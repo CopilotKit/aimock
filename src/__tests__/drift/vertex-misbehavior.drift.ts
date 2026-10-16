@@ -1769,7 +1769,7 @@ describe("Vertex recurring bounds and exact selection", () => {
     { AIMOCK_VERTEX_MODEL: "other-model" },
     { AIMOCK_VERTEX_ACCESS_TOKEN: undefined },
     { AIMOCK_VERTEX_ACCESS_TOKEN: " " },
-  ])("rejects incomplete/wrong enabled configuration without a send: %j", async (override) => {
+  ])("%#: rejects incomplete/wrong enabled configuration without a send: %j", async (override) => {
     await withVertexSequence(async (origin, requests) => {
       await expect(
         runVertexRecurrence({ ...localVertexEnvironment, ...override }, origin),

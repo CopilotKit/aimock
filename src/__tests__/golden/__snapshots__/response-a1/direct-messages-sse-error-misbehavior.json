@@ -1,0 +1,51 @@
+{
+  "got": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"aimock_misbehavior_invalid\",\"message\":\"anthropic: misbehavior/bad-value at headers.x-aimock-misbehavior: invalid value \\\"typo\\\"\"}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "text"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 400,
+        "fixture": {
+          "match": {
+            "userMessage": "text"
+          },
+          "response": {
+            "content": "Answer",
+            "reasoning": "Reason",
+            "reasoningSignature": "signature"
+          }
+        },
+        "misbehavior": {
+          "applied": false,
+          "source": "header",
+          "wire": "anthropic",
+          "evaluations": []
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture",
+        "misbehavior"
+      ]
+    }
+  ]
+}

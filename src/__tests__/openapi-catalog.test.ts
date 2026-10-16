@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import OpenAI, { toFile } from "openai";
+import Anthropic from "@anthropic-ai/sdk";
+import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { SSEChunk, ChatCompletion, ChatCompletionRequest } from "../types.js";
 import { LLMock } from "../llmock.js";
 import { CATALOG_ROUTES, buildOpenApiDocument } from "../openapi.js";
@@ -83,6 +86,416 @@ describe("OpenAPI route catalog", () => {
   afterEach(async () => {
     await mock.stop();
   });
+
+  it.each([
+    {
+      kind: "Anthropic",
+      path: "/v1/messages/count_tokens",
+      template: "/v1/messages/count_tokens",
+      request: { messages: [{ role: "user", content: "hello" }] },
+      responseKey: "input_tokens",
+    },
+    {
+      kind: "Gemini",
+      path: "/v1beta/models/gemini-test:countTokens",
+      template: "/v1beta/models/{model}:countTokens",
+      request: { contents: [{ parts: [{ text: "hello" }] }] },
+      responseKey: "totalTokens",
+    },
+  ])(
+    "validates the real $kind count response against its published schema",
+    async ({ kind, path, template, request, responseKey }) => {
+      const response = await post(path, request);
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toHaveProperty(responseKey);
+      const catalogResponse = await fetch(`${mock.url}/__aimock/openapi.json`);
+      expect(catalogResponse.status).toBe(200);
+      const doc: {
+        components: { schemas: { [name: string]: JsonSchemaType } };
+        paths: {
+          [path: string]: {
+            post: {
+              responses: { "200": { content: { "application/json": { schema: JsonSchemaType } } } };
+            };
+          };
+        };
+      } = await catalogResponse.json();
+      const schema = {
+        components: doc.components,
+        ...doc.paths[template].post.responses["200"].content["application/json"].schema,
+      };
+      const validation = new AjvJsonSchemaValidator().getValidator(schema)(body);
+      console.log(JSON.stringify({ kind, status: response.status, body, ...validation }));
+      expect(validation.valid, validation.errorMessage).toBe(true);
+    },
+  );
+
+  const anthropicCountValidator = async () => {
+    const response = await fetch(`${mock.url}/__aimock/openapi.json`);
+    expect(response.status).toBe(200);
+    const doc: {
+      components: { schemas: { [name: string]: JsonSchemaType } };
+      paths: {
+        "/v1/messages/count_tokens": {
+          post: { requestBody: { content: { "application/json": { schema: JsonSchemaType } } } };
+        };
+      };
+    } = await response.json();
+    const schema = {
+      components: doc.components,
+      ...doc.paths["/v1/messages/count_tokens"].post.requestBody.content["application/json"].schema,
+    };
+    return new AjvJsonSchemaValidator().getValidator(schema);
+  };
+
+  const requestAnthropicCount = async (requestBody: Anthropic.MessageCountTokensParams) => {
+    let emitted: unknown;
+    let status: number | undefined;
+    const client = new Anthropic({
+      apiKey: "test",
+      baseURL: mock.url,
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        emitted = await request.clone().json();
+        const response = await fetch(request);
+        status = response.status;
+        return response;
+      },
+    });
+    const body = await client.messages.countTokens(requestBody);
+    const validation = (await anthropicCountValidator())(emitted);
+    return { emitted, status, body, ...validation };
+  };
+
+  it.each([
+    { kind: "native", tool: { type: "web_search_20250305", name: "web_search" }, tokens: 15 },
+    { kind: "custom", tool: { name: "lookup", input_schema: { type: "object" } }, tokens: 22 },
+  ] satisfies { kind: string; tool: Anthropic.MessageCountTokensTool; tokens: number }[])(
+    "validates the real Anthropic SDK count request with a $kind tool",
+    async ({ kind, tool, tokens }) => {
+      const result = await requestAnthropicCount({
+        model: "claude-test",
+        messages: [],
+        tools: [tool],
+      });
+      console.log(JSON.stringify({ kind, ...result }));
+      expect(result.status).toBe(200);
+      expect(result.body).toEqual({ input_tokens: tokens });
+      expect(result.valid, result.errorMessage).toBe(true);
+    },
+  );
+
+  it.each([
+    {
+      kind: "document",
+      content: [
+        { type: "document", source: { type: "text", media_type: "text/plain", data: "hello" } },
+      ],
+      tokens: 1,
+    },
+    {
+      kind: "redacted thinking",
+      content: [{ type: "redacted_thinking", data: "opaque" }],
+      tokens: 1,
+    },
+    {
+      kind: "null tool input",
+      content: [{ type: "tool_use", id: "tool-1", name: "lookup", input: null }],
+      tokens: 1,
+    },
+    {
+      kind: "array tool input",
+      content: [{ type: "tool_use", id: "tool-1", name: "lookup", input: [] }],
+      tokens: 1,
+    },
+    { kind: "text", content: "hello", tokens: 2 },
+    {
+      kind: "object tool input",
+      content: [{ type: "tool_use", id: "tool-1", name: "lookup", input: {} }],
+      tokens: 1,
+    },
+  ] satisfies { kind: string; content: Anthropic.MessageParam["content"]; tokens: number }[])(
+    "validates the real Anthropic SDK count request with $kind content",
+    async ({ kind, content, tokens }) => {
+      const result = await requestAnthropicCount({
+        model: "claude-test",
+        messages: [{ role: "user", content }],
+      });
+      console.log(JSON.stringify({ kind, ...result }));
+      expect(result.status).toBe(200);
+      expect(result.body).toEqual({ input_tokens: tokens });
+      expect(result.valid, result.errorMessage).toBe(true);
+    },
+  );
+
+  it.each([
+    { kind: "object messages", messages: {} },
+    { kind: "null message", messages: [null] },
+    { kind: "null content", messages: [{ role: "user", content: null }] },
+    { kind: "null block", messages: [{ role: "user", content: [null] }] },
+  ])(
+    "rejects the real Anthropic count request with invalid content: $kind",
+    async ({ messages }) => {
+      const body = { messages };
+      const response = await post("/v1/messages/count_tokens", body);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        type: "error",
+        error: { type: "invalid_request_error" },
+      });
+      expect((await anthropicCountValidator())(body).valid).toBe(false);
+    },
+  );
+
+  it.each([
+    { kind: "object", tools: {} },
+    { kind: "null entry", tools: [null] },
+    { kind: "array entry", tools: [[]] },
+  ])("rejects the real Anthropic count request with invalid tools: $kind", async ({ tools }) => {
+    const body = { messages: [], tools };
+    const response = await post("/v1/messages/count_tokens", body);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      type: "error",
+      error: { type: "invalid_request_error" },
+    });
+    expect((await anthropicCountValidator())(body).valid).toBe(false);
+  });
+
+  const geminiCountValidator = async () => {
+    const response = await fetch(`${mock.url}/__aimock/openapi.json`);
+    expect(response.status).toBe(200);
+    const doc: {
+      components: { schemas: { [name: string]: JsonSchemaType } };
+      paths: {
+        "/v1beta/models/{model}:countTokens": {
+          post: { requestBody: { content: { "application/json": { schema: JsonSchemaType } } } };
+        };
+      };
+    } = await response.json();
+    const schema = {
+      components: doc.components,
+      ...doc.paths["/v1beta/models/{model}:countTokens"].post.requestBody.content[
+        "application/json"
+      ].schema,
+    };
+    return new AjvJsonSchemaValidator().getValidator(schema);
+  };
+
+  it.each([
+    {
+      kind: "null wrapper with valid outer contents",
+      request: { contents: [], generateContentRequest: null },
+      status: 400,
+      expectedBody: {
+        error: {
+          code: 400,
+          status: "INVALID_ARGUMENT",
+          message: "Request body must be an object",
+        },
+      },
+    },
+    {
+      kind: "ordinary unwrapped contents",
+      request: { contents: [] },
+      status: 200,
+      expectedBody: { totalTokens: 1 },
+    },
+    ...[
+      { kind: "null system container", systemInstruction: null, tokens: 1 },
+      { kind: "null system parts container", systemInstruction: { parts: null }, tokens: 1 },
+      { kind: "empty system container", systemInstruction: {}, tokens: 1 },
+      { kind: "empty system parts", systemInstruction: { parts: [] }, tokens: 1 },
+      { kind: "valid system text", systemInstruction: { parts: [{ text: "hello" }] }, tokens: 2 },
+    ].flatMap(({ kind, systemInstruction, tokens }) => {
+      const contentRequest = { contents: [], systemInstruction };
+      return [
+        { kind: `direct ${kind}`, request: contentRequest },
+        { kind: `wrapped ${kind}`, request: { generateContentRequest: contentRequest } },
+      ].map((row) => ({ ...row, status: 200, expectedBody: { totalTokens: tokens } }));
+    }),
+    {
+      kind: "null content parts container",
+      request: { contents: [{ parts: null }] },
+      status: 400,
+      expectedBody: {
+        error: { code: 400, status: "INVALID_ARGUMENT", message: "parts must be an array" },
+      },
+    },
+    {
+      kind: "null system parts element",
+      request: { contents: [], systemInstruction: { parts: [null] } },
+      status: 400,
+      expectedBody: {
+        error: {
+          code: 400,
+          status: "INVALID_ARGUMENT",
+          message: "systemInstruction parts must be objects",
+        },
+      },
+    },
+    {
+      kind: "wrapped tool declaration",
+      request: {
+        generateContentRequest: {
+          contents: [],
+          tools: [{ functionDeclarations: [{ name: "lookup" }] }],
+        },
+      },
+      status: 200,
+      expectedBody: { totalTokens: 14 },
+    },
+    {
+      kind: "wrapped contents ignoring outer content and tools",
+      request: {
+        contents: [{ parts: [{ text: "Outer text must not contribute to the count" }] }],
+        tools: [{ functionDeclarations: [{ name: "ignoredOuterTool" }] }],
+        generateContentRequest: { contents: [] },
+      },
+      status: 200,
+      expectedBody: { totalTokens: 1 },
+    },
+    {
+      kind: "wrapped contents ignoring malformed outer content and tools",
+      request: {
+        contents: "ignored",
+        tools: "ignored",
+        generateContentRequest: { contents: [] },
+      },
+      status: 200,
+      expectedBody: { totalTokens: 1 },
+    },
+  ])(
+    "matches real Gemini count wrapper precedence in the schema: $kind",
+    async ({ kind, request, status, expectedBody }) => {
+      const response = await post("/v1beta/models/gemini-test:countTokens", request);
+      const body: unknown = await response.json();
+      const validation = (await geminiCountValidator())(request);
+      console.log(JSON.stringify({ kind, request, status: response.status, body, ...validation }));
+      expect(response.status).toBe(status);
+      expect(body).toEqual(expectedBody);
+      expect(validation.valid, validation.errorMessage).toBe(status === 200);
+    },
+  );
+
+  it.each([
+    {
+      kind: "string",
+      functionDeclarations: "bad",
+      message: "functionDeclarations must be an array",
+    },
+    {
+      kind: "null entry",
+      functionDeclarations: [null],
+      message: "functionDeclarations entries must be objects",
+    },
+  ])(
+    "rejects the real Gemini count request and schema with declarations: $kind",
+    async ({ kind, functionDeclarations, message }) => {
+      const request = { contents: [], tools: [{ functionDeclarations }] };
+      const response = await post("/v1beta/models/gemini-test:countTokens", request);
+      const body: unknown = await response.json();
+      const validation = (await geminiCountValidator())(request);
+      console.log(JSON.stringify({ kind, request, status: response.status, body, ...validation }));
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({ error: { code: 400, status: "INVALID_ARGUMENT", message } });
+      expect(validation.valid, validation.errorMessage).toBe(false);
+    },
+  );
+
+  it.each([
+    { kind: "empty declaration", tool: { functionDeclarations: [{}] }, tokens: 10 },
+    { kind: "named declaration", tool: { functionDeclarations: [{ name: "lookup" }] }, tokens: 14 },
+    { kind: "empty declarations", tool: { functionDeclarations: [] }, tokens: 1 },
+    { kind: "ignored tool", tool: { googleSearch: {} }, tokens: 1 },
+  ])(
+    "validates the real Gemini count request and schema with a $kind",
+    async ({ kind, tool, tokens }) => {
+      const request = { contents: [], tools: [tool] };
+      const response = await post("/v1beta/models/gemini-test:countTokens", request);
+      const body: unknown = await response.json();
+      const validation = (await geminiCountValidator())(request);
+      console.log(JSON.stringify({ kind, request, status: response.status, body, ...validation }));
+      expect(response.status).toBe(200);
+      expect(body).toEqual({ totalTokens: tokens });
+      expect(validation.valid, validation.errorMessage).toBe(true);
+    },
+  );
+
+  it.each(["openai", "anthropic", "anthropic-retired"] as const)(
+    "validates the real model list against its published schema: %s",
+    async (kind) => {
+      const response = await fetch(
+        `${mock.url}/v1/models${kind === "anthropic-retired" ? "?lifecycle=retired" : ""}`,
+        { headers: kind === "openai" ? {} : { "anthropic-version": "2023-06-01" } },
+      );
+      expect(response.status).toBe(200);
+      const body: { data: { id: string }[] } = await response.json();
+      if (kind === "anthropic-retired") {
+        expect(body).toEqual({ data: [], has_more: false, first_id: null, last_id: null });
+      } else {
+        expect(body.data.length).toBeGreaterThan(0);
+        expect(body).toMatchObject(kind === "openai" ? { object: "list" } : { has_more: false });
+      }
+      const catalogResponse = await fetch(`${mock.url}/__aimock/openapi.json`);
+      expect(catalogResponse.status).toBe(200);
+      const doc: {
+        components: { schemas: { [name: string]: JsonSchemaType } };
+        paths: {
+          "/v1/models": {
+            get: {
+              responses: { "200": { content: { "application/json": { schema: JsonSchemaType } } } };
+            };
+          };
+        };
+      } = await catalogResponse.json();
+      const schema = {
+        components: doc.components,
+        ...doc.paths["/v1/models"].get.responses["200"].content["application/json"].schema,
+      };
+      const validate = new AjvJsonSchemaValidator().getValidator(schema);
+      const result = validate(body);
+      console.log(JSON.stringify({ kind, status: response.status, body, ...result }));
+      expect(result.valid, result.errorMessage).toBe(true);
+    },
+  );
+
+  it.each([
+    { kind: "list", path: "/v1beta/models", template: "/v1beta/models" },
+    {
+      kind: "detail",
+      path: "/v1beta/models/gemini-2.0-flash",
+      template: "/v1beta/models/{model}",
+    },
+  ])(
+    "validates the real Gemini model $kind against its published schema",
+    async ({ kind, path, template }) => {
+      const response = await fetch(`${mock.url}${path}`);
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toHaveProperty(kind === "list" ? "models.0.name" : "name");
+      const catalogResponse = await fetch(`${mock.url}/__aimock/openapi.json`);
+      expect(catalogResponse.status).toBe(200);
+      const doc: {
+        components: { schemas: { [name: string]: JsonSchemaType } };
+        paths: {
+          [path: string]: {
+            get: {
+              responses: { "200": { content: { "application/json": { schema: JsonSchemaType } } } };
+            };
+          };
+        };
+      } = await catalogResponse.json();
+      const schema = {
+        components: doc.components,
+        ...doc.paths[template].get.responses["200"].content["application/json"].schema,
+      };
+      const result = new AjvJsonSchemaValidator().getValidator(schema)(body);
+      expect(result.valid, result.errorMessage).toBe(true);
+    },
+  );
 
   it.each(["omitted", "auto", "static"] as const)(
     "describes emitted vector resource configuration over HTTP: %s",
@@ -1508,8 +1921,11 @@ describe("OpenAPI route catalog", () => {
       FINE_TUNING_EVENTS_RE: ["GET /v1/fine_tuning/jobs/{job_id}/events"],
       FINE_TUNING_ID_RE: ["GET /v1/fine_tuning/jobs/{job_id}"],
       FINE_TUNING_JOBS_PATH: ["GET /v1/fine_tuning/jobs", "POST /v1/fine_tuning/jobs"],
+      GEMINI_COUNT_RE: ["POST /v1beta/models/{model}:countTokens"],
       GEMINI_EMBED_RE: ["POST /v1beta/models/{model}:embedContent"],
       GEMINI_INTERACTIONS_PATH: ["POST /v1beta/interactions"],
+      GEMINI_MODELS_PATH: ["GET /v1beta/models"],
+      GEMINI_MODEL_DETAIL_RE: ["GET /v1beta/models/{model}"],
       GEMINI_PATH_RE: [
         "POST /v1beta/models/{model}:generateContent",
         "POST /v1beta/models/{model}:streamGenerateContent",
@@ -1521,8 +1937,10 @@ describe("OpenAPI route catalog", () => {
       IMAGES_EDIT_PATH: ["POST /v1/images/edits"],
       IMAGES_PATH: ["POST /v1/images/generations"],
       IMAGES_VARIATIONS_PATH: ["POST /v1/images/variations"],
+      MESSAGES_COUNT_PATH: ["POST /v1/messages/count_tokens"],
       MESSAGES_PATH: ["POST /v1/messages"],
       METRICS_PATH: ["GET /metrics"],
+      MODELS_DETAIL_RE: ["GET /v1/models/{id}"],
       MODELS_PATH: ["GET /v1/models"],
       MODERATIONS_PATH: ["POST /v1/moderations"],
       OLLAMA_CHAT_PATH: ["POST /api/chat"],

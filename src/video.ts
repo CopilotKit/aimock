@@ -8,12 +8,12 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -162,13 +162,11 @@ export async function handleVideoCreate(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          error: {
-            message: `Malformed JSON: ${detail}`,
-            type: "invalid_request_error",
-            code: "invalid_json",
-          },
-        }),
+        renderError("openai", "validation", {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        }).body,
       );
       return;
     }
@@ -189,12 +187,10 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -210,9 +206,10 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: { message: "Missing required parameter: 'prompt'", type: "invalid_request_error" },
-      }),
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'prompt'",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -238,13 +235,11 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message:
-            "Invalid parameter: 'prompt' must be a string or a non-empty array of content parts",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message:
+          "Invalid parameter: 'prompt' must be a string or a non-empty array of content parts",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -288,8 +283,8 @@ export async function handleVideoCreate(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -306,13 +301,11 @@ export async function handleVideoCreate(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -354,13 +347,11 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -393,9 +384,10 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not a video type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a video type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -468,7 +460,10 @@ export async function handleVideoStatus(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({ error: { message: `Video ${videoId} not found`, type: "not_found" } }),
+      renderError("openai", "route-failure", {
+        message: `Video ${videoId} not found`,
+        type: "not_found",
+      }).body,
     );
     return;
   }

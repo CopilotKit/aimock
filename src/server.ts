@@ -1,4 +1,10 @@
 import * as http from "node:http";
+import {
+  parsePolicy,
+  resolvePolicy,
+  resolveRequestDecisions,
+  strictOverrideField,
+} from "./response/policy.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   Fixture,
@@ -95,10 +101,8 @@ import {
   resolveRequestId,
   markMintedRequestId,
   resolveResponse,
-  resolveStrictMode,
   wouldProxyMiss,
   resolveReasoningForModel,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
@@ -110,6 +114,21 @@ import {
   describeMatch,
 } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import { collect, idsFor } from "./response/catalog/collect.js";
+import { anthropicPage } from "./response/catalog/anthropic-page.js";
+import { geminiPage } from "./response/catalog/gemini-page.js";
+import { isAnthropicModelRequest, missingRequiredHeader } from "./response/profiles.js";
+import {
+  coreModelIds,
+  renderOpenAIModel,
+  renderOpenAIModels,
+  renderAnthropicModel,
+  renderAnthropicModels,
+  renderGeminiModel,
+  renderGeminiModels,
+  renderOllamaTags,
+} from "./response/catalog/render.js";
+import { renderError } from "./response/errors.js";
 import {
   isOpenRouterPath,
   buildOpenRouterCandidates,
@@ -130,6 +149,7 @@ import type {
 } from "./types.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
+import { handleCountTokens } from "./count-tokens.js";
 import { handleGemini } from "./gemini.js";
 import { handleGeminiEmbedContent } from "./gemini-embeddings.js";
 import { handleBedrock, handleBedrockStream } from "./bedrock.js";
@@ -254,6 +274,7 @@ import {
   LIVE_PATH,
   GEMINI_LIVE_PATH,
   MESSAGES_PATH,
+  MESSAGES_COUNT_PATH,
   EMBEDDINGS_PATH,
   COHERE_CHAT_PATH,
   COHERE_EMBED_PATH,
@@ -284,6 +305,7 @@ import {
   FAL_ROUTE_RE,
   GEMINI_INTERACTIONS_PATH,
   GEMINI_PATH_RE,
+  GEMINI_COUNT_RE,
   GEMINI_EMBED_RE,
   AZURE_DEPLOYMENT_RE,
   BEDROCK_INVOKE_RE,
@@ -307,6 +329,9 @@ import {
   READY_PATH,
   METRICS_PATH,
   MODELS_PATH,
+  MODELS_DETAIL_RE,
+  GEMINI_MODELS_PATH,
+  GEMINI_MODEL_DETAIL_RE,
   REQUESTS_PATH,
   FILES_PATH,
   FILES_ID_RE,
@@ -419,14 +444,6 @@ function normalizeCompatPath(pathname: string, logger?: Logger): string {
 // content/status REs are shared with the route registry and metrics.ts
 // path-label normalization (imported above).
 
-const DEFAULT_MODELS = [
-  "gpt-4",
-  "gpt-4o",
-  "claude-3-5-sonnet-20241022",
-  "gemini-2.0-flash",
-  "text-embedding-3-small",
-];
-
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   // Every method the dispatcher serves: PUT is dispatched for
@@ -454,7 +471,14 @@ function handleOptions(res: http.ServerResponse): void {
 
 function handleNotFound(res: http.ServerResponse, message: string): void {
   setCorsHeaders(res);
-  writeErrorResponse(res, 404, JSON.stringify({ error: { message, type: "not_found" } }));
+  writeErrorResponse(
+    res,
+    404,
+    renderError("openai", "route-failure", {
+      message: message,
+      type: "not_found",
+    }).body,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1644,12 +1668,10 @@ async function handleCompletions(
       status,
       openRouter
         ? serializeOpenRouterError(status, `Request body read failed: ${msg}`)
-        : JSON.stringify({
-            error: {
-              message: `Request body read failed: ${msg}`,
-              type: clientFault ? "invalid_request_error" : "server_error",
-            },
-          }),
+        : renderError("openai", "transport-failure", {
+            message: `Request body read failed: ${msg}`,
+            type: clientFault ? "invalid_request_error" : "server_error",
+          }).body,
     );
     return;
   }
@@ -1672,14 +1694,13 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, `Malformed JSON: ${detail}`)
-        : JSON.stringify({
-            error: {
-              message: `Malformed JSON: ${detail}`,
-              type: "invalid_request_error",
-              param: null,
-              code: "invalid_json",
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: `Malformed JSON: ${detail}`,
+            type: "invalid_request_error",
+            param: null,
+            code: "invalid_json",
+            includeParam: true,
+          }).body,
     );
     return;
   }
@@ -1700,12 +1721,10 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, "Request body must be a JSON object")
-        : JSON.stringify({
-            error: {
-              message: "Request body must be a JSON object",
-              type: "invalid_request_error",
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: "Request body must be a JSON object",
+            type: "invalid_request_error",
+          }).body,
     );
     return;
   }
@@ -1729,14 +1748,13 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, "Missing required parameter: 'messages'")
-        : JSON.stringify({
-            error: {
-              message: "Missing required parameter: 'messages'",
-              type: "invalid_request_error",
-              param: null,
-              code: null,
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: "Missing required parameter: 'messages'",
+            type: "invalid_request_error",
+            param: null,
+            code: null,
+            includeParam: true,
+          }).body,
     );
     return;
   }
@@ -1756,14 +1774,13 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, message)
-        : JSON.stringify({
-            error: {
-              message,
-              type: "invalid_request_error",
-              param: null,
-              code: null,
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: message,
+            type: "invalid_request_error",
+            param: null,
+            code: null,
+            includeParam: true,
+          }).body,
     );
     return;
   }
@@ -1789,7 +1806,10 @@ async function handleCompletions(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({ error: { message: toolsError, type: "invalid_request_error" } }),
+        renderError("openai", "validation", {
+          message: toolsError,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -2037,8 +2057,9 @@ async function handleCompletions(
   // on the non-proxied path. A miss is only proxied when record mode has an
   // upstream for THIS provider and strict is not refusing it first; the
   // shared rule lives in `wouldProxyMiss` (also used by elevenlabs-voice.ts).
-  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-  const missWouldProxy = wouldProxyMiss(effectiveStrict, defaults.record, providerKey);
+  const missDecisions = resolveRequestDecisions(defaults.strict, req.headers);
+  const effectiveStrict = missDecisions.fixtureMiss;
+  const missWouldProxy = wouldProxyMiss(!missDecisions.upstream, defaults.record, providerKey);
   const noFixtureSource = missWouldProxy ? "proxy" : "internal";
   // Chaos writes its own entry. Resolve by request identity, including after
   // awaited proxy hooks, so concurrent requests cannot receive each other's marker.
@@ -2133,14 +2154,13 @@ async function handleCompletions(
         strictStatus,
         openRouter
           ? serializeOpenRouterError(strictStatus, strictMessage)
-          : JSON.stringify({
-              error: {
-                message: strictMessage,
-                type: "invalid_request_error",
-                param: null,
-                code: "no_fixture_match",
-              },
-            }),
+          : renderError("openai", "strict-miss", {
+              message: strictMessage,
+              type: "invalid_request_error",
+              param: null,
+              code: "no_fixture_match",
+              includeParam: true,
+            }).body,
       );
       return;
     }
@@ -2282,14 +2302,13 @@ async function handleCompletions(
       404,
       openRouter
         ? serializeOpenRouterError(404, "No fixture matched")
-        : JSON.stringify({
-            error: {
-              message: "No fixture matched",
-              type: "invalid_request_error",
-              param: null,
-              code: "no_fixture_match",
-            },
-          }),
+        : renderError("openai", "fixture-miss", {
+            message: "No fixture matched",
+            type: "invalid_request_error",
+            param: null,
+            code: "no_fixture_match",
+            includeParam: true,
+          }).body,
     );
     return;
   }
@@ -2325,14 +2344,13 @@ async function handleCompletions(
       evaluation.status,
       openRouter
         ? serializeOpenRouterError(evaluation.status, `${evaluation.code}: ${evaluation.message}`)
-        : JSON.stringify({
-            error: {
-              message: evaluation.message,
-              type: "invalid_request_error",
-              param: null,
-              code: evaluation.code,
-            },
-          }),
+        : renderError("openai", "misbehavior", {
+            message: evaluation.message,
+            type: "invalid_request_error",
+            param: null,
+            code: evaluation.code,
+            includeParam: true,
+          }).body,
     );
     return;
   }
@@ -2354,7 +2372,7 @@ async function handleCompletions(
       ? resolveReasoningForModel(
           response.reasoning,
           responseModel,
-          resolveStrictMode(defaults.strict, req.headers),
+          resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
           defaults.logger,
         )
       : undefined;
@@ -2484,13 +2502,11 @@ async function handleCompletions(
             422,
             "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
           )
-        : JSON.stringify({
-            error: {
-              message:
-                "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
-              type: "invalid_request_error",
-            },
-          }),
+        : renderError("openai", "validation", {
+            message:
+              "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
+            type: "invalid_request_error",
+          }).body,
     );
     return;
   }
@@ -2585,7 +2601,10 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = appliedPlan
       ? appliedReasoning
       : resolveReasoningForModel(
@@ -2684,7 +2703,10 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = appliedPlan
       ? appliedReasoning
       : resolveReasoningForModel(
@@ -2758,7 +2780,10 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = appliedPlan
       ? appliedReasoning
       : resolveReasoningForModel(
@@ -2840,12 +2865,10 @@ async function handleCompletions(
     500,
     openRouter
       ? serializeOpenRouterError(500, "Fixture response did not match any known type")
-      : JSON.stringify({
-          error: {
-            message: "Fixture response did not match any known type",
-            type: "server_error",
-          },
-        }),
+      : renderError("openai", "unknown-response", {
+          message: "Fixture response did not match any known type",
+          type: "server_error",
+        }).body,
   );
 }
 
@@ -2968,6 +2991,8 @@ async function startServer(
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  // Invalid JavaScript options warn even when ordinary server logging is silent.
+  parsePolicy(serverOptions.policy, (message) => new Logger("warn").warn(message));
   // 1.44.0 ignored an unknown `responsesTools` option, so an invalid value is
   // ignored with a warning (at any logLevel, as aimock --config warns) and the
   // server runs in "legacy" mode.
@@ -3062,6 +3087,9 @@ async function startServer(
     },
     get strict() {
       return serverOptions.strict;
+    },
+    get policy() {
+      return serverOptions.policy;
     },
     get strictToolArguments() {
       return serverOptions.strictToolArguments;
@@ -3242,22 +3270,20 @@ async function startServer(
    * `toolCallEnvelope` instead of using this one.
    */
   function invalidToolArgumentsEnvelope(pathname: string, message: string, code: string): string {
-    if (pathname === OLLAMA_CHAT_PATH) return JSON.stringify({ error: message, code });
+    if (pathname === OLLAMA_CHAT_PATH)
+      return renderError("ollama", "tool-argument", { message, code }).body;
     if (pathname === GEMINI_INTERACTIONS_PATH) {
-      return JSON.stringify({ error: { code, message } });
+      return renderError("interactions", "tool-argument", { message, code }).body;
     }
     if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
-      return JSON.stringify({
-        error: {
-          code: 500,
-          message,
-          status: "INTERNAL",
-          details: googleFixtureToolCallErrorDetails(code),
-        },
-      });
+      return renderError("gemini", "tool-argument", {
+        message,
+        code,
+        googleDetails: googleFixtureToolCallErrorDetails(code),
+      }).body;
     }
     if (pathname === MESSAGES_PATH) {
-      return JSON.stringify({ type: "error", error: { type: "api_error", code, message } });
+      return renderError("messages", "tool-argument", { message, code }).body;
     }
     if (
       BEDROCK_INVOKE_RE.test(pathname) ||
@@ -3265,29 +3291,27 @@ async function startServer(
       BEDROCK_CONVERSE_RE.test(pathname) ||
       BEDROCK_CONVERSE_STREAM_RE.test(pathname)
     ) {
-      return JSON.stringify({ __type: "InternalServerException", message, reason: code });
+      return renderError("bedrock", "tool-argument", { message, code }).body;
     }
-    return JSON.stringify({ error: { message, type: "server_error", code } });
+    return renderError("openai", "tool-argument", { message, code }).body;
   }
 
   function invalidMisbehaviorHeaderEnvelope(pathname: string, detail: string): string {
     const code = "aimock_misbehavior_invalid";
     const message = `${code}: ${detail}`;
     if (pathname === OLLAMA_CHAT_PATH || pathname === OLLAMA_GENERATE_PATH) {
-      return JSON.stringify({ error: message });
+      return renderError("ollama", "invalid-misbehavior-header", { message, code }).body;
     }
-    if (pathname === COHERE_CHAT_PATH) return JSON.stringify({ message });
+    if (pathname === COHERE_CHAT_PATH)
+      return renderError("cohere", "invalid-misbehavior-header", { message, code }).body;
     if (pathname === GEMINI_INTERACTIONS_PATH) {
-      return JSON.stringify({ error: { code, message } });
+      return renderError("interactions", "invalid-misbehavior-header", { message, code }).body;
     }
     if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
-      return JSON.stringify({ error: { code: 400, message, status: "INVALID_ARGUMENT" } });
+      return renderError("gemini", "invalid-misbehavior-header", { message, code }).body;
     }
     if (pathname === MESSAGES_PATH) {
-      return JSON.stringify({
-        type: "error",
-        error: { type: "invalid_request_error", code, message },
-      });
+      return renderError("messages", "invalid-misbehavior-header", { message, code }).body;
     }
     if (
       BEDROCK_INVOKE_RE.test(pathname) ||
@@ -3295,9 +3319,9 @@ async function startServer(
       BEDROCK_CONVERSE_RE.test(pathname) ||
       BEDROCK_CONVERSE_STREAM_RE.test(pathname)
     ) {
-      return JSON.stringify({ __type: "ValidationException", message });
+      return renderError("bedrock", "invalid-misbehavior-header", { message, code }).body;
     }
-    return JSON.stringify({ error: { message, type: "invalid_request_error", code } });
+    return renderError("openai", "invalid-misbehavior-header", { message, code }).body;
   }
 
   /**
@@ -3460,12 +3484,10 @@ async function startServer(
             )
           : opts?.envelope
             ? opts.envelope(msg, status)
-            : JSON.stringify({
-                error: {
-                  message: msg,
-                  type: errorTypeForStatus(status),
-                },
-              }),
+            : renderError("openai", "route-failure", {
+                message: msg,
+                type: errorTypeForStatus(status),
+              }).body,
       );
     } else {
       // Headers are on the wire, so the status the client got is fixed. If the
@@ -3652,9 +3674,10 @@ async function startServer(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          error: { message: "Invalid request target", type: "invalid_request_error" },
-        }),
+        renderError("openai", "route-failure", {
+          message: "Invalid request target",
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -3692,7 +3715,7 @@ async function startServer(
       (pathname === HEALTH_PATH || pathname === READY_PATH || pathname === METRICS_PATH);
     if (!isPublicProbe) {
       if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
-        writeApiKeyHttpRejection(res, setCorsHeaders);
+        writeApiKeyHttpRejection(res, setCorsHeaders, pathname);
         return;
       }
       markAuthenticatedRequest(req, resolvedAuth.policy);
@@ -3800,23 +3823,9 @@ async function startServer(
 
     if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
-      }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const models = ids.map((name) => ({
-        name,
-        model: name,
-        modified_at: new Date().toISOString(),
-        size: 0,
-        digest: "",
-        details: {},
-      }));
+      const body = renderOllamaTags(collect(fixtures, "all").ids, () => new Date().toISOString());
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ models }));
+      res.end(JSON.stringify(body));
       return;
     }
 
@@ -4032,24 +4041,91 @@ async function startServer(
       return;
     }
 
-    // Models listing
-    if (pathname === MODELS_PATH && req.method === "GET") {
+    // Catalog GETs are synthesized in every mode, without journal or egress.
+    const modelDetailMatch = pathname.match(MODELS_DETAIL_RE);
+    const geminiModelDetailMatch = pathname.match(GEMINI_MODEL_DETAIL_RE);
+    if (
+      req.method === "GET" &&
+      (pathname === MODELS_PATH ||
+        pathname === GEMINI_MODELS_PATH ||
+        modelDetailMatch ||
+        geminiModelDetailMatch)
+    ) {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
+      const google = pathname === GEMINI_MODELS_PATH || geminiModelDetailMatch !== null;
+      const anthropic = !google && isAnthropicModelRequest(req.headers);
+      const policy = resolvePolicy(defaults, req.headers);
+      const missingHeader =
+        anthropic && policy.requiredHeaders === "enforce"
+          ? missingRequiredHeader("messages", req.headers)
+          : undefined;
+      if (missingHeader) {
+        writeErrorResponse(
+          res,
+          400,
+          renderError("messages", "thinking", {
+            message: `${missingHeader}: header is required`,
+            requestId,
+          }).body,
+        );
+        return;
       }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const data = ids.map((id) => ({
-        id,
-        object: "model" as const,
-        created: 1686935002,
-        owned_by: "aimock",
-      }));
+      const ids = coreModelIds(collect(fixtures, "all").ids);
+      const visible = google ? idsFor(ids, "google") : anthropic ? idsFor(ids, "anthropic") : ids;
+      const catalogError = (status: number, message: string): void => {
+        const rendered = google
+          ? renderError("gemini", "fixture", {
+              bodyCode: status,
+              status: status === 404 ? "NOT_FOUND" : "INVALID_ARGUMENT",
+              message,
+            })
+          : anthropic
+            ? renderError("messages", "thinking", {
+                type: status === 404 ? "not_found_error" : "invalid_request_error",
+                message,
+              })
+            : renderError("openai", "validation", { message });
+        res.writeHead(status, { "Content-Type": "application/json", ...rendered.headers });
+        res.end(rendered.body);
+      };
+      let body: unknown;
+      const detail = modelDetailMatch ?? geminiModelDetailMatch;
+      if (detail) {
+        let id: string;
+        try {
+          id = decodeURIComponent(detail[1]);
+        } catch {
+          catalogError(404, "Model not found");
+          return;
+        }
+        if (!visible.includes(id)) {
+          catalogError(404, `Model not found: ${id}`);
+          return;
+        }
+        body = google
+          ? renderGeminiModel(id)
+          : anthropic
+            ? renderAnthropicModel(id)
+            : renderOpenAIModel(id);
+      } else if (google) {
+        const result = geminiPage(visible, parsedUrl.searchParams);
+        if (result.error !== undefined) {
+          catalogError(400, result.error);
+          return;
+        }
+        body = renderGeminiModels(result.page);
+      } else if (anthropic) {
+        const result = anthropicPage(visible, parsedUrl.searchParams);
+        if (result.error !== undefined) {
+          catalogError(400, result.error);
+          return;
+        }
+        body = renderAnthropicModels(result.page);
+      } else {
+        body = renderOpenAIModels(ids);
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ object: "list", data }));
+      res.end(JSON.stringify(body));
       return;
     }
 
@@ -4471,12 +4547,10 @@ async function startServer(
             writeErrorResponse(
               res,
               400,
-              JSON.stringify({
-                error: {
-                  message: `Invalid limit parameter: "${limitParam}"`,
-                  type: "invalid_request_error",
-                },
-              }),
+              renderError("openai", "validation", {
+                message: `Invalid limit parameter: "${limitParam}"`,
+                type: "invalid_request_error",
+              }).body,
             );
             return;
           }
@@ -4510,7 +4584,42 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
+      }
+      return;
+    }
+
+    // Counts are synthesized before generation dispatch in every mode.
+    const geminiCountMatch = pathname.match(GEMINI_COUNT_RE);
+    if (req.method === "POST" && (pathname === MESSAGES_COUNT_PATH || geminiCountMatch)) {
+      const google = geminiCountMatch !== null;
+      try {
+        const raw = await readBody(req);
+        handleCountTokens(
+          req,
+          res,
+          raw,
+          google,
+          geminiCountMatch?.[1] ?? "",
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: google ? "gemini" : "anthropic",
+          envelope: (message, status) =>
+            google
+              ? renderError("gemini", "fixture", {
+                  message,
+                  bodyCode: status,
+                  status: status === 400 ? "INVALID_ARGUMENT" : "INTERNAL",
+                }).body
+              : renderError("messages", "thinking", {
+                  message,
+                  type: status === 400 ? "invalid_request_error" : "api_error",
+                }).body,
         });
       }
       return;
@@ -4525,7 +4634,7 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4540,7 +4649,7 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4845,7 +4954,8 @@ async function startServer(
         await handleGeminiInteractions(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4895,7 +5005,8 @@ async function startServer(
         );
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4923,7 +5034,8 @@ async function startServer(
         );
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -5140,12 +5252,10 @@ async function startServer(
         writeErrorResponse(
           res,
           400,
-          JSON.stringify({
-            error: {
-              message: `Invalid voice id '${elevenLabsVoiceMatch[1]}': malformed percent-encoding`,
-              type: "invalid_request_error",
-            },
-          }),
+          renderError("openai", "validation", {
+            message: `Invalid voice id '${elevenLabsVoiceMatch[1]}': malformed percent-encoding`,
+            type: "invalid_request_error",
+          }).body,
         );
         // Journaled AFTER the write, like every other terminal arm in this
         // batch: the caller's answer never waits on bookkeeping. Tagged with
@@ -5472,9 +5582,10 @@ async function startServer(
         envelope: (m, status) =>
           isOpenRouter
             ? serializeOpenRouterError(status, m)
-            : JSON.stringify({
-                error: { message: m, type: errorTypeForStatus(status) },
-              }),
+            : renderError("openai", "route-failure", {
+                message: m,
+                type: errorTypeForStatus(status),
+              }).body,
         // OpenRouter's numeric `error.code` is the HTTP status, so the aimock
         // code rides in its free-form `metadata`.
         ...(isOpenRouter
@@ -5484,7 +5595,10 @@ async function startServer(
           `data: ${
             isOpenRouter
               ? serializeOpenRouterError(status, m)
-              : JSON.stringify({ error: { message: m, type: errorTypeForStatus(status) } })
+              : renderError("openai", "route-failure", {
+                  message: m,
+                  type: errorTypeForStatus(status),
+                }).body
           }\n\n`,
       });
     }

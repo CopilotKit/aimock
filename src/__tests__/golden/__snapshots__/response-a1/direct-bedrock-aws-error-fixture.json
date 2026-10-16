@@ -1,0 +1,54 @@
+{
+  "got": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json",
+      "retry-after": "1",
+      "x-ratelimit-limit-requests": "60",
+      "x-ratelimit-limit-tokens": "150000",
+      "x-ratelimit-remaining-requests": "0",
+      "x-ratelimit-remaining-tokens": "0",
+      "x-ratelimit-reset-requests": "1s",
+      "x-ratelimit-reset-tokens": "6m0s"
+    },
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Limited\"}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/model/gpt-4/invoke-with-response-stream",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "error"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 429,
+        "fixture": {
+          "match": {
+            "userMessage": "error"
+          },
+          "response": {
+            "error": {
+              "message": "Limited",
+              "type": "rate_limit_error",
+              "code": "limited"
+            },
+            "status": 429
+          }
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

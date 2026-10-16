@@ -35,7 +35,6 @@ import {
   isCombinedFixtureResponse,
   isEmbeddingResponse,
   isErrorResponse,
-  serializeErrorResponse,
   validateChatMessages,
   validateToolsField,
   flattenHeaders,
@@ -43,9 +42,7 @@ import {
   getTestId,
   resolveFixtureBlockOutcome,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -63,6 +60,10 @@ import {
   recordMisbehaviorOutcome,
 } from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
+import { mapCohereFinish } from "./response/finish.js";
+import { render as renderCohereUsage } from "./response/usage/codecs/cohere.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 
 // ─── Cohere v2 Chat request types ───────────────────────────────────────────
 
@@ -123,13 +124,6 @@ interface CohereSSEEvent {
   [key: string]: unknown;
 }
 
-// ─── Zero-value usage block ─────────────────────────────────────────────────
-
-const ZERO_USAGE = {
-  billed_units: { input_tokens: 0, output_tokens: 0, search_units: 0, classifications: 0 },
-  tokens: { input_tokens: 0, output_tokens: 0 },
-};
-
 // ─── Cohere finish reason / usage mapping ──────────────────────────────────
 
 function cohereFinishReason(
@@ -137,25 +131,11 @@ function cohereFinishReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "COMPLETE";
-  if (overrideFinishReason === "tool_calls") return "TOOL_CALL";
-  if (overrideFinishReason === "length") return "MAX_TOKENS";
-  return overrideFinishReason;
+  return mapCohereFinish(overrideFinishReason);
 }
 
-function cohereUsage(overrides?: ResponseOverrides): typeof ZERO_USAGE {
-  if (!overrides?.usage) return ZERO_USAGE;
-  const inputTokens = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
-  const outputTokens = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
-  return {
-    billed_units: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      search_units: 0,
-      classifications: 0,
-    },
-    tokens: { input_tokens: inputTokens, output_tokens: outputTokens },
-  };
+function cohereUsage(overrides?: ResponseOverrides): ReturnType<typeof renderCohereUsage> {
+  return renderCohereUsage(overrides);
 }
 
 // ─── Input conversion: Cohere → ChatCompletionRequest ───────────────────────
@@ -917,12 +897,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -941,12 +919,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -963,12 +939,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "model is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "model is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -995,12 +969,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${shapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Invalid request: ${shapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1051,7 +1023,7 @@ export async function handleCohere(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1072,12 +1044,10 @@ export async function handleCohere(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("cohere", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1118,12 +1088,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1153,7 +1121,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       misbehavior.status,
-      JSON.stringify({ message: misbehavior.message, code: misbehavior.code }),
+      renderError("cohere", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
     );
     return;
   }
@@ -1168,7 +1139,7 @@ export async function handleCohere(
       ? resolveReasoningForModel(
           prepared.response.reasoning,
           cohereReq.model,
-          resolveStrictMode(defaults.strict, req.headers),
+          resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
           logger,
         )
       : undefined;
@@ -1206,7 +1177,7 @@ export async function handleCohere(
       defaults,
       testId,
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1220,7 +1191,10 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = prepared
       ? appliedReasoning
       : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
@@ -1287,7 +1261,10 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = prepared
       ? appliedReasoning
       : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
@@ -1354,7 +1331,10 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = prepared
       ? appliedReasoning
       : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
@@ -1416,12 +1396,10 @@ export async function handleCohere(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("cohere", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1471,12 +1449,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1495,12 +1471,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1517,12 +1491,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "model is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "model is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1538,12 +1510,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: texts array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "Invalid request: texts array is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1561,12 +1531,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: texts must be an array of strings",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "Invalid request: texts must be an array of strings",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1643,14 +1611,12 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: isArray
-            ? "Invalid request: embedding_types must be an array of strings"
-            : "Invalid request: embedding_types must be an array",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: isArray
+          ? "Invalid request: embedding_types must be an array of strings"
+          : "Invalid request: embedding_types must be an array",
+        type: "invalid_request_error",
+      }).body,
     );
     return true;
   }
@@ -1668,7 +1634,7 @@ export async function handleCohereEmbed(
         body: syntheticReq,
         response: { status, fixture },
       });
-      writeErrorResponse(res, status, serializeErrorResponse(response), {
+      writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
         retryAfter: response.retryAfter,
       });
       return;
@@ -1711,19 +1677,17 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError("cohere", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode
-  if (resolveStrictMode(defaults.strict, req.headers)) {
+  if (resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
       strictNoMatchLogLine(req.method ?? "POST", req.url ?? "/v2/embed", skippedBySequenceOrTurn),
@@ -1742,12 +1706,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }

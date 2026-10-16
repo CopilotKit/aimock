@@ -7,6 +7,7 @@ import { configToolHandlers } from "./mcp-handler.js";
 import { A2AMock } from "./a2a-mock.js";
 import { AGUIMock } from "./agui-mock.js";
 import type {
+  AimockPolicy,
   ApiKeyAuthConfig,
   ChaosConfig,
   McpRecordConfig,
@@ -25,6 +26,7 @@ import { VectorMock } from "./vector-mock.js";
 import type { QueryResult } from "./vector-types.js";
 import { Logger } from "./logger.js";
 import { wireMcpRecording } from "./mcp-recorder.js";
+import { parsePolicy, parsePolicyEntry } from "./response/policy.js";
 
 export interface MCPConfigTool extends MCPToolDefinition {
   result?: string;
@@ -133,6 +135,8 @@ export interface AimockConfig {
     strictToolArguments?: boolean;
     /** See `MockServerOptions.responsesTools`. */
     responsesTools?: ResponsesToolsMode;
+    /** See `MockServerOptions.policy`. Independent of `strict`. */
+    policy?: AimockPolicy;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -178,6 +182,31 @@ export interface StartFromConfigOverrides {
   strictToolArguments?: boolean;
   /** `aimock --responses-tools`: overrides `llm.responsesTools`. */
   responsesTools?: ResponsesToolsMode;
+  /** `aimock --policy`: overrides individual keys from `llm.policy`. */
+  policy?: AimockPolicy;
+}
+
+/** Both CLI entry points use the shared policy parser and treat failures as usage errors. */
+export function parsePolicyFlags(entries: string[]) {
+  const policy: AimockPolicy = {};
+  for (const entry of entries) {
+    const separator = entry.indexOf("=");
+    if (separator < 0) {
+      return {
+        ok: false,
+        error: `Invalid --policy ${JSON.stringify(entry)}: expected key=value.`,
+      } as const;
+    }
+    const parsed = parsePolicyEntry(entry.slice(0, separator), entry.slice(separator + 1));
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: `Invalid --policy ${JSON.stringify(entry)}: ${parsed.reason} Use key=value.`,
+      } as const;
+    }
+    policy[parsed.key] = parsed.value;
+  }
+  return { ok: true, policy } as const;
 }
 
 export async function startFromConfig(
@@ -185,6 +214,10 @@ export async function startFromConfig(
   overrides?: StartFromConfigOverrides,
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  const policy = {
+    ...parsePolicy(config.llm?.policy, (message) => logger.warn(message)),
+    ...parsePolicy(overrides?.policy, (message) => logger.warn(message)),
+  };
   // 1.44.0 ignored these keys, so a non-boolean value (such as the string
   // "true") is ignored with a warning, as `llm.misbehavior` is, and the
   // option stays off unless a CLI flag turns it on (`llm.enableMcpRecording`
@@ -281,6 +314,7 @@ export async function startFromConfig(
       strict: config.strict,
       strictToolArguments: overrides?.strictToolArguments ?? configStrictToolArguments,
       responsesTools: overrides?.responsesTools ?? responsesTools,
+      policy,
     },
     resolvedAuth,
   );

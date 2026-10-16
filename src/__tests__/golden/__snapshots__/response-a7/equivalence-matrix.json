@@ -1,0 +1,4863 @@
+[
+  {
+    "id": "chat-miss-default-off",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-miss-header-off",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 404,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-miss-invalid-header-default-off",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#0>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#1>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_json\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-invalid-header-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.25,-0.5]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.25,-0.5]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON body: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[-0.7411764705882353,-0.9137254901960784]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"code\":503,\"status\":\"UNAVAILABLE\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"code\":503,\"status\":\"UNAVAILABLE\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[-0.7411764705882353,-0.9137254901960784]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-invalid-header-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[-0.7411764705882353,-0.9137254901960784]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"code\":503,\"status\":\"UNAVAILABLE\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[0.25,-0.5]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[0.25,-0.5]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON body: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"code\":400,\"status\":\"INVALID_ARGUMENT\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"code\":400,\"status\":\"INVALID_ARGUMENT\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#2>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":false,\"categories\":{\"sexual\":false,\"hate\":false,\"harassment\":false,\"self-harm\":false,\"sexual/minors\":false,\"hate/threatening\":false,\"violence/graphic\":false,\"self-harm/intent\":false,\"self-harm/instructions\":false,\"harassment/threatening\":false,\"violence\":false,\"illicit\":false,\"illicit/violent\":false},\"category_scores\":{\"sexual\":0,\"hate\":0,\"harassment\":0,\"self-harm\":0,\"sexual/minors\":0,\"hate/threatening\":0,\"violence/graphic\":0,\"self-harm/intent\":0,\"self-harm/instructions\":0,\"harassment/threatening\":0,\"violence\":0,\"illicit\":0,\"illicit/violent\":0}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#3>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":false,\"categories\":{\"sexual\":false,\"hate\":false,\"harassment\":false,\"self-harm\":false,\"sexual/minors\":false,\"hate/threatening\":false,\"violence/graphic\":false,\"self-harm/intent\":false,\"self-harm/instructions\":false,\"harassment/threatening\":false,\"violence\":false,\"illicit\":false,\"illicit/violent\":false},\"category_scores\":{\"sexual\":0,\"hate\":0,\"harassment\":0,\"self-harm\":0,\"sexual/minors\":0,\"hate/threatening\":0,\"violence/graphic\":0,\"self-harm/intent\":0,\"self-harm/instructions\":0,\"harassment/threatening\":0,\"violence\":0,\"illicit\":0,\"illicit/violent\":0}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-invalid-header-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#4>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":false,\"categories\":{\"sexual\":false,\"hate\":false,\"harassment\":false,\"self-harm\":false,\"sexual/minors\":false,\"hate/threatening\":false,\"violence/graphic\":false,\"self-harm/intent\":false,\"self-harm/instructions\":false,\"harassment/threatening\":false,\"violence\":false,\"illicit\":false,\"illicit/violent\":false},\"category_scores\":{\"sexual\":0,\"hate\":0,\"harassment\":0,\"self-harm\":0,\"sexual/minors\":0,\"hate/threatening\":0,\"violence/graphic\":0,\"self-harm/intent\":0,\"self-harm/instructions\":0,\"harassment/threatening\":0,\"violence\":0,\"illicit\":0,\"illicit/violent\":0}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#5>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":true,\"categories\":{\"violence\":true},\"category_scores\":{\"violence\":0.9}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#6>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":true,\"categories\":{\"violence\":true},\"category_scores\":{\"violence\":0.9}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-<#7>",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#8>\",\"results\":[],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-miss-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#9>\",\"results\":[],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-miss-invalid-header-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#10>\",\"results\":[],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#11>\",\"results\":[{\"index\":1,\"relevance_score\":0.75}],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#12>\",\"results\":[{\"index\":1,\"relevance_score\":0.75}],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-invalid-header-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-miss-invalid-header-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-hit-strict",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[{\"title\":\"a7 result\",\"url\":\"https://example.test/a7\",\"content\":\"a7 content\",\"score\":0.5}],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-hit-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[{\"title\":\"a7 result\",\"url\":\"https://example.test/a7\",\"content\":\"a7 content\",\"score\":0.5}],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-validation-malformed",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-validation-nonobject",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-messages-missing",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Missing required parameter: 'messages'\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-message-null",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid request: messages[0] must be an object\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-tools-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"tools must be an array\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-function-null",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"tools[0].function must not be null\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-input-missing",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Missing required parameter: 'input'\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-model-missing",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Missing required parameter: 'model'\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-input-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid parameter: 'input' must be a string, an array of strings, or an array of tokens\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-dimensions-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid parameter: 'dimensions' must be an integer between 1 and 100000\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-parts-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"content.parts must be an array\",\"code\":400,\"status\":\"INVALID_ARGUMENT\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-part-null",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"content.parts must not contain null entries\",\"code\":400,\"status\":\"INVALID_ARGUMENT\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-dimensions-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"outputDimensionality cannot produce a numeric embedding\",\"code\":400,\"status\":\"INVALID_ARGUMENT\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-input-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid parameter: 'input' must be a string, an array of strings, or an array of multimodal parts\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "rerank-query-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid parameter: 'query' must be a string or an array of strings\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "search-query-invalid",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid parameter: 'query' must be a string or an array of strings\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-fixture-error",
+    "wire": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "7",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"a7 fixture error\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"a7_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 429,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "error": {
+                "message": "a7 fixture error",
+                "type": "rate_limit_error",
+                "code": "a7_error"
+              },
+              "status": 429,
+              "retryAfter": 7
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-unknown-fixture",
+    "wire": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Fixture response did not match any known type\",\"type\":\"server_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                1,
+                2
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-record-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-a7-upstream-fixed\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 upstream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5,\"total_tokens\":9}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"a7 request\"}]}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "userMessage": "a7 request",
+              "model": "gpt-4o-mini",
+              "turnIndex": 0,
+              "hasToolResult": false
+            },
+            "response": {
+              "content": "a7 upstream",
+              "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 5,
+                "total_tokens": 9
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "chat-record-strict",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "chat-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-a7-upstream-fixed\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 upstream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5,\"total_tokens\":9}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"a7 request\"}]}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "userMessage": "a7 request",
+              "model": "gpt-4o-mini",
+              "turnIndex": 0,
+              "hasToolResult": false
+            },
+            "response": {
+              "content": "a7 upstream",
+              "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 5,
+                "total_tokens": 9
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "chat-sequence-hit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#13>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": []
+  },
+  {
+    "id": "chat-sequence-exhausted",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: 1 candidate fixture(s) skipped by sequence/turn state\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request",
+              "sequenceIndex": 0
+            },
+            "response": {
+              "content": "a7 reply",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-fixture-error",
+    "wire": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "7",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"a7 fixture error\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"a7_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 429,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "error": {
+                "message": "a7 fixture error",
+                "type": "rate_limit_error",
+                "code": "a7_error"
+              },
+              "status": 429,
+              "retryAfter": 7
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-unknown-fixture",
+    "wire": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Fixture response did not match any known embedding type (must have embedding or error)\",\"type\":\"server_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "content": "wrong response"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "embedding-record-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"model\":\"text-embedding-3-small\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.1,0.2]}],\"usage\":{\"prompt_tokens\":2,\"total_tokens\":2}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": "{\"model\":\"text-embedding-3-small\",\"input\":\"a7 request\",\"dimensions\":2}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.1,
+                0.2
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "embedding-record-strict",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "embedding-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"model\":\"text-embedding-3-small\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.1,0.2]}],\"usage\":{\"prompt_tokens\":2,\"total_tokens\":2}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": "{\"model\":\"text-embedding-3-small\",\"input\":\"a7 request\",\"dimensions\":2}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.1,
+                0.2
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "embedding-sequence-hit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.25,-0.5]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": []
+  },
+  {
+    "id": "embedding-sequence-exhausted",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: 1 candidate fixture(s) skipped by sequence/turn state\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request",
+              "sequenceIndex": 0
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-fixture-error",
+    "wire": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "7",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"code\":429,\"message\":\"a7 fixture error\",\"status\":\"rate_limit_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 429,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "error": {
+                "message": "a7 fixture error",
+                "type": "rate_limit_error",
+                "code": "a7_error"
+              },
+              "status": 429,
+              "retryAfter": 7
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-unknown-fixture",
+    "wire": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Fixture response did not match any known embedding type (must have embedding or error)\",\"code\":500,\"status\":\"INTERNAL\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "content": "wrong response"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-record-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[0.1,0.2]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": "{\"content\":{\"parts\":[{\"text\":\"a7 request\"}]},\"outputDimensionality\":2}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "error": {
+                "message": "Could not detect response format from upstream",
+                "type": "proxy_error"
+              },
+              "status": 200
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-record-strict",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"code\":503,\"status\":\"UNAVAILABLE\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "gemini-embedding-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[0.1,0.2]}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": "{\"content\":{\"parts\":[{\"text\":\"a7 request\"}]},\"outputDimensionality\":2}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "error": {
+                "message": "Could not detect response format from upstream",
+                "type": "proxy_error"
+              },
+              "status": 200
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-embedding-sequence-hit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"embedding\":{\"values\":[0.25,-0.5]}}"
+    },
+    "entries": []
+  },
+  {
+    "id": "gemini-embedding-sequence-exhausted",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: 1 candidate fixture(s) skipped by sequence/turn state\",\"code\":503,\"status\":\"UNAVAILABLE\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request",
+              "sequenceIndex": 0
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/v1beta/models/text-embedding-004:embedContent",
+        "body": {
+          "model": "text-embedding-004",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "moderation-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"modr-<#14>\",\"model\":\"omni-moderation-latest\",\"results\":[{\"flagged\":false,\"categories\":{\"sexual\":false,\"hate\":false,\"harassment\":false,\"self-harm\":false,\"sexual/minors\":false,\"hate/threatening\":false,\"violence/graphic\":false,\"self-harm/intent\":false,\"self-harm/instructions\":false,\"harassment/threatening\":false,\"violence\":false,\"illicit\":false,\"illicit/violent\":false},\"category_scores\":{\"sexual\":0,\"hate\":0,\"harassment\":0,\"self-harm\":0,\"sexual/minors\":0,\"hate/threatening\":0,\"violence/graphic\":0,\"self-harm/intent\":0,\"self-harm/instructions\":0,\"harassment/threatening\":0,\"violence\":0,\"illicit\":0,\"illicit/violent\":0}}]}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/moderations",
+        "service": "moderation",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "rerank-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"rerank-<#15>\",\"results\":[],\"meta\":{\"billed_units\":{\"search_units\":0}}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v2/rerank",
+        "service": "rerank",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "search-record-strict-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"query\":\"a7 request\",\"results\":[],\"images\":[],\"response_time\":0,\"answer\":null}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/search",
+        "service": "search",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "strictOverride": false
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "chat-chaos-strict-rate-limit",
+    "wire": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "1",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Chaos: rate limit exceeded\",\"type\":\"rate_limit_error\",\"code\":\"chaos_ratelimit\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 429,
+          "fixture": null,
+          "chaosAction": "rateLimit",
+          "source": "internal"
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "chat-chaos-strict-header-off-rate-limit",
+    "wire": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "1",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Chaos: rate limit exceeded\",\"type\":\"rate_limit_error\",\"code\":\"chaos_ratelimit\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 429,
+          "fixture": null,
+          "chaosAction": "rateLimit",
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "chat-chaos-strict-malformed",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{malformed json: <<<chaos>>>"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "chaosAction": "malformed",
+          "source": "internal"
+        }
+      }
+    ],
+    "upstream": [],
+    "fixtureFiles": []
+  },
+  {
+    "id": "chat-chaos-strict-header-off-malformed",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{malformed json: <<<chaos>>>"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null,
+          "chaosAction": "malformed",
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"a7 request\"}]}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": [
+      {
+        "fixtures": [
+          {
+            "match": {
+              "userMessage": "a7 request",
+              "model": "gpt-4o-mini",
+              "turnIndex": 0,
+              "hasToolResult": false
+            },
+            "response": {
+              "content": "a7 upstream",
+              "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 5,
+                "total_tokens": 9
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-text-off-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#16>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null,\"reasoning_content\":\"a7 reasoning\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-text-off-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#17>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"a7 reasoning\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#17>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#17>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a7 reply\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#17>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}",
+        "data: {\"id\":\"chatcmpl-<#17>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-text-strict-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#18>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-text-strict-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#19>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#19>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a7 reply\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#19>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}",
+        "data: {\"id\":\"chatcmpl-<#19>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-tools-off-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#20>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning_content\":\"a7 reasoning\",\"tool_calls\":[{\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-tools-off-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"a7 reasoning\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}",
+        "data: {\"id\":\"chatcmpl-<#21>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-tools-strict-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#22>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"tool_calls\":[{\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-tools-strict-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#23>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#23>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#23>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#23>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}",
+        "data: {\"id\":\"chatcmpl-<#23>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-combined-off-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#24>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null,\"reasoning_content\":\"a7 reasoning\",\"tool_calls\":[{\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-combined-off-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"a7 reasoning\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a7 reply\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}",
+        "data: {\"id\":\"chatcmpl-<#25>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-combined-strict-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#26>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a7 reply\",\"refusal\":null,\"tool_calls\":[{\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-combined-strict-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a7 reply\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a7_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"a7\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}",
+        "data: {\"id\":\"chatcmpl-<#27>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "toolCalls": [
+                {
+                  "id": "call_a7_fixed",
+                  "name": "lookup",
+                  "arguments": "{\"q\":\"a7\"}"
+                }
+              ],
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-applied-text-off-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#28>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":\"a7 refusal\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":3,\"total_tokens\":6}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          },
+          "misbehavior": {
+            "applied": true,
+            "source": "server",
+            "wire": "openai-chat",
+            "evaluations": [
+              {
+                "entryIndex": 0,
+                "fault": "refusal",
+                "outcome": "applied",
+                "ordinal": 0
+              }
+            ],
+            "fault": "refusal",
+            "ordinal": 0,
+            "servedToolCalls": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-applied-text-off-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#29>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#29>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"a7 refusal\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#29>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}",
+        "data: {\"id\":\"chatcmpl-<#29>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":3,\"total_tokens\":6}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          },
+          "misbehavior": {
+            "applied": true,
+            "source": "server",
+            "wire": "openai-chat",
+            "evaluations": [
+              {
+                "entryIndex": 0,
+                "fault": "refusal",
+                "outcome": "applied",
+                "ordinal": 0
+              }
+            ],
+            "fault": "refusal",
+            "ordinal": 0,
+            "servedToolCalls": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-applied-text-strict-http",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#30>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":\"a7 refusal\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":3,\"total_tokens\":6}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": false,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          },
+          "misbehavior": {
+            "applied": true,
+            "source": "server",
+            "wire": "openai-chat",
+            "evaluations": [
+              {
+                "entryIndex": 0,
+                "fault": "refusal",
+                "outcome": "applied",
+                "ordinal": 0
+              }
+            ],
+            "fault": "refusal",
+            "ordinal": 0,
+            "servedToolCalls": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-reasoning-applied-text-strict-sse",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream",
+        "x-request-id": "a7-caller-trace"
+      },
+      "frames": [
+        "data: {\"id\":\"chatcmpl-<#31>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#31>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"a7 refusal\"},\"logprobs\":null,\"finish_reason\":null}]}",
+        "data: {\"id\":\"chatcmpl-<#31>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}",
+        "data: {\"id\":\"chatcmpl-<#31>\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":3,\"total_tokens\":6}}",
+        "data: [DONE]"
+      ]
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "reasoning": "a7 reasoning",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          },
+          "misbehavior": {
+            "applied": true,
+            "source": "server",
+            "wire": "openai-chat",
+            "evaluations": [
+              {
+                "entryIndex": 0,
+                "fault": "refusal",
+                "outcome": "applied",
+                "ordinal": 0
+              }
+            ],
+            "fault": "refusal",
+            "ordinal": 0,
+            "servedToolCalls": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-unsupported-audio",
+    "wire": {
+      "status": 422,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 422,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "audio": "/wAB",
+              "format": "wav"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-unsupported-custom-tool-callback",
+    "wire": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"aimock: fixture tool call \\\"lookup\\\" is a custom tool call, which only the OpenAI Responses API supports; this request arrived on OpenAI Chat Completions\",\"type\":\"server_error\",\"code\":\"aimock_unsupported_tool_call\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "responsesBlocks": [
+                {
+                  "type": "text",
+                  "text": "a7"
+                },
+                {
+                  "type": "customToolCall",
+                  "id": "ctc_a7_fixed",
+                  "name": "lookup",
+                  "input": "a7"
+                }
+              ]
+            }
+          },
+          "error": "aimock: fixture tool call \"lookup\" is a custom tool call, which only the OpenAI Responses API supports; this request arrived on OpenAI Chat Completions"
+        }
+      }
+    ]
+  },
+  {
+    "id": "chat-misbehavior-evaluation-error",
+    "wire": {
+      "status": 501,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a7-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"tool-args-invalid-json on openai-chat: not-applicable: Response has no tool calls\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"aimock_misbehavior_not_applicable\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a7 request"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 501,
+          "fixture": {
+            "match": {
+              "userMessage": "a7 request"
+            },
+            "response": {
+              "content": "a7 reply",
+              "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5
+              }
+            }
+          },
+          "misbehavior": {
+            "applied": false,
+            "source": "header",
+            "wire": "openai-chat",
+            "evaluations": [
+              {
+                "entryIndex": 0,
+                "fault": "tool-args-invalid-json",
+                "outcome": "error",
+                "reason": "not-applicable"
+              }
+            ],
+            "fault": "tool-args-invalid-json",
+            "reason": "not-applicable",
+            "detail": "Response has no tool calls"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-hit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.25,-0.5]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "embedding",
+              "inputText": "a7 request"
+            },
+            "response": {
+              "embedding": [
+                0.25,
+                -0.5
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-default-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-header-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null,
+          "strictOverride": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-default-on",
+    "wire": {
+      "status": 503,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 503,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-header-off",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "model": "text-embedding-3-small",
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "direct-embedding-model-default",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[-0.7411764705882353,-0.9137254901960784]}],\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "body": {
+          "messages": [],
+          "embeddingInput": "a7 request",
+          "_endpointType": "embedding"
+        },
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "server-/a7-not-found",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#32>"
+      },
+      "body": "{\"error\":{\"message\":\"Not found\",\"type\":\"not_found\"}}"
+    },
+    "entries": []
+  },
+  {
+    "id": "server-/v1/_requests?limit=bad",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#33>"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid limit parameter: \\\"bad\\\"\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": []
+  },
+  {
+    "id": "server-/v1/voices/%ZZ",
+    "wire": {
+      "status": 400,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#34>"
+      },
+      "body": "{\"error\":{\"message\":\"Invalid voice id '%ZZ': malformed percent-encoding\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/v1/voices/%ZZ",
+        "service": "elevenlabs-voice",
+        "body": null,
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ]
+  }
+]

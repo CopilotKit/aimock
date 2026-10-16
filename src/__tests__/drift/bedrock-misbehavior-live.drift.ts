@@ -246,6 +246,7 @@ async function runAwsCell(
     timeoutMs?: number;
     nativeRequests?: boolean;
     beforeSend?: () => void;
+    diagnosticWire?: "full" | "summary";
   } = {},
 ): Promise<Observation> {
   const live = typeof target !== "string";
@@ -441,7 +442,10 @@ async function runAwsCell(
         sdkEvents,
         decodedEvents: cell.wire === "invoke" ? events : converseEvents,
         networkEnded,
-        rawWire: { encoding: "base64", bytes: Buffer.concat(chunks).toString("base64") },
+        rawWire:
+          !live && limits.diagnosticWire === "summary"
+            ? { omitted: true, byteLength: Buffer.concat(chunks).length }
+            : { encoding: "base64", bytes: Buffer.concat(chunks).toString("base64") },
         error:
           error instanceof Error ? { name: error.name, message: error.message } : String(error),
       }),
@@ -1211,9 +1215,9 @@ for (const wire of ["invoke", "converse"] as const) {
     await withTransportFixture(
       { match: {}, response: { content: "x".repeat(262145) } },
       async (url, mock) => {
-        await expect(runAwsCell({ wire, fault: "K9", stream: false }, url)).rejects.toThrow(
-          "AWS response exceeds 262144 bytes",
-        );
+        await expect(
+          runAwsCell({ wire, fault: "K9", stream: false }, url, { diagnosticWire: "summary" }),
+        ).rejects.toThrow("AWS response exceeds 262144 bytes");
         expect(mock.getRequests()).toHaveLength(1);
       },
     );

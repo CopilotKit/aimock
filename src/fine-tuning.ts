@@ -105,6 +105,7 @@ import type { ChaosDefaults, JournalBody } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
+import { buildOpenAIError } from "./response/errors.js";
 
 export interface FineTuningJobEvent {
   id: string;
@@ -335,7 +336,7 @@ function writeJson(
 }
 
 function invalid(message: string): { error: { message: string; type: string } } {
-  return { error: { message, type: "invalid_request_error" } };
+  return buildOpenAIError("service-validation", { message });
 }
 
 /**

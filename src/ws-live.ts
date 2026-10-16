@@ -1,13 +1,12 @@
 import { performance } from "node:perf_hooks";
 import type { IncomingHttpHeaders } from "node:http";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import {
   flattenHeaders,
   isLiveResponse,
   resolveResponse,
-  resolveStrictMode,
   strictNoMatchLogLine,
   strictNoMatchMessage,
-  strictOverrideField,
   wouldProxyMiss,
 } from "./helpers.js";
 import { normalizeLiveFixture, validateLiveClientEvent } from "./live-fixture.js";
@@ -458,8 +457,8 @@ export function handleLiveSession(
         return;
       }
       if (!fixture) {
-        const strict = resolveStrictMode(defaults.strict, options.headers);
-        if (strict) {
+        const decisions = resolveRequestDecisions(defaults.strict, options.headers);
+        if (decisions.fixtureMiss) {
           const message = strictNoMatchMessage(skippedBySequenceOrTurn);
           defaults.logger.error(
             strictNoMatchLogLine("WS", "/v1/live/sessions", skippedBySequenceOrTurn),
@@ -483,7 +482,7 @@ export function handleLiveSession(
             ),
           );
           fail("fixture-mismatch", message);
-        } else if (wouldProxyMiss(strict, defaults.record, "openai")) {
+        } else if (wouldProxyMiss(!decisions.upstream, defaults.record, "openai")) {
           void startRecording(event);
         } else {
           fail("fixture-mismatch", "No matching Live fixture");

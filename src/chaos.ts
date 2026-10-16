@@ -28,6 +28,7 @@ import { describeMatch, parseStrictIntegerText, resolveTestId } from "./helpers.
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
+import { renderError } from "./response/errors.js";
 
 /**
  * Narrow the server-defaults argument. The discrimination is STRUCTURAL: a
@@ -1002,13 +1003,11 @@ export function applyChaosAction(
       writeErrorResponse(
         res,
         500,
-        JSON.stringify({
-          error: {
-            message: "Chaos: request dropped",
-            type: "server_error",
-            code: "chaos_drop",
-          },
-        }),
+        renderError("openai", "misbehavior", {
+          message: "Chaos: request dropped",
+          type: "server_error",
+          code: "chaos_drop",
+        }).body,
       );
       journal.add({
         ...context,
@@ -1032,13 +1031,11 @@ export function applyChaosAction(
       writeErrorResponse(
         res,
         429,
-        JSON.stringify({
-          error: {
-            message: "Chaos: rate limit exceeded",
-            type: "rate_limit_error",
-            code: "chaos_ratelimit",
-          },
-        }),
+        renderError("openai", "misbehavior", {
+          message: "Chaos: rate limit exceeded",
+          type: "rate_limit_error",
+          code: "chaos_ratelimit",
+        }).body,
       );
       journal.add({
         ...context,

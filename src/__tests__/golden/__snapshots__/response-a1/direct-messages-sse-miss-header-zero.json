@@ -1,0 +1,37 @@
+{
+  "got": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\"}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "miss"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 404,
+        "fixture": null,
+        "strictOverride": false
+      },
+      "responseKeys": [
+        "status",
+        "fixture",
+        "strictOverride"
+      ]
+    }
+  ]
+}

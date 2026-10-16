@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { resolve, basename } from "node:path";
-import { loadConfig, startFromConfig, type StartFromConfigOverrides } from "./config-loader.js";
+import {
+  loadConfig,
+  parsePolicyFlags,
+  startFromConfig,
+  type StartFromConfigOverrides,
+} from "./config-loader.js";
 import { runConvertCli, type ConvertCliDeps } from "./convert.js";
 import { runValidateCli } from "./validate-cli.js";
 
@@ -19,6 +24,8 @@ Options:
                         instead of serving {} (same as llm.strictToolArguments: true)
       --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or
                         extended (overrides llm.responsesTools)
+      --policy <key=value>  Request policy (repeatable): requiredHeaders=off|enforce
+                        Overrides individual llm.policy keys (default: off)
   -h, --help            Show this help message
 
 Subcommands:
@@ -95,6 +102,7 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
         misbehavior: { type: "boolean", default: false },
         "strict-tool-arguments": { type: "boolean", default: false },
         "responses-tools": { type: "string" },
+        policy: { type: "string", multiple: true },
         help: { type: "boolean", short: "h", default: false },
       },
       strict: true,
@@ -173,12 +181,19 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
   // The boolean opt-ins override the config only when given, so an absent flag
   // leaves llm.enableMisbehavior / llm.strictToolArguments in charge.
   const responsesTools: StartFromConfigOverrides["responsesTools"] = responsesToolsFlag;
+  const parsedPolicy = parsePolicyFlags(values.policy ?? []);
+  if (!parsedPolicy.ok) {
+    logError(`${parsedPolicy.error}\n\n${HELP}`);
+    exit(1);
+    return;
+  }
   const overrides: StartFromConfigOverrides = {
     port,
     host,
     ...(values.misbehavior ? { enableMisbehavior: true } : {}),
     ...(values["strict-tool-arguments"] ? { strictToolArguments: true } : {}),
     ...(responsesTools !== undefined ? { responsesTools } : {}),
+    ...(values.policy !== undefined ? { policy: parsedPolicy.policy } : {}),
   };
 
   async function main() {

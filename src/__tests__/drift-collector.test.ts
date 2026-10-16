@@ -63,6 +63,12 @@ import {
   writeFileSync,
   symlinkSync,
   statSync,
+  lstatSync,
+  readlinkSync,
+  chmodSync,
+  linkSync,
+  openSync,
+  closeSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
 import { resolve, join } from "node:path";
@@ -91,7 +97,7 @@ async function withCollectorFixture(
     | "responses-markers",
   check: (fixture: {
     directory: string;
-    invoke: () => Promise<{
+    invoke: (args?: readonly string[]) => Promise<{
       status: number | null;
       error: Error | undefined;
       stdout: string;
@@ -334,15 +340,19 @@ async function withCollectorFixture(
     if (mode === "write-failure") writeFileSync(join(directory, "drift-evidence"), "occupied");
     await check({
       directory,
-      invoke: () =>
+      invoke: (
+        args = [
+          "--out",
+          mode === "report-write-failure" ? directory : join(directory, "drift-report.json"),
+        ],
+      ) =>
         new Promise((resolveChild) => {
           execFile(
             process.execPath,
             [
               join(root, "node_modules/tsx/dist/cli.mjs"),
               join(root, "scripts/drift-report-collector.ts"),
-              "--out",
-              mode === "report-write-failure" ? directory : join(directory, "drift-report.json"),
+              ...args,
             ],
             {
               cwd: directory,
@@ -367,6 +377,399 @@ async function withCollectorFixture(
 }
 
 describe("collector invocation evidence", async () => {
+  it("rejects ASCII case aliases with a shared non-ASCII prefix", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "SharedPrefixAlias");
+      mkdirSync(parent);
+      const probe = join(parent, "é-case-probe");
+      const alternate = join(parent, "é-CASE-PROBE");
+      const descriptor = openSync(probe, "wx");
+      let aliases = false;
+      try {
+        const owned = statSync(probe);
+        const other = statSync(alternate, { throwIfNoEntry: false });
+        aliases = owned.dev === other?.dev && owned.ino === other?.ino;
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!aliases) context.skip("Shared-prefix control requires actual ASCII case aliases");
+      expect(readdirSync(parent)).toEqual([]);
+      const main = join(parent, "é-report.json");
+      const observations = join(parent, "é-REPORT.JSON");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      expect(existsSync(main)).toBe(false);
+      expect(existsSync(observations)).toBe(false);
+      expect(readdirSync(parent)).toEqual([]);
+    });
+  }, 30_000);
+
+  it("retains distinct ASCII artifact basenames at a UUID version position", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "UuidPosition");
+      mkdirSync(parent);
+      const probe = join(parent, "case-probe");
+      const alternateProbe = join(parent, "CASE-PROBE");
+      const descriptor = openSync(probe, "wx");
+      let caseSensitive = false;
+      try {
+        caseSensitive = !existsSync(alternateProbe);
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!caseSensitive) context.skip("Distinct ASCII outputs require a case-sensitive parent");
+      expect(readdirSync(parent)).toEqual([]);
+      const main = join(parent, "000000000000e");
+      const observations = join(parent, "000000000000E");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const report = readFileSync(main, "utf8");
+      expect(JSON.parse(report)).toMatchObject({
+        conclusion: "critical",
+        entries: expect.any(Array),
+      });
+      expect(report).toContain("fixture mismatch");
+      expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        observations: expect.any(Array),
+      });
+      expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+      expect(readdirSync(parent).sort()).toEqual(["000000000000E", "000000000000e"]);
+    });
+  }, 30_000);
+
+  it.for([
+    { existing: true, long: false },
+    { existing: false, long: false },
+    { existing: true, long: true },
+    { existing: false, long: true },
+  ])(
+    "rejects case-aliased artifact basenames: existing=$existing long=$long",
+    { timeout: 30_000 },
+    async ({ existing, long }, context) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        const parent = join(directory, "LeafCaseAlias");
+        mkdirSync(parent);
+        const probe = join(parent, long ? `${"v".repeat(250)}.json` : "case-probe.json");
+        const alternateProbe = join(parent, long ? `${"V".repeat(250)}.JSON` : "CASE-PROBE.JSON");
+        const descriptor = openSync(probe, "wx");
+        let aliases = false;
+        try {
+          const original = statSync(probe);
+          const alternate = statSync(alternateProbe, { throwIfNoEntry: false });
+          aliases = original.dev === alternate?.dev && original.ino === alternate?.ino;
+        } finally {
+          try {
+            closeSync(descriptor);
+          } finally {
+            rmSync(probe);
+          }
+        }
+        if (!aliases) context.skip();
+        const main = join(parent, long ? `${"r".repeat(250)}.json` : "report.json");
+        const sidecar = join(parent, long ? `${"R".repeat(250)}.JSON` : "REPORT.JSON");
+        if (existing) writeFileSync(main, report);
+        expect(existsSync(main)).toBe(existing);
+        expect(existsSync(sidecar)).toBe(existing);
+        const child = await invoke(["--out", main, "--observations-out", sidecar]);
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+        expect(existsSync(main)).toBe(existing);
+        expect(existsSync(sidecar)).toBe(existing);
+        if (existing) expect(readFileSync(main, "utf8")).toBe(report);
+        expect(readdirSync(parent).sort()).toEqual(
+          existing ? [long ? `${"r".repeat(250)}.json` : "report.json"] : [],
+        );
+      });
+    },
+  );
+
+  it("preserves independent alternate probe symlinks for distinct case-sensitive outputs", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "AlternateProbeSymlinks");
+      mkdirSync(parent);
+      const probe = join(parent, "case-capability");
+      const alternateProbe = join(parent, "CASE-CAPABILITY");
+      const descriptor = openSync(probe, "wx");
+      let caseSensitive = false;
+      try {
+        caseSensitive = lstatSync(alternateProbe, { throwIfNoEntry: false }) === undefined;
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!caseSensitive) context.skip("Alternate probe control requires case-sensitive storage");
+      const letters = Array.from({ length: 25 }, (_, index) => String.fromCharCode(98 + index));
+      const links = letters.map((letter) => {
+        const path = join(parent, letter);
+        symlinkSync(letter.toUpperCase(), path);
+        const info = lstatSync(path);
+        expect(info.isSymbolicLink()).toBe(true);
+        return { path, dev: info.dev, ino: info.ino, target: readlinkSync(path) };
+      });
+      const main = join(parent, "A");
+      const observations = join(parent, "a");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      for (const link of links) {
+        const info = lstatSync(link.path);
+        expect(info.isSymbolicLink()).toBe(true);
+        expect([info.dev, info.ino, readlinkSync(link.path)]).toEqual([
+          link.dev,
+          link.ino,
+          link.target,
+        ]);
+      }
+      expect(
+        readdirSync(parent)
+          .filter((name) => name !== "A" && name !== "a")
+          .sort(),
+      ).toEqual(letters);
+      expect(child.error).toBeUndefined();
+      expect(child.stderr).not.toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.status, child.stderr).toBe(2);
+      expect(JSON.parse(readFileSync(main, "utf8"))).toMatchObject({
+        conclusion: "critical",
+        entries: expect.any(Array),
+      });
+      expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        observations: expect.any(Array),
+      });
+      expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+    });
+  }, 30_000);
+
+  it("rejects case-aliased parents with the same artifact basename", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const control = await invoke();
+      expect(control.error).toBeUndefined();
+      expect(control.status).toBe(2);
+      const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+      const parent = join(directory, "CaseAlias");
+      const alias = join(directory, "casealias");
+      mkdirSync(parent);
+      writeFileSync(join(parent, "report.json"), report);
+      if (!existsSync(alias)) context.skip();
+      const original = statSync(parent);
+      const alternate = statSync(alias);
+      if (original.dev !== alternate.dev || original.ino !== alternate.ino) context.skip();
+      const target = statSync(join(parent, "report.json"));
+      const aliasTarget = statSync(join(alias, "report.json"));
+      expect([aliasTarget.dev, aliasTarget.ino]).toEqual([target.dev, target.ino]);
+      expect(readFileSync(join(alias, "report.json"), "utf8")).toBe(report);
+      const child = await invoke([
+        "--out",
+        join(parent, "report.json"),
+        "--observations-out",
+        join(alias, "report.json"),
+      ]);
+      expect(readFileSync(join(parent, "report.json"), "utf8")).toBe(report);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+    });
+  }, 30_000);
+
+  it.for(["nonlisting", "hardlinks"] as const)(
+    "retains ordinary distinct artifact destinations: %s",
+    { timeout: 30_000 },
+    async (mode, context) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        const outputs = join(directory, "outputs");
+        mkdirSync(outputs);
+        const main = join(outputs, "report.json");
+        const observations = join(outputs, "observations.json");
+        writeFileSync(main, report);
+        try {
+          if (mode === "hardlinks") {
+            linkSync(main, observations);
+            expect(statSync(observations).ino).toBe(statSync(main).ino);
+          } else {
+            const uid = process.getuid?.();
+            const euid = process.geteuid?.();
+            if (uid === undefined || euid === undefined || uid === 0 || euid === 0) {
+              context.skip("Nonlisting control requires available non-root UID/EUID APIs");
+            }
+            chmodSync(outputs, 0o300);
+          }
+          if (mode === "nonlisting") {
+            let listingDenied = false;
+            try {
+              readdirSync(outputs);
+            } catch (error) {
+              expect(error).toMatchObject({ code: "EACCES" });
+              listingDenied = true;
+            }
+            if (!listingDenied) {
+              context.skip("Nonlisting control requires enforced directory listing permissions");
+            }
+            const probe = join(outputs, "known-probe");
+            writeFileSync(probe, "lookup-write-unlink");
+            expect(readFileSync(probe, "utf8")).toBe("lookup-write-unlink");
+            rmSync(probe);
+            expect(existsSync(probe)).toBe(false);
+          }
+          const child = await invoke(["--out", main, "--observations-out", observations]);
+          expect(child.error).toBeUndefined();
+          expect(child.status).toBe(2);
+          expect(JSON.parse(readFileSync(main, "utf8"))).toMatchObject({
+            conclusion: "critical",
+            entries: expect.any(Array),
+          });
+          expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+            schemaVersion: 1,
+            observations: expect.any(Array),
+          });
+          expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+        } finally {
+          if (mode === "nonlisting") chmodSync(outputs, 0o700);
+        }
+      });
+    },
+  );
+
+  it.each([
+    { link: "file", existing: true, startupFailure: false },
+    { link: "parent", existing: true, startupFailure: true },
+    { link: "parent", existing: false, startupFailure: false },
+  ])(
+    "rejects filesystem artifact aliases: $link existing=$existing startupFailure=$startupFailure",
+    async ({ link, existing, startupFailure }) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        expect(JSON.parse(report)).toMatchObject({
+          conclusion: "critical",
+          entries: expect.any(Array),
+        });
+        const destination = link === "file" ? "report.json" : "real/report.json";
+        const output = join(directory, destination);
+        if (link === "parent") mkdirSync(join(directory, "real"));
+        if (existing) writeFileSync(output, report);
+        symlinkSync(
+          link === "file" ? "report.json" : "real",
+          join(directory, link === "file" ? "report-link.json" : "alias"),
+        );
+        if (startupFailure) {
+          writeFileSync(
+            join(directory, "vitest.config.drift.ts"),
+            "this is not valid TypeScript configuration",
+          );
+        }
+        const child = await invoke([
+          "--out",
+          link === "file" ? "report-link.json" : destination,
+          "--observations-out",
+          link === "file" ? destination : "alias/report.json",
+        ]);
+        const after = existsSync(output) ? readFileSync(output, "utf8") : undefined;
+        expect(after, "artifact alias rejection must preserve the original destination").toBe(
+          existing ? report : undefined,
+        );
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      });
+    },
+    30_000,
+  );
+
+  it.each([
+    {
+      label: "default observation destination",
+      args: ["--out", "drift-observations.json"],
+      destination: "drift-observations.json",
+      unavailable: false,
+    },
+    {
+      label: "explicit identical destinations",
+      args: ["--out", "shape-report.json", "--observations-out", "shape-report.json"],
+      destination: "shape-report.json",
+      unavailable: false,
+    },
+    {
+      label: "normalized destinations with unavailable observation evidence",
+      args: ["--out", "shape-report.json", "--observations-out", "./shape-report.json"],
+      destination: "shape-report.json",
+      unavailable: true,
+    },
+  ])(
+    "rejects aliased artifact destinations: $label",
+    async ({ args, destination, unavailable }) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        expect(JSON.parse(report)).toMatchObject({
+          conclusion: "critical",
+          entries: expect.any(Array),
+        });
+        expect(
+          JSON.parse(readFileSync(join(directory, "drift-observations.json"), "utf8")),
+        ).toMatchObject({
+          schemaVersion: 1,
+          observations: expect.any(Array),
+        });
+        const aliasedPath = join(directory, destination);
+        writeFileSync(aliasedPath, report);
+        if (unavailable) {
+          const config = join(directory, "vitest.config.drift.ts");
+          writeFileSync(config, readFileSync(config, "utf8") + "\nwriteSync(3, 'not json\\n');\n");
+        }
+        const child = await invoke(args);
+        const after = existsSync(aliasedPath) ? readFileSync(aliasedPath, "utf8") : undefined;
+        expect(after, "the actual ShapeDiff report must remain byte-identical").toBe(report);
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      });
+    },
+    30_000,
+  );
+
   it.each(["test", "suite", "module"] as const)(
     "isolates attributable console overflow at %s scope",
     async (scope) => {
@@ -1407,15 +1810,54 @@ describe("collector invocation evidence", async () => {
     });
   }, 60_000);
 
+  it("clears obsolete observations before an actual collector startup failure", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const previous = await invoke();
+      expect(previous.error).toBeUndefined();
+      expect(previous.status).toBe(2);
+      const observations = join(directory, "drift-observations.json");
+      expect(existsSync(observations)).toBe(true);
+      const report = join(directory, "drift-report.json");
+      const reportBefore = readFileSync(report, "utf8");
+      writeFileSync(
+        join(directory, "vitest.config.drift.ts"),
+        'throw new Error("collector startup fixture");\n',
+      );
+
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("Failed to run drift tests");
+      expect(child.stderr).toContain("collector startup fixture");
+      expect(existsSync(observations), "prior invocation observations must not survive").toBe(
+        false,
+      );
+      expect(readFileSync(report, "utf8")).toBe(reportBefore);
+      expect(readdirSync(join(directory, "drift-evidence"))).toHaveLength(2);
+    });
+  }, 60_000);
+
   it.each(["unknown-surface", "secondary-malformed"] as const)(
     "retains actual collector attempts after %s failure",
     async (mode) => {
       await withCollectorFixture(mode, async ({ directory, invoke }) => {
+        const observations = join(directory, "drift-observations.json");
+        writeFileSync(
+          observations,
+          JSON.stringify({
+            schemaVersion: 1,
+            generatedAt: "2000-01-01T00:00:00Z",
+            observations: [],
+          }),
+        );
         const child = await invoke();
         expect(child.error).toBeUndefined();
         expect(child.status).toBe(1);
         expect(child.stderr).toContain(
           mode === "unknown-surface" ? "Unknown drift surface" : "produced unparseable output",
+        );
+        expect(existsSync(observations), "prior invocation observations must not survive").toBe(
+          false,
         );
         const evidenceDirectory = join(directory, "drift-evidence");
         expect(existsSync(evidenceDirectory), "earlier reporter rows lost on later failure").toBe(
@@ -1522,6 +1964,21 @@ function makeAssertion(overrides: Partial<VitestAssertion> = {}): VitestAssertio
   };
 }
 
+// Preserve the real collector's input and output for the three standing captured
+// reporter cases. Evidence output never gates the assertions or changes inputs.
+function capturedRoutingCase(caseId: string, input: VitestJsonResult) {
+  const actual = collectDriftEntries(input);
+  const directory = process.env.AIMOCK_W7_ROUTING_EVIDENCE_DIR;
+  if (directory) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, `${caseId}.json`),
+      JSON.stringify({ caseId, input, actual }, null, 2),
+    );
+  }
+  return actual;
+}
+
 const SAMPLE_DIFF: ShapeDiff = {
   path: "choices[0].message.refusal",
   severity: "critical",
@@ -1539,6 +1996,39 @@ const SAMPLE_DIFF_WARNING: ShapeDiff = {
   real: "string",
   mock: "<absent>",
 };
+
+describe("W7 supplementary ordinary parsed routing", () => {
+  it.each([
+    [
+      "openai-realtime",
+      "src/ws-realtime.ts",
+      ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    ],
+    ["openai-responses-ws", "src/ws-responses.ts", ["handleWebSocketResponses"]],
+  ] as const)(
+    "%s keeps its non-usage endpoint metadata",
+    (surface, builderFile, builderFunctions) => {
+      // Reuse the existing generic parser fixture. This is a synthetic routing
+      // control, not a captured usage discrepancy or fresh provider observation.
+      const result = makeResult([
+        makeAssertion({
+          failureMessages: [
+            formatDriftReport("supplementary parsed routing control", [SAMPLE_DIFF], surface),
+          ],
+        }),
+      ]);
+      const actual = collectDriftEntries(result);
+      expect(actual.quarantine).toEqual([]);
+      expect(actual.timeouts).toEqual([]);
+      expect(actual.entries).toHaveLength(1);
+      expect(actual.entries[0].builderFile).toBe(builderFile);
+      expect(actual.entries[0].builderFunctions).toEqual(builderFunctions);
+      expect(actual.entries[0].provider).toBe(SURFACE_REGISTRY[surface].provider);
+      expect(actual.entries[0].diffs[0].severity).toBe("critical");
+      expect(exitCodeOf(result)).toBe(2);
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // REAL captured vitest --reporter=json failure-message fixtures.
@@ -1806,6 +2296,299 @@ describe("extractScenario", () => {
 // collectDriftEntries (HTTP drift path)
 // ---------------------------------------------------------------------------
 
+describe("R1 ordinary parsed owner routing", () => {
+  const openaiBuilders = [
+    "buildTextCompletion",
+    "buildToolCallCompletion",
+    "buildTextChunks",
+    "buildToolCallChunks",
+  ];
+  const anthropicBuilders = [
+    "buildClaudeTextResponse",
+    "buildClaudeToolCallResponse",
+    "buildClaudeTextStreamEvents",
+    "buildClaudeToolCallStreamEvents",
+  ];
+
+  // These generated controls exercise real collector routing, not vendor drift.
+  function supplementaryCase(caseId: string, surface: string, paths: string[], label?: string) {
+    const diffs = paths.map((path) => ({ ...SAMPLE_DIFF, path }));
+    const input = makeResult([
+      makeAssertion({
+        ancestorTitles: label ? [label] : [],
+        failureMessages: [
+          formatDriftReport(
+            label ?? "supplementary owner routing",
+            diffs,
+            label ? undefined : surface,
+          ),
+        ],
+      }),
+    ]);
+    const actual = capturedRoutingCase(caseId, input);
+    expect(actual.entries).toHaveLength(1);
+    expect(actual.entries[0].diffs).toEqual(diffs.map((diff) => ({ ...diff, id: diff.path })));
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    expect(exitCodeOf(input)).toBe(2);
+    return actual.entries[0];
+  }
+
+  it("routes the unchanged standing OpenAI refusal reporter capture to its endpoint builders", () => {
+    const input = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Chat Completions drift"],
+        title: "non-streaming text matches real API",
+        failureMessages: [GENUINE_DRIFT_WITH_STACK],
+      }),
+    ]);
+    const actual = capturedRoutingCase("ordinary-openai-refusal", input);
+    expect(actual.entries).toHaveLength(1);
+    expect(actual.entries[0].provider).toBe("OpenAI Chat");
+    expect(actual.entries[0].scenario).toBe("non-streaming text");
+    expect(actual.entries[0].diffs).toEqual([
+      {
+        path: "choices[0].message.refusal",
+        severity: "critical",
+        issue: "LLMOCK DRIFT — mismatch detected",
+        expected: "null",
+        real: "null",
+        mock: "<absent>",
+        id: "choices[0].message.refusal",
+      },
+    ]);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    expect(exitCodeOf(input)).toBe(2);
+    expect(actual.entries[0].builderFile).toBe("src/helpers.ts");
+    expect(actual.entries[0].builderFunctions).toEqual(openaiBuilders);
+  });
+
+  const surfaces = [
+    ["openai-chat", "usage.prompt_tokens", "openai", ["resolve", "render"], "src/helpers.ts"],
+    [
+      "openrouter-chat",
+      "usage.total_tokens",
+      "openrouter",
+      ["resolve", "render"],
+      "src/openrouter-chat.ts",
+    ],
+    ["openai-responses", "usage.input_tokens", "responses", ["render"], "src/responses.ts"],
+    ["openai-responses-ws", "usage.output_tokens", "responses", ["render"], "src/ws-responses.ts"],
+    ["anthropic", "usage.input_tokens", "anthropic", ["resolve", "render"], "src/messages.ts"],
+    ["bedrock-invoke", "usage.output_tokens", "anthropic", ["resolve", "render"], "src/bedrock.ts"],
+    [
+      "bedrock-invoke-stream",
+      "usage.output_tokens",
+      "anthropic",
+      ["resolve", "render"],
+      "src/bedrock.ts",
+    ],
+    ["gemini", "usageMetadata.promptTokenCount", "gemini", ["render"], "src/gemini.ts"],
+    ["vertex-ai", "usageMetadata.totalTokenCount", "gemini", ["render"], "src/gemini.ts"],
+    [
+      "gemini-interactions",
+      "usage.total_input_tokens",
+      "interactions",
+      ["render"],
+      "src/gemini-interactions.ts",
+    ],
+    ["cohere-chat", "usage.billed_units.input_tokens", "cohere", ["render"], "src/cohere.ts"],
+    ["ollama", "eval_count", "ollama", ["render"], "src/ollama.ts"],
+    [
+      "openai-realtime",
+      "response.usage.input_tokens",
+      "realtime",
+      ["render"],
+      "src/ws-realtime.ts",
+    ],
+    ["bedrock-converse", "usage.inputTokens", "converse", ["render"], "src/bedrock-converse.ts"],
+    [
+      "bedrock-converse-stream",
+      "usage.outputTokens",
+      "converse",
+      ["render"],
+      "src/bedrock-converse.ts",
+    ],
+  ] as const;
+
+  it.each(surfaces)(
+    "%s usage-only fields retain their codec",
+    (surface, path, codec, functions) => {
+      const entry = supplementaryCase(`${surface}-usage`, surface, [path]);
+      expect(entry.builderFile).toBe(`src/response/usage/codecs/${codec}.ts`);
+      expect(entry.builderFunctions).toEqual(functions);
+    },
+  );
+
+  it.each(surfaces)(
+    "%s content fields retain an endpoint anchor",
+    (surface, _path, _codec, _functions, endpoint) => {
+      const entry = supplementaryCase(`${surface}-content`, surface, ["content[].text"]);
+      expect(entry.builderFile).toBe(endpoint);
+      expect(entry.builderFunctions).not.toContain("render");
+    },
+  );
+
+  it.each([
+    ["openai-chat", "(root)[].usage.prompt_tokens", "openai", ["resolve", "render"]],
+    [
+      "openai-responses",
+      "SSE:response.completed.response.usage.output_tokens",
+      "responses",
+      ["render"],
+    ],
+    [
+      "openai-responses-ws",
+      "SSE:response.incomplete.response.usage.input_tokens",
+      "responses",
+      ["render"],
+    ],
+    [
+      "anthropic",
+      "SSE:message_start.message.usage.input_tokens",
+      "anthropic",
+      ["resolve", "render"],
+    ],
+    [
+      "bedrock-invoke-stream",
+      "SSE:message_delta.usage.output_tokens",
+      "anthropic",
+      ["resolve", "render"],
+    ],
+    [
+      "gemini-interactions",
+      "SSE:interaction.completed.interaction.usage.total_output_tokens",
+      "interactions",
+      ["render"],
+    ],
+    ["cohere-chat", "SSE:message-end.delta.usage.tokens.input_tokens", "cohere", ["render"]],
+    ["openai-realtime", "SSE:response.done.response.usage.output_tokens", "realtime", ["render"]],
+    ["bedrock-converse-stream", "SSE:metadata.usage.inputTokens", "converse", ["render"]],
+  ] as const)("%s recognizes its native usage path %s", (surface, path, codec, functions) => {
+    const entry = supplementaryCase(`${surface}-native-usage`, surface, [path]);
+    expect(entry.builderFile).toBe(`src/response/usage/codecs/${codec}.ts`);
+    expect(entry.builderFunctions).toEqual(functions);
+  });
+
+  it.each(["usage_extra", "choices[0].message.usage", "SSE:message_delta", "", "unknown.path"])(
+    "keeps unknown or non-usage path %s at the endpoint",
+    (path) => {
+      const entry = supplementaryCase(`boundary-${encodeURIComponent(path)}`, "openai-chat", [
+        path,
+      ]);
+      expect(entry.builderFile).toBe("src/helpers.ts");
+      expect(entry.builderFunctions).toEqual(openaiBuilders);
+    },
+  );
+
+  it("routes only OpenAI error-envelope fields to the shared error owner", () => {
+    const entry = supplementaryCase("openai-error", "openai-chat", ["error.message", "error.type"]);
+    expect(entry.builderFile).toBe("src/response/errors.ts");
+    expect(entry.builderFunctions).toEqual(["renderError", "buildOpenAIError"]);
+  });
+
+  it("keeps a bare OpenAI message field at its assembly anchor", () => {
+    const entry = supplementaryCase("openai-bare-message", "openai-chat", ["message"]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual(openaiBuilders);
+  });
+
+  it("retains caller defaults and the shared mapper for Anthropic finish fields", () => {
+    const entry = supplementaryCase("anthropic-finish", "anthropic", ["stop_reason"]);
+    expect(entry.builderFile).toBe("src/messages.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...anthropicBuilders,
+      "claudeStopReason",
+      "mapAnthropicFinish",
+    ]);
+  });
+
+  it("keeps mixed content and usage together with both actual owners", () => {
+    const entry = supplementaryCase("openai-mixed-content-usage", "openai-chat", [
+      "choices[].message.content",
+      "usage.total_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual([...openaiBuilders, "resolve", "render"]);
+  });
+
+  it("keeps mixed error and usage together with real shared functions", () => {
+    const entry = supplementaryCase("openai-mixed-error-usage", "openai-chat", [
+      "error.message",
+      "usage.total_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...openaiBuilders,
+      "resolve",
+      "render",
+      "serializeErrorResponse",
+      "renderError",
+      "buildOpenAIError",
+    ]);
+  });
+
+  it("keeps mixed finish and usage together without displacing caller defaults", () => {
+    const entry = supplementaryCase("anthropic-mixed-finish-usage", "anthropic", [
+      "SSE:message_delta.delta.stop_reason",
+      "SSE:message_delta.usage.output_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/messages.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...anthropicBuilders,
+      "resolve",
+      "render",
+      "claudeStopReason",
+      "mapAnthropicFinish",
+    ]);
+  });
+
+  it("leaves Ollama duration fields with the endpoint", () => {
+    const entry = supplementaryCase("ollama-duration", "ollama", ["prompt_eval_duration"]);
+    expect(entry.builderFile).toBe("src/ollama.ts");
+    expect(entry.builderFunctions).toEqual([
+      "handleOllama",
+      "handleOllamaGenerate",
+      "ollamaToCompletionRequest",
+    ]);
+  });
+
+  it.each(["Anthropic", "Anthropic Claude"])(
+    "preserves legacy label %s with codec-only usage",
+    (label) => {
+      const entry = supplementaryCase(
+        `legacy-${label.replace(/ /g, "-")}`,
+        "anthropic",
+        ["usage.input_tokens"],
+        label,
+      );
+      expect(entry.provider).toBe(label);
+      expect(entry.builderFile).toBe("src/response/usage/codecs/anthropic.ts");
+      expect(entry.builderFunctions).toEqual(["resolve", "render"]);
+    },
+  );
+
+  it("preserves a legacy OpenAI label for non-usage fields", () => {
+    const entry = supplementaryCase(
+      "legacy-openai-content",
+      "openai-chat",
+      ["choices[].message.content"],
+      "OpenAI Chat",
+    );
+    expect(entry.provider).toBe("OpenAI Chat");
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual(openaiBuilders);
+  });
+
+  it("preserves an unaffected surface mapping", () => {
+    const entry = supplementaryCase("unaffected-images", "images", ["usage.total_tokens"]);
+    expect(entry.builderFile).toBe(SURFACE_REGISTRY["images"].builderFile);
+    expect(entry.builderFunctions).toEqual(SURFACE_REGISTRY["images"].builderFunctions);
+  });
+});
+
 describe("collectDriftEntries", () => {
   it("returns empty entries+quarantine when no failed tests", () => {
     const result = makeResult([
@@ -1895,12 +2678,14 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    // GREEN: one attributed critical entry, no quarantine, exit 2.
-    expect(quarantineOf(result)).toEqual([]);
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-session-type", result);
+    // Payload/disposition controls precede the independently literal owner
+    // assertion, so a routing RED cannot conceal a preservation failure.
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Realtime");
-    expect(entries[0].builderFile).toBe("src/ws-realtime.ts");
     expect(entries[0].diffs).toHaveLength(1);
     expect(entries[0].diffs[0].severity).toBe("critical");
     // The surfaced error payload (type/code/message) is carried into the entry.
@@ -1908,6 +2693,10 @@ describe("collectDriftEntries", () => {
     expect(entries[0].diffs[0].issue).toContain("missing_required_parameter");
     expect(entries[0].diffs[0].issue).toContain("session.type");
     expect(exitCodeOf(result)).toBe(2);
+    expect({ file: entries[0].builderFile, functions: entries[0].builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("does NOT recognize a bare WS timeout (zero messages, no error body) as handshake drift → live-timeout lane (exit 6), NOT drift and NOT quarantine", () => {
@@ -2032,13 +2821,15 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-unknown-models", result);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
 
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
     expect(entry.scenario).toBe("known-models canary");
-    expect(entry.builderFile).toBe("src/ws-realtime.ts");
 
     // FULL list recovered from the marker (NOT truncated to just the first id).
     const reals = entry.diffs.map((d) => d.real);
@@ -2064,6 +2855,17 @@ describe("collectDriftEntries", () => {
       0,
     );
     expect(criticalCount).toBe(4);
+    expect(exitCodeOf(result)).toBe(2);
+    for (const diff of entry.diffs) {
+      expect(diff.path).toBe("knownVoiceModelFamilies");
+      expect(diff.issue).toBe(
+        "Unknown realtime model detected — add to knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
+      );
+    }
+    expect({ file: entry.builderFile, functions: entry.builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("does NOT misattribute a non-canary toEqual([]) failure from another provider as OpenAI-Realtime drift → quarantine (exit 5)", () => {
@@ -2149,11 +2951,13 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-no-ga", result);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
-    expect(entry.builderFile).toBe("src/ws-realtime.ts");
     expect(entry.diffs.length).toBeGreaterThan(0);
     expect(entry.diffs.every((d) => d.severity === "critical")).toBe(true);
 
@@ -2162,6 +2966,20 @@ describe("collectDriftEntries", () => {
       0,
     );
     expect(criticalCount).toBeGreaterThan(0);
+    expect(exitCodeOf(result)).toBe(2);
+    expect(entry.diffs).toHaveLength(1);
+    expect(entry.diffs[0]).toMatchObject({
+      id: NO_GA_DELTA_ID,
+      path: "gaRealtimeModels",
+      real: "observed realtime models: gpt-foo, gpt-bar",
+      mock: "<no mock leg — real-API-only canary>",
+      issue:
+        "GA realtime family unavailable — no known GA model in the OpenAI realtime list. OpenAI may have renamed/removed the GA family, or the realtime credential cannot see it. Update gaRealtimeModels in src/__tests__/drift/voice-models.ts.",
+    });
+    expect({ file: entry.builderFile, functions: entry.builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("preserves the unknown-model list in the NO_GA entry (no info loss when both fire)", () => {
@@ -2981,8 +3799,15 @@ describe("a WS failure with no probe frame is attributed by the failing test's n
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(provider);
-      expect(entries[0].builderFile).toBe(builder);
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(builder);
+      expect(entries[0].builderFunctions).toEqual(
+        provider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : provider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 
@@ -2997,9 +3822,16 @@ describe("a WS failure with no probe frame is attributed by the failing test's n
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(provider);
-      expect(entries[0].builderFile).toBe(builder);
       expect(entries[0].scenario).toBe("WS handshake");
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(builder);
+      expect(entries[0].builderFunctions).toEqual(
+        provider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : provider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 
@@ -3338,10 +4170,17 @@ describe("zero-observation live timeouts are reported AS timeouts (exit 6)", () 
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(wantProvider);
-      expect(entries[0].builderFile).toBe(wantBuilderFile);
       expect(entries[0].diffs[0].severity).toBe("critical");
       expect(entries[0].diffs[0].id).toBe("ws-handshake:bad_setup");
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(wantBuilderFile);
+      expect(entries[0].builderFunctions).toEqual(
+        wantProvider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : wantProvider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 

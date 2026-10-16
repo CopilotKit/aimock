@@ -185,19 +185,21 @@ $ docker run -d -p 4010:4010 \
                 <code>chaos</code>, <code>record</code>, <code>strictToolArguments</code>,
                 <code>responsesTools</code> (<code>"legacy"</code> or <code>"extended"</code>),
                 <code>enableMisbehavior</code>, <code>misbehavior</code> and
-                <code>enableMcpRecording</code>. <code>llm.misbehavior</code> is read only when
-                <code>llm.enableMisbehavior</code> is <code>true</code> or
-                <code>--misbehavior</code> is given; otherwise it is ignored with a warning, as
-                1.44.0 ignored it. In the same way, <code>llm.record.mcp</code> is read only when
-                <code>llm.enableMcpRecording</code> is <code>true</code>. An
-                <code>llm.responsesTools</code> other than <code>"legacy"</code> or
-                <code>"extended"</code> is also ignored with a warning, and the server runs in
-                <code>legacy</code> mode, or in the mode that <code>--responses-tools</code> sets
-                (the warning names it). A non-boolean <code>llm.strictToolArguments</code>,
-                <code>llm.enableMisbehavior</code> or <code>llm.enableMcpRecording</code> is ignored
-                with a warning and the option stays off, unless
-                <code>--strict-tool-arguments</code> or <code>--misbehavior</code> turns it on.
-                Per-fixture knobs such as <code>streamingProfile</code> live on the fixture entries.
+                <code>enableMcpRecording</code>, and <code>policy</code> (see
+                <a href="#required-header-policy">Required Header Policy</a>).
+                <code>llm.misbehavior</code> is read only when <code>llm.enableMisbehavior</code> is
+                <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
+                with a warning, as 1.44.0 ignored it. In the same way,
+                <code>llm.record.mcp</code> is read only when <code>llm.enableMcpRecording</code> is
+                <code>true</code>. An <code>llm.responsesTools</code> other than
+                <code>"legacy"</code> or <code>"extended"</code> is also ignored with a warning, and
+                the server runs in <code>legacy</code> mode, or in the mode that
+                <code>--responses-tools</code> sets (the warning names it). A non-boolean
+                <code>llm.strictToolArguments</code>, <code>llm.enableMisbehavior</code> or
+                <code>llm.enableMcpRecording</code> is ignored with a warning and the option stays
+                off, unless <code>--strict-tool-arguments</code> or <code>--misbehavior</code> turns
+                it on. Per-fixture knobs such as <code>streamingProfile</code> live on the fixture
+                entries.
               </td>
             </tr>
             <tr>
@@ -260,6 +262,73 @@ $ docker run -d -p 4010:4010 \
             </tr>
           </tbody>
         </table>
+
+        <h3 id="required-header-policy">Required Header Policy</h3>
+        <p>
+          Header enforcement is off by default. Set <code>llm.policy.requiredHeaders</code> to
+          <code>"enforce"</code> to require <code>anthropic-version</code> on Anthropic HTTP routes.
+          This policy is independent of <code>strict</code>. Strict mode alone does not require the
+          version header.
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-config">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+    "port": 4010,
+    "llm": {
+        "fixtures": "./fixtures",
+        "policy": { "requiredHeaders": "enforce" }
+    }
+}</code></pre>
+        </div>
+        <p>
+          Both CLI entry points accept repeated <code>--policy key=value</code> flags. CLI values
+          override the config per key. For duplicate flags, the last value wins. The commands below
+          both enable enforcement:
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-cli">
+          <div class="code-block-header">CLI overrides <span class="lang-tag">shell</span></div>
+          <pre><code>npx @copilotkit/aimock --config aimock.json --port 4010 --policy requiredHeaders=off --policy requiredHeaders=enforce
+
+npx --package @copilotkit/aimock llmock -f ./fixtures --port 4010 --policy requiredHeaders=off --policy requiredHeaders=enforce</code></pre>
+        </div>
+        <p>
+          The request header <code>X-AIMock-Policy</code> overrides the effective server policy.
+          Precedence is built-in <code>off</code>, config, programmatic config overrides or CLI,
+          then the request header. The public <code>startFromConfig</code> override accepts
+          <code>policy: { requiredHeaders: "enforce" }</code>.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Input</th>
+              <th>Invalid entries</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Programmatic options and config</td>
+              <td>Warn and ignore the invalid entry; retain other valid policy values.</td>
+            </tr>
+            <tr>
+              <td><code>X-AIMock-Policy</code></td>
+              <td>Warn and ignore the invalid entry; retain other valid entries.</td>
+            </tr>
+            <tr>
+              <td><code>--policy</code></td>
+              <td>Print usage and exit 1. Every CLI entry must be valid.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The key <code>requiredHeaders</code> has exact case. Values accept <code>off</code> and
+          <code>enforce</code>, without case sensitivity. Text entries use <code>key=value</code>;
+          surrounding whitespace is trimmed. The request header accepts comma-separated entries. A
+          later valid duplicate wins; an invalid entry does not erase a valid one.
+        </p>
+        <p>
+          See <a href="/claude-messages#required-header-policy">Claude Messages</a> for the affected
+          routes, the shared model-path caveat, and the rejection body.
+        </p>
 
         <h3>Recording Config (<code>llm.record</code>)</h3>
         <p>
@@ -499,6 +568,15 @@ $ docker run -d -p 4010:4010 \
               <td>
                 OpenAI Responses tool handling: <code>legacy</code> or <code>extended</code> (any
                 other value exits 1)
+              </td>
+            </tr>
+            <tr>
+              <td><code>--policy &lt;key=value&gt;</code></td>
+              <td>config <code>llm.policy</code>, else <code>requiredHeaders=off</code></td>
+              <td>
+                Repeatable policy override. See
+                <a href="#required-header-policy">Required Header Policy</a>. Invalid entries exit
+                1.
               </td>
             </tr>
             <tr>

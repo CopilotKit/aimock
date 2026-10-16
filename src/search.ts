@@ -7,15 +7,15 @@
  */
 
 import type * as http from "node:http";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import {
   flattenHeaders,
   isJsonObject,
   matchesPattern,
   normalizeTextInput,
-  resolveStrictMode,
   strictNoMatchLogLine,
   strictNoMatchMessage,
-  strictOverrideField,
 } from "./helpers.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
@@ -63,13 +63,11 @@ export async function handleSearch(
     });
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
@@ -88,12 +86,10 @@ export async function handleSearch(
     });
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -111,12 +107,10 @@ export async function handleSearch(
     });
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: "Invalid parameter: 'query' must be a string or an array of strings",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Invalid parameter: 'query' must be a string or an array of strings",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -146,7 +140,7 @@ export async function handleSearch(
   // Strict mode turns the lenient default (empty results) into a no-match
   // error, like every other fixture-matching handler. These fixtures carry no
   // sequence/turn state, so the skipped count is always 0.
-  if (!matchedFixture && resolveStrictMode(defaults.strict, req.headers)) {
+  if (!matchedFixture && resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
     const strictMessage = strictNoMatchMessage(0);
     logger.error(strictNoMatchLogLine(req.method ?? "POST", req.url ?? "/search", 0));
     journal.add({
@@ -163,13 +157,11 @@ export async function handleSearch(
     });
     res.writeHead(503, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }

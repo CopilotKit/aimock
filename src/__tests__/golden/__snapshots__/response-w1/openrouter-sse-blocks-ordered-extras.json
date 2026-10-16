@@ -1,0 +1,21 @@
+{
+  "status": 200,
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+    "cache-control": "no-cache",
+    "content-type": "text/event-stream",
+    "x-request-id": "req-<#0>"
+  },
+  "frames": [
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null,\"native_finish_reason\":null}],\"provider\":\"openai\",\"system_fingerprint\":null}",
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello world!\",\"role\":\"assistant\"},\"logprobs\":null,\"finish_reason\":null,\"native_finish_reason\":null}],\"provider\":\"openai\",\"system_fingerprint\":null}",
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_fixed\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null,\"native_finish_reason\":null}],\"provider\":\"openai\",\"system_fingerprint\":null}",
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null,\"native_finish_reason\":null}],\"provider\":\"openai\",\"system_fingerprint\":null}",
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\"}],\"provider\":\"openai\",\"system_fingerprint\":null}",
+    "data: {\"id\":\"w1-fixed\",\"object\":\"chat.completion.chunk\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":7,\"total_tokens\":10,\"cost\":null,\"cost_details\":{\"provider_detail\":1,\"upstream_inference_cost\":0,\"upstream_inference_prompt_cost\":0,\"upstream_inference_completions_cost\":0},\"prompt_tokens_details\":{\"audio_tokens\":4,\"cached_tokens\":0,\"cache_write_tokens\":0,\"unknown\":null},\"completion_tokens_details\":{\"extra\":9,\"reasoning_tokens\":0},\"is_byok\":false,\"last\":7,\"first\":0,\"nested_unknown\":{\"z\":null},\"native_tokens_prompt\":3},\"provider\":\"openai\",\"system_fingerprint\":null,\"service_tier\":null}",
+    "data: [DONE]"
+  ]
+}

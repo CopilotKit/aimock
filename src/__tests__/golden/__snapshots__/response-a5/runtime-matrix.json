@@ -1,0 +1,3934 @@
+[
+  {
+    "name": "byteplus",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#0>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#1>"
+          },
+          "body": "{\"id\":\"cgt-<uuid#2>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#3>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video task cgt-<uuid#2> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#4>"
+            },
+            "body": "{\"id\":\"cgt-<uuid#2>\",\"status\":\"running\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#2>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#2>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#5>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#6>"
+          },
+          "body": "{\"id\":\"cgt-<uuid#7>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#8>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video task cgt-<uuid#7> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#9>"
+            },
+            "body": "{\"id\":\"cgt-<uuid#7>\",\"status\":\"running\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#7>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#7>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#10>"
+          },
+          "body": "{\"error\":{\"message\":\"No byteplus fixture matched. A byteplus video fixture must carry match.endpoint: \\\"video\\\" and a { json: <Ark task envelope> } response\"}}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#11>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#12>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\"}}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#13>"
+          },
+          "body": "{\"id\":\"cgt-<uuid#14>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#15>"
+            },
+            "body": "{\"status\":\"succeeded\",\"model\":\"seedance-1-0-pro-fast-251015\",\"content\":{\"video_url\":\"https://media.example/video.mp4\"},\"id\":\"cgt-<uuid#14>\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "json": {
+                    "status": "succeeded",
+                    "model": "seedance-1-0-pro-fast-251015",
+                    "content": {
+                      "video_url": "https://media.example/video.mp4"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#14>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#16>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\"}}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#17>"
+          },
+          "body": "{\"error\":{\"message\":\"No byteplus fixture matched. A byteplus video fixture must carry match.endpoint: \\\"video\\\" and a { json: <Ark task envelope> } response\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#18>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\"}}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#19>"
+          },
+          "body": "{\"id\":\"cgt-<uuid#20>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#21>"
+            },
+            "body": "{\"status\":\"succeeded\",\"model\":\"seedance-1-0-pro-fast-251015\",\"content\":{\"video_url\":\"https://media.example/video.mp4\"},\"id\":\"cgt-<uuid#20>\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v3/contents/generations/tasks",
+            "body": {
+              "model": "seedance-1-0-pro-fast-251015",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture\n[media: ]"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "byteplus"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "json": {
+                    "status": "succeeded",
+                    "model": "seedance-1-0-pro-fast-251015",
+                    "content": {
+                      "video_url": "https://media.example/video.mp4"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v3/contents/generations/tasks/cgt-<uuid#20>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v3/contents/generations/tasks",
+        "body": "{\"model\":\"seedance-1-0-pro-fast-251015\",\"content\":[{\"type\":\"text\",\"text\":\"fixture\"}]}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v3/contents/generations/tasks/up-byteplus",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/api/v3/contents/generations/tasks",
+        "body": "{\"model\":\"seedance-1-0-pro-fast-251015\",\"content\":[{\"type\":\"text\",\"text\":\"fixture\"}]}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v3/contents/generations/tasks/up-byteplus",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  },
+  {
+    "name": "grok",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#22>"
+          },
+          "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: no fixture matched\"}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#23>"
+          },
+          "body": "{\"request_id\":\"<uuid#24>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#25>"
+            },
+            "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: video job <uuid#24> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\"}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#26>"
+            },
+            "body": "{\"status\":\"pending\",\"progress\":12,\"request_id\":\"<uuid#24>\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#24>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#24>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#27>"
+          },
+          "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: no fixture matched\"}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#28>"
+          },
+          "body": "{\"request_id\":\"<uuid#29>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#30>"
+            },
+            "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: video job <uuid#29> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\"}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#31>"
+            },
+            "body": "{\"status\":\"pending\",\"progress\":12,\"request_id\":\"<uuid#29>\"}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#29>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#29>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#32>"
+          },
+          "body": "{\"code\":\"not_found\",\"error\":\"No fixture matched\"}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#33>"
+          },
+          "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: no fixture matched\"}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#34>"
+          },
+          "body": "{\"code\":\"invalid_request\",\"error\":\"Request body must be a JSON object\"}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#35>"
+          },
+          "body": "{\"request_id\":\"<uuid#36>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#37>"
+            },
+            "body": "{\"request_id\":\"<uuid#36>\",\"status\":\"done\",\"progress\":100,\"video\":{\"url\":\"https://media.example/video.mp4\",\"duration\":0},\"usage\":{\"cost_in_usd_ticks\":0}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#36>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#38>"
+          },
+          "body": "{\"code\":\"no_fixture_match\",\"error\":\"Strict mode: no fixture matched\"}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#39>"
+          },
+          "body": "{\"code\":\"not_found\",\"error\":\"No fixture matched\"}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#40>"
+          },
+          "body": "{\"code\":\"invalid_request\",\"error\":\"Request body must be a JSON object\"}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#41>"
+          },
+          "body": "{\"request_id\":\"<uuid#42>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#43>"
+            },
+            "body": "{\"request_id\":\"<uuid#42>\",\"status\":\"done\",\"progress\":100,\"video\":{\"url\":\"https://media.example/video.mp4\",\"duration\":0},\"usage\":{\"cost_in_usd_ticks\":0}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos/generations",
+            "body": {
+              "model": "grok-imagine-video",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "grok"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1/videos/<uuid#42>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1/videos/generations",
+        "body": "{\"model\":\"grok-imagine-video\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/v1/videos/up-grok",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/v1/videos/generations",
+        "body": "{\"model\":\"grok-imagine-video\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/v1/videos/up-grok",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  },
+  {
+    "name": "veo",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#44>"
+          },
+          "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: no fixture matched\",\"status\":\"UNAVAILABLE\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#45>"
+          },
+          "body": "{\"name\":\"operations/<uuid#46>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#47>"
+            },
+            "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: Veo operation operations/<uuid#46> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"status\":\"UNAVAILABLE\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#48>"
+            },
+            "body": "{\"name\":\"operations/<uuid#46>\",\"done\":false}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#46>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#46>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#49>"
+          },
+          "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: no fixture matched\",\"status\":\"UNAVAILABLE\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#50>"
+          },
+          "body": "{\"name\":\"operations/<uuid#51>\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#52>"
+            },
+            "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: Veo operation operations/<uuid#51> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"status\":\"UNAVAILABLE\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#53>"
+            },
+            "body": "{\"name\":\"operations/<uuid#51>\",\"done\":false}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#51>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#51>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#54>"
+          },
+          "body": "{\"error\":{\"code\":404,\"message\":\"No fixture matched\",\"status\":\"NOT_FOUND\"}}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#55>"
+          },
+          "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: no fixture matched\",\"status\":\"UNAVAILABLE\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#56>"
+          },
+          "body": "{\"error\":{\"code\":400,\"message\":\"Request body must be a JSON object\",\"status\":\"INVALID_ARGUMENT\"}}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#57>"
+          },
+          "body": "{\"name\":\"operations/<uuid#58>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#59>"
+            },
+            "body": "{\"name\":\"operations/<uuid#58>\",\"done\":true,\"response\":{\"generateVideoResponse\":{\"generatedSamples\":[{\"video\":{\"uri\":\"https://media.example/video.mp4\"}}]}}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#58>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#60>"
+          },
+          "body": "{\"error\":{\"code\":503,\"message\":\"Strict mode: no fixture matched\",\"status\":\"UNAVAILABLE\"}}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#61>"
+          },
+          "body": "{\"error\":{\"code\":404,\"message\":\"No fixture matched\",\"status\":\"NOT_FOUND\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#62>"
+          },
+          "body": "{\"error\":{\"code\":400,\"message\":\"Request body must be a JSON object\",\"status\":\"INVALID_ARGUMENT\"}}"
+        },
+        "commonErrors": [],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#63>"
+          },
+          "body": "{\"name\":\"operations/<uuid#64>\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#65>"
+            },
+            "body": "{\"name\":\"operations/<uuid#64>\",\"done\":true,\"response\":{\"generateVideoResponse\":{\"generatedSamples\":[{\"video\":{\"uri\":\"https://media.example/video.mp4\"}}]}}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+            "body": {
+              "model": "veo-3.0-generate-001",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video",
+              "_videoProvider": "veo"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/v1beta/operations/<uuid#64>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+        "body": "{\"instances\":[{\"prompt\":\"fixture\"}]}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/v1beta/operations/up-veo",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/v1beta/models/veo-3.0-generate-001:predictLongRunning",
+        "body": "{\"instances\":[{\"prompt\":\"fixture\"}]}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/v1beta/operations/up-veo",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  },
+  {
+    "name": "openai",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#66>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json; charset=utf-8",
+            "x-request-id": "req-<#67>"
+          },
+          "body": "{\"id\":\"up-openai\",\"status\":\"queued\"}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#68>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json; charset=utf-8",
+            "x-request-id": "req-<#69>"
+          },
+          "body": "{\"id\":\"up-openai\",\"status\":\"queued\"}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#70>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#71>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#72>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#73>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#74>"
+            },
+            "body": "{\"error\":{\"message\":\"Missing required parameter: 'prompt'\",\"type\":\"invalid_request_error\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#75>"
+            },
+            "body": "{\"error\":{\"message\":\"Invalid parameter: 'prompt' must be a string or a non-empty array of content parts\",\"type\":\"invalid_request_error\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#76>"
+          },
+          "body": "{\"id\":\"fixture-video\",\"status\":\"completed\",\"url\":\"https://media.example/video.mp4\",\"created_at\":\"<epoch>\"}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#77>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#78>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#79>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#80>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#81>"
+            },
+            "body": "{\"error\":{\"message\":\"Missing required parameter: 'prompt'\",\"type\":\"invalid_request_error\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#82>"
+            },
+            "body": "{\"error\":{\"message\":\"Invalid parameter: 'prompt' must be a string or a non-empty array of content parts\",\"type\":\"invalid_request_error\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#83>"
+          },
+          "body": "{\"id\":\"fixture-video\",\"status\":\"completed\",\"url\":\"https://media.example/video.mp4\",\"created_at\":\"<epoch>\"}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "url": "https://media.example/video.mp4"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "wrongKind": {
+          "status": 500,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#84>"
+          },
+          "body": "{\"error\":{\"message\":\"Fixture response is not a video type\",\"type\":\"server_error\"}}"
+        },
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/v1/videos",
+            "body": {
+              "model": "sora-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 500,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "content": "wrong kind"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1/videos",
+        "body": "{\"model\":\"sora-2\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/v1/videos",
+        "body": "{\"model\":\"sora-2\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  },
+  {
+    "name": "openrouter",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#85>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 202,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#86>"
+          },
+          "body": "{\"id\":\"<uuid#87>\",\"polling_url\":\"https://media.example/api/v1/videos/<uuid#87>\",\"status\":\"pending\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#88>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video job <uuid#87> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#89>"
+            },
+            "body": "{\"id\":\"<uuid#87>\",\"status\":\"completed\",\"usage\":{\"cost\":0.25},\"unsigned_urls\":[\"https://media.example/api/v1/videos/<uuid#87>/content?index=0\"]}"
+          },
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#90>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video job <uuid#87> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "video/mp4",
+              "x-request-id": "req-<#91>"
+            },
+            "body": "media-bytes"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#92>"
+            },
+            "body": "{\"data\":[{\"id\":\"bytedance/seedance-2.0\",\"name\":\"bytedance/seedance-2.0\",\"supported_durations\":[4,8],\"supported_resolutions\":[\"720p\",\"1080p\"],\"supported_aspect_ratios\":[\"16:9\",\"9:16\",\"1:1\"],\"supported_frame_images\":[],\"supported_sizes\":[],\"generate_audio\":false,\"seed\":true,\"pricing_skus\":[]}]}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req-<#93>"
+            },
+            "body": "{ \"data\": [{ \"id\": \"upstream-video\" }] }\n"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 202,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#87>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#87>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#87>/content?index=0",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#87>/content?index=0",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/models",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/models",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#94>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 202,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#95>"
+          },
+          "body": "{\"id\":\"<uuid#96>\",\"polling_url\":\"https://media.example/api/v1/videos/<uuid#96>\",\"status\":\"pending\"}"
+        },
+        "polls": [
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#97>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video job <uuid#96> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#98>"
+            },
+            "body": "{\"id\":\"<uuid#96>\",\"status\":\"completed\",\"usage\":{\"cost\":0.25},\"unsigned_urls\":[\"https://media.example/api/v1/videos/<uuid#96>/content?index=0\"]}"
+          },
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#99>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: video job <uuid#96> is proxied live upstream (record mode) — nothing reaches an upstream under strict mode\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "video/mp4",
+              "x-request-id": "req-<#100>"
+            },
+            "body": "media-bytes"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#101>"
+            },
+            "body": "{\"data\":[{\"id\":\"bytedance/seedance-2.0\",\"name\":\"bytedance/seedance-2.0\",\"supported_durations\":[4,8],\"supported_resolutions\":[\"720p\",\"1080p\"],\"supported_aspect_ratios\":[\"16:9\",\"9:16\",\"1:1\"],\"supported_frame_images\":[],\"supported_sizes\":[],\"generate_audio\":false,\"seed\":true,\"pricing_skus\":[]}]}"
+          },
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req-<#102>"
+            },
+            "body": "{ \"data\": [{ \"id\": \"upstream-video\" }] }\n"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 202,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#96>",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#96>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#96>/content?index=0",
+            "body": null,
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#96>/content?index=0",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/models",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/models",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy",
+              "strictOverride": false
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#103>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"code\":404}}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#104>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#105>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#106>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#107>"
+            },
+            "body": "{\"error\":{\"message\":\"Missing required parameter: 'prompt'\",\"type\":\"invalid_request_error\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#108>"
+            },
+            "body": "{\"error\":{\"message\":\"Invalid type for parameter: 'prompt' must be a non-empty string\",\"type\":\"invalid_request_error\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 202,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#109>"
+          },
+          "body": "{\"id\":\"<uuid#110>\",\"polling_url\":\"https://media.example/api/v1/videos/<uuid#110>\",\"status\":\"pending\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#111>"
+            },
+            "body": "{\"id\":\"<uuid#110>\",\"status\":\"completed\",\"unsigned_urls\":[\"https://media.example/api/v1/videos/<uuid#110>/content?index=0\"],\"usage\":{\"cost\":0.25}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "",
+              "messages": []
+            },
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "prompt": 42,
+              "messages": []
+            },
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 202,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "b64": "bWVkaWE=",
+                    "cost": 0.25
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#110>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#112>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#113>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"code\":404}}"
+        },
+        "invalid": {
+          "status": 400,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#114>"
+          },
+          "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#115>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#116>"
+            },
+            "body": "{\"error\":{\"message\":\"Missing required parameter: 'prompt'\",\"type\":\"invalid_request_error\"}}"
+          },
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#117>"
+            },
+            "body": "{\"error\":{\"message\":\"Invalid type for parameter: 'prompt' must be a non-empty string\",\"type\":\"invalid_request_error\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 202,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#118>"
+          },
+          "body": "{\"id\":\"<uuid#119>\",\"polling_url\":\"https://media.example/api/v1/videos/<uuid#119>\",\"status\":\"pending\"}"
+        },
+        "polls": [
+          {
+            "status": 200,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#120>"
+            },
+            "body": "{\"id\":\"<uuid#119>\",\"status\":\"completed\",\"unsigned_urls\":[\"https://media.example/api/v1/videos/<uuid#119>/content?index=0\"],\"usage\":{\"cost\":0.25}}"
+          }
+        ],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "",
+              "messages": []
+            },
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "prompt": 42,
+              "messages": []
+            },
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 202,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "video": {
+                    "id": "fixture-video",
+                    "status": "completed",
+                    "b64": "bWVkaWE=",
+                    "cost": 0.25
+                  }
+                }
+              }
+            }
+          },
+          {
+            "method": "GET",
+            "path": "/api/v1/videos/<uuid#119>",
+            "body": null,
+            "response": {
+              "status": 200,
+              "fixture": null
+            }
+          }
+        ]
+      },
+      {
+        "wrongKind": {
+          "status": 500,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#121>"
+          },
+          "body": "{\"error\":{\"message\":\"Fixture response is not a video type\",\"type\":\"server_error\"}}"
+        },
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "body": {
+              "model": "bytedance/seedance-2.0",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "video"
+            },
+            "response": {
+              "status": 500,
+              "fixture": {
+                "match": {
+                  "endpoint": "video",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "content": "wrong kind"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/up-openrouter",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/up-openrouter/content?index=0",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/models",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/up-openrouter",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/up-openrouter/content?index=0",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/models",
+        "body": "",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  },
+  {
+    "name": "fal",
+    "results": [
+      {
+        "serverStrict": false,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#122>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json; charset=utf-8",
+            "x-request-id": "req-<#123>"
+          },
+          "body": "{\"images\":[{\"url\":\"https://media.example/upstream.png\"}]}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "blocked": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#124>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "allowed": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json; charset=utf-8",
+            "x-request-id": "req-<#125>"
+          },
+          "body": "{\"images\":[{\"url\":\"https://media.example/upstream.png\"}]}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 200,
+              "fixture": null,
+              "source": "proxy"
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": false,
+        "miss": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#126>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "flipped": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#127>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "invalid": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#128>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#129>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 404,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#130>"
+            },
+            "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 404,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#131>"
+            },
+            "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#132>"
+          },
+          "body": "{\"images\":[{\"url\":\"https://media.example/image.png\"}]}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null,
+              "strictOverride": true
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"prompt\":42}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "fal",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "json": {
+                    "images": [
+                      {
+                        "url": "https://media.example/image.png"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "serverStrict": true,
+        "miss": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#133>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "flipped": {
+          "status": 404,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#134>"
+          },
+          "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "invalid": {
+          "status": 503,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#135>"
+          },
+          "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+        },
+        "commonErrors": [
+          {
+            "status": 400,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#136>"
+            },
+            "body": "{\"error\":{\"message\":\"Malformed JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json\"}}"
+          },
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#137>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          },
+          {
+            "status": 503,
+            "headers": {
+              "access-control-allow-headers": "*",
+              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+              "access-control-allow-origin": "*",
+              "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+              "content-type": "application/json",
+              "x-request-id": "req-<#138>"
+            },
+            "body": "{\"error\":{\"message\":\"Strict mode: no fixture matched\",\"type\":\"invalid_request_error\",\"code\":\"no_fixture_match\"}}"
+          }
+        ],
+        "fixture": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#139>"
+          },
+          "body": "{\"images\":[{\"url\":\"https://media.example/image.png\"}]}"
+        },
+        "polls": [],
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "miss"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 404,
+              "fixture": null,
+              "strictOverride": false
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": null,
+            "response": {
+              "status": 400,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"prompt\":42}"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 503,
+              "fixture": null
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 200,
+              "fixture": {
+                "match": {
+                  "endpoint": "fal",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "json": {
+                    "images": [
+                      {
+                        "url": "https://media.example/image.png"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "wrongKind": {
+          "status": 500,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#140>"
+          },
+          "body": "{\"error\":{\"message\":\"Fixture response is not JSON or audio for fal endpoint\",\"type\":\"server_error\"}}"
+        },
+        "journal": [
+          {
+            "method": "POST",
+            "path": "/fal/fal-ai/flux/dev",
+            "body": {
+              "model": "fal-ai/flux/dev",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "fixture"
+                }
+              ],
+              "_endpointType": "fal"
+            },
+            "response": {
+              "status": 500,
+              "fixture": {
+                "match": {
+                  "endpoint": "fal",
+                  "userMessage": "fixture"
+                },
+                "response": {
+                  "content": "wrong kind"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/fal-ai/flux/dev",
+        "body": "{\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      },
+      {
+        "method": "POST",
+        "url": "/fal-ai/flux/dev",
+        "body": "{\"prompt\":\"fixture\"}",
+        "authorization": "Bearer media-test",
+        "strict": null
+      }
+    ],
+    "recordedFiles": []
+  }
+]

@@ -968,10 +968,9 @@ describe("normalizePathLabel: closed namespaces (F3)", () => {
     expect(normalizePathLabel("/v1beta/models/gemini-2.0-flash:fuzz9a8b")).toBe(
       "/v1beta/models/{model}:{action}",
     );
-    // Bare model lookup collapses too; the bare listing path is not a route
-    // server.ts serves, so it takes the unrouted bucket like any other.
+    // Bare model lookup collapses too; the served listing keeps its static label.
     expect(normalizePathLabel("/v1beta/models/gemini-2.0-flash")).toBe("/v1beta/models/{model}");
-    expect(normalizePathLabel("/v1beta/models")).toBe(metricsModule.UNKNOWN_PATH_LABEL);
+    expect(normalizePathLabel("/v1beta/models")).toBe("/v1beta/models");
     // The Veo submit label is byte-identical to before the RE widened.
     expect(normalizePathLabel("/v1beta/models/veo-3.0:predictLongRunning")).toBe(
       "/v1beta/models/{model}:predictLongRunning",
@@ -1192,39 +1191,69 @@ describe("route-aware labels track the live route table (round 2)", () => {
 });
 
 describe("mounted service metric precedence", () => {
-  it.each(["/fal/custom", "/v1/files/custom", "/v1/music/custom", "/custom"])(
-    "keeps bounded live labels for a late mount at %s",
-    async (mountPath) => {
-      const llm = new LLMock({ metrics: true });
-      await llm.start();
-      try {
-        llm.mount(mountPath, {
-          async handleRequest(_req, res, subPath) {
-            res.end(subPath);
-            return true;
-          },
-        });
-        for (const suffix of ["", "/.well-known/agent-card.json", "/random-1", "/random-2"]) {
-          const response = await httpGet(`${llm.url}${mountPath}${suffix}`);
-          expect(response.status).toBe(200);
-          expect(response.body).toBe(suffix || "/");
-        }
-        const metrics = await httpGet(`${llm.url}/metrics`);
-        for (const [suffix, count] of [
-          ["", 1],
-          ["/.well-known/agent-card.json", 1],
-          ["/{other}", 2],
-        ] as const) {
-          expect(metrics.body).toContain(
-            `aimock_requests_total{method="GET",path="${mountPath}${suffix}",status="200"} ${count}`,
-          );
-        }
-        expect(metrics.body).not.toContain("random-");
-      } finally {
-        await llm.stop();
-      }
+  it.each([
+    {
+      pathname: "/v1/models/custom",
+      mounts: ["/v1/models/custom"],
+      label: "/v1/models/custom",
     },
-  );
+    {
+      pathname: "/v1/models/custom/.well-known/agent-card.json",
+      mounts: ["/v1/models/custom"],
+      label: "/v1/models/custom/.well-known/agent-card.json",
+    },
+    {
+      pathname: "/v1beta/models",
+      mounts: ["/v1beta"],
+      label: "/v1beta/{other}",
+    },
+  ])("preserves model mount label for $pathname", ({ pathname, mounts, label }) => {
+    expect(normalizePathLabel(pathname, mounts)).toBe(label);
+  });
+
+  it.each([
+    "/fal/custom",
+    "/v1/files/custom",
+    "/v1/music/custom",
+    "/custom",
+    "/v1/models/custom",
+    "/v1beta",
+  ])("keeps bounded live labels for a late mount at %s", async (mountPath) => {
+    const llm = new LLMock({ metrics: true });
+    await llm.start();
+    try {
+      llm.mount(mountPath, {
+        async handleRequest(_req, res, subPath) {
+          res.end(subPath);
+          return true;
+        },
+      });
+      for (const suffix of [
+        "",
+        "/.well-known/agent-card.json",
+        "/random-1",
+        "/random-2",
+        "/models",
+      ]) {
+        const response = await httpGet(`${llm.url}${mountPath}${suffix}`);
+        expect(response.status).toBe(200);
+        expect(response.body).toBe(suffix || "/");
+      }
+      const metrics = await httpGet(`${llm.url}/metrics`);
+      for (const [suffix, count] of [
+        ["", 1],
+        ["/.well-known/agent-card.json", 1],
+        ["/{other}", 3],
+      ] as const) {
+        expect(metrics.body).toContain(
+          `aimock_requests_total{method="GET",path="${mountPath}${suffix}",status="200"} ${count}`,
+        );
+      }
+      expect(metrics.body).not.toContain("random-");
+    } finally {
+      await llm.stop();
+    }
+  });
 
   it("keeps control API precedence and first registered mount matching", async () => {
     const llm = new LLMock({ metrics: true });
@@ -1267,5 +1296,16 @@ describe("mounted service metric precedence", () => {
     expect(normalizePathLabel("/v1/music/generation", mounts)).toBe("/v1/music/generation");
     expect(normalizePathLabel("/fal/customized", mounts)).toBe("/fal/{other}");
     expect(normalizePathLabel("/fal/custom", ["/fal/custom", "/fal"])).toBe("/fal/custom");
+  });
+
+  it.each([
+    ["/v1/models", "/v1/models"],
+    ["/v1/models/custom", "/v1/models/{id}"],
+    ["/v1/models/customized", "/v1/models/{id}"],
+    ["/v1beta/models", "/v1beta/models"],
+    ["/v1beta/models/custom", "/v1beta/models/{model}"],
+  ])("keeps the unmounted model label for %s", (pathname, label) => {
+    expect(normalizePathLabel(pathname)).toBe(label);
+    expect(normalizePathLabel(pathname, ["/custom"])).toBe(label);
   });
 });

@@ -58,6 +58,13 @@ vi.setConfig({ testTimeout: 30_000 });
 const WORKFLOW = resolve(__dirname, "../../.github/workflows/test-drift.yml");
 const wf = readFileSync(WORKFLOW, "utf8");
 
+// The real steps extract the shared native gate from their checked-out workflow.
+const stageWorkflowCheckout = (root: string) => {
+  const workflows = join(root, ".github/workflows");
+  mkdirSync(workflows, { recursive: true });
+  writeFileSync(join(workflows, "test-drift.yml"), wf);
+};
+
 const OLLAMA_STEP = "Provision Ollama daemon (live drift leg)";
 const DRIFT_JOB = "drift";
 const KEY_STEP = "Run drift tests";
@@ -185,6 +192,7 @@ it("uploads every invocation sidecar with the final drift report", () => {
           name: drift-report
           path: |
             drift-report.json
+            drift-observations.json
             drift-evidence/*.json
           if-no-files-found: warn
           retention-days: 30`);
@@ -448,6 +456,7 @@ const observeCollectorLeg = (
 ): LegRun => {
   const dir = mkdtempSync(join(tmpdir(), "test-drift-leg-"));
   try {
+    stageWorkflowCheckout(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin);
     const report = JSON.stringify({
@@ -690,6 +699,7 @@ const observeBaseLeg = (
   try {
     const ws = join(parent, "workspace");
     mkdirSync(ws);
+    stageWorkflowCheckout(ws);
     const bin = join(parent, "bin");
     mkdirSync(bin);
     const report = JSON.stringify({

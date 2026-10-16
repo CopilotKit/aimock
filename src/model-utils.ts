@@ -79,7 +79,7 @@ const REASONING_FAMILIES = [
  * the actual family token — e.g. `anthropic.`, `us.anthropic.`, `eu.`. Keeps
  * everything from the recognised family token onward so prefix matching works.
  */
-function stripProviderPrefix(id: string): string {
+export function stripProviderPrefix(id: string): string {
   // Remove leading region/provider segments (dot-separated) until we hit the
   // model token. Provider/region segments never contain a hyphen, whereas
   // model families do (e.g. `claude-3-5-sonnet`, `gpt-4.1`). So drop any

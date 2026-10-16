@@ -1,0 +1,7 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"model\":\"llama3\",\"created_at\":\"<iso-date>\",\"response\":\"Hi there.\",\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0,\"context\":[]}"
+}

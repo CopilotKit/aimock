@@ -20,6 +20,111 @@ import {
 } from "./sdk-shapes.js";
 import { geminiNonStreaming, geminiStreaming } from "./providers.js";
 import { httpPost, parseDataOnlySSE, startDriftServer, stopDriftServer } from "./helpers.js";
+import { startGoldenServer, type GoldenServer } from "../golden/harness.js";
+import { emitLiveObservation, type ObservedResponse } from "./live-observations.js";
+import { nativeResponseDiffs } from "./sdk-shapes.js";
+
+let nativeAuthServer: GoldenServer;
+const nativeAuthExpected: ObservedResponse = {
+  status: 401,
+  body: { error: { code: 401, message: "Invalid API key", status: "UNAUTHENTICATED" } },
+};
+beforeAll(async () => {
+  nativeAuthServer = await startGoldenServer([], { auth: { apiKeys: ["local-native-auth"] } });
+});
+afterAll(async () => {
+  await nativeAuthServer.close();
+});
+
+describe("native provider Gemini auth local contracts", () => {
+  it.each([
+    "/v1beta/models/gemini-test:generateContent",
+    "/v1beta/models/gemini-test:countTokens",
+    "/v1/projects/p/locations/l/publishers/google/models/gemini-test:generateContent",
+  ])("local auth %s", async (path) => {
+    const response = await fetch(`${nativeAuthServer.url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "abcd" }] }] }),
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    const caseId = path.startsWith("/v1/projects")
+      ? "local:vertex-auth"
+      : path.endsWith("countTokens")
+        ? "local:gemini-count-auth"
+        : "local:gemini-auth";
+    emitLiveObservation({
+      surface: "gemini-native-auth",
+      caseId,
+      expected: nativeAuthExpected,
+      actual,
+    });
+    const diffs = nativeResponseDiffs(nativeAuthExpected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(`Gemini local auth ${path}`, diffs, "gemini-native-auth"),
+    ).toEqual([]);
+  });
+});
+describe.skipIf(process.env.AIMOCK_NATIVE_PROVIDER_DRIFT !== "1")(
+  "native provider Gemini vendor auth observation",
+  () => {
+    let captured: Promise<{ expected: ObservedResponse; actual: ObservedResponse }> | undefined;
+    const receive = () => (captured ??= capture());
+    const capture = async () => {
+      const response = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts: [{ text: "abcd" }] }] }),
+          signal: AbortSignal.timeout(15000),
+        },
+      );
+      const expected: ObservedResponse = {
+        status: response.status,
+        body: await response
+          .clone()
+          .json()
+          .catch(() => response.text()),
+      };
+      const local = await fetch(
+        `${nativeAuthServer.url}/v1beta/models/gemini-2.5-flash:countTokens`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts: [{ text: "abcd" }] }] }),
+        },
+      );
+      const actual: ObservedResponse = { status: local.status, body: await local.json() };
+      return { expected, actual };
+    };
+    it("vendor unauthenticated received status/body (evidence only)", async () => {
+      emitLiveObservation({
+        surface: "gemini-native-auth",
+        caseId: "vendor:gemini-auth",
+        ...(await receive()),
+      });
+    });
+    it("vendor unauthenticated comparison", async (context) => {
+      const { expected, actual } = await receive();
+      if ([429].includes(expected.status) || expected.status >= 500)
+        context.skip("Comparison UNAVAILABLE: rate/service error; vendor conformance unverified");
+      // Configured inbound mock authentication is not Google's API-key gateway.
+      // Preserve the vendor body/status without treating intentional dialect
+      // differences as a production fix mandate.
+      const diffs = nativeResponseDiffs(expected, actual);
+      expect(
+        diffs,
+        formatDriftReport(
+          "Gemini vendor auth (inbound policy divergence)",
+          diffs,
+          "gemini-native-auth",
+        ),
+      ).toEqual([]);
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Server lifecycle

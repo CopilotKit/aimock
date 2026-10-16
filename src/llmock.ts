@@ -60,6 +60,8 @@ import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
 import { imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
 import { voiceDesignToJson } from "./elevenlabs-voice.js";
+import { Logger } from "./logger.js";
+import { parsePolicy } from "./response/policy.js";
 
 import {
   getFixtureMisbehaviorPosition,
@@ -93,6 +95,8 @@ export class LLMock {
     // Only this LLMock's server reads its array, so fixtures it makes may be marked in place.
     markServerOwnedFixtures(this.fixtures);
     this.options = options ?? {};
+    // Validate this public entry point without copying or changing caller options.
+    parsePolicy(this.options.policy, (message) => new Logger("warn").warn(message));
     if (this.options.live !== undefined) normalizeLiveOptions(this.options.live);
     // The `misbehavior` option is read only with `enableMisbehavior: true`;
     // otherwise it is unused data, as in 1.44.0.

@@ -94,49 +94,65 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
   "openai-chat": {
     provider: "OpenAI Chat",
     liveCoverage: "live",
-    builderFile: "src/helpers.ts",
-    builderFunctions: [
-      "buildTextCompletion",
-      "buildToolCallCompletion",
-      "buildTextChunks",
-      "buildToolCallChunks",
-    ],
+    builderFile: "src/response/usage/codecs/openai.ts",
+    builderFunctions: ["resolve", "render"],
     typesFile: "src/types.ts",
   },
   "openai-responses": {
     provider: "OpenAI Responses",
     liveCoverage: "live",
-    builderFile: "src/responses.ts",
-    builderFunctions: [
-      "buildTextResponse",
-      "buildToolCallResponse",
-      "buildTextStreamEvents",
-      "buildToolCallStreamEvents",
-    ],
+    builderFile: "src/response/usage/codecs/responses.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   anthropic: {
     provider: "Anthropic Claude",
     liveCoverage: "live",
-    builderFile: "src/messages.ts",
-    builderFunctions: [
-      "buildClaudeTextResponse",
-      "buildClaudeToolCallResponse",
-      "buildClaudeTextStreamEvents",
-      "buildClaudeToolCallStreamEvents",
-    ],
+    builderFile: "src/response/usage/codecs/anthropic.ts",
+    builderFunctions: ["resolve", "render"],
+    typesFile: null,
+  },
+  "anthropic-catalog": {
+    provider: "Anthropic native catalog",
+    liveCoverage: "live",
+    coverageNote:
+      "Local catalog validation/cursor/lifecycle contracts run always. Bounded vendor comparisons require AIMOCK_NATIVE_PROVIDER_DRIFT=1 and ANTHROPIC_API_KEY; skipped comparisons establish no vendor conformance. Exact unknown-cursor behavior is undocumented.",
+    builderFile: "src/response/catalog/anthropic-page.ts",
+    builderFunctions: ["anthropicPage", "renderAnthropicModels"],
+    typesFile: null,
+  },
+  "gemini-catalog": {
+    provider: "Gemini native catalog",
+    liveCoverage: "live",
+    coverageNote:
+      "Local page validation contracts run always. Bounded vendor comparisons require AIMOCK_NATIVE_PROVIDER_DRIFT=1 and GOOGLE_API_KEY; skipped comparisons establish no vendor conformance. Mock offset tokens are an implementation contract, not documented vendor tokens.",
+    builderFile: "src/response/catalog/gemini-page.ts",
+    builderFunctions: ["geminiPage", "renderGeminiModels"],
+    typesFile: null,
+  },
+  "anthropic-native-errors": {
+    provider: "Anthropic native authentication and version",
+    liveCoverage: "live",
+    coverageNote:
+      "Local auth and permissive missing-version behavior run always. Bounded vendor auth/version observations require AIMOCK_NATIVE_PROVIDER_DRIFT=1; missing-version also requires ANTHROPIC_API_KEY. This records intentional default-policy divergence; it does not enforce headers.",
+    builderFile: "src/response/errors.ts",
+    builderFunctions: ["renderError"],
+    typesFile: null,
+  },
+  "gemini-native-auth": {
+    provider: "Gemini native authentication",
+    liveCoverage: "live",
+    coverageNote:
+      "Local mock HTTP auth401 runs always. Bounded unauthenticated Developer API observations require AIMOCK_NATIVE_PROVIDER_DRIFT=1. Google API-key rejection may differ from the mock's configured inbound auth; no 401 vendor equivalence is assumed.",
+    builderFile: "src/response/errors.ts",
+    builderFunctions: ["renderError"],
     typesFile: null,
   },
   gemini: {
     provider: "Google Gemini",
     liveCoverage: "live",
-    builderFile: "src/gemini.ts",
-    builderFunctions: [
-      "buildGeminiTextResponse",
-      "buildGeminiToolCallResponse",
-      "buildGeminiTextStreamChunks",
-      "buildGeminiToolCallStreamChunks",
-    ],
+    builderFile: "src/response/usage/codecs/gemini.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   "openai-live": {
@@ -152,15 +168,15 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
   "openai-realtime": {
     provider: "OpenAI Realtime",
     liveCoverage: "live",
-    builderFile: "src/ws-realtime.ts",
-    builderFunctions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    builderFile: "src/response/usage/codecs/realtime.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   "openai-responses-ws": {
     provider: "OpenAI Responses WS",
     liveCoverage: "live",
-    builderFile: "src/ws-responses.ts",
-    builderFunctions: ["handleWebSocketResponses"],
+    builderFile: "src/response/usage/codecs/responses.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   "gemini-live": {
@@ -181,15 +197,8 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
   "gemini-interactions": {
     provider: "Gemini Interactions",
     liveCoverage: "live",
-    builderFile: "src/gemini-interactions.ts",
-    builderFunctions: [
-      "buildInteractionsTextResponse",
-      "buildInteractionsToolCallResponse",
-      "buildInteractionsContentWithToolCallsResponse",
-      "buildInteractionsTextSSEEvents",
-      "buildInteractionsToolCallSSEEvents",
-      "buildInteractionsContentWithToolCallsSSEEvents",
-    ],
+    builderFile: "src/response/usage/codecs/interactions.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
 
@@ -197,8 +206,8 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
   "cohere-chat": {
     provider: "Cohere Chat",
     liveCoverage: "live",
-    builderFile: "src/cohere.ts",
-    builderFunctions: ["handleCohere", "cohereToCompletionRequest"],
+    builderFile: "src/response/usage/codecs/cohere.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   rerank: {
@@ -213,15 +222,8 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
     liveCoverage: "none",
     coverageNote:
       "No live AWS leg: nothing in this repo implements SigV4 request signing (no @aws-sdk dependency, no HMAC signer), so the Bedrock legs only drive the local mock. Offline conformance only.",
-    builderFile: "src/bedrock.ts",
-    builderFunctions: [
-      "handleBedrock",
-      "handleBedrockStream",
-      "bedrockToCompletionRequest",
-      "buildBedrockStreamTextEvents",
-      "buildBedrockStreamToolCallEvents",
-      "buildBedrockStreamContentWithToolCallsEvents",
-    ],
+    builderFile: "src/response/usage/codecs/anthropic.ts",
+    builderFunctions: ["resolve", "render"],
     typesFile: null,
   },
   "bedrock-invoke-stream": {
@@ -229,36 +231,31 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
     liveCoverage: "none",
     coverageNote:
       "No live AWS leg — see `bedrock-invoke`. The binary event-stream frames are graded against a hand-written fixture, never against Bedrock.",
-    builderFile: "src/bedrock.ts",
-    builderFunctions: [
-      "handleBedrockStream",
-      "buildBedrockStreamTextEvents",
-      "buildBedrockStreamToolCallEvents",
-      "buildBedrockStreamContentWithToolCallsEvents",
-    ],
+    builderFile: "src/response/usage/codecs/anthropic.ts",
+    builderFunctions: ["resolve", "render"],
     typesFile: null,
   },
   "bedrock-converse": {
     provider: "Bedrock Converse",
     liveCoverage: "none",
     coverageNote: "No live AWS leg — see `bedrock-invoke`. Offline conformance only.",
-    builderFile: "src/bedrock-converse.ts",
-    builderFunctions: ["handleConverse", "converseToCompletionRequest"],
+    builderFile: "src/response/usage/codecs/converse.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   "bedrock-converse-stream": {
     provider: "Bedrock ConverseStream",
     liveCoverage: "none",
     coverageNote: "No live AWS leg — see `bedrock-invoke`. Offline conformance only.",
-    builderFile: "src/bedrock-converse.ts",
-    builderFunctions: ["handleConverseStream", "converseToCompletionRequest"],
+    builderFile: "src/response/usage/codecs/converse.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   ollama: {
     provider: "Ollama",
     liveCoverage: "live",
-    builderFile: "src/ollama.ts",
-    builderFunctions: ["handleOllama", "handleOllamaGenerate", "ollamaToCompletionRequest"],
+    builderFile: "src/response/usage/codecs/ollama.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   "fal-sync": {
@@ -354,14 +351,8 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
     liveCoverage: "none",
     coverageNote:
       "No live Vertex leg: `vertex-ai.drift.ts` only drives the local mock's Vertex-style path. A live leg needs a GCP service account and an OAuth2 token exchange, neither of which this repo does.",
-    builderFile: "src/gemini.ts",
-    builderFunctions: [
-      "handleGemini",
-      "buildGeminiTextResponse",
-      "buildGeminiToolCallResponse",
-      "buildGeminiTextStreamChunks",
-      "buildGeminiToolCallStreamChunks",
-    ],
+    builderFile: "src/response/usage/codecs/gemini.ts",
+    builderFunctions: ["render"],
     typesFile: null,
   },
   // Covered by ONE real vendor-facing check: the FREE, KEYLESS auth-layer
@@ -401,13 +392,8 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
   "openrouter-chat": {
     provider: "OpenRouter Chat",
     liveCoverage: "live",
-    builderFile: "src/openrouter-chat.ts",
-    builderFunctions: [
-      "shapeOpenRouterCompletion",
-      "shapeOpenRouterChunks",
-      "serializeOpenRouterError",
-      "handleOpenRouterModels",
-    ],
+    builderFile: "src/response/usage/codecs/openrouter.ts",
+    builderFunctions: ["resolve", "render"],
     typesFile: "src/types.ts",
   },
 };

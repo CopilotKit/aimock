@@ -34,8 +34,6 @@ import {
   resolveResponse,
   prepareOpenAIChatMisbehavior,
   resolveOpenAIChatMisbehaviorUsage,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
@@ -45,6 +43,9 @@ import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { WebSocketConnection } from "./ws-framing.js";
+import { render as renderRealtimeUsage } from "./response/usage/codecs/realtime.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { buildOpenAIError } from "./response/errors.js";
 
 /**
  * Wire label for custom-tool-call rejections on this transport, on both the
@@ -482,7 +483,7 @@ function buildErrorRealtimeEvent(
   type = "invalid_request_error",
   code?: string,
 ): void {
-  sendEvent(ws, { type: "error", error: { message, type, code } }, isBeta);
+  sendEvent(ws, { type: "error", error: buildOpenAIError({ message, type, code }) }, isBeta);
 }
 
 // ─── Retired Beta shape ─────────────────────────────────────────────────────
@@ -698,11 +699,11 @@ async function processMessage(
             ws,
             {
               type: "error",
-              error: {
+              error: buildOpenAIError({
                 message: `Invalid session type: ${(s as Record<string, unknown>).type}`,
                 type: "invalid_request_error",
                 code: "invalid_session_config",
-              },
+              }),
             },
             isBeta,
           );
@@ -813,11 +814,11 @@ async function processMessage(
           ws,
           {
             type: "error",
-            error: {
+            error: buildOpenAIError({
               message: `Model ${candidateTranscriptionModel} does not support session type transcription`,
               type: "invalid_request_error",
               code: "invalid_session_config",
-            },
+            }),
           },
           isBeta,
         );
@@ -829,11 +830,11 @@ async function processMessage(
           ws,
           {
             type: "error",
-            error: {
+            error: buildOpenAIError({
               message: `Model ${s.model ?? prevSession.model} does not support session type translation`,
               type: "invalid_request_error",
               code: "invalid_session_config",
-            },
+            }),
           },
           isBeta,
         );
@@ -991,7 +992,7 @@ async function emitLiveTranscriptionEvents(
   const itemId = audioItem.id ?? realtimeId("item");
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
@@ -1219,7 +1220,7 @@ function checkRealtimeFixtureToolCalls<T>(
               code: fixtureToolCallErrorCode(err),
             },
           },
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1294,7 +1295,7 @@ async function handleResponseCreate(
   }
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
@@ -1355,7 +1356,7 @@ async function handleResponseCreate(
               code: "no_fixture_match",
             },
           },
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1453,11 +1454,7 @@ async function handleResponseCreate(
       journalEntry,
       {
         stop: misbehavior.stop,
-        usage: {
-          input_tokens: usage.prompt_tokens,
-          output_tokens: usage.completion_tokens,
-          total_tokens: usage.total_tokens,
-        },
+        usage: renderRealtimeUsage({ kind: "applied-misbehavior", usage }),
       },
     );
     return;
@@ -1499,7 +1496,7 @@ async function handleResponseCreate(
               code: response.error.code,
             },
           },
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1924,7 +1921,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: allOutputItems,
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -2137,7 +2134,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: [outputItem],
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -2344,7 +2341,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: outputItems,
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -2735,7 +2732,7 @@ async function streamRealtimeBlocks(
             }
           : {}),
         output: allOutputItems,
-        usage: fault?.usage ?? { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+        usage: fault?.usage ?? renderRealtimeUsage({ kind: "ordinary-zero" }),
       },
     },
     isBeta,

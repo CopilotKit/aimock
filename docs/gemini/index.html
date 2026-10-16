@@ -76,12 +76,120 @@
               <td>SSE (data:)</td>
             </tr>
             <tr>
+              <td>GET</td>
+              <td>/v1beta/models</td>
+              <td>Paged model JSON</td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td>/v1beta/models/:model</td>
+              <td>Model JSON</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td>/v1beta/models/:model:countTokens</td>
+              <td>JSON: totalTokens</td>
+            </tr>
+            <tr>
               <td>WS</td>
               <td>/ws/google.ai.generativelanguage.*</td>
               <td>WebSocket JSON</td>
             </tr>
           </tbody>
         </table>
+
+        <h2 id="model-catalog">Model Catalog</h2>
+        <p>
+          The native catalog contains Google IDs and unrecognized IDs from fixtures, in first-seen
+          order. Empty fixture sets use the established default models. Known OpenAI and Anthropic
+          IDs are excluded. Custom test IDs remain visible.
+        </p>
+        <p>
+          <code>GET /v1beta/models</code> returns <code>models</code> and a
+          <code>nextPageToken</code> when another page exists. The default <code>pageSize</code> is
+          50. Zero uses that default, and values greater than 1000 use 1000. Send the returned token
+          as <code>pageToken</code> for the next page.
+        </p>
+        <p>
+          A client that ignores <code>nextPageToken</code> sees only the first page. Negative,
+          noninteger, or nonnumeric sizes and invalid tokens return 400
+          <code>INVALID_ARGUMENT</code>. aimock uses base64 offset tokens. Exact error details are
+          local contracts. Authenticated upstream catalog errors were not measured.
+        </p>
+        <p>
+          Model metadata is synthetic: <code>name</code> is <code>models/&lt;id&gt;</code>,
+          <code>baseModelId</code> and <code>displayName</code> equal the ID, and
+          <code>version</code> is <code>"1"</code>. Token limits are 128000 input and 8192 output.
+          <code>supportedGenerationMethods</code> contains <code>generateContent</code> and
+          <code>countTokens</code>. These values do not describe upstream capacity.
+        </p>
+        <p>
+          Detail paths accept raw or percent-encoded slashes in IDs. Missing IDs, malformed escapes,
+          and IDs outside the Google catalog return 404 <code>NOT_FOUND</code>. The examples assume
+          fixtures with <code>gemini-test</code> and additional Gemini IDs.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Native catalog <span class="lang-tag">shell</span></div>
+          <pre><code>curl 'http://localhost:4010/v1beta/models?pageSize=1'
+
+curl 'http://localhost:4010/v1beta/models?pageSize=1&amp;pageToken=MQ=='
+
+curl 'http://localhost:4010/v1beta/models/gemini-test'</code></pre>
+        </div>
+        <p>
+          In this example, the first page returns <code>MQ==</code>. Use the actual returned token
+          for your fixture set.
+        </p>
+
+        <h2 id="token-counts">Approximate Token Counts</h2>
+        <p>
+          <code>POST /v1beta/models/:model:countTokens</code> accepts top-level
+          <code>contents</code> or a <code>generateContentRequest</code> wrapper. It returns
+          <code>{"totalTokens": N}</code>. Wrapped requests use the fields inside the wrapper,
+          including system text and tools.
+        </p>
+        <p>
+          aimock converts the request through its existing translator, then estimates tokens with
+          <code>ceil(chars / 4)</code>. The estimate includes converted messages, system text, and
+          serialized converted tools. This deterministic estimate is not a tokenizer or an upstream
+          count. Optional cache counts and token-detail arrays are omitted.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Count a prompt <span class="lang-tag">shell</span></div>
+          <pre><code>curl http://localhost:4010/v1beta/models/gemini-test:countTokens \
+  -H 'Content-Type: application/json' \
+  --data '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}'
+
+curl http://localhost:4010/v1beta/models/gemini-test:countTokens \
+  -H 'Content-Type: application/json' \
+  --data '{"generateContentRequest":{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}'</code></pre>
+        </div>
+        <p>
+          Counts ignore fixture usage. Generate responses use fixture counts and otherwise default
+          to zero. To make a response agree with an estimate, set its fixture usage explicitly.
+          Missing or invalid contents return 400 <code>INVALID_ARGUMENT</code>.
+        </p>
+        <p>
+          Catalog and count routes never proxy or record. Count POSTs create internal journal
+          entries. Catalog GETs do not. See
+          <a href="/record-replay#catalog-and-count-routes">Record &amp; Replay</a>.
+        </p>
+
+        <h2 id="authentication-errors">Authentication Errors</h2>
+        <p>
+          With inbound API-key authentication enabled, rejected keys on Gemini and Vertex Google
+          HTTP paths return 401 with this body:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Inbound rejection <span class="lang-tag">json</span></div>
+          <pre><code>{"error":{"code":401,"message":"Invalid API key","status":"UNAUTHENTICATED"}}</code></pre>
+        </div>
+        <p>
+          A live unauthenticated Gemini count probe returned 403 <code>PERMISSION_DENIED</code>
+          for an unregistered caller. aimock intentionally retains 401
+          <code>UNAUTHENTICATED</code> for configured inbound authentication. These policies differ.
+          WebSocket authentication retains its existing body.
+        </p>
 
         <h2>Unit Test: Streaming Text</h2>
 

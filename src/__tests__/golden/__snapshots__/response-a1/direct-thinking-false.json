@@ -1,0 +1,60 @@
+{
+  "got": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"id\":\"msg_<#0>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Sunny\"}],\"model\":\"claude-3-7-sonnet-20250219\",\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-3-7-sonnet-20250219",
+        "messages": [
+          {
+            "role": "user",
+            "content": "text"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "tu_1",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "Sunny",
+            "tool_call_id": "tu_1"
+          }
+        ],
+        "max_tokens": 1024,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 200,
+        "fixture": {
+          "match": {
+            "toolCallId": "tu_1"
+          },
+          "response": {
+            "content": "Sunny"
+          }
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

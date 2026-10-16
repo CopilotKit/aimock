@@ -1,0 +1,9 @@
+{
+  "status": 401,
+  "headers": {
+    "content-length": "94",
+    "content-type": "application/json",
+    "www-authenticate": "Bearer realm=\"aimock\""
+  },
+  "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+}
