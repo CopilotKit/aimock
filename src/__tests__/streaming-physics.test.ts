@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { PassThrough } from "node:stream";
 import type * as http from "node:http";
-import { writeSSEStream, calculateDelay } from "../sse-writer.js";
+import { writeSSEStream, calculateDelay, calculateTotalDelay } from "../sse-writer.js";
 import type { SSEChunk, StreamingProfile, RecordedTimings } from "../types.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -328,5 +328,74 @@ describe("fixture loader streamingProfile passthrough", () => {
     const fixtures = loadFixtureFile(filePath);
     expect(fixtures).toHaveLength(1);
     expect(fixtures[0].streamingProfile).toEqual({ ttft: 300 });
+  });
+});
+
+// ─── calculateTotalDelay unit tests ──────────────────────────────────────────
+// The non-streaming equivalent of calculateDelay: sums it over the same chunk
+// count a streamed response at the same chunkSize would use, so a fixture's
+// timing is identical whether served streamed or not.
+
+describe("calculateTotalDelay", () => {
+  it("returns fallback latency once, not per would-be chunk, when no profile is set", () => {
+    // 25 chars at chunkSize 10 -> 3 chunks, but a flat fallback applies per
+    // chunk the same way streaming's calculateDelay does, so the total is
+    // fallback * chunkCount here too.
+    expect(calculateTotalDelay(25, 10, undefined, 50)).toBe(150);
+  });
+
+  it("returns 0 when there is no profile and no fallback", () => {
+    expect(calculateTotalDelay(25, 10, undefined, undefined)).toBe(0);
+  });
+
+  it("charges ttft once plus tps for every remaining would-be chunk", () => {
+    const profile: StreamingProfile = { ttft: 200, tps: 50 };
+    // 25 chars at chunkSize 10 -> 3 chunks: ttft (200) + 2 * (1000/50 = 20)
+    expect(calculateTotalDelay(25, 10, profile)).toBe(240);
+  });
+
+  it("treats content shorter than chunkSize as a single chunk", () => {
+    const profile: StreamingProfile = { ttft: 150, tps: 50 };
+    expect(calculateTotalDelay(5, 10, profile)).toBe(150);
+  });
+
+  it("treats zero-length content as a single chunk (still pays ttft)", () => {
+    const profile: StreamingProfile = { ttft: 120, tps: 50 };
+    expect(calculateTotalDelay(0, 10, profile)).toBe(120);
+  });
+
+  it("matches summing calculateDelay over the same chunk range", () => {
+    const profile: StreamingProfile = { ttft: 300, tps: 40 };
+    const contentLength = 47;
+    const chunkSize = 10;
+    const chunkCount = Math.ceil(contentLength / chunkSize);
+    let expected = 0;
+    for (let i = 0; i < chunkCount; i++) {
+      expected += calculateDelay(i, profile);
+    }
+    expect(calculateTotalDelay(contentLength, chunkSize, profile)).toBe(expected);
+  });
+
+  it("uses recordedTimings (ttft + inter-chunk delays) across the chunk range", () => {
+    const recordedTimings: RecordedTimings = {
+      ttftMs: 80,
+      interChunkDelaysMs: [15, 25],
+      totalDurationMs: 120,
+    };
+    // 30 chars at chunkSize 10 -> 3 chunks: ttft (80) + recorded gaps (15, 25)
+    expect(calculateTotalDelay(30, 10, undefined, undefined, recordedTimings)).toBe(120);
+  });
+
+  it("divides by replaySpeed, same as calculateDelay", () => {
+    const profile: StreamingProfile = { ttft: 200, tps: 50 };
+    // 25 chars at chunkSize 10 -> 240ms at 1x (see earlier test), 120ms at 2x
+    expect(calculateTotalDelay(25, 10, profile, undefined, undefined, 2)).toBe(120);
+  });
+
+  it("stays non-negative when jitter or replaySpeed could otherwise push it below zero", () => {
+    const profile: StreamingProfile = { ttft: 10, tps: 500, jitter: 1 };
+    for (let i = 0; i < 50; i++) {
+      expect(calculateTotalDelay(100, 10, profile)).toBeGreaterThanOrEqual(0);
+    }
   });
 });

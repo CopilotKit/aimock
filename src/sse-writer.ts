@@ -89,6 +89,31 @@ export function calculateDelay(
   return speed > 0 ? delayMs / speed : delayMs;
 }
 
+/**
+ * The non-streaming equivalent of calculateDelay: the total wait before a
+ * single JSON response is written, matching what a streamed response with
+ * the same profile/chunking would have taken in aggregate. Sums
+ * calculateDelay over the same chunk count buildTextChunks/buildToolCallChunks
+ * would use for `contentLength` at `chunkSize`, so ttft/tps/jitter and
+ * recordedTimings behave identically whether a fixture is served streamed or
+ * not — only the delivery (one write vs many) differs.
+ */
+export function calculateTotalDelay(
+  contentLength: number,
+  chunkSize: number,
+  profile?: StreamingProfile,
+  fallbackLatency?: number,
+  recordedTimings?: RecordedTimings,
+  replaySpeed?: number,
+): number {
+  const chunkCount = Math.max(1, Math.ceil(contentLength / chunkSize));
+  let total = 0;
+  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+    total += calculateDelay(chunkIndex, profile, fallbackLatency, recordedTimings, replaySpeed);
+  }
+  return total;
+}
+
 export async function writeSSEStream(
   res: http.ServerResponse,
   chunks: SSEChunk[],

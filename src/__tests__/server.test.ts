@@ -538,6 +538,29 @@ describe("POST /v1/chat/completions (non-streaming)", () => {
     expect(tc[0].function.name).toBe("get_weather");
     expect(tc[0].function.arguments).toBe('{"city":"NYC"}');
   });
+
+  it("applies streamingProfile timing to a non-streaming response too", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming" },
+      response: { content: "Hi there!" },
+      streamingProfile: { ttft: 60, tps: 1000 },
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    // 60ms ttft dominates here (tps is fast); allow scheduling slack, but a
+    // regression back to "non-streaming ignores streamingProfile" would
+    // return in a few ms, well under this floor.
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
 });
 
 describe("routing", () => {

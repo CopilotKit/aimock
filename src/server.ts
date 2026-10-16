@@ -46,7 +46,7 @@ import {
   responsesToolsExtendedView,
   responsesToolsViewSource,
 } from "./fixture-loader.js";
-import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
+import { writeSSEStream, writeErrorResponse, delay, calculateTotalDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import {
   prepareOpenAIChatMisbehavior,
@@ -2531,6 +2531,22 @@ async function handleCompletions(
                 overrides,
                 body.messages,
               );
+      const nonStreamedContent =
+        appliedPlan.stop === "refusal"
+          ? (appliedPlan.refusal ?? "")
+          : appliedPlan.stop === "content_filter"
+            ? ""
+            : (appliedPlan.reasoning ?? "");
+      await delay(
+        calculateTotalDelay(
+          nonStreamedContent.length,
+          chunkSize,
+          fixture.streamingProfile,
+          latency,
+          fixture.recordedTimings,
+          fixture.replaySpeed ?? defaults.replaySpeed,
+        ),
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2702,6 +2718,16 @@ async function handleCompletions(
     });
     recordOutcome(journalEntry);
     if (body.stream !== true) {
+      await delay(
+        calculateTotalDelay(
+          (effReasoning?.length ?? 0) + response.content.length,
+          chunkSize,
+          fixture.streamingProfile,
+          latency,
+          fixture.recordedTimings,
+          fixture.replaySpeed ?? defaults.replaySpeed,
+        ),
+      );
       const completion = buildTextCompletion(
         response.content,
         responseModel,
@@ -2777,6 +2803,17 @@ async function handleCompletions(
     recordOutcome(journalEntry);
     const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
+      const toolCallText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      await delay(
+        calculateTotalDelay(
+          (effReasoning?.length ?? 0) + toolCallText.length,
+          chunkSize,
+          fixture.streamingProfile,
+          latency,
+          fixture.recordedTimings,
+          fixture.replaySpeed ?? defaults.replaySpeed,
+        ),
+      );
       const completion = buildToolCallCompletion(
         toolCalls,
         responseModel,
