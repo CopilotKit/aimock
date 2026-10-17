@@ -1516,6 +1516,7 @@ export function extractOverrides(
 ): ResponseOverrides {
   const r = response;
   return {
+    ...(r.citations !== undefined && { citations: r.citations }),
     ...(r.id !== undefined && { id: r.id }),
     ...(r.created !== undefined && { created: r.created }),
     ...(r.model !== undefined && { model: r.model }),

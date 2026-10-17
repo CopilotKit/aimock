@@ -270,7 +270,18 @@ export interface FixtureMatch {
  * API honors five common fields (no role, systemFingerprint) plus optional phase;
  * Claude (5: no created, systemFingerprint); Gemini (2: only finishReason, usage).
  */
+/** A source citation attached to a text response. Served on the OpenAI Responses API as `url_citation` annotations. */
+export interface FixtureCitation {
+  url: string;
+  title?: string;
+  /** Character offsets into the text; default to the whole text. */
+  startIndex?: number;
+  endIndex?: number;
+}
+
 export interface ResponseOverrides {
+  /** Source citations for the response text (OpenAI Responses API only). */
+  citations?: FixtureCitation[];
   id?: string;
   created?: number;
   model?: string;
