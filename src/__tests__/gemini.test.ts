@@ -1255,3 +1255,41 @@ describe("Gemini streaming interruptions", () => {
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 });
+
+describe("Gemini model-generated files", () => {
+  const png = "iVBORw0KGgo=";
+  const fileFixture: Fixture = {
+    match: { userMessage: "draw" },
+    response: { content: "Here is your image.", files: [{ mimeType: "image/png", data: png }] },
+  };
+
+  it("non-streaming emits inlineData parts before the text", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "draw" }] }],
+    });
+    const parts = JSON.parse(res.body).candidates[0].content.parts;
+    expect(parts).toEqual([
+      { inlineData: { mimeType: "image/png", data: png } },
+      { text: "Here is your image." },
+    ]);
+  });
+
+  it("streaming emits an inlineData chunk before the text chunks", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "draw" }] }],
+    });
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: { content: { parts: { text?: string; inlineData?: unknown }[] } }[];
+    }[];
+    expect(chunks[0].candidates[0].content.parts).toEqual([
+      { inlineData: { mimeType: "image/png", data: png } },
+    ]);
+    const text = chunks
+      .slice(1)
+      .map((c) => c.candidates[0].content.parts[0].text ?? "")
+      .join("");
+    expect(text).toBe("Here is your image.");
+  });
+});

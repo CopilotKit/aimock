@@ -352,6 +352,22 @@ function buildGeminiTextStreamChunks(
     }
   }
 
+  if (overrides?.files?.length) {
+    chunks.push({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: overrides.files.map((f) => ({
+              inlineData: { mimeType: f.mimeType, data: f.data },
+            })),
+          },
+          index: 0,
+        },
+      ],
+    });
+  }
+
   // Content chunks
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);
@@ -461,6 +477,9 @@ function buildGeminiTextResponse(
   const parts: GeminiPart[] = [];
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
+  }
+  for (const f of overrides?.files ?? []) {
+    parts.push({ inlineData: { mimeType: f.mimeType, data: f.data } });
   }
   parts.push({ text: content });
 
