@@ -279,7 +279,16 @@ export interface FixtureCitation {
   endIndex?: number;
 }
 
+/** A model-generated file (e.g. an inline image). Served on Gemini as `inlineData` parts. */
+export interface FixtureFile {
+  mimeType: string;
+  /** Base64-encoded file bytes. */
+  data: string;
+}
+
 export interface ResponseOverrides {
+  /** Model-generated files emitted before the response text (Gemini only). */
+  files?: FixtureFile[];
   /** Source citations for the response text (OpenAI Responses API only). */
   citations?: FixtureCitation[];
   id?: string;
