@@ -1,5 +1,5 @@
 {
-  "lastScan": "2026-10-12T17:03:12.455Z",
+  "lastScan": "2026-10-19T00:00:00.000Z",
   "adopters": [
     {
       "repo": "2710-bhushan/Generative-AI-Projects",
@@ -15,6 +15,14 @@
         "container"
       ],
       "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Aafff623/github-idea-project",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
       "missedRuns": 0
     },
     {
@@ -74,11 +82,28 @@
       "missedRuns": 0
     },
     {
+      "repo": "aiappsgbb/kratos-agent",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
       "repo": "AIstar007/Dynamic_UI_with_Voice_Integration",
       "channels": [
         "container"
       ],
       "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "AkshayReddyGujjula/Google-A2UI-Hackathon",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
       "missedRuns": 0
     },
     {
@@ -328,6 +353,22 @@
       "missedRuns": 0
     },
     {
+      "repo": "dinwun450/FIFA-World-Cup-2026-App-with-Copilotkit",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
+      "repo": "djshababkhan/awesome-llm-apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
       "repo": "drexc/Andy-Agent",
       "channels": [
         "symbol"
@@ -456,6 +497,14 @@
       "missedRuns": 0
     },
     {
+      "repo": "jaggadhaliwal/fenix-os-agenticsquad",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
       "repo": "jakubzika/i-love-moms",
       "channels": [
         "container"
@@ -533,6 +582,14 @@
       "missedRuns": 0
     },
     {
+      "repo": "kodjobaah/moda-interact-background",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
       "repo": "KrishnaAsati16/AI-Financial-Coach-Agent",
       "channels": [
         "container"
@@ -585,6 +642,14 @@
         "container"
       ],
       "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mhamza-usman/MindBridge",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
       "missedRuns": 0
     },
     {
@@ -698,6 +763,14 @@
       "missedRuns": 0
     },
     {
+      "repo": "Reeti05Agarwal/Agentic_AI",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-19",
+      "missedRuns": 0
+    },
+    {
       "repo": "Remi-537/awesome-llm-apps",
       "channels": [
         "container"
@@ -715,14 +788,6 @@
       "missedRuns": 0
     },
     {
-      "repo": "rivet-dev/agentos",
-      "channels": [
-        "symbol"
-      ],
-      "firstSeen": "2026-09-21",
-      "missedRuns": 0
-    },
-    {
       "repo": "rophy/opencode-rc",
       "channels": [
         "container"
@@ -736,6 +801,14 @@
         "container"
       ],
       "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "saadshahd/roundup",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-19",
       "missedRuns": 0
     },
     {
