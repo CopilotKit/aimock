@@ -2304,20 +2304,22 @@ describe("POST /api/embeddings — Ollama Embeddings API", () => {
   });
 });
 
-// ─── POST /api/embed (current Ollama endpoint alias) ───────────────────────
+// ─── POST /api/embed (current Ollama endpoint) ───────────────────────
 
-describe("POST /api/embed — Ollama Embeddings API (current endpoint alias)", () => {
-  it("returns a valid embedding response identical to /api/embeddings", async () => {
+describe("POST /api/embed — Ollama Embeddings API", () => {
+  it("returns the current endpoint response with one vector per input", async () => {
     instance = await createServer([]);
     const res = await post(`${instance.url}/api/embed`, {
       model: "nomic-embed-text",
-      prompt: "hello world",
+      input: "hello world",
     });
 
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.model).toBe("nomic-embed-text");
-    expect(Array.isArray(body.embedding)).toBe(true);
-    expect(body.embedding.length).toBe(1536);
+    expect(body).not.toHaveProperty("embedding");
+    expect(Array.isArray(body.embeddings)).toBe(true);
+    expect(body.embeddings).toHaveLength(1);
+    expect(body.embeddings[0]).toHaveLength(1536);
   });
 });

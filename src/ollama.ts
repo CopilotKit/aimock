@@ -10,10 +10,11 @@
  * - Streaming uses NDJSON, not SSE
  * - Tool call arguments are objects, not JSON strings
  * - Tool calls have no id field
- * - Embeddings return a single `embedding` array, not an array of objects
+ * - Legacy embeddings return `embedding`; /api/embed returns `embeddings`
  */
 
 import type * as http from "node:http";
+import { setEmbeddingRequest } from "./embedding-request.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -30,22 +31,20 @@ import {
   isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
+  isJSONResponse,
   validateChatMessages,
   validateToolsField,
   normalizeEmbeddingInput,
+  validateEmbeddingDimensions,
+  MAX_EMBEDDING_DIMENSIONS,
   resolveFixtureBlocks,
   resolveFixtureBlockOutcome,
-  estimatePromptTokens,
-  estimateTokens,
-  serializeErrorResponse,
   generateDeterministicEmbedding,
   flattenHeaders,
   isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -61,6 +60,9 @@ import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
+import { render as renderUsage } from "./response/usage/codecs/ollama.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 
 // ─── Ollama request types ────────────────────────────────────────────────────
 
@@ -103,9 +105,9 @@ const DURATION_FIELDS = {
   done_reason: "stop" as const,
   total_duration: 0,
   load_duration: 0,
-  prompt_eval_count: 0,
+  ...renderUsage({ kind: "ordinary-zero" }, "prompt"),
   prompt_eval_duration: 0,
-  eval_count: 0,
+  ...renderUsage({ kind: "ordinary-zero" }, "completion"),
   eval_duration: 0,
 };
 
@@ -626,8 +628,7 @@ function prepareOllamaMisbehavior(
   const terminal = chunks.length - 1;
   chunks[terminal] = {
     ...chunks[terminal],
-    prompt_eval_count: estimatePromptTokens(request.messages),
-    eval_count: estimateTokens(completion),
+    ...renderUsage({ kind: "applied-chat-estimate", messages: request.messages, completion }),
   };
   return { chunks, status: 200, summary: { ...plan.summary, servedToolCalls } };
 }
@@ -727,12 +728,10 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -751,12 +750,10 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -784,12 +781,10 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${chatShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: `Invalid request: ${chatShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -840,7 +835,7 @@ export async function handleOllama(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -859,12 +854,10 @@ export async function handleOllama(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("ollama", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -905,12 +898,10 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -937,7 +928,14 @@ export async function handleOllama(
     recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
     const message = `${misbehavior.code}: ${misbehavior.message}`;
     if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
-    writeErrorResponse(res, misbehavior.status, JSON.stringify({ error: message }));
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("ollama", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
     return;
   }
   const latency = fixture.latency ?? defaults.latency;
@@ -952,7 +950,7 @@ export async function handleOllama(
       completionReq,
       streaming,
       chunkSize,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     const journalEntry = journal.add({
@@ -1002,7 +1000,7 @@ export async function handleOllama(
       defaults,
       testId,
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1028,7 +1026,10 @@ export async function handleOllama(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1092,7 +1093,10 @@ export async function handleOllama(
       testId,
     });
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1149,7 +1153,10 @@ export async function handleOllama(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1202,12 +1209,10 @@ export async function handleOllama(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("ollama", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1241,12 +1246,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1265,12 +1268,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1286,12 +1287,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: prompt field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Invalid request: prompt field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1342,7 +1341,7 @@ export async function handleOllamaGenerate(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1363,12 +1362,10 @@ export async function handleOllamaGenerate(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("ollama", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1409,12 +1406,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1442,7 +1437,14 @@ export async function handleOllamaGenerate(
     recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
     const message = `${misbehavior.code}: ${misbehavior.message}`;
     if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
-    writeErrorResponse(res, misbehavior.status, JSON.stringify({ error: message }));
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("ollama", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
     return;
   }
   const latency = fixture.latency ?? defaults.latency;
@@ -1467,7 +1469,7 @@ export async function handleOllamaGenerate(
       defaults,
       testId,
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1489,7 +1491,10 @@ export async function handleOllamaGenerate(
       testId,
     });
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1548,12 +1553,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Tool call fixtures are not supported on /api/generate — use /api/chat instead",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Tool call fixtures are not supported on /api/generate — use /api/chat instead",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1570,12 +1573,10 @@ export async function handleOllamaGenerate(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("ollama", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1585,6 +1586,7 @@ interface OllamaEmbeddingsRequest {
   model: string;
   prompt?: string;
   input?: string | string[];
+  dimensions?: number;
 }
 
 // ─── Request handler: /api/embeddings ───────────────────────────────────────
@@ -1602,6 +1604,9 @@ export async function handleOllamaEmbeddings(
   setCorsHeaders(res);
 
   const urlPath = req.url ?? "/api/embeddings";
+  const currentEndpoint = urlPath.split("?")[0] === "/api/embed";
+
+  const errorWire = currentEndpoint ? "ollama-embed" : "ollama";
 
   let embReq: OllamaEmbeddingsRequest;
   try {
@@ -1618,12 +1623,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1642,12 +1645,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1655,8 +1656,7 @@ export async function handleOllamaEmbeddings(
   // Reject wrong-typed prompt/input before `.slice()` / `.join()` below read
   // them — a number passes the presence checks and then throws a TypeError.
   // `null` means "absent" on both fields, matching the `??` fall-through below.
-  // `input` is checked with the repo's shared `normalizeEmbeddingInput`, which
-  // also accepts the pre-tokenized `number[]` / `number[][]` shapes.
+  // Keep the accepted token-array extension on both endpoints.
   const promptShapeError =
     embReq.prompt !== undefined && embReq.prompt !== null && typeof embReq.prompt !== "string"
       ? "prompt field must be a string"
@@ -1676,23 +1676,26 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${promptShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: `Invalid request: ${promptShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  // Ollama accepts either "prompt" or "input" for the text to embed
-  const inputText =
-    embReq.prompt ??
-    (typeof embReq.input === "string" ? embReq.input : undefined) ??
-    (Array.isArray(embReq.input) ? embReq.input.join(" ") : undefined);
+  // Prefer input on the current endpoint, with the existing prompt fallback.
+  // The legacy endpoint keeps prompt precedence.
+  const inputs = normalizeEmbeddingInput(
+    currentEndpoint ? (embReq.input ?? embReq.prompt) : (embReq.prompt ?? embReq.input),
+  );
+  const inputText = currentEndpoint
+    ? inputs?.join(" ")
+    : (embReq.prompt ??
+      (typeof embReq.input === "string" ? embReq.input : undefined) ??
+      (Array.isArray(embReq.input) ? embReq.input.join(" ") : undefined));
 
-  if (!embReq.model) {
+  if (!embReq.model || (currentEndpoint && typeof embReq.model !== "string")) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1703,12 +1706,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: model field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: "Invalid request: model field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1724,12 +1725,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: prompt or input field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: "Invalid request: prompt or input field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1742,6 +1741,13 @@ export async function handleOllamaEmbeddings(
     _endpointType: "embedding",
     _context: getContext(req),
   };
+  setEmbeddingRequest(syntheticReq, {
+    operation: currentEndpoint ? "/api/embed" : "/api/embeddings",
+    input: currentEndpoint
+      ? (embReq.input ?? embReq.prompt ?? "")
+      : (embReq.prompt ?? embReq.input ?? ""),
+    ...(embReq.dimensions !== undefined && { dimensions: embReq.dimensions }),
+  });
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
@@ -1796,9 +1802,29 @@ export async function handleOllamaEmbeddings(
         body: syntheticReq,
         response: { status, fixture },
       });
-      writeErrorResponse(res, status, serializeErrorResponse(response), {
-        retryAfter: response.retryAfter,
+      writeErrorResponse(
+        res,
+        status,
+        renderError(currentEndpoint ? "ollama-embed" : "openai", "fixture", response.error).body,
+        {
+          retryAfter: response.retryAfter,
+        },
+      );
+      return;
+    }
+
+    // Recorded current-endpoint batches retain every vector and provider metadata.
+    if (currentEndpoint && isJSONResponse(response)) {
+      const status = response.status ?? 200;
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status, fixture },
       });
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(response.json));
       return;
     }
 
@@ -1811,10 +1837,9 @@ export async function handleOllamaEmbeddings(
         body: syntheticReq,
         response: { status: 200, fixture },
       });
-      const body = {
-        model: embReq.model,
-        embedding: [...response.embedding],
-      };
+      const body = currentEndpoint
+        ? { model: embReq.model, embeddings: (inputs ?? []).map(() => [...response.embedding]) }
+        : { model: embReq.model, embedding: [...response.embedding] };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
       return;
@@ -1831,19 +1856,17 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError(errorWire, "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
   if (effectiveStrict) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
@@ -1861,12 +1884,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1895,11 +1916,30 @@ export async function handleOllamaEmbeddings(
     }
   }
 
+  const dimensions = currentEndpoint ? validateEmbeddingDimensions(embReq.dimensions) : 1536;
+  if (dimensions === null) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError(errorWire, "validation", {
+        message: `Invalid request: dimensions must be an integer between 1 and ${MAX_EMBEDDING_DIMENSIONS}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
   // No fixture match — generate deterministic embedding from input text
   logger.warn(
     `No embedding fixture matched for "${inputText.slice(0, 80)}" — returning deterministic fallback`,
   );
-  const embedding = generateDeterministicEmbedding(inputText);
 
   journal.add({
     method: req.method ?? "POST",
@@ -1909,10 +1949,14 @@ export async function handleOllamaEmbeddings(
     response: { status: 200, fixture: null },
   });
 
-  const body = {
-    model: embReq.model,
-    embedding,
-  };
+  const body = currentEndpoint
+    ? {
+        model: embReq.model,
+        embeddings: (inputs ?? []).map((input) =>
+          generateDeterministicEmbedding(input, dimensions),
+        ),
+      }
+    : { model: embReq.model, embedding: generateDeterministicEmbedding(inputText) };
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }

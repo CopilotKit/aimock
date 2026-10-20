@@ -28,10 +28,10 @@ import {
   flattenHeaders,
   readBody,
   resolveMcpIdentity,
-  resolveStrictMode,
   slugifyContext,
   slugifyTestId,
 } from "./helpers.js";
+import { resolveRequestDecisions } from "./response/policy.js";
 import {
   buildForwardHeaders,
   persistServiceFakes,
@@ -413,7 +413,7 @@ export class McpRecorder {
       );
       return true;
     }
-    const strict = resolveStrictMode(this.config.strict, x.req.headers);
+    const strict = resolveRequestDecisions(this.config.strict, x.req.headers).mcpRecordingStrict;
     const ctx = { identity, mount: x.mount, notifications: [], calls: [] };
     let failure: ReturnType<typeof fakeFailure> | null = null;
     if (claim.kind === "none") {

@@ -195,6 +195,17 @@ export interface FixtureMatch {
    */
   systemMessage?: string | string[] | RegExp;
   inputText?: string | RegExp;
+  /**
+   * Exact embedding operation, input shape and requested dimensions. Recordings
+   * set this to keep batches and widths distinct across Ollama and OpenAI wire
+   * formats. Omit this field for broad fixtures. Values preserve the wire JSON,
+   * including invalid arguments when recording an upstream error response.
+   */
+  embeddingRequest?: {
+    operation: "/api/embed" | "/api/embeddings" | "/v1/embeddings";
+    input: unknown;
+    dimensions?: unknown;
+  };
   toolCallId?: string;
   /**
    * Substring matched against the text content of the LAST message when that
@@ -349,6 +360,13 @@ export interface ResponseOverrides {
      * through verbatim onto the emitted `usage` object. The load-time validator
      * still requires extra scalars to be numbers (see fixture-loader.ts), so a
      * typo'd field is caught rather than silently emitted as a string.
+     *
+     * Anthropic Messages and Bedrock invoke accept cache_read_input_tokens and
+     * cache_creation_input_tokens here. cache_creation accepts a number
+     * (unrendered) or an object with ephemeral_5m_input_tokens and
+     * ephemeral_1h_input_tokens. Missing object members render as zero in final
+     * and message_start usage; message_delta emits only the flat cache fields.
+     * Record mode preserves Anthropic token counts and cache usage for replay.
      */
     [key: string]: unknown;
   };
@@ -1055,6 +1073,8 @@ export interface FixtureFileEntry {
      */
     systemMessage?: string | string[];
     inputText?: string;
+    /** Mirrors the exact embedding request match in FixtureMatch. */
+    embeddingRequest?: FixtureMatch["embeddingRequest"];
     toolCallId?: string;
     /**
      * Substring matched against the last tool-result message's text content.
@@ -1473,6 +1493,11 @@ export interface FalRecordConfig {
 /** See {@link MockServerOptions.responsesTools}. */
 export type ResponsesToolsMode = "legacy" | "extended";
 
+export interface AimockPolicy {
+  /** Reject requests missing a provider's required headers. Default "off"; independent of strict. */
+  requiredHeaders?: "off" | "enforce";
+}
+
 export interface MockServerOptions {
   live?: LiveOptions;
   /** Optional inbound test-client access keys. Omit to preserve permissive behavior. */
@@ -1503,6 +1528,8 @@ export interface MockServerOptions {
   metrics?: boolean;
   /** Strict mode: return 503 instead of 404 when no fixture matches. */
   strict?: boolean;
+  /** Optional request policy. Invalid entries warn and are ignored. */
+  policy?: AimockPolicy;
   /**
    * Reject fixture tool calls whose `arguments` are not valid JSON instead of
    * serving them as `{}`. Off by default (the 1.44.0 behavior). When on, wires
@@ -1668,6 +1695,8 @@ export interface HandlerDefaults {
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;
+  /** See {@link MockServerOptions.policy}. Request headers override each valid key. */
+  policy?: AimockPolicy;
   /** See {@link MockServerOptions.strictToolArguments}. */
   strictToolArguments?: boolean;
   /** See {@link MockServerOptions.responsesTools}. Absent means `"legacy"`. */

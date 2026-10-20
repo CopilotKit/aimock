@@ -66,6 +66,7 @@ import type { ChaosDefaults, ChatCompletionRequest, JournalBody } from "./types.
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
+import { buildOpenAIError } from "./response/errors.js";
 
 export interface FileObject {
   id: string;
@@ -512,7 +513,7 @@ function writeJson(
 }
 
 function invalidRequest(message: string): { error: { message: string; type: string } } {
-  return { error: { message, type: "invalid_request_error" } };
+  return buildOpenAIError("service-validation", { message });
 }
 
 /**

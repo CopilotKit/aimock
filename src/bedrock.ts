@@ -18,6 +18,8 @@
  */
 
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -44,8 +46,6 @@ import {
   resolveResponse,
   resolveFixtureBlockOutcome,
   resolveReasoningForModel,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
   validateChatMessages,
@@ -62,6 +62,11 @@ import { applyChaosAsync } from "./chaos.js";
 import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 import { prepareClaudeMisbehavior } from "./messages.js";
 import { proxyAndRecord } from "./recorder.js";
+import { mapAnthropicFinish } from "./response/finish.js";
+import {
+  resolve as resolveAnthropicUsage,
+  render as renderAnthropicUsage,
+} from "./response/usage/codecs/anthropic.js";
 
 // ─── Bedrock Claude request types ────────────────────────────────────────────
 
@@ -105,30 +110,7 @@ function bedrockStopReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "end_turn";
-  if (overrideFinishReason === "tool_calls") return "tool_use";
-  if (overrideFinishReason === "length") return "max_tokens";
-  return overrideFinishReason;
-}
-
-/**
- * Build a Bedrock-style usage object from optional overrides.
- *
- * When no overrides are provided (the common case for mock fixtures),
- * returns all-zero token counts. This is intentional — aimock does not
- * attempt to estimate token usage from fixture content. Callers that
- * need realistic usage numbers should set `usage` in their fixture's
- * response overrides.
- */
-function bedrockUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
-  return {
-    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
-  };
+  return mapAnthropicFinish(overrideFinishReason);
 }
 
 // ─── Input conversion: Bedrock → ChatCompletionRequest ──────────────────────
@@ -306,7 +288,7 @@ function buildBedrockTextResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -339,7 +321,7 @@ function buildBedrockToolCallResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -393,7 +375,7 @@ function buildBedrockBlocksResponse(
       outcome.hasToolCalls ? "tool_use" : "end_turn",
     ),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -429,12 +411,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -453,12 +433,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -485,12 +463,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${bedrockShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -544,7 +520,7 @@ export async function handleBedrock(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -563,12 +539,10 @@ export async function handleBedrock(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -609,12 +583,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -648,12 +620,14 @@ export async function handleBedrock(
       response: { status: misbehavior.status, fixture },
     });
     const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
-    res.setHeader("x-amzn-errortype", type);
-    writeErrorResponse(
-      res,
-      misbehavior.status,
-      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
-    );
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
 
@@ -663,7 +637,7 @@ export async function handleBedrock(
       stream: false,
       chunkSize: Math.max(1, fixture.chunkSize ?? defaults.chunkSize),
       logger,
-      strict: resolveStrictMode(defaults.strict, req.headers),
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
     });
     if (prepared.stream) throw new TypeError("InvokeModel requires non-stream Claude output");
     const entry = journal.add({
@@ -691,14 +665,7 @@ export async function handleBedrock(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -713,7 +680,7 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     addResponseEntry({
@@ -776,7 +743,7 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     addResponseEntry({
@@ -806,7 +773,7 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     addResponseEntry({
@@ -840,12 +807,10 @@ export async function handleBedrock(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -884,13 +849,16 @@ function buildBedrockInvokeMessageStart(
         model: overrides?.model ?? model,
         stop_reason: null,
         stop_sequence: null,
-        usage: bedrockUsage(overrides),
+        usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-start"),
       },
     },
   };
 }
 
-function buildBedrockInvokeMessageDelta(stopReason: string): {
+function buildBedrockInvokeMessageDelta(
+  stopReason: string,
+  overrides?: ResponseOverrides,
+): {
   eventType: string;
   payload: object;
 } {
@@ -899,7 +867,7 @@ function buildBedrockInvokeMessageDelta(stopReason: string): {
     payload: {
       type: "message_delta",
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: 0 },
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-delta"),
     },
   };
 }
@@ -995,7 +963,10 @@ export function buildBedrockStreamTextEvents(
   });
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "end_turn")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "end_turn"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -1130,6 +1101,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
     events.push(
       buildBedrockInvokeMessageDelta(
         bedrockStopReason(overrides?.finishReason, outcome.hasToolCalls ? "tool_use" : "end_turn"),
+        overrides,
       ),
     );
     events.push(buildBedrockInvokeMessageStop());
@@ -1204,7 +1176,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   }
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "tool_use"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -1302,7 +1277,10 @@ export function buildBedrockStreamToolCallEvents(
   }
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "tool_use"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -1341,12 +1319,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1365,12 +1341,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1397,12 +1371,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${bedrockShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1456,7 +1428,7 @@ export async function handleBedrockStream(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1475,12 +1447,10 @@ export async function handleBedrockStream(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1521,12 +1491,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1560,12 +1528,14 @@ export async function handleBedrockStream(
       response: { status: misbehavior.status, fixture },
     });
     const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
-    res.setHeader("x-amzn-errortype", type);
-    writeErrorResponse(
-      res,
-      misbehavior.status,
-      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
-    );
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
   const latency = fixture.latency ?? defaults.latency;
@@ -1577,7 +1547,7 @@ export async function handleBedrockStream(
       stream: true,
       chunkSize,
       logger,
-      strict: resolveStrictMode(defaults.strict, req.headers),
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
     });
     if (!prepared.stream) throw new TypeError("InvokeModel stream requires Claude events");
     const entry = journal.add({
@@ -1625,14 +1595,7 @@ export async function handleBedrockStream(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1647,7 +1610,7 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     const journalEntry = addResponseEntry({
@@ -1695,7 +1658,7 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     const journalEntry = addResponseEntry({
@@ -1739,7 +1702,7 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
     const journalEntry = addResponseEntry({
@@ -1787,11 +1750,9 @@ export async function handleBedrockStream(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }

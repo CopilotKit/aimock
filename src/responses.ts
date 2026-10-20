@@ -40,9 +40,7 @@ import {
   isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -64,6 +62,10 @@ import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import { render as renderResponsesUsage } from "./response/usage/codecs/responses.js";
+import { mapResponsesFinish } from "./response/finish.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
@@ -533,26 +535,7 @@ export function validateResponsesTools(tools: unknown): string | undefined {
 
 function responsesStatus(finishReason: string | undefined, defaultStatus: string): string {
   if (!finishReason) return defaultStatus;
-  if (finishReason === "stop") return "completed";
-  if (finishReason === "tool_calls") return "completed";
-  if (finishReason === "length") return "incomplete";
-  if (finishReason === "content_filter") return "failed";
-  return finishReason;
-}
-
-function responsesUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  const input = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
-  const output = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
-  return {
-    input_tokens: input,
-    output_tokens: output,
-    total_tokens: overrides.usage.total_tokens ?? input + output,
-  };
+  return mapResponsesFinish(finishReason);
 }
 
 function responseId(): string {
@@ -608,7 +591,7 @@ export function buildTextStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, msgItem],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
@@ -800,7 +783,7 @@ export function toolCallStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, ...fcOutputItems],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
@@ -1413,7 +1396,7 @@ function buildResponseEnvelope(
     model: overrides?.model ?? model,
     status: responsesStatus(overrides?.finishReason, "completed"),
     output,
-    usage: responsesUsage(overrides),
+    usage: renderResponsesUsage(overrides),
   };
 }
 
@@ -1604,7 +1587,7 @@ export function contentWithToolCallsStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, ...orderedOutputItems],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
@@ -1791,13 +1774,11 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
@@ -1816,12 +1797,10 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1863,7 +1842,10 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({ error: { message: validationError, type: "invalid_request_error" } }),
+      renderError("openai", "validation", {
+        message: validationError,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1935,8 +1917,8 @@ export async function handleResponses(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const decisions = resolveRequestDecisions(defaults.strict, req.headers);
+    if (decisions.fixtureMiss) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
@@ -1960,13 +1942,11 @@ export async function handleResponses(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -2007,13 +1987,11 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -2048,13 +2026,11 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       misbehavior.status,
-      JSON.stringify({
-        error: {
-          message: misbehavior.message,
-          type: "invalid_request_error",
-          code: misbehavior.code,
-        },
-      }),
+      renderError("openai", "misbehavior", {
+        message: misbehavior.message,
+        type: "invalid_request_error",
+        code: misbehavior.code,
+      }).body,
     );
     return;
   }
@@ -2139,7 +2115,10 @@ export async function handleResponses(
   if (isCombinedFixtureResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -2214,7 +2193,10 @@ export async function handleResponses(
   if (isTextResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -2280,7 +2262,10 @@ export async function handleResponses(
   if (isToolCallResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -2355,9 +2340,10 @@ export async function handleResponses(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: { message: "Fixture response did not match any known type", type: "server_error" },
-    }),
+    renderError("openai", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -2496,11 +2482,7 @@ export function buildResponsesMisbehavior(
         }
       : {}),
     output,
-    usage: {
-      input_tokens: usage.prompt_tokens,
-      output_tokens: usage.completion_tokens,
-      total_tokens: usage.total_tokens,
-    },
+    usage: renderResponsesUsage({ usage }),
   };
   events.push({ type: incomplete ? "response.incomplete" : "response.completed", response: body });
   return { response: body, events };

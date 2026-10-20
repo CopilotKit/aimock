@@ -76,12 +76,46 @@
               <td>Single-prompt text generation (no tool calls)</td>
             </tr>
             <tr>
+              <td>POST</td>
+              <td>/api/embed</td>
+              <td>Current embeddings API: input text or batch, embeddings matrix</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td>/api/embeddings</td>
+              <td>Legacy embeddings API: prompt text, single embedding vector</td>
+            </tr>
+            <tr>
               <td>GET</td>
               <td>/api/tags</td>
               <td>List available models (derived from fixtures)</td>
             </tr>
           </tbody>
         </table>
+
+        <h2>Embeddings</h2>
+        <p>
+          Use the Ollama SDK's <code>embed({ model, input })</code> with a string or array of
+          strings. <code>/api/embed</code> returns one vector per input in <code>embeddings</code>,
+          in input order. Unmatched inputs get separate, deterministic vectors;
+          <code>dimensions</code> sets their width (1–100,000, default 1,536). An embedding fixture
+          repeats its supplied vector for each input; match <code>inputText</code> against the
+          inputs joined by spaces. Recorded batches keep every vector and the upstream JSON metadata
+          for replay.
+        </p>
+        <p>
+          New <code>/api/embed</code> recordings also store <code>match.embeddingRequest</code> with
+          the operation, exact input shape and requested dimensions, plus <code>match.model</code>.
+          A batch such as <code>["first", "second"]</code> therefore does not match the string
+          <code>"first second"</code>, a different width, or another embedding operation. Re-record
+          older captures to add these keys. New legacy Ollama and OpenAI embedding recordings use
+          the same operation-specific match field. Handwritten embedding fixtures without
+          <code>embeddingRequest</code> keep their broad matching behavior.
+        </p>
+        <p>
+          The legacy SDK method <code>embeddings({ model, prompt })</code> still uses
+          <code>/api/embeddings</code> and returns a single <code>embedding</code> array.
+        </p>
 
         <h2>Key Differences from OpenAI</h2>
         <ul>

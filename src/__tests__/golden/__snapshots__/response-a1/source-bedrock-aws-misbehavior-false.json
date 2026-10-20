@@ -1,0 +1,100 @@
+{
+  "got": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-type": "application/vnd.amazon.eventstream",
+      "x-request-id": "req-<#0>"
+    },
+    "frames": [
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_<#1>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-4\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_stop\"}"
+      }
+    ]
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/model/gpt-4/invoke-with-response-stream",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "combined"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 200,
+        "fixture": {
+          "match": {
+            "userMessage": "combined"
+          },
+          "response": {
+            "content": "Answer",
+            "toolCalls": [
+              {
+                "name": "lookup",
+                "arguments": "{}"
+              }
+            ],
+            "reasoning": "Reason",
+            "reasoningSignature": "signature"
+          }
+        },
+        "misbehavior": {
+          "applied": true,
+          "source": "header",
+          "wire": "bedrock-invoke",
+          "evaluations": [
+            {
+              "entryIndex": 0,
+              "fault": "empty-response",
+              "outcome": "applied",
+              "ordinal": 0
+            }
+          ],
+          "fault": "empty-response",
+          "ordinal": 0,
+          "servedToolCalls": []
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture",
+        "misbehavior"
+      ]
+    }
+  ]
+}

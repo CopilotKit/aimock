@@ -11,6 +11,8 @@
  */
 
 import type * as http from "node:http";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -26,8 +28,6 @@ import {
   isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -96,13 +96,11 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          code: 400,
-          status: "INVALID_ARGUMENT",
-        },
-      }),
+      renderError("gemini", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
@@ -121,13 +119,11 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          code: 400,
-          status: "INVALID_ARGUMENT",
-        },
-      }),
+      renderError("gemini", "validation", {
+        message: "Request body must be a JSON object",
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
@@ -152,9 +148,11 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: { message: partsError, code: 400, status: "INVALID_ARGUMENT" },
-      }),
+      renderError("gemini", "validation", {
+        message: partsError,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
@@ -224,14 +222,12 @@ export async function handleGeminiEmbedContent(
         body: syntheticReq,
         response: { status, fixture },
       });
-      const geminiError = {
-        error: {
-          code: status,
-          message: response.error.message,
-          status: response.error.type ?? "ERROR",
-        },
-      };
-      writeErrorResponse(res, status, JSON.stringify(geminiError), {
+      const geminiError = renderError("gemini", "fixture", {
+        bodyCode: status,
+        message: response.error.message,
+        status: response.error.type ?? "ERROR",
+      }).body;
+      writeErrorResponse(res, status, geminiError, {
         retryAfter: response.retryAfter,
       });
       return;
@@ -267,20 +263,18 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          code: 500,
-          status: "INTERNAL",
-        },
-      }),
+      renderError("gemini", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        bodyCode: 500,
+        status: "INTERNAL",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
   if (effectiveStrict) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(strictNoMatchLogLine(req.method ?? "POST", path, skippedBySequenceOrTurn));
@@ -298,13 +292,11 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          code: 503,
-          status: "UNAVAILABLE",
-        },
-      }),
+      renderError("gemini", "strict-miss", {
+        message: strictMessage,
+        bodyCode: 503,
+        status: "UNAVAILABLE",
+      }).body,
     );
     return;
   }
@@ -355,15 +347,13 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: exceedsFallbackBudget
-            ? `outputDimensionality exceeds the fallback serialization budget of ${MAX_EMBEDDING_DIMENSIONS}`
-            : "outputDimensionality cannot produce a numeric embedding",
-          code: 400,
-          status: "INVALID_ARGUMENT",
-        },
-      }),
+      renderError("gemini", "validation", {
+        message: exceedsFallbackBudget
+          ? `outputDimensionality exceeds the fallback serialization budget of ${MAX_EMBEDDING_DIMENSIONS}`
+          : "outputDimensionality cannot produce a numeric embedding",
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }

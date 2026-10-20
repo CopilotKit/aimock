@@ -8,6 +8,7 @@
  */
 
 import { crc32 } from "node:zlib";
+import { captureUsage } from "./response/usage/recording.js";
 import type {
   CustomToolCall,
   FixtureBlock,
@@ -129,15 +130,12 @@ export interface CollapseResult {
   redactedThinking?: string[];
   webSearches?: string[];
   /**
-   * The provider-reported `usage` object from the stream's final usage frame,
-   * captured VERBATIM (#368). OpenAI-compatible streams (including OpenRouter)
-   * close with a `chat.completion.chunk` whose `choices` is empty and whose
-   * `usage` carries the real token counts — plus, on OpenRouter,
-   * `cost` / `cost_details` / `native_tokens_*`. Collapsing dropped that frame,
-   * so a recorded fixture could only ever replay estimated (`ceil(len/4)`) token
-   * counts and never a provider-reported cost. Last-usage-wins: a stream that
-   * emits several usage frames keeps the final one. Absent when the upstream
-   * stream carried no usage (e.g. `stream_options.include_usage` unset).
+   * Provider-reported usage captured with each wire's merge rule. OpenAI and
+   * OpenRouter preserve the last nonempty usage object, including cost fields.
+   * Anthropic Messages and Bedrock Claude invoke merge message_start usage
+   * with numeric message_delta updates; null keeps the earlier count. Cache
+   * TTL objects come from message_start. Other wire families omit usage.
+   * Absent when no usage was captured from the upstream stream.
    *
    * Kept as a loose record because the field set is provider-specific and
    * forward-extending; the recorder sanitizes it into the fixture
@@ -617,14 +615,15 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       // Only capture a real usage OBJECT. `typeof === "object"` alone admits an
       // array (a type lie once cast to Record) and an empty `{}` (meaningless);
       // guard against both, exactly like any chat usage capture would.
-      if (
-        parsed.usage &&
-        typeof parsed.usage === "object" &&
-        !Array.isArray(parsed.usage) &&
-        Object.keys(parsed.usage).length > 0
-      ) {
-        transcriptUsage = parsed.usage as Record<string, unknown>;
-      }
+      transcriptUsage = captureUsage({
+        provider: "openai",
+        contentType: "text/event-stream",
+        operation: "transcription",
+        family: "transcription",
+        stage: "stream",
+        previous: transcriptUsage,
+        observation: parsed,
+      });
       continue;
     }
     if (
@@ -842,14 +841,15 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     // entirely. Some providers also attach `usage` to the finish chunk (non-empty
     // choices), so this runs for every chat chunk, last-NON-EMPTY-usage-wins:
     // a trailing bare `usage: {}` frame must not clobber a good capture (#369).
-    if (
-      parsed.usage &&
-      typeof parsed.usage === "object" &&
-      !Array.isArray(parsed.usage) &&
-      Object.keys(parsed.usage).length > 0
-    ) {
-      usage = parsed.usage as Record<string, unknown>;
-    }
+    usage = captureUsage({
+      provider: "openai",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "openai",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
     if (!choices || choices.length === 0) continue;
@@ -1054,6 +1054,8 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
 
 /**
  * Collapse Anthropic Claude Messages SSE stream into a single response.
+ * Captures start usage and numeric delta updates; null keeps the start value.
+ * Cache TTL objects are captured from message_start, alongside flat counts.
  *
  * Format:
  *   event: message_start\ndata: {...}\n\n
@@ -1063,6 +1065,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const blocks = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   // Real cryptographic signature captured from a `signature_delta`; stays
@@ -1113,6 +1116,16 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "anthropic",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "anthropic",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
@@ -1220,6 +1233,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
@@ -1233,6 +1247,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(reasoningSignature ? { reasoningSignature } : {}),
@@ -1257,6 +1272,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -1284,6 +1300,16 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "gemini",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "gemini",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const candidates = parsed.candidates as Array<Record<string, unknown>> | undefined;
     if (!candidates || candidates.length === 0) continue;
@@ -1355,6 +1381,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
     // a field this result shape can't carry. Block ordering is built only on the
     // content+toolCalls path below, which can actually carry it.
     return {
+      ...(usage ? { usage } : {}),
       audioB64,
       audioMimeType,
       ...(content ? { content } : {}),
@@ -1369,6 +1396,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   if (toolCalls.length > 0) {
     const blocks = buildOrderedBlocks(orderAtoms);
     return {
+      ...(usage ? { usage } : {}),
       ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: normalizedToolCalls,
@@ -1380,6 +1408,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1410,6 +1439,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = body.split("\n").filter((l) => l.trim().length > 0);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -1432,6 +1462,16 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "ollama",
+      contentType: "application/x-ndjson",
+      operation: "chat",
+      family: "ollama",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     // /api/chat format
     const message = parsed.message as Record<string, unknown> | undefined;
@@ -1504,6 +1544,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
       arguments: normalizeToolArguments(tc.arguments),
     }));
     return {
+      ...(usage ? { usage } : {}),
       ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: normalizedToolCalls,
@@ -1517,6 +1558,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1541,6 +1583,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const blocks = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   // Reasoning text assembled from `thinking` content-delta blocks. Cohere's
   // reasoning models stream a `content.type === "thinking"` block carrying a
@@ -1586,6 +1629,16 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "cohere",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "cohere",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     if (eventType === "content-delta") {
       const delta = parsed.delta as Record<string, unknown> | undefined;
@@ -1689,6 +1742,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
@@ -1700,6 +1754,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1818,6 +1873,8 @@ function decodeEventStreamFrames(buf: Buffer): {
 
 /**
  * Collapse Bedrock binary Event Stream into a single response.
+ * Claude invoke events preserve usage with the Anthropic start/delta rules;
+ * Converse usage remains omitted.
  *
  * Each frame contains a JSON payload with event types like:
  *   contentBlockDelta, contentBlockStart, etc.
@@ -1834,6 +1891,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
   const body = inputTruncated ? rawBody.subarray(0, limit) : rawBody;
   const { frames, truncated: frameTruncated } = decodeEventStreamFrames(body);
   const truncated = frameTruncated || inputTruncated;
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   // Reasoning text assembled from Converse `reasoningContent.text` deltas. The
   // Bedrock Converse stream interleaves a `delta.reasoningContent` block carrying
@@ -1902,6 +1960,16 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "bedrock",
+      contentType: "application/vnd.amazon.eventstream",
+      operation: "chat",
+      family: typeof parsed.type === "string" ? "bedrock-invoke" : "bedrock-converse",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     // InvokeModel Claude event: decoded PayloadPart or legacy flat payload with "type" field
     if (parsed.type === "content_block_delta") {
@@ -2090,6 +2158,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       // A tool-bearing turn that ALSO streamed text previously DROPPED `content`
       // here. Spread it when present so the interleaved blocks are persistable
@@ -2107,6 +2176,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(reasoningSignature ? { reasoningSignature } : {}),
@@ -2139,6 +2209,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -2173,6 +2244,16 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "gemini-interactions",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "interactions",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const eventType = parsed.event_type as string | undefined;
     if (!eventType) continue;
@@ -2292,6 +2373,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
 
   if (toolCalls.length > 0) {
     return {
+      ...(usage ? { usage } : {}),
       ...(content ? { content } : {}),
       toolCalls,
       ...(reasoning ? { reasoning } : {}),
@@ -2302,6 +2384,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -2348,15 +2431,25 @@ export function collapseStreamingResponseWithResponsesTools(
   logger?: Logger,
 ): CollapseResult | null {
   const ct = contentType.toLowerCase();
+  const complete = (result: CollapseResult): CollapseResult => {
+    const usage = captureUsage({
+      provider: providerKey,
+      contentType,
+      family: "stream-dispatch",
+      stage: "collapsed",
+      observation: result,
+    });
+    return usage ? { ...result, usage } : result;
+  };
 
   if (ct.includes("application/vnd.amazon.eventstream")) {
     const buf = typeof body === "string" ? Buffer.from(body, "binary") : body;
-    return collapseBedrockEventStream(buf);
+    return complete(collapseBedrockEventStream(buf));
   }
 
   if (ct.includes("application/x-ndjson")) {
     const str = typeof body === "string" ? body : body.toString("utf8");
-    return collapseOllamaNDJSON(str);
+    return complete(collapseOllamaNDJSON(str));
   }
 
   if (ct.includes("text/event-stream")) {
@@ -2378,23 +2471,23 @@ export function collapseStreamingResponseWithResponsesTools(
       case "azure":
       case "openrouter":
       case "byteplus":
-        return collapseOpenAISSEWithResponsesTools(str);
+        return complete(collapseOpenAISSEWithResponsesTools(str));
       case "anthropic":
-        return collapseAnthropicSSE(str);
+        return complete(collapseAnthropicSSE(str));
       case "gemini":
       case "vertexai":
-        return collapseGeminiSSE(str);
+        return complete(collapseGeminiSSE(str));
       case "gemini-interactions":
-        return collapseGeminiInteractionsSSE(str);
+        return complete(collapseGeminiInteractionsSSE(str));
       case "cohere":
-        return collapseCohereSSE(str);
+        return complete(collapseCohereSSE(str));
       case "bedrock":
-        return collapseAnthropicSSE(str);
+        return complete(collapseAnthropicSSE(str));
       default:
         logger?.warn(
           `[stream-collapse] unknown SSE provider "${providerKey}", falling back to OpenAI SSE format`,
         );
-        return collapseOpenAISSEWithResponsesTools(str);
+        return complete(collapseOpenAISSEWithResponsesTools(str));
     }
   }
 

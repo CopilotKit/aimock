@@ -1,8 +1,13 @@
+import {
+  resolve as resolveOpenAIUsage,
+  render as renderOpenAIUsage,
+} from "./response/usage/codecs/openai.js";
 import type { MisbehaviorPlan, ServedMisbehaviorToolCall } from "./misbehavior.js";
 import type { LiveFixtureResponse } from "./live-types.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
 import type { IncomingHttpHeaders } from "node:http";
 import { DEFAULT_TEST_ID, MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { cutText } from "./echo-text.js";
@@ -10,6 +15,14 @@ import { build, fixed, msg, quote, type MessageValue } from "./message-text.js";
 import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
 import { isRecognizedApiKeyHeader } from "./api-key-auth.js";
+import {
+  resolveStrictMode as resolvePolicyStrictMode,
+  strictOverrideField as policyStrictOverrideField,
+} from "./response/policy.js";
+import {
+  estimatePromptTokens as estimateUsagePromptTokens,
+  estimateTokens as estimateUsageTokens,
+} from "./response/usage/estimate.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -379,17 +392,7 @@ export function resolveStrictMode(
   serverDefault: boolean | undefined,
   rawHeaders?: IncomingHttpHeaders,
 ): boolean {
-  if (rawHeaders) {
-    const header = rawHeaders["x-aimock-strict"];
-    const rawVal =
-      typeof header === "string" ? header : Array.isArray(header) ? header[0] : undefined;
-    if (typeof rawVal === "string") {
-      const val = rawVal.trim().toLowerCase();
-      if (val === "true" || val === "1") return true;
-      if (val === "false" || val === "0") return false;
-    }
-  }
-  return serverDefault ?? false;
+  return resolvePolicyStrictMode(serverDefault, rawHeaders);
 }
 
 const STRICT_INTEGER_RE = /^\d+$/;
@@ -441,11 +444,7 @@ export function strictOverrideField(
   serverDefault: boolean | undefined,
   rawHeaders?: IncomingHttpHeaders,
 ): { strictOverride?: boolean } {
-  const effective = resolveStrictMode(serverDefault, rawHeaders);
-  if (effective !== (serverDefault ?? false)) {
-    return { strictOverride: effective };
-  }
-  return {};
+  return policyStrictOverrideField(serverDefault, rawHeaders);
 }
 
 /**
@@ -1443,14 +1442,7 @@ export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {
  * response body.  Real LLM APIs don't include it.
  */
 export function serializeErrorResponse(response: ErrorResponse): string {
-  return JSON.stringify({
-    error: {
-      message: response.error.message,
-      type: response.error.type ?? "server_error",
-      param: response.error.param ?? null,
-      code: response.error.code ?? null,
-    },
-  });
+  return renderError("openai", "fixture", response.error).body;
 }
 
 export function isEmbeddingResponse(r: FixtureResponse): r is EmbeddingResponse {
@@ -1538,24 +1530,14 @@ export function extractOverrides(
  * Uses the ~4 characters per token heuristic common for English text.
  */
 export function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
+  return estimateUsageTokens(text);
 }
 
 /**
  * Estimate prompt tokens from a request's messages array.
  */
 export function estimatePromptTokens(messages: ChatCompletionRequest["messages"]): number {
-  let totalChars = 0;
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      totalChars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.text) totalChars += part.text.length;
-      }
-    }
-  }
-  return Math.max(1, Math.ceil(totalChars / 4));
+  return estimateUsagePromptTokens(messages);
 }
 
 /**
@@ -1571,43 +1553,8 @@ export function resolveUsage(
   promptText: string,
   completionText: string,
 ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
-  if (overrides?.usage) {
-    const u = overrides.usage;
-    // A usage override that scripts only cost fields (e.g. `{ cost: 0.5 }`)
-    // carries NO token counts. Real providers always report real token usage,
-    // so estimate the counts rather than forcing them to 0 — otherwise a
-    // cost-scripting fixture is unfaithful (cost present, tokens 0). When the
-    // override DOES set any token count we preserve the explicit-or-zero merge
-    // behavior, and any explicit token value always wins.
-    const hasExplicitTokens =
-      u.prompt_tokens !== undefined ||
-      u.completion_tokens !== undefined ||
-      u.total_tokens !== undefined ||
-      u.input_tokens !== undefined ||
-      u.output_tokens !== undefined ||
-      u.promptTokenCount !== undefined ||
-      u.candidatesTokenCount !== undefined ||
-      u.totalTokenCount !== undefined;
-    const fallbackPrompt = hasExplicitTokens ? 0 : estimateTokens(promptText || "x");
-    const fallbackCompletion = hasExplicitTokens ? 0 : estimateTokens(completionText || "x");
-    const prompt = u.prompt_tokens ?? u.input_tokens ?? u.promptTokenCount ?? fallbackPrompt;
-    const completion =
-      u.completion_tokens ?? u.output_tokens ?? u.candidatesTokenCount ?? fallbackCompletion;
-    return {
-      prompt_tokens: prompt,
-      completion_tokens: completion,
-      total_tokens: u.total_tokens ?? u.totalTokenCount ?? prompt + completion,
-    };
-  }
-  const prompt = estimateTokens(promptText || "x");
-  const completion = estimateTokens(completionText || "x");
-  return {
-    prompt_tokens: prompt,
-    completion_tokens: completion,
-    total_tokens: prompt + completion,
-  };
+  return renderOpenAIUsage(resolveOpenAIUsage(overrides, { promptText, completionText }));
 }
-
 /**
  * Build an SSE usage chunk for streaming responses.
  * OpenAI emits this as the final chunk before [DONE] when

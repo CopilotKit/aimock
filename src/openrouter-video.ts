@@ -15,12 +15,12 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -43,6 +43,21 @@ import {
   testIdSuffix,
   upstreamTimeoutSignal,
 } from "./video-proxy-shared.js";
+/**
+ * Video models OpenRouter has REMOVED (deprecation policy: a removed surface
+ * never mocks success — it serves the rejection the real API serves now).
+ *
+ * openai/sora-2: gone from the live /api/v1/videos/models listing and from
+ * /api/v1/models (its /endpoints page is a 404). A live submit observed on
+ * 2026-10-10 is rejected with HTTP 400, content-type application/json, body
+ * `{"error":{"message":"Model openai/sora-2 does not exist","code":400}}` —
+ * the same rejection OpenRouter gives any unknown model id.
+ */
+import { collect, OPENROUTER_VIDEO_SUNSET_MODELS } from "./response/catalog/collect.js";
+import {
+  DEFAULT_OPENROUTER_VIDEO_MODEL,
+  renderOpenRouterVideoModels,
+} from "./response/catalog/render.js";
 
 /**
  * OpenRouter async video lifecycle mock (`/api/v1/videos`). Mirrors the
@@ -60,20 +75,6 @@ interface OpenRouterVideoRequest {
   prompt?: string;
   [key: string]: unknown;
 }
-
-const DEFAULT_OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0";
-
-/**
- * Video models OpenRouter has REMOVED (deprecation policy: a removed surface
- * never mocks success — it serves the rejection the real API serves now).
- *
- * openai/sora-2: gone from the live /api/v1/videos/models listing and from
- * /api/v1/models (its /endpoints page is a 404). A live submit observed on
- * 2026-10-10 is rejected with HTTP 400, content-type application/json, body
- * `{"error":{"message":"Model openai/sora-2 does not exist","code":400}}` —
- * the same rejection OpenRouter gives any unknown model id.
- */
-const OPENROUTER_VIDEO_SUNSET_MODELS: ReadonlySet<string> = new Set(["openai/sora-2"]);
 
 // ─── OpenRouterVideoJobMap (TTL + bounded) ──────────────────────────────────
 
@@ -456,7 +457,7 @@ export async function handleOpenRouterVideoStatus(
     // pure upstream proxies, so an effective-strict request is refused with
     // the strict 503 family (same gate as the models proxy; the submit-time
     // gate cannot help a job that was created under a strict-off override).
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: video job ${jobId} is proxied live upstream (record mode) — refusing the upstream poll`,
       );
@@ -474,13 +475,11 @@ export async function handleOpenRouterVideoStatus(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: `Strict mode: video job ${jobId} is proxied live upstream (record mode) — nothing reaches an upstream under strict mode`,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: `Strict mode: video job ${jobId} is proxied live upstream (record mode) — nothing reaches an upstream under strict mode`,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -661,7 +660,7 @@ export async function handleOpenRouterVideoContent(
   if (job.kind === "record") {
     // Strict means nothing reaches an upstream — gate the live content proxy
     // exactly like the models proxy and the record-job poll path.
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: video job ${jobId} content is proxied live upstream (record mode) — refusing the upstream fetch`,
       );
@@ -679,13 +678,11 @@ export async function handleOpenRouterVideoContent(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: `Strict mode: video job ${jobId} is proxied live upstream (record mode) — nothing reaches an upstream under strict mode`,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: `Strict mode: video job ${jobId} is proxied live upstream (record mode) — nothing reaches an upstream under strict mode`,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -857,9 +854,10 @@ async function proxyOpenRouterVideoRecordContent(args: {
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
   };
 
@@ -1158,23 +1156,6 @@ async function proxyOpenRouterVideoRecordContent(args: {
 
 // ─── GET /api/v1/videos/models — model listing ──────────────────────────────
 
-const DEFAULT_OPENROUTER_VIDEO_MODELS = [DEFAULT_OPENROUTER_VIDEO_MODEL];
-
-function modelEntry(id: string): Record<string, unknown> {
-  return {
-    id,
-    name: id,
-    supported_durations: [4, 8],
-    supported_resolutions: ["720p", "1080p"],
-    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
-    supported_frame_images: [],
-    supported_sizes: [],
-    generate_audio: false,
-    seed: true,
-    pricing_skus: [],
-  };
-}
-
 /**
  * Synthesizes the OpenRouter video model listing from loaded fixtures —
  * video-endpoint fixtures with a string `match.model` (mirrors the Ollama
@@ -1222,7 +1203,7 @@ export async function handleOpenRouterVideoModels(
   const record = defaults.record;
   const upstreamBase = record?.providers.openrouter;
   let proxyAttemptFailed = false;
-  if (upstreamBase && !resolveStrictMode(defaults.strict, req.headers)) {
+  if (upstreamBase && resolveRequestDecisions(defaults.strict, req.headers).upstream) {
     // The try covers ONLY the upstream fetch: a throw from the journal/relay
     // writes below must not be misattributed to the upstream (it would warn
     // "proxy failed", double-journal, and attempt a second response via the
@@ -1284,23 +1265,8 @@ export async function handleOpenRouterVideoModels(
     }
   }
 
-  const modelIds = new Set<string>();
-  let sawVideoFixture = false;
-  for (const f of fixtures) {
-    if (f.match.endpoint === "video") {
-      sawVideoFixture = true;
-      // A sunset model can never be served, so a fixture for one must not
-      // advertise it in the listing either.
-      if (
-        f.match.model &&
-        typeof f.match.model === "string" &&
-        !OPENROUTER_VIDEO_SUNSET_MODELS.has(f.match.model)
-      ) {
-        modelIds.add(f.match.model);
-      }
-    }
-  }
-  if (modelIds.size === 0 && sawVideoFixture) {
+  const collection = collect(fixtures, "video-active");
+  if (collection.ids.length === 0 && collection.diagnostics.sawVideoFixture) {
     // Video fixtures are loaded but none has a string match.model (e.g. all
     // RegExp models or onVideo registrations) — the listing silently serves
     // the default set, which can surprise fixture authors.
@@ -1308,7 +1274,7 @@ export async function handleOpenRouterVideoModels(
       "No video fixture contributes a string model — serving the default video model set",
     );
   }
-  const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_OPENROUTER_VIDEO_MODELS;
+  const body = renderOpenRouterVideoModels(collection.ids);
 
   // Guard BEFORE journaling (file convention): the synthesis is reachable
   // after an AWAITED-but-failed proxy attempt above, so the client may have
@@ -1336,7 +1302,7 @@ export async function handleOpenRouterVideoModels(
   });
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ data: ids.map((id) => modelEntry(id)) }));
+  res.end(JSON.stringify(body));
 }
 
 // ─── POST /api/v1/videos — submit ───────────────────────────────────────────
@@ -1370,13 +1336,11 @@ export async function handleOpenRouterVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
@@ -1395,12 +1359,10 @@ export async function handleOpenRouterVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1427,9 +1389,7 @@ export async function handleOpenRouterVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: { message, type: "invalid_request_error" },
-      }),
+      renderError("openai", "validation", { message, type: "invalid_request_error" }).body,
     );
     return;
   }
@@ -1447,12 +1407,10 @@ export async function handleOpenRouterVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid type for parameter: 'model' must be a non-empty string",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Invalid type for parameter: 'model' must be a non-empty string",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1534,7 +1492,7 @@ export async function handleOpenRouterVideoCreate(
       // no-match, or no record/provider, is served internally.
       fixture
         ? "fixture"
-        : resolveStrictMode(defaults.strict, req.headers)
+        : resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss
           ? "internal"
           : defaults.record?.providers.openrouter
             ? "proxy"
@@ -1548,8 +1506,8 @@ export async function handleOpenRouterVideoCreate(
   if (!fixture) {
     // Strict mode wins over record: a strict no-match must fail loudly with
     // 503 rather than silently recording a new fixture.
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -1566,13 +1524,11 @@ export async function handleOpenRouterVideoCreate(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -1652,9 +1608,10 @@ export async function handleOpenRouterVideoCreate(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not a video type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a video type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -1783,9 +1740,10 @@ async function proxyOpenRouterVideoSubmit(args: {
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
     return "handled";
   };
@@ -2050,9 +2008,10 @@ async function proxyOpenRouterVideoRecordPoll(args: {
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
   };
 

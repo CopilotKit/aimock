@@ -1,4 +1,6 @@
 import { claimOneShotError, isOneShotError } from "./fixture-loader.js";
+import { isDeepStrictEqual } from "node:util";
+import { getEmbeddingRequest } from "./embedding-request.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -346,6 +348,15 @@ export function matchFixtureDiagnostic(
 
   for (const fixture of fixtures) {
     const { match } = fixture;
+
+    // Recorded embeddings retain the operation and exact wire inputs so a
+    // changed batch or width cannot reuse another operation's response.
+    if (
+      match.embeddingRequest !== undefined &&
+      !isDeepStrictEqual(match.embeddingRequest, getEmbeddingRequest(req))
+    ) {
+      continue;
+    }
 
     // predicate — if present, must return true (receives original request)
     if (match.predicate !== undefined) {

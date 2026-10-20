@@ -275,6 +275,25 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/gemini-gemini-3.8-flash-new-family.md.
     "gemini-3.8-flash",
+    // Gemini 4 Argon, first listed 2026-10-14 (drift run 38523200980). A named
+    // variant of a new generation, so "argon" carries no modality signal and it
+    // is classified on the live listing plus a LIVE PROBE, not on the name (the
+    // `gpt-6-astra` precedent).
+    //
+    // Listing (2026-10-20): `displayName` and `description` both "Gemini 4
+    // Argon", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]`; `inputTokenLimit: 1048576`; `thinking: true`. No
+    // `bidiGenerateContent`, `embedContent` or `predict`. A plain text
+    // generateContent call returned 200 with a text part, `finishReason: "STOP"`
+    // and `candidatesTokensDetails` `modality: "TEXT"`, the same shape as the
+    // included `gemini-3.8-flash` probed in the same run. That is the text
+    // surface aimock mocks. Not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-argon-new-family.md.
+    "gemini-4-argon",
   ]),
 };
 
@@ -385,6 +404,21 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/openai-gpt-live-1-new-family.md.
     "gpt-live-1",
+    // Pre-GA `-alpha` codenames. The Drift Tests run on 2026-10-18 (run
+    // 39103216353) saw all three on the live listing. By the next run they were
+    // gone, and on 2026-10-20 `GET /v1/models/<id>` and /v1/chat/completions
+    // return 404 `model_not_found` for each. The id itself declares the
+    // pre-GA status, the same policy PREVIEW_FAMILY applies to `-preview` and
+    // the `-eap` entry under excludeFamilies.gemini applies to early access:
+    // aimock does not mock pre-GA surfaces. No rule matches `-alpha`, so they
+    // are enumerated. This also keeps the canary quiet if they are listed
+    // again. Not voice families, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-aurora-{blue,green,red}-alpha-new-family.md.
+    "aurora-blue-alpha",
+    "aurora-green-alpha",
+    "aurora-red-alpha",
     // NOTE: `-preview` families (gpt-4o-realtime-preview,
     // gpt-4o-mini-realtime-preview, gpt-4o-search-preview,
     // gpt-4o-mini-search-preview, computer-use-preview, …) are auto-excluded by

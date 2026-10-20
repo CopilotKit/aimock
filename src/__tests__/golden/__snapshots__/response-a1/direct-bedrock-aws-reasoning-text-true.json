@@ -1,0 +1,99 @@
+{
+  "got": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/vnd.amazon.eventstream"
+    },
+    "frames": [
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_<#0>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-4\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer\"}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"content_block_stop\",\"index\":0}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":0}}"
+      },
+      {
+        "headers": {
+          ":content-type": "application/json",
+          ":event-type": "chunk",
+          ":message-type": "event"
+        },
+        "payload": "{\"bytes\":\"<base64:decodedBytes>\"}",
+        "decodedBytes": "{\"type\":\"message_stop\"}"
+      }
+    ]
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/model/gpt-4/invoke-with-response-stream",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "text"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 200,
+        "fixture": {
+          "match": {
+            "userMessage": "text"
+          },
+          "response": {
+            "content": "Answer",
+            "reasoning": "Reason",
+            "reasoningSignature": "signature"
+          }
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

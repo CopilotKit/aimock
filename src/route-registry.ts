@@ -38,6 +38,7 @@ export const LIVE_PATH = "/v1/live/sessions";
 export const GEMINI_LIVE_PATH =
   "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 export const MESSAGES_PATH = "/v1/messages";
+export const MESSAGES_COUNT_PATH = "/v1/messages/count_tokens";
 export const EMBEDDINGS_PATH = "/v1/embeddings";
 export const COHERE_CHAT_PATH = "/v2/chat";
 export const COHERE_EMBED_PATH = "/v2/embed";
@@ -85,6 +86,7 @@ export const FAL_RUN_RE = /^\/fal\/run\/(.+)$/;
 export const FAL_ROUTE_RE = /^\/fal(?:\/.*)?$/;
 export const GEMINI_INTERACTIONS_PATH = "/v1beta/interactions";
 export const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
+export const GEMINI_COUNT_RE = /^\/v1beta\/models\/([^:]+):countTokens$/;
 export const GEMINI_EMBED_RE = /^\/v1beta\/models\/([^:]+):embedContent$/;
 export const AZURE_DEPLOYMENT_RE =
   /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
@@ -116,6 +118,10 @@ export const HEALTH_PATH = "/health";
 export const READY_PATH = "/ready";
 export const METRICS_PATH = "/metrics";
 export const MODELS_PATH = "/v1/models";
+export const MODELS_DETAIL_RE = /^\/v1\/models\/(.+)$/;
+export const GEMINI_MODELS_PATH = "/v1beta/models";
+// Colon action suffixes remain with existing routes, before ID decoding.
+export const GEMINI_MODEL_DETAIL_RE = /^\/v1beta\/models\/((?:(?!%3[aA])[^:])+)$/;
 export const REQUESTS_PATH = "/v1/_requests";
 
 export const FILES_PATH = "/v1/files";
@@ -284,6 +290,26 @@ export const ROUTE_DEFINITIONS: RouteDefinition[] = [
   { method: "GET", path: METRICS_PATH, service: "ops", description: "Prometheus metrics (public)" },
   // Models + legacy journal
   { method: "GET", path: MODELS_PATH, service: "openai", description: "Models listing" },
+  {
+    method: "GET",
+    path: "/v1/models/{id}",
+    examplePath: "/v1/models/gpt-4o",
+    service: "openai",
+    description: "Model detail (OpenAI or Anthropic response dialect)",
+  },
+  {
+    method: "GET",
+    path: GEMINI_MODELS_PATH,
+    service: "gemini",
+    description: "Gemini models listing",
+  },
+  {
+    method: "GET",
+    path: "/v1beta/models/{model}",
+    examplePath: "/v1beta/models/gemini-2.0-flash",
+    service: "gemini",
+    description: "Gemini model detail",
+  },
   { method: "GET", path: REQUESTS_PATH, service: "control", description: "Legacy journal listing" },
   {
     method: "DELETE",
@@ -294,6 +320,19 @@ export const ROUTE_DEFINITIONS: RouteDefinition[] = [
   // OpenAI Responses + Anthropic + Cohere + core OpenAI
   { method: "POST", path: RESPONSES_PATH, service: "openai", description: "OpenAI Responses API" },
   { method: "POST", path: MESSAGES_PATH, service: "anthropic", description: "Anthropic messages" },
+  {
+    method: "POST",
+    path: MESSAGES_COUNT_PATH,
+    service: "anthropic",
+    description: "Estimated Anthropic input token count",
+  },
+  {
+    method: "POST",
+    path: "/v1beta/models/{model}:countTokens",
+    examplePath: "/v1beta/models/gemini-2.0-flash:countTokens",
+    service: "gemini",
+    description: "Estimated Gemini input token count",
+  },
   { method: "POST", path: COHERE_CHAT_PATH, service: "cohere", description: "Cohere chat" },
   { method: "POST", path: COHERE_EMBED_PATH, service: "cohere", description: "Cohere embed" },
   { method: "POST", path: EMBEDDINGS_PATH, service: "openai", description: "OpenAI embeddings" },
@@ -788,6 +827,8 @@ export const ROUTE_DEFINITIONS: RouteDefinition[] = [
  * the runtime drift guard relies on.
  */
 export function templateToRegExp(template: string): RegExp {
+  if (template === "/v1/models/{id}") return MODELS_DETAIL_RE;
+  if (template === "/v1beta/models/{model}") return GEMINI_MODEL_DETAIL_RE;
   const pattern = template
     .split(/(\{[^}]+\})/g)
     .map((part) =>

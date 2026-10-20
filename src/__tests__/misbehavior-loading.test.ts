@@ -3,7 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import OpenAI from "openai";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -57,6 +57,40 @@ function loadFixturesFromDirWithServices(
 function recognized(fixtures: Fixture[]): Fixture[] {
   fixtures.forEach(markFixtureMisbehaviorEnabled);
   return fixtures;
+}
+
+interface ChildResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error: Error | undefined;
+  stdout: string;
+  stderr: string;
+}
+
+/** Run real children while the worker can acknowledge pending runner RPC messages. */
+function runChild(
+  args: string[],
+  options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<ChildResult> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      process.execPath,
+      args,
+      { ...options, encoding: "utf8" },
+      (error, stdout, stderr) => {
+        resolve({
+          status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+          signal: error?.signal ?? null,
+          // A normal nonzero exit is a status, not a spawn failure. Preserve
+          // startup, output-buffer and timeout errors for the existing checks.
+          error: error && (error.killed || typeof error.code === "string") ? error : undefined,
+          stdout,
+          stderr,
+        });
+      },
+    );
+    child.stdin?.end();
+  });
 }
 
 const directories: string[] = [];
@@ -533,12 +567,11 @@ describe("normal CLI startup misbehavior diagnostics", () => {
   describe.each([false, true])("strict=%s", (strict) => {
     it.each(["silent", "warn", "info", "debug"])(
       "rejects malformed config without --validate-on-load at log level %s",
-      (logLevel) => {
+      async (logLevel) => {
         const { file } = fixtureFile([
           entry({ faults: [{ fault: "tool-args-invalid-json", rate: 2 }] }),
         ]);
-        const result = spawnSync(
-          process.execPath,
+        const result = await runChild(
           [
             "--import",
             createRequire(import.meta.url).resolve("tsx"),
@@ -554,7 +587,7 @@ describe("normal CLI startup misbehavior diagnostics", () => {
             "--misbehavior",
             ...(strict ? ["--strict"] : []),
           ],
-          { encoding: "utf8", timeout: 5000 },
+          { timeout: 5000 },
         );
         expect(result.error).toBeUndefined();
         expect(result.signal).toBeNull();
@@ -569,9 +602,8 @@ describe("normal CLI startup misbehavior diagnostics", () => {
 });
 
 describe("actual validate command misbehavior diagnostics", () => {
-  function validate(args: string[], cwd?: string) {
-    const result = spawnSync(
-      process.execPath,
+  async function validate(args: string[], cwd?: string) {
+    const result = await runChild(
       [
         "--import",
         createRequire(import.meta.url).resolve("tsx"),
@@ -580,7 +612,7 @@ describe("actual validate command misbehavior diagnostics", () => {
         "--misbehavior",
         ...args,
       ],
-      { encoding: "utf8", cwd, timeout: 15000 },
+      { cwd, timeout: 15000 },
     );
     expect(result.error).toBeUndefined();
     return result;
@@ -617,7 +649,7 @@ describe("actual validate command misbehavior diagnostics", () => {
     },
   ])(
     "reports $rule with logical source, original index, path and value",
-    ({ config, rule, path, value, fixtureResponse }) => {
+    async ({ config, rule, path, value, fixtureResponse }) => {
       const { directory } = fixtureFile([]);
       mkdirSync(join(directory, "nested"));
       writeFileSync(
@@ -625,7 +657,7 @@ describe("actual validate command misbehavior diagnostics", () => {
         JSON.stringify({ fixtures: [null, entry(config, fixtureResponse)] }),
       );
       for (const json of [false, true]) {
-        const result = validate([...(json ? ["--json"] : []), directory]);
+        const result = await validate([...(json ? ["--json"] : []), directory]);
         expect(result.status).toBe(1);
         const report = json
           ? (JSON.parse(result.stdout) as {
@@ -645,11 +677,11 @@ describe("actual validate command misbehavior diagnostics", () => {
     },
   );
 
-  it("does not repeat probabilistic warnings in the cross-file pass", () => {
+  it("does not repeat probabilistic warnings in the cross-file pass", async () => {
     const config = { faults: [{ fault: "tool-args-invalid-json", rate: 0.5 }] };
     const first = fixtureFile([entry(config)]);
     const second = fixtureFile([entry(config)]);
-    const result = validate(["--json", first.file, second.file]);
+    const result = await validate(["--json", first.file, second.file]);
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout) as {
       files: { warnings: { index: number; message: string }[] }[];
@@ -667,9 +699,9 @@ describe("actual validate command misbehavior diagnostics", () => {
     }
   });
 
-  it("keeps a named relative source spelling", () => {
+  it("keeps a named relative source spelling", async () => {
     const { directory } = fixtureFile([entry("unknown-fault")]);
-    const result = validate(["./fixtures.json"], directory);
+    const result = await validate(["./fixtures.json"], directory);
     expect(result.stderr).toContain('"./fixtures.json": [misbehavior/bad-value]');
     expect(result.stderr).toContain("fixtures[0].misbehavior");
   });
@@ -684,12 +716,12 @@ describe("actual validate command misbehavior diagnostics", () => {
     { rate: 0.5, times: 1, warn: false },
   ])(
     "warns only for the specified unseeded probabilistic case %j",
-    ({ rate, seed, times, warn }) => {
+    async ({ rate, seed, times, warn }) => {
       const { file } = fixtureFile([
         entry({ seed, faults: [{ fault: "tool-args-invalid-json", rate, times }] }),
       ]);
       for (const strict of [false, true]) {
-        const result = validate(["--json", ...(strict ? ["--strict"] : []), file]);
+        const result = await validate(["--json", ...(strict ? ["--strict"] : []), file]);
         const report = JSON.parse(result.stdout) as {
           files: { warnings: { message: string }[] }[];
         };
@@ -707,11 +739,11 @@ describe("actual validate command misbehavior diagnostics", () => {
   it.each([
     { toolCalls: [{ name: "weather", arguments: "{broken" }] },
     { blocks: [{ type: "toolCall", name: "weather", arguments: "{broken" }] },
-  ])("retains authored-invalid JSON as an error with the B5 hint %j", (fixtureResponse) => {
+  ])("retains authored-invalid JSON as an error with the B5 hint %j", async (fixtureResponse) => {
     const { file } = fixtureFile([
       { match: { userMessage: "weather" }, response: fixtureResponse },
     ]);
-    const result = validate(["--json", file]);
+    const result = await validate(["--json", file]);
     expect(result.status).toBe(1);
     const report = JSON.parse(result.stdout) as { files: { errors: { message: string }[] }[] };
     expect(report.files[0].errors).toEqual(
@@ -800,7 +832,7 @@ describe("shared validateFixtures misbehavior diagnostics", () => {
 // Run real plugin hooks in a child runner: a failing beforeAll must not fail
 // this parent suite. As in mcp-fakes-plugins, Jest uses Vitest's compatible globals.
 describe("actual plugin misbehavior diagnostics", () => {
-  function runPlugin(plugin: string, fixturePath: string, enableMisbehavior = true) {
+  async function runPlugin(plugin: string, fixturePath: string, enableMisbehavior = true) {
     const directory = mkdtempSync(resolve(".aimock-plugin-loading-"));
     directories.push(directory);
     const testFile = join(directory, "plugin.test.ts");
@@ -833,10 +865,9 @@ it("serves the loaded fixture over HTTP", async () => {
   expect(body.choices[0].message).toBeDefined();
 });`,
     );
-    const result = spawnSync(
-      process.execPath,
+    const result = await runChild(
       [resolve("node_modules/vitest/vitest.mjs"), "run", "--config", configFile],
-      { encoding: "utf8", timeout: 15000, env: { ...process.env, NO_COLOR: "1", CI: "1" } },
+      { timeout: 15000, env: { ...process.env, NO_COLOR: "1", CI: "1" } },
     );
     expect(result.error).toBeUndefined();
     expect(result.signal).toBeNull();
@@ -881,9 +912,9 @@ it("serves the loaded fixture over HTTP", async () => {
       },
     ])(
       "propagates $rule from a $surface through beforeAll",
-      ({ surface, config, rule, path, value, fixtureResponse }) => {
+      async ({ surface, config, rule, path, value, fixtureResponse }) => {
         const { file, directory } = fixtureFile([entry(config, fixtureResponse)]);
-        const result = runPlugin(plugin, surface === "file" ? file : directory);
+        const result = await runPlugin(plugin, surface === "file" ? file : directory);
         expect(result.status, result.output).toBe(1);
         expect(result.output).toContain("MisbehaviorConfigError:");
         expect(result.output).toContain(`[misbehavior/${rule}]`);
@@ -896,18 +927,18 @@ it("serves the loaded fixture over HTTP", async () => {
       20000,
     );
 
-    it("ignores an invalid misbehavior key without enableMisbehavior, as 1.44.0", () => {
+    it("ignores an invalid misbehavior key without enableMisbehavior, as 1.44.0", async () => {
       const { file } = fixtureFile([entry({ faults: [], typo: "unexpected" })]);
-      const result = runPlugin(plugin, file, false);
+      const result = await runPlugin(plugin, file, false);
       expect(result.status, result.output).toBe(0);
       expect(result.output).toMatch(/Tests\s+1 passed \(1\)/);
       expect(result.output).not.toContain("MisbehaviorConfigError");
       expect(result.output).not.toContain("[aimock] Failed to load fixtures");
     }, 20000);
 
-    it("starts and serves HTTP with a valid empty misbehavior override", () => {
+    it("starts and serves HTTP with a valid empty misbehavior override", async () => {
       const { file } = fixtureFile([entry({ faults: [] })]);
-      const result = runPlugin(plugin, file);
+      const result = await runPlugin(plugin, file);
       expect(result.status, result.output).toBe(0);
       expect(result.output).toMatch(/Tests\s+1 passed \(1\)/);
     }, 20000);

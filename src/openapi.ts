@@ -20,6 +20,7 @@ import {
   COMPLETIONS_PATH,
   RESPONSES_PATH,
   MESSAGES_PATH,
+  MESSAGES_COUNT_PATH,
   EMBEDDINGS_PATH,
   COHERE_CHAT_PATH,
   COHERE_EMBED_PATH,
@@ -684,6 +685,19 @@ const COMPONENTS: Record<string, unknown> = {
     properties: {
       model: { type: "string" },
       embedding: { type: "array", items: { type: "number" } },
+    },
+  },
+  OllamaCurrentEmbedRequest: {
+    allOf: [{ $ref: "#/components/schemas/OllamaEmbedRequest" }],
+    type: "object",
+    properties: { dimensions: { type: "integer", minimum: 1, maximum: 100000 } },
+  },
+  OllamaCurrentEmbedResponse: {
+    type: "object",
+    required: ["model", "embeddings"],
+    properties: {
+      model: { type: "string" },
+      embeddings: { type: "array", items: { type: "array", items: { type: "number" } } },
     },
   },
   OllamaTagsResponse: {
@@ -2013,6 +2027,7 @@ const COMPONENTS: Record<string, unknown> = {
   },
   ModelsListResponse: {
     type: "object",
+    required: ["object"],
     properties: {
       object: { type: "string", enum: ["list"] },
       data: {
@@ -2029,6 +2044,188 @@ const COMPONENTS: Record<string, unknown> = {
         },
       },
     },
+  },
+  OpenAIModelResponse: {
+    type: "object",
+    required: ["id", "object", "created", "owned_by"],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["model"] },
+      created: { type: "integer" },
+      owned_by: { type: "string" },
+    },
+  },
+  AnthropicModelInfo: {
+    type: "object",
+    required: [
+      "type",
+      "id",
+      "display_name",
+      "created_at",
+      "capabilities",
+      "lifecycle",
+      "line",
+      "max_input_tokens",
+      "max_tokens",
+      "deprecated_at",
+      "retires_at",
+    ],
+    properties: {
+      type: { type: "string", enum: ["model"] },
+      id: { type: "string" },
+      display_name: { type: "string" },
+      created_at: { type: "string", format: "date-time" },
+      capabilities: { type: ["object", "null"] },
+      lifecycle: { type: "string", enum: ["active", "deprecated", "retired"] },
+      line: { type: ["string", "null"] },
+      max_input_tokens: { type: ["integer", "null"] },
+      max_tokens: { type: ["integer", "null"] },
+      deprecated_at: { type: ["string", "null"], format: "date-time" },
+      retires_at: { type: ["string", "null"], format: "date-time" },
+    },
+  },
+  AnthropicModelsListResponse: {
+    type: "object",
+    required: ["data", "has_more", "first_id", "last_id"],
+    properties: {
+      data: { type: "array", items: { $ref: "#/components/schemas/AnthropicModelInfo" } },
+      has_more: { type: "boolean" },
+      first_id: { type: ["string", "null"] },
+      last_id: { type: ["string", "null"] },
+    },
+  },
+  CatalogModelsListResponse: {
+    description:
+      "Anthropic headers select the native paged Anthropic list; other callers receive the unchanged OpenAI list.",
+    oneOf: [
+      { $ref: "#/components/schemas/ModelsListResponse" },
+      { $ref: "#/components/schemas/AnthropicModelsListResponse" },
+    ],
+  },
+  CatalogModelResponse: {
+    oneOf: [
+      { $ref: "#/components/schemas/OpenAIModelResponse" },
+      { $ref: "#/components/schemas/AnthropicModelInfo" },
+    ],
+  },
+  GeminiModel: {
+    type: "object",
+    required: [
+      "name",
+      "baseModelId",
+      "version",
+      "displayName",
+      "inputTokenLimit",
+      "outputTokenLimit",
+      "supportedGenerationMethods",
+    ],
+    properties: {
+      name: { type: "string" },
+      baseModelId: { type: "string" },
+      version: { type: "string" },
+      displayName: { type: "string" },
+      inputTokenLimit: { type: "integer" },
+      outputTokenLimit: { type: "integer" },
+      supportedGenerationMethods: { type: "array", items: { type: "string" } },
+    },
+  },
+  GeminiModelsListResponse: {
+    type: "object",
+    required: ["models"],
+    properties: {
+      models: { type: "array", items: { $ref: "#/components/schemas/GeminiModel" } },
+      nextPageToken: { type: "string" },
+    },
+  },
+  AnthropicCountTool: {
+    anyOf: [
+      { $ref: "#/components/schemas/MessagesRequest/properties/tools/items" },
+      {
+        type: "object",
+        required: ["type", "name"],
+        properties: {
+          type: { type: "string" },
+          name: { type: "string" },
+          description: { type: "string" },
+          input_schema: { type: "object" },
+        },
+      },
+    ],
+  },
+  AnthropicCountRequest: {
+    type: "object",
+    required: ["messages"],
+    properties: {
+      model: { type: "string" },
+      messages: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["role", "content"],
+          properties: {
+            role: { type: "string", enum: ["user", "assistant"] },
+            // Counting accepts object blocks without generation-only content constraints.
+            content: {
+              oneOf: [{ type: "string" }, { type: "array", items: { type: "object" } }],
+            },
+          },
+        },
+      },
+      system: { oneOf: [{ type: "string" }, { type: "array", items: { type: "object" } }] },
+      tools: { type: "array", items: { $ref: "#/components/schemas/AnthropicCountTool" } },
+    },
+  },
+  AnthropicCountResponse: {
+    type: "object",
+    required: ["input_tokens"],
+    properties: { input_tokens: { type: "integer", minimum: 1 } },
+  },
+  GeminiCountContentRequest: {
+    type: "object",
+    required: ["contents"],
+    properties: {
+      contents: { $ref: "#/components/schemas/GeminiGenerateRequest/properties/contents" },
+      systemInstruction: {
+        type: ["object", "null"],
+        properties: {
+          parts: {
+            type: ["array", "null"],
+            items: { type: "object", properties: { text: { type: "string" } } },
+          },
+        },
+      },
+      tools: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            functionDeclarations: { type: "array", items: { type: "object" } },
+          },
+        },
+      },
+    },
+  },
+  GeminiCountRequest: {
+    anyOf: [
+      {
+        allOf: [
+          { $ref: "#/components/schemas/GeminiCountContentRequest" },
+          { not: { required: ["generateContentRequest"] } },
+        ],
+      },
+      {
+        type: "object",
+        required: ["generateContentRequest"],
+        properties: {
+          generateContentRequest: { $ref: "#/components/schemas/GeminiCountContentRequest" },
+        },
+      },
+    ],
+  },
+  GeminiCountResponse: {
+    type: "object",
+    required: ["totalTokens"],
+    properties: { totalTokens: { type: "integer", minimum: 1 } },
   },
   ReadyResponse: {
     type: "object",
@@ -2314,7 +2511,70 @@ const SCHEMA_REFS: Record<string, OperationSchemas> = {
     request: "ModerationRequest",
     response: "ModerationResponse",
   },
-  [`GET ${MODELS_PATH}`]: { response: "ModelsListResponse" },
+  [`GET ${MODELS_PATH}`]: {
+    response: "CatalogModelsListResponse",
+    query: [
+      {
+        name: "limit",
+        description: "Anthropic page size; OpenAI callers ignore query parameters.",
+        schema: { type: "integer", default: 20, minimum: 1, maximum: 1000 },
+      },
+      {
+        name: "after_id",
+        description: "Anthropic cursor after this visible ID; unknown IDs return 400",
+        schema: { type: "string" },
+      },
+      {
+        name: "before_id",
+        description: "Anthropic cursor before this visible ID; unknown IDs return 400",
+        schema: { type: "string" },
+      },
+      {
+        name: "lifecycle",
+        description:
+          "Union of lifecycle and lifecycle[] values; omitted means active and deprecated.",
+        schema: {
+          type: "array",
+          maxItems: 3,
+          items: { type: "string", enum: ["active", "deprecated", "retired"] },
+        },
+      },
+      {
+        name: "lifecycle[]",
+        description: "Bracketed lifecycle encoding used by Anthropic SDKs",
+        schema: {
+          type: "array",
+          maxItems: 3,
+          items: { type: "string", enum: ["active", "deprecated", "retired"] },
+        },
+      },
+    ],
+  },
+  "GET /v1/models/{id}": { response: "CatalogModelResponse" },
+  "GET /v1beta/models": {
+    response: "GeminiModelsListResponse",
+    query: [
+      {
+        name: "pageSize",
+        description: "Default 50; zero uses the default; values above 1000 clamp to 1000",
+        schema: { type: "integer", minimum: 0, default: 50 },
+      },
+      {
+        name: "pageToken",
+        description: "Opaque offset token from the preceding page",
+        schema: { type: "string" },
+      },
+    ],
+  },
+  "GET /v1beta/models/{model}": { response: "GeminiModel" },
+  [`POST ${MESSAGES_COUNT_PATH}`]: {
+    request: "AnthropicCountRequest",
+    response: "AnthropicCountResponse",
+  },
+  "POST /v1beta/models/{model}:countTokens": {
+    request: "GeminiCountRequest",
+    response: "GeminiCountResponse",
+  },
   [`POST ${SEARCH_PATH}`]: { request: "SearchRequest", response: "SearchResponse" },
   [`POST ${RERANK_PATH}`]: { request: "RerankRequest", response: "RerankResponse" },
   "POST /openai/deployments/{deploymentId}/chat/completions": {
@@ -2330,7 +2590,10 @@ const SCHEMA_REFS: Record<string, OperationSchemas> = {
   "POST /api/chat": { request: "OllamaChatRequest", response: "OllamaChatResponse" },
   "POST /api/generate": { request: "OllamaGenerateRequest", response: "OllamaGenerateResponse" },
   "POST /api/embeddings": { request: "OllamaEmbedRequest", response: "OllamaEmbedResponse" },
-  "POST /api/embed": { request: "OllamaEmbedRequest", response: "OllamaEmbedResponse" },
+  "POST /api/embed": {
+    request: "OllamaCurrentEmbedRequest",
+    response: "OllamaCurrentEmbedResponse",
+  },
   "GET /api/tags": { response: "OllamaTagsResponse" },
   // OpenAI Batches API
   "POST /v1/batches/{batch_id}/cancel": { response: "BatchObject" },

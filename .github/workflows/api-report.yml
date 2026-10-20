@@ -1,0 +1,96 @@
+name: API Report
+# Public type surface gate. `pnpm api:report` (scripts/api-report.ts) runs
+# Microsoft API Extractor once per package.json#exports subpath x condition and
+# writes one report per entry to etc/*.api.md. The reports are committed, so a
+# change to the public .d.ts surface shows up as a diff of etc/ in the PR.
+#
+#   - always: etc/ must match the build (comment-only lines such as
+#     `// @public` are ignored). For an intended change, run
+#     `pnpm build && pnpm api:report`, commit etc/, and add the
+#     `public-api-addition` label for compatibility review. The label cannot
+#     bypass report freshness, authorize breaking changes, or replace manual
+#     review of the report diff.
+#   - pull_request: committed etc/ must match the PR base, ignoring comment-only
+#     changes, unless the PR has the `public-api-addition` label.
+#   - always: dist/*.d.ts and *.d.cts must not contain `declare global` or
+#     `declare module`, which API Extractor does not report.
+#
+# This is its own workflow, not a job in static-quality.yml, because it must
+# re-run when the label changes. A label event that re-ran Static Quality with
+# its other jobs skipped would post a "skipped" result for those checks on the
+# same commit, and GitHub counts a skipped required check as passing, so a label
+# toggle could hide an earlier prettier/eslint/typecheck failure. Here, only
+# this workflow sees label events, and it runs in full on every event.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  api-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: No global or module augmentation in dist
+        run: |
+          set -euo pipefail
+          [ -d dist ] || { echo "::error::dist/ not found; the build step did not run"; exit 1; }
+          rc=0
+          grep -rnoE --include='*.d.ts' --include='*.d.cts' \
+            '\bdeclare[[:space:]]+(global|module)\b' dist || rc=$?
+          case "$rc" in
+            0)
+              echo "::error::dist type declarations contain 'declare global' or 'declare module'." \
+                "API reports do not cover augmentations; remove it from the public types."
+              exit 1
+              ;;
+            1) echo "No declare global / declare module in dist type declarations." ;;
+            *)
+              echo "::error::grep of dist type declarations failed (exit $rc)"
+              exit 1
+              ;;
+          esac
+      - run: pnpm api:report
+      - name: Compare API reports with etc/
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HAS_ADDITION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'public-api-addition') }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Intent-to-add, so a report for a new export entry shows in the diff.
+          git add -N etc
+          IGNORE_COMMENTS='^[[:space:]]*//'
+          if ! git diff --exit-code -I "$IGNORE_COMMENTS" HEAD -- etc/; then
+            echo "::error::Generated API reports differ from committed reports. Run" \
+              "'pnpm build && pnpm api:report' and commit etc/." \
+              "Labels cannot bypass report freshness."
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ -z "$PR_BASE_SHA" ] || ! git cat-file -e "$PR_BASE_SHA^{commit}"; then
+              echo "::error::The pull request base commit is unavailable; cannot compare committed API reports."
+              exit 1
+            fi
+            if [ "$HAS_ADDITION_LABEL" = "true" ]; then
+              echo "API report changes accepted (public-api-addition label); compatibility review required." \
+                "Breaking changes are not allowed."
+            elif ! git diff --exit-code -I "$IGNORE_COMMENTS" "$PR_BASE_SHA" HEAD -- etc/; then
+              echo "::error::Committed API reports differ from the pull request base. Add the" \
+                "public-api-addition label for intended changes and manual compatibility review." \
+                "Breaking changes are not allowed."
+              exit 1
+            fi
+          fi

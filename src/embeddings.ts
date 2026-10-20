@@ -7,6 +7,9 @@
  */
 
 import type * as http from "node:http";
+import { setEmbeddingRequest } from "./embedding-request.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -22,8 +25,6 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -83,13 +84,11 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
@@ -108,12 +107,10 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -130,12 +127,10 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Missing required parameter: 'input'",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'input'",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -151,12 +146,10 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Missing required parameter: 'model'",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'model'",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -175,15 +168,14 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message:
-            "Invalid parameter: 'input' must be a string, an array of strings, or an array of tokens",
-          type: "invalid_request_error",
-          param: null,
-          code: null,
-        },
-      }),
+      renderError("openai", "validation", {
+        message:
+          "Invalid parameter: 'input' must be a string, an array of strings, or an array of tokens",
+        type: "invalid_request_error",
+        param: null,
+        code: null,
+        includeParam: true,
+      }).body,
     );
     return;
   }
@@ -200,6 +192,11 @@ export async function handleEmbeddings(
     _endpointType: "embedding",
     _context: getContext(req),
   };
+  setEmbeddingRequest(syntheticReq, {
+    operation: "/v1/embeddings",
+    input: embeddingReq.input,
+    ...(embeddingReq.dimensions !== undefined && { dimensions: embeddingReq.dimensions }),
+  });
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = selectFixtureForServing(
@@ -285,19 +282,17 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError("openai", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  if (resolveStrictMode(defaults.strict, req.headers)) {
+  if (resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
       strictNoMatchLogLine(
@@ -320,13 +315,11 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -376,14 +369,13 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid parameter: 'dimensions' must be an integer between 1 and ${MAX_EMBEDDING_DIMENSIONS}`,
-          type: "invalid_request_error",
-          param: null,
-          code: null,
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Invalid parameter: 'dimensions' must be an integer between 1 and ${MAX_EMBEDDING_DIMENSIONS}`,
+        type: "invalid_request_error",
+        param: null,
+        code: null,
+        includeParam: true,
+      }).body,
     );
     return;
   }

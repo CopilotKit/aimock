@@ -339,6 +339,12 @@ const INLINE_SAMPLES = {
   "mcp-record-config": "aimock-cli",
   "fakes-for-test": "test-plugins",
   "fakes-for-fixture": "test-plugins",
+  "required-policy-config": "aimock-cli",
+  "required-policy-cli": "aimock-cli",
+  "required-policy-api": "claude-messages",
+  "required-policy-reject": "claude-messages",
+  "required-policy-error": "claude-messages",
+  "required-policy-off": "claude-messages",
 } as const;
 type InlineSample = keyof typeof INLINE_SAMPLES;
 
@@ -459,6 +465,109 @@ describe("docs sample: the fakes report route (docs/control-api#mcp-fakes-report
     const { stdout } = await run("sh", ["-c", script]);
     expect(JSON.parse(stdout)).toEqual(JSON.parse(docSample("fakes-report-response")));
   });
+});
+
+describe("docs samples: required-header policy (docs/aimock-cli, docs/claude-messages)", () => {
+  /** Run the literal curl, changing only the port and adding response capture. */
+  async function policyRequest(
+    name: "required-policy-reject" | "required-policy-off",
+    url: string,
+  ) {
+    const headers = join(tmpDir, "policy-response.headers");
+    const script = docSample(name)
+      .replace(/http:\/\/localhost:4010/g, url)
+      .trim();
+    const { stdout } = await run("sh", [
+      "-c",
+      `${script} --silent --show-error --write-out '\\n%{http_code}' --dump-header "$1"`,
+      "docs-policy",
+      headers,
+    ]);
+    const split = stdout.lastIndexOf("\n");
+    const body: unknown = JSON.parse(stdout.slice(0, split));
+    return {
+      status: Number(stdout.slice(split + 1)),
+      body,
+      headers: readFileSync(headers, "utf8"),
+    };
+  }
+
+  /** Compare the rejection to the literal error sample, including request attribution. */
+  async function expectPolicyRejection(url: string) {
+    const response = await policyRequest("required-policy-reject", url);
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual(JSON.parse(docSample("required-policy-error")));
+    expect(response.headers).toMatch(/^x-request-id: req_policy_example\r?$/im);
+  }
+
+  it("required-policy-api/reject/error/off: enforces the header and permits the override", async () => {
+    const sample = docSample("required-policy-api")
+      .replace('"@copilotkit/aimock"', JSON.stringify(resolve(REPO_ROOT, "dist/index.js")))
+      .replace("port: 4010", "port: 0");
+    const file = join(tmpDir, "policy-api.mjs");
+    writeFileSync(file, `${sample}\nconsole.log("aimock server listening on " + instance.url);\n`);
+    const instance = await startCli([], file);
+    try {
+      await expectPolicyRejection(instance.url);
+      const response = await policyRequest("required-policy-off", instance.url);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ input_tokens: 2 });
+    } finally {
+      await instance.stop();
+    }
+  });
+
+  it("required-policy-config: the documented config enforces the header", async () => {
+    const fixtures = join(tmpDir, "fixtures");
+    mkdirSync(fixtures);
+    const config = docSample("required-policy-config")
+      .replace('"port": 4010', '"port": 0')
+      .replace('"./fixtures"', JSON.stringify(fixtures));
+    const file = join(tmpDir, "aimock.json");
+    writeFileSync(file, config);
+    const cli = await startCli(["--config", file], "dist/aimock-cli.js");
+    try {
+      await expectPolicyRejection(cli.url);
+    } finally {
+      await cli.stop();
+    }
+  });
+
+  it.each([
+    [0, "@copilotkit/aimock", "dist/aimock-cli.js"],
+    [1, "llmock", "dist/cli.js"],
+  ] as const)(
+    "required-policy-cli: command %i applies the last policy flag",
+    async (index, bin, file) => {
+      const fixtures = join(tmpDir, "fixtures");
+      mkdirSync(fixtures);
+      const config = join(tmpDir, "aimock.json");
+      writeFileSync(
+        config,
+        docSample("required-policy-config").replace('"./fixtures"', JSON.stringify(fixtures)),
+      );
+      const commands = docSample("required-policy-cli")
+        .trim()
+        .split(/\n\s*\n/);
+      expect(commands).toHaveLength(2);
+      const argv = shellArgs(commands[index]);
+      expect(argv).toContain(bin);
+      // Published npx invocations use the corresponding owned binary. Only
+      // fixture/config paths and the displayed port are localized.
+      const args = argv.slice(argv.indexOf(bin) + 1).map((arg, at, all) => {
+        if (all[at - 1] === "--port") return "0";
+        if (arg === "./fixtures") return fixtures;
+        if (arg === "aimock.json") return config;
+        return arg;
+      });
+      const cli = await startCli(args, file);
+      try {
+        await expectPolicyRejection(cli.url);
+      } finally {
+        await cli.stop();
+      }
+    },
+  );
 });
 
 describe("docs samples: MCP recording (docs/record-replay, docs/aimock-cli)", () => {

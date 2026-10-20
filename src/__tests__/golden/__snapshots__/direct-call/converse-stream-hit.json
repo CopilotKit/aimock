@@ -1,0 +1,56 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/vnd.amazon.eventstream"
+  },
+  "frames": [
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "messageStart",
+        ":message-type": "event"
+      },
+      "payload": "{\"role\":\"assistant\"}"
+    },
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "contentBlockStart",
+        ":message-type": "event"
+      },
+      "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+    },
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "contentBlockDelta",
+        ":message-type": "event"
+      },
+      "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi there.\"}}"
+    },
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "contentBlockStop",
+        ":message-type": "event"
+      },
+      "payload": "{\"contentBlockIndex\":0}"
+    },
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "messageStop",
+        ":message-type": "event"
+      },
+      "payload": "{\"stopReason\":\"end_turn\"}"
+    },
+    {
+      "headers": {
+        ":content-type": "application/json",
+        ":event-type": "metadata",
+        ":message-type": "event"
+      },
+      "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+    }
+  ]
+}

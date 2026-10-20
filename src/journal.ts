@@ -1,4 +1,5 @@
 import { generateId } from "./helpers.js";
+import { isDeepStrictEqual } from "node:util";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -109,6 +110,7 @@ function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
     fieldEqual(a.userMessage, b.userMessage) &&
     systemMessageEqual(a.systemMessage, b.systemMessage) &&
     fieldEqual(a.inputText, b.inputText) &&
+    isDeepStrictEqual(a.embeddingRequest, b.embeddingRequest) &&
     fieldEqual(a.toolCallId, b.toolCallId) &&
     fieldEqual(a.toolName, b.toolName) &&
     fieldEqual(a.toolNamespace, b.toolNamespace) &&

@@ -8,12 +8,11 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -654,7 +653,7 @@ export async function handleBytePlusVideoCreate(
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
       fixture
         ? "fixture"
-        : resolveStrictMode(defaults.strict, req.headers)
+        : resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss
           ? "internal"
           : defaults.record?.providers.byteplus
             ? "proxy"
@@ -666,8 +665,8 @@ export async function handleBytePlusVideoCreate(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -897,7 +896,7 @@ export async function handleBytePlusVideoStatus(
   }
 
   if (job.kind === "record") {
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: video task ${id} is proxied live upstream (record mode) — refusing the upstream poll`,
       );

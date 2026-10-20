@@ -5,6 +5,7 @@
  * and responds with setupComplete, serverContent, toolCall, and error
  * messages in the Gemini Live streaming format.
  */
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 
 import type {
   Fixture,
@@ -41,8 +42,6 @@ import {
   resolveFixtureBlocks,
   resolveFixtureBlockOutcome,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
@@ -534,7 +533,7 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", path, skippedBySequenceOrTurn));
       journal.add({

@@ -520,6 +520,62 @@ def test_match_level_kwarg_opt_routed_under_match():
     assert "model" not in entry
 
 
+@pytest.mark.parametrize("operation", ["/api/embed", "/api/embeddings", "/v1/embeddings"])
+def test_add_fixture_embedding_request_kwarg_keeps_exact_matching(aimock, operation):
+    """The public kwarg constrains embedding operation, input shape and width."""
+    legacy = operation == "/api/embeddings"
+    raw_input = "same text" if legacy else ["same", "text"]
+    embedding_request = {"operation": operation, "input": raw_input, "dimensions": 2}
+    aimock.add_fixture(
+        {"inputText": "same text"},
+        {"embedding": [0.125, 0.875]},
+        embeddingRequest=embedding_request,
+    )
+    payload = {
+        "model": "nomic-embed-text",
+        "prompt" if legacy else "input": raw_input,
+        "dimensions": 2,
+    }
+    headers = {"X-AIMock-Strict": "true"}
+    matched = requests.post(
+        f"{aimock.base_url}{operation}", json=payload, headers=headers, timeout=5
+    )
+    assert matched.status_code == 200
+
+    changed_width = requests.post(
+        f"{aimock.base_url}{operation}",
+        json={**payload, "dimensions": 3},
+        headers=headers,
+        timeout=5,
+    )
+    assert changed_width.status_code == 503
+
+    if not legacy:
+        # Same joined text, different wire shape: the exact matcher must miss.
+        changed_shape = requests.post(
+            f"{aimock.base_url}{operation}",
+            json={**payload, "input": "same text"},
+            headers=headers,
+            timeout=5,
+        )
+        assert changed_shape.status_code == 503
+
+    other_operation = "/v1/embeddings" if legacy else "/api/embeddings"
+    other_payload = {
+        "model": "nomic-embed-text",
+        "input" if legacy else "prompt": "same text",
+        "dimensions": 2,
+    }
+    changed_operation = requests.post(
+        f"{aimock.base_url}{other_operation}",
+        json=other_payload,
+        headers=headers,
+        timeout=5,
+    )
+    assert changed_operation.status_code == 503
+    assert embedding_request == {"operation": operation, "input": raw_input, "dimensions": 2}
+
+
 def test_match_level_opt_keys_match_server_schema():
     """Drift guard: ``_MATCH_LEVEL_OPT_KEYS`` must cover every match-level
     field the server reads from ``entry.match`` in ``entryToFixture``.

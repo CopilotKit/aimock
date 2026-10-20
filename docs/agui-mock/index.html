@@ -123,6 +123,15 @@ agui.<span class="fn">onToolCall</span>(<span class="op">/search/</span>, <span 
           </tbody>
         </table>
 
+        <p>
+          <code>onMessage</code>, <code>onToolCall</code>, <code>onStateKey</code>, and
+          <code>onReasoning</code> build events for each request. Run events use the caller's
+          <code>threadId</code>, <code>runId</code>, and optional <code>parentRunId</code>; message
+          and tool-call IDs are fresh for each run. Explicit event arrays passed to
+          <code>addFixture</code>, <code>onRun</code>, <code>onPredicate</code>, and
+          <code>onToolResult</code> keep their authored IDs.
+        </p>
+
         <h2>Event Types</h2>
         <p>AG-UI protocol event categories:</p>
         <table class="endpoint-table">

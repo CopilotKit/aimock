@@ -19,6 +19,9 @@ import {
   FINE_TUNING_ID_RE,
   GROK_VIDEO_STATUS_RE,
   GROK_VIDEO_SUBMIT_PATH,
+  MODELS_DETAIL_RE,
+  GEMINI_MODEL_DETAIL_RE,
+  GEMINI_MODELS_PATH,
   OPENAI_VIDEO_STATUS_RE,
   OPENROUTER_VIDEO_CONTENT_RE,
   OPENROUTER_VIDEO_STATUS_RE,
@@ -285,6 +288,8 @@ const VERTEX_RE =
 // submit label below stays byte-identical to what it was before this RE
 // widened past generate/streamGenerate — the two rules must agree.
 const GEMINI_RE = /^\/v1beta\/models\/([^:]+):([^/]+)$/;
+// Retain the historical label for unserved single-segment encoded action IDs.
+const GEMINI_MODEL_LABEL_RE = /^\/v1beta\/models\/([^:/]+)$/;
 const GEMINI_ACTIONS = new Set([
   "generateContent",
   "streamGenerateContent",
@@ -294,7 +299,6 @@ const GEMINI_ACTIONS = new Set([
   "predict",
   "predictLongRunning",
 ]);
-const GEMINI_MODEL_RE = /^\/v1beta\/models\/([^:/]+)$/;
 // The Vertex `:action` segment is caller controlled exactly as Gemini's is;
 // server.ts routes only these two, so anything else collapses to `{action}`.
 const VERTEX_ACTIONS = new Set(["generateContent", "streamGenerateContent"]);
@@ -375,6 +379,7 @@ const STATIC_ROUTE_PATHS = new Set([
   "/v1/responses",
   "/v1/realtime",
   "/v1/messages",
+  "/v1/messages/count_tokens",
   "/v1/embeddings",
   "/v1/moderations",
   "/v1/models",
@@ -520,6 +525,9 @@ export function normalizePathLabel(pathname: string, mountPaths: readonly string
     }
   }
 
+  if (MODELS_DETAIL_RE.test(pathname)) return "/v1/models/{id}";
+  if (pathname === GEMINI_MODELS_PATH) return GEMINI_MODELS_PATH;
+
   // Bedrock: /model/{modelId}/{operation}
   const bedrockMatch = pathname.match(BEDROCK_RE);
   if (bedrockMatch) {
@@ -532,7 +540,7 @@ export function normalizePathLabel(pathname: string, mountPaths: readonly string
     const action = GEMINI_ACTIONS.has(geminiMatch[2]) ? geminiMatch[2] : "{action}";
     return `/v1beta/models/{model}:${action}`;
   }
-  if (GEMINI_MODEL_RE.test(pathname)) {
+  if (GEMINI_MODEL_DETAIL_RE.test(pathname) || GEMINI_MODEL_LABEL_RE.test(pathname)) {
     return "/v1beta/models/{model}";
   }
 

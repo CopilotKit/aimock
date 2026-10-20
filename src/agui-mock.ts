@@ -16,10 +16,24 @@ import {
   buildStateUpdate,
   buildReasoningResponse,
   writeAGUIEventStream,
+  type AGUIBuildOpts,
 } from "./agui-handler.js";
 import { flattenHeaders, readBody } from "./helpers.js";
 import { proxyAndRecordAGUI } from "./agui-recorder.js";
 import { Logger, type LogLevel } from "./logger.js";
+
+const generatedEvents = new WeakMap<AGUIFixture, (opts: AGUIBuildOpts) => AGUIEvent[]>();
+
+/** Keep convenience builders lazy so each request gets its own run and content IDs. */
+function generatedFixture(
+  match: AGUIFixture["match"],
+  build: (opts: AGUIBuildOpts) => AGUIEvent[],
+  delayMs?: number,
+): AGUIFixture {
+  const fixture: AGUIFixture = { match, events: [], delayMs };
+  generatedEvents.set(fixture, build);
+  return fixture;
+}
 
 export class AGUIMock implements Mountable {
   private fixtures: AGUIFixture[] = [];
@@ -44,12 +58,9 @@ export class AGUIMock implements Mountable {
   }
 
   onMessage(pattern: string | RegExp, text: string, opts?: { delayMs?: number }): this {
-    const events = buildTextResponse(text);
-    this.fixtures.push({
-      match: { message: pattern },
-      events,
-      delayMs: opts?.delayMs,
-    });
+    this.fixtures.push(
+      generatedFixture({ message: pattern }, (ids) => buildTextResponse(text, ids), opts?.delayMs),
+    );
     return this;
   }
 
@@ -68,34 +79,32 @@ export class AGUIMock implements Mountable {
     args: string,
     opts?: { result?: string; delayMs?: number },
   ): this {
-    const events = buildToolCallResponse(toolName, args, {
-      result: opts?.result,
-    });
-    this.fixtures.push({
-      match: { message: pattern },
-      events,
-      delayMs: opts?.delayMs,
-    });
+    const result = opts?.result;
+    this.fixtures.push(
+      generatedFixture(
+        { message: pattern },
+        (ids) => buildToolCallResponse(toolName, args, { ...ids, result }),
+        opts?.delayMs,
+      ),
+    );
     return this;
   }
 
   onStateKey(key: string, snapshot: Record<string, unknown>, delayMs?: number): this {
-    const events = buildStateUpdate(snapshot);
-    this.fixtures.push({
-      match: { stateKey: key },
-      events,
-      delayMs,
-    });
+    this.fixtures.push(
+      generatedFixture({ stateKey: key }, (ids) => buildStateUpdate(snapshot, ids), delayMs),
+    );
     return this;
   }
 
   onReasoning(pattern: string | RegExp, text: string, opts?: { delayMs?: number }): this {
-    const events = buildReasoningResponse(text);
-    this.fixtures.push({
-      match: { message: pattern },
-      events,
-      delayMs: opts?.delayMs,
-    });
+    this.fixtures.push(
+      generatedFixture(
+        { message: pattern },
+        (ids) => buildReasoningResponse(text, ids),
+        opts?.delayMs,
+      ),
+    );
     return this;
   }
 
@@ -183,7 +192,11 @@ export class AGUIMock implements Mountable {
     const fixture = findFixture(input, this.fixtures);
 
     if (fixture) {
-      await writeAGUIEventStream(res, fixture.events, { delayMs: fixture.delayMs });
+      const build = generatedEvents.get(fixture);
+      const events = build
+        ? build({ threadId: input.threadId, runId: input.runId, parentRunId: input.parentRunId })
+        : fixture.events;
+      await writeAGUIEventStream(res, events, { delayMs: fixture.delayMs });
       this.journalRequest(req, pathname, 200);
       return true;
     }

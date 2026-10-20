@@ -69,6 +69,26 @@
           <li>Subsequent identical requests match the newly recorded fixture</li>
         </ol>
 
+        <h2 id="catalog-and-count-routes">Catalog and Count Routes</h2>
+        <p>
+          Native model catalogs and token-count routes always answer locally, including in record
+          and proxy-only modes. They never contact upstream providers or save recordings. Catalog
+          GETs do not create journal entries. Count POSTs create entries with
+          <code>source: "internal"</code> and <code>fixture: null</code>.
+        </p>
+        <p>
+          Count routes estimate the translated request, including system text and converted tools.
+          They do not read fixture usage or count-specific fixtures. The estimate can differ from
+          the usage on a replayed response. To make those values agree, set the response usage in
+          the fixture explicitly.
+        </p>
+        <p>
+          Native catalogs use provider paging by default. Clients must read
+          <code>has_more</code> or <code>nextPageToken</code> to collect all pages. See the
+          <a href="/claude-messages#model-catalog">Claude catalog and count routes</a> and
+          <a href="/gemini#model-catalog">Gemini catalog and count routes</a>.
+        </p>
+
         <h2>Proxy-Only Mode</h2>
         <p>
           Use <code>--proxy-only</code> instead of <code>--record</code> when you want unmatched
@@ -832,10 +852,17 @@ try {
               >Mock-internal control headers (meaningless — and potentially confusing or leaky — on
               a real provider's wire):</strong
             >
-            <code>x-test-id</code>, <code>x-aimock-strict</code>, <code>x-aimock-context</code>, and
-            the <code>x-aimock-chaos-*</code> prefix family
+            <code>x-test-id</code>, <code>x-aimock-strict</code>, <code>x-aimock-policy</code>,
+            <code>x-aimock-context</code>, and the <code>x-aimock-chaos-*</code> prefix family
           </li>
         </ul>
+        <p>
+          The LLM HTTP recorder strips <code>X-AIMock-Policy</code> before forwarding. With
+          <code>requiredHeaders=enforce</code>, a missing Anthropic version header returns 400
+          before proxying. Other forwarded headers and recorded response content keep their existing
+          behavior. See
+          <a href="/claude-messages#required-header-policy">Required Header Policy</a>.
+        </p>
         <p>
           <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture contains
           the match criteria (derived from the last user message) and the response content — plus,
@@ -1018,6 +1045,13 @@ try {
         </p>
 
         <h2 id="model-aware-recording">Model-Aware Recording</h2>
+        <p>
+          New Ollama and OpenAI-compatible embedding recordings also keep the operation, exact input
+          shape and requested dimensions in <code>match.embeddingRequest</code>. This separates
+          batches from strings with the same joined text, different widths, and other embedding
+          operations, both while recording and after loading the saved file. Re-record older
+          captures to add this match data.
+        </p>
         <p>
           When recording fixtures, aimock automatically includes the model name in match criteria.
           This prevents collisions when your app makes multiple LLM calls with the same user message

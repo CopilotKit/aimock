@@ -1,14 +1,13 @@
+import { renderError } from "./response/errors.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type * as http from "node:http";
 import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
 import {
   isTranscriptionResponse,
   isErrorResponse,
-  serializeErrorResponse,
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -165,7 +164,7 @@ export async function handleTranscription(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
@@ -183,13 +182,11 @@ export async function handleTranscription(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -231,13 +228,11 @@ export async function handleTranscription(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -253,7 +248,7 @@ export async function handleTranscription(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -270,12 +265,10 @@ export async function handleTranscription(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message: "Fixture response is not a transcription type",
-          type: "server_error",
-        },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a transcription type",
+        type: "server_error",
+      }).body,
     );
     return;
   }

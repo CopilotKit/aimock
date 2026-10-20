@@ -129,6 +129,17 @@
               <td>Match on embedding input text</td>
             </tr>
             <tr>
+              <td>embeddingRequest</td>
+              <td>{ operation, input, dimensions? }</td>
+              <td>
+                Exact operation, input shape and requested dimensions for <code>/api/embed</code>,
+                <code>/api/embeddings</code>, or <code>/v1/embeddings</code>. Recordings set this
+                alongside <code>inputText</code> and <code>model</code> so batches and widths stay
+                distinct and other embedding operations cannot match. Omit this field for broad
+                embedding fixtures.
+              </td>
+            </tr>
+            <tr>
               <td>toolCallId</td>
               <td>string</td>
               <td>

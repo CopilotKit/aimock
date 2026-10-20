@@ -235,6 +235,7 @@ class AIMockServer:
             "userMessage",
             "systemMessage",
             "inputText",
+            "embeddingRequest",
             "toolCallId",
             "toolResultContains",
             "toolName",

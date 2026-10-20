@@ -1,0 +1,40 @@
+{
+  "got": {
+    "status": 404,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-type": "application/json",
+      "x-request-id": "req-<#0>"
+    },
+    "body": "{\"error\":{\"message\":\"No fixture matched\",\"type\":\"invalid_request_error\"}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/model/gpt-4/invoke-with-response-stream",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "miss"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 404,
+        "fixture": null
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

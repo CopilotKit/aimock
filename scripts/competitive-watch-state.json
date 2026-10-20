@@ -10,10 +10,10 @@
   },
   "mastra-core-npm": {
     "url": "https://registry.npmjs.org/@mastra%2Fcore/latest",
-    "hash": "sha256:fa99b25f316a085beb35da563d99c46cec265e6f967c495c70dffe22f8f6d5c3",
+    "hash": "sha256:a361164ff386819edb5a198587a2e15c41267f83ca6eafeaa8e614b6c665e962",
     "checks": {},
-    "version": "1.76.0",
-    "lastChanged": "2026-10-12"
+    "version": "1.78.0",
+    "lastChanged": "2026-10-19"
   },
   "mastra-docs-tool-mocks": {
     "url": "https://mastra.ai/docs/evals/experiments",
@@ -38,21 +38,21 @@
   },
   "mockserver-ao-record": {
     "url": "https://www.mock-server.com/mock_server/ai_overview.html",
-    "hash": "sha256:6ad03175ed61cc7ad29e3c9f7197ed5cedf5fa7df80778c7a37f6d93751dda5b",
+    "hash": "sha256:79e26d043bf5d598aa2cfebe49ad03375434d9e05bf99f6f176074ff2f61cdc9",
     "checks": {
       "replay": true
     },
-    "lastChanged": "2026-10-12"
+    "lastChanged": "2026-10-19"
   },
   "mockserver-ap-mcp": {
     "url": "https://www.mock-server.com/mock_server/ai_protocol_mocking.html",
-    "hash": "sha256:3b3c892c52415286b7c1cf4af40aa6e82b58ee64d757ba37c6f79c3049475e8e",
+    "hash": "sha256:007d80a34c2b9d1cb315c3cb28c4b87628681bb8ed5bbd4e8cdb0de379e8138d",
     "checks": {
       "argument-matching": false,
       "ordered-answers": false,
       "undeclared-policy": false
     },
-    "lastChanged": "2026-10-12"
+    "lastChanged": "2026-10-19"
   },
   "mockserver-dd-cassette": {
     "url": "https://www.mock-server.com/mock_server/drift_detection.html",
@@ -64,11 +64,11 @@
   },
   "mockserver-lr-chaos": {
     "url": "https://www.mock-server.com/mock_server/llm_response_mocking.html",
-    "hash": "sha256:34f6410c57d1982081f92255982c46894c5efe5d9b335124dd54f2db74e06c67",
+    "hash": "sha256:7c759d5fbf682da239a90fd98aa4cf606cc78671330b0eda8b47576811619adc",
     "checks": {
       "tool-argument-fault": false
     },
-    "lastChanged": "2026-10-12"
+    "lastChanged": "2026-10-19"
   },
   "mockserver-lr-sessions": {
     "url": "https://www.mock-server.com/mock_server/llm_response_mocking.html",

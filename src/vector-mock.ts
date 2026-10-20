@@ -1,4 +1,5 @@
 import * as http from "node:http";
+import { buildOpenAIError } from "./response/errors.js";
 import type { Mountable, JournalEntry } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { MetricsRegistry } from "./metrics.js";
@@ -121,12 +122,11 @@ export class VectorMock implements Mountable {
         }
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
+          JSON.stringify(
+            buildOpenAIError("service-validation", {
               message: "Request body must be a JSON object",
-              type: "invalid_request_error",
-            },
-          }),
+            }),
+          ),
         );
         return true;
       }
@@ -244,12 +244,11 @@ export class VectorMock implements Mountable {
             }
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify({
-                error: {
+              JSON.stringify(
+                buildOpenAIError("service-validation", {
                   message: "Request body must be a JSON object",
-                  type: "invalid_request_error",
-                },
-              }),
+                }),
+              ),
             );
             return;
           }

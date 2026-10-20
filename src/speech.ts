@@ -1,16 +1,15 @@
+import { renderError } from "./response/errors.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type * as http from "node:http";
 import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
 import {
   isAudioResponse,
   isErrorResponse,
   isJsonObject,
-  serializeErrorResponse,
   flattenHeaders,
   getTestId,
   FORMAT_TO_CONTENT_TYPE,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -58,13 +57,11 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
@@ -83,12 +80,10 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -115,14 +110,12 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: !input
-            ? "Missing required parameter: 'input'"
-            : "Invalid parameter: 'input' must be a string or a nonempty array of content parts",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: !input
+          ? "Missing required parameter: 'input'"
+          : "Invalid parameter: 'input' must be a string or a nonempty array of content parts",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -166,7 +159,7 @@ export async function handleSpeech(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
@@ -184,13 +177,11 @@ export async function handleSpeech(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -232,13 +223,11 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -254,7 +243,7 @@ export async function handleSpeech(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -271,9 +260,10 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not an audio type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not an audio type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -290,13 +280,11 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Object-form audio not supported for speech endpoint. Use string-form: { audio: '<base64>' }",
-          type: "server_error",
-        },
-      }),
+      renderError("openai", "unknown-response", {
+        message:
+          "Object-form audio not supported for speech endpoint. Use string-form: { audio: '<base64>' }",
+        type: "server_error",
+      }).body,
     );
     return;
   }

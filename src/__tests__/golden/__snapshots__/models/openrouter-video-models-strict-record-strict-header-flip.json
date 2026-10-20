@@ -1,0 +1,33 @@
+{
+  "exchange": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-type": "application/json; charset=utf-8",
+      "x-request-id": "req-<#0>"
+    },
+    "body": "{\"data\":[{\"id\":\"upstream/video-1\"}]}"
+  },
+  "journal": [
+    {
+      "method": "GET",
+      "path": "/api/v1/videos/models",
+      "response": {
+        "status": 200,
+        "fixture": null,
+        "source": "proxy",
+        "strictOverride": false
+      }
+    }
+  ],
+  "upstreamHits": [
+    {
+      "method": "GET",
+      "url": "/api/v1/videos/models",
+      "authorization": "Bearer k"
+    }
+  ]
+}

@@ -34,7 +34,29 @@
  * them without also adopting the LIVE canaries below (see that module's header).
  */
 
-import { describe, it, expect } from "vitest";
+import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import type { DriftReport } from "../../../scripts/drift-types.js";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { startGoldenServer, type GoldenServer } from "../golden/harness.js";
+import { formatDriftReport } from "./schema.js";
+import { nativeResponseDiffs } from "./sdk-shapes.js";
+import {
+  emitLiveObservation,
+  type LiveObservation,
+  type ObservedResponse,
+} from "./live-observations.js";
 import { InfraError, isInfraSkip } from "./providers.js";
 import { includeFamilies, excludeFamilies } from "./model-registry.js";
 import { isFamilyStillReferenced } from "./deprecation-detector.js";
@@ -44,6 +66,711 @@ import {
   detectDeprecatedFamilies,
   checkDeprecatedFamiliesLive,
 } from "./text-drift.js";
+
+// Verified docs: platform.claude.com/docs/en/api/models/list and
+// ai.google.dev/api/models (2026-10-13). Bounds and lifecycle enums are
+// documented; exact error text, unknown cursors and mock offset tokens are not.
+const emptyAnthropicPage = { data: [], has_more: false, first_id: null, last_id: null };
+const anthropicCatalogCases = [
+  {
+    id: "anthropic-limit-zero",
+    query: "limit=0",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "limit must be an integer between 1 and 1000",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-limit-large",
+    query: "limit=1001",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "limit must be an integer between 1 and 1000",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-limit-fractional",
+    query: "limit=1.5",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "limit must be an integer between 1 and 1000",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-after-unknown",
+    query: "after_id=aimock-nonexistent-model",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Model with id aimock-nonexistent-model not found",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-before-unknown",
+    query: "before_id=aimock-nonexistent-model",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Model with id aimock-nonexistent-model not found",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-lifecycle-invalid",
+    query: "lifecycle=unknown",
+    expected: {
+      status: 400,
+      body: {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "lifecycle must contain active, deprecated, or retired",
+        },
+      },
+    },
+  },
+  {
+    id: "anthropic-lifecycle-retired",
+    query: "lifecycle=retired",
+    expected: { status: 200, body: emptyAnthropicPage },
+  },
+] satisfies { id: string; query: string; expected: ObservedResponse }[];
+const geminiCatalogCases = [
+  {
+    id: "gemini-page-size-negative",
+    query: "pageSize=-1",
+    expected: {
+      status: 400,
+      body: {
+        error: {
+          code: 400,
+          message: "pageSize must be a nonnegative integer",
+          status: "INVALID_ARGUMENT",
+        },
+      },
+    },
+  },
+  {
+    id: "gemini-page-size-fractional",
+    query: "pageSize=1.5",
+    expected: {
+      status: 400,
+      body: {
+        error: {
+          code: 400,
+          message: "pageSize must be a nonnegative integer",
+          status: "INVALID_ARGUMENT",
+        },
+      },
+    },
+  },
+  {
+    id: "gemini-page-token-invalid",
+    query: "pageToken=not-a-token",
+    expected: {
+      status: 400,
+      body: {
+        error: {
+          code: 400,
+          message: "pageToken must be a valid catalog offset token",
+          status: "INVALID_ARGUMENT",
+        },
+      },
+    },
+  },
+] satisfies { id: string; query: string; expected: ObservedResponse }[];
+let nativeCatalogServer: GoldenServer;
+let nativeVersionServer: GoldenServer;
+const nativeVersionCases = [
+  { path: "/v1/models", caseId: "anthropic-models-missing-version-enforce" },
+  {
+    path: "/v1/models/claude-sonnet-4-5",
+    caseId: "anthropic-model-detail-missing-version-enforce",
+  },
+] as const;
+const nativeVersionExpected: ObservedResponse = {
+  status: 400,
+  body: {
+    type: "error",
+    error: { type: "invalid_request_error", message: "anthropic-version: header is required" },
+    request_id: "req_f6b_required_version",
+  },
+};
+beforeAll(async () => {
+  nativeCatalogServer = await startGoldenServer([]);
+  nativeVersionServer = await startGoldenServer([], {
+    auth: { apiKeys: ["local-native-auth"] },
+    policy: { requiredHeaders: "enforce" },
+  });
+});
+afterAll(async () => {
+  await nativeCatalogServer.close();
+  await nativeVersionServer.close();
+});
+
+describe("native provider catalog local contracts", () => {
+  it.each(nativeVersionCases)("local enforced missing-version $path", async ({ path, caseId }) => {
+    const response = await fetch(`${nativeVersionServer.url}${path}`, {
+      headers: { "x-api-key": "local-native-auth", "x-request-id": "req_f6b_required_version" },
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    emitLiveObservation({
+      surface: "anthropic-catalog",
+      caseId: `local:${caseId}`,
+      expected: nativeVersionExpected,
+      actual,
+    });
+    const diffs = nativeResponseDiffs(nativeVersionExpected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(
+        `Anthropic catalog enforced missing-version ${path}`,
+        diffs,
+        "anthropic-catalog",
+      ),
+    ).toEqual([]);
+  });
+  it.each(["different-error-envelope", "error"])(
+    "compares the top-level native discriminator %s from a real response",
+    async (type) => {
+      const response = await fetch(`${nativeCatalogServer.url}/v1/models?limit=0`, {
+        headers: { "anthropic-version": "2023-06-01" },
+      });
+      const actual: ObservedResponse = { status: response.status, body: await response.json() };
+      expect(actual).toEqual(anthropicCatalogCases[0].expected);
+      const expected = {
+        ...actual,
+        body: { ...anthropicCatalogCases[0].expected.body, type },
+      };
+      const diffs = nativeResponseDiffs(expected, actual);
+      expect(diffs).toEqual(
+        type === "error"
+          ? []
+          : [
+              {
+                path: "type",
+                severity: "critical",
+                issue: "Native response value differs",
+                expected: '"different-error-envelope"',
+                real: '"different-error-envelope"',
+                mock: '"error"',
+              },
+            ],
+      );
+      expect(
+        formatDriftReport("Anthropic native type control", diffs, "anthropic-catalog"),
+      ).toContain(type === "error" ? "No drift detected" : "Surface: anthropic-catalog");
+      const diagnostic = (message: string, request_id: string) => ({
+        ...actual,
+        body: {
+          type: "error",
+          error: { type: "invalid_request_error", message },
+          request_id,
+        },
+      });
+      expect(
+        nativeResponseDiffs(
+          diagnostic("expected diagnostic", "expected-request"),
+          diagnostic("actual diagnostic", "actual-request"),
+        ),
+      ).toEqual([]);
+    },
+  );
+  it("reports value-only drift from a real native response through ShapeDiff", async () => {
+    const response = await fetch(`${nativeCatalogServer.url}/v1/models?limit=0`, {
+      headers: { "anthropic-version": "2023-06-01" },
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    const diffs = nativeResponseDiffs({ ...actual, status: 401 }, actual);
+    expect(diffs).toEqual([
+      {
+        path: "status",
+        severity: "critical",
+        issue: "Native response value differs",
+        expected: "401",
+        real: "401",
+        mock: "400",
+      },
+    ]);
+    expect(
+      formatDriftReport("Anthropic native status control", diffs, "anthropic-catalog"),
+    ).toContain("Surface: anthropic-catalog");
+  });
+  it.each(anthropicCatalogCases)("$id", async ({ id, query, expected }) => {
+    const response = await fetch(`${nativeCatalogServer.url}/v1/models?${query}`, {
+      headers: { "anthropic-version": "2023-06-01" },
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    emitLiveObservation({ surface: "anthropic-catalog", caseId: `local:${id}`, expected, actual });
+    const diffs = nativeResponseDiffs(expected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(`Anthropic catalog local contract ${id}`, diffs, "anthropic-catalog"),
+    ).toEqual([]);
+  });
+  it.each(geminiCatalogCases)("$id", async ({ id, query, expected }) => {
+    const response = await fetch(`${nativeCatalogServer.url}/v1beta/models?${query}`);
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    emitLiveObservation({ surface: "gemini-catalog", caseId: `local:${id}`, expected, actual });
+    const diffs = nativeResponseDiffs(expected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(`Gemini catalog local contract ${id}`, diffs, "gemini-catalog"),
+    ).toEqual([]);
+  });
+});
+
+function registerNativeCatalogObservation(
+  id: string,
+  surface: string,
+  caseId: string,
+  capture: () => Promise<{ expected: ObservedResponse; actual: ObservedResponse }>,
+  allDiffs = false,
+  assertionTitle = id,
+) {
+  let captured: ReturnType<typeof capture> | undefined;
+  const receive = () => (captured ??= capture());
+  // Received evidence needs an eligible owner even when comparison is skipped.
+  it(`${assertionTitle} received status/body (evidence only)`, async () => {
+    const observation = await receive();
+    emitLiveObservation({ surface, caseId, ...observation });
+  });
+  it(`${assertionTitle} comparison`, async (context) => {
+    const observation = await receive();
+    if ([401, 403, 429].includes(observation.expected.status) || observation.expected.status >= 500)
+      context.skip(
+        "Comparison UNAVAILABLE: access/rate/service error; vendor conformance unverified",
+      );
+    const diffs = nativeResponseDiffs(observation.expected, observation.actual);
+    expect(
+      allDiffs ? diffs : diffs.filter((diff) => diff.severity === "critical"),
+      formatDriftReport(`Native catalog comparison ${id}`, diffs, surface),
+    ).toEqual([]);
+  });
+}
+
+async function receiveNativeCatalogResponse(response: Response): Promise<ObservedResponse> {
+  // Keep literal empty/non-JSON bodies; comparison owns unavailable status policy.
+  return {
+    status: response.status,
+    body: await response
+      .clone()
+      .json()
+      .catch(() => response.text()),
+  };
+}
+
+// Opt-in, read-only vendor requests; no inference/token spend, retries or fake
+// vendor responses. Full status/body records precede comparison/infra handling.
+const nativeProviderDrift = process.env.AIMOCK_NATIVE_PROVIDER_DRIFT === "1";
+describe.skipIf(!nativeProviderDrift || !process.env.ANTHROPIC_API_KEY)(
+  "native provider Anthropic catalog vendor observations",
+  () => {
+    for (const { path, caseId } of nativeVersionCases) {
+      registerNativeCatalogObservation(
+        `Anthropic catalog vendor enforced missing-version ${path}`,
+        "anthropic-catalog",
+        `vendor:${caseId}`,
+        async () => {
+          const response = await fetch(`https://api.anthropic.com${path}`, {
+            headers: { "x-api-key": process.env.ANTHROPIC_API_KEY ?? "" },
+            signal: AbortSignal.timeout(15000),
+          });
+          const expected = await receiveNativeCatalogResponse(response);
+          const local = await fetch(`${nativeVersionServer.url}${path}`, {
+            headers: {
+              "x-api-key": "local-native-auth",
+              "x-request-id": "req_f6b_required_version",
+            },
+          });
+          const actual: ObservedResponse = { status: local.status, body: await local.json() };
+          return { expected, actual };
+        },
+        true,
+        `Anthropic catalog vendor enforced missing-version ${path.startsWith("/v1/models/") ? "/v1/models/:model" : path}`,
+      );
+    }
+    for (const { id, query } of anthropicCatalogCases.filter(
+      (item) => item.id !== "anthropic-lifecycle-retired",
+    )) {
+      registerNativeCatalogObservation(id, "anthropic-catalog", `vendor:${id}`, async () => {
+        const response = await fetch(`https://api.anthropic.com/v1/models?${query}`, {
+          headers: {
+            "anthropic-version": "2023-06-01",
+            "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        const vendor = await receiveNativeCatalogResponse(response);
+        const local = await fetch(`${nativeCatalogServer.url}/v1/models?${query}`, {
+          headers: { "anthropic-version": "2023-06-01" },
+        });
+        const actual: ObservedResponse = { status: local.status, body: await local.json() };
+        return { expected: vendor, actual };
+      });
+    }
+  },
+);
+describe.skipIf(!nativeProviderDrift || !process.env.GOOGLE_API_KEY)(
+  "native provider Gemini catalog vendor observations",
+  () => {
+    for (const { id, query } of geminiCatalogCases) {
+      registerNativeCatalogObservation(id, "gemini-catalog", `vendor:${id}`, async () => {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?${query}`,
+          {
+            headers: { "x-goog-api-key": process.env.GOOGLE_API_KEY ?? "" },
+            signal: AbortSignal.timeout(15000),
+          },
+        );
+        const vendor = await receiveNativeCatalogResponse(response);
+        const local = await fetch(`${nativeCatalogServer.url}/v1beta/models?${query}`);
+        const actual: ObservedResponse = { status: local.status, body: await local.json() };
+        return { expected: vendor, actual };
+      });
+    }
+  },
+);
+
+// These are controlled localhost responses, never vendor evidence. The child
+// collector selects only this suite, exercising the same catalog producer.
+const nativeRawResponseCases = [
+  { id: "empty-unavailable", status: 429, body: "" },
+  { id: "html-unavailable", status: 503, body: "<html>controlled unavailable</html>\r\n" },
+  { id: "html-unexpected", status: 418, body: "<html>controlled unexpected</html>" },
+] as const;
+const nativeBodyControls = [
+  {
+    id: "nested-discriminator",
+    error: { type: "controlled_expected_error" },
+    exactBody: false,
+    path: "error.type",
+    expected: '"controlled_expected_error"',
+    actual: '"invalid_request_error"',
+  },
+  {
+    id: "exact-body",
+    error: { message: "controlled expected diagnostic" },
+    exactBody: true,
+    path: "body",
+    expected:
+      '{"type":"error","error":{"type":"invalid_request_error","message":"controlled expected diagnostic"}}',
+    actual:
+      '{"type":"error","error":{"type":"invalid_request_error","message":"limit must be an integer between 1 and 1000"}}',
+  },
+] as const;
+describe.skipIf(process.env.AIMOCK_NATIVE_LIFECYCLE_CHILD !== "1")(
+  "native provider controlled response lifecycle",
+  () => {
+    const server = createServer((request, response) => {
+      const rawCase = nativeRawResponseCases.find((item) => request.url === `/${item.id}`);
+      if (rawCase) {
+        response.writeHead(rawCase.status, { "content-type": "text/html" });
+        response.end(rawCase.body);
+        return;
+      }
+      response.writeHead(Number(request.url?.slice(1)), { "content-type": "application/json" });
+      response.end(
+        JSON.stringify(
+          Number(request.url?.slice(1)) === 400
+            ? anthropicCatalogCases[0].expected.body
+            : {
+                type: "error",
+                error: { type: "invalid_request_error", message: "controlled localhost response" },
+              },
+        ),
+      );
+    });
+    let url: string;
+    beforeAll(async () => {
+      await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("No controlled HTTP address");
+      url = `http://127.0.0.1:${address.port}`;
+    });
+    afterAll(async () => {
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    });
+    const capture = async (status: number | string) => {
+      const response = await fetch(`${url}/${status}`);
+      const expected = await receiveNativeCatalogResponse(response);
+      const local = await fetch(`${nativeCatalogServer.url}/v1/models?limit=0`, {
+        headers: { "anthropic-version": "2023-06-01" },
+      });
+      const actual: ObservedResponse = { status: local.status, body: await local.json() };
+      return { expected, actual };
+    };
+    for (const [id, status] of [
+      ["unavailable", 429],
+      ["eligible-pass", 400],
+      ["eligible-fail", 418],
+    ] as const) {
+      registerNativeCatalogObservation(id, "anthropic-catalog", `local:a3-${id}`, () =>
+        capture(status),
+      );
+    }
+    for (const { id } of nativeRawResponseCases)
+      registerNativeCatalogObservation(id, "anthropic-catalog", `local:a1-${id}`, () =>
+        capture(id),
+      );
+    it.each(nativeBodyControls)("$id comparison control", async (control) => {
+      const response = await fetch(`${nativeCatalogServer.url}/v1/models?limit=0`, {
+        headers: { "anthropic-version": "2023-06-01" },
+      });
+      const actual: ObservedResponse = { status: response.status, body: await response.json() };
+      expect(actual).toEqual(anthropicCatalogCases[0].expected);
+      const body = anthropicCatalogCases[0].expected.body;
+      if (!("error" in body)) throw new Error("Expected native catalog error fixture");
+      const expected = {
+        ...actual,
+        body: { ...body, error: { ...body.error, ...control.error } },
+      };
+      const diffs = nativeResponseDiffs(expected, actual, control.exactBody);
+      // Deliberately fail so the real formatter/reporter/collector must deliver this difference.
+      expect(
+        diffs,
+        formatDriftReport(`Native catalog body control ${control.id}`, diffs, "anthropic-catalog"),
+      ).toEqual([]);
+    });
+    it("eligible failed owner", async () => {
+      const observation = await capture(418);
+      emitLiveObservation({
+        surface: "anthropic-catalog",
+        caseId: "local:a3-failed-owner",
+        ...observation,
+      });
+      const diffs = nativeResponseDiffs(observation.expected, observation.actual);
+      expect(
+        diffs,
+        formatDriftReport("Native catalog failed-owner control", diffs, "anthropic-catalog"),
+      ).toEqual([]);
+    });
+    it.skip("no-request skip", () => {
+      throw new Error("Skipped request must never run");
+    });
+  },
+);
+
+describe("native provider response evidence delivery", () => {
+  it("persists received responses while unavailable comparison remains unverified", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "aimock-native-lifecycle-"));
+    const root = resolve(import.meta.dirname, "../../..");
+    try {
+      symlinkSync(join(root, "node_modules"), join(directory, "node_modules"));
+      mkdirSync(join(directory, "unavailable-agui"));
+      writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+      writeFileSync(
+        join(directory, "vitest.config.drift.ts"),
+        `export default {test:{include:[${JSON.stringify(join(root, "src/__tests__/drift/models.drift.ts"))}],testNamePattern:'native provider controlled response lifecycle',pool:'forks',maxWorkers:1,fileParallelism:false}};`,
+      );
+      const environment: NodeJS.ProcessEnv = {};
+      for (const name of ["PATH", "HOME", "TMPDIR", "SystemRoot", "WINDIR"])
+        environment[name] = process.env[name];
+      environment.AIMOCK_NATIVE_LIFECYCLE_CHILD = "1";
+      environment.AGUI_REPO_PATH = join(directory, "unavailable-agui");
+      const child = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
+        (resolveChild) => {
+          execFile(
+            process.execPath,
+            [
+              join(root, "node_modules/tsx/dist/cli.mjs"),
+              join(root, "scripts/drift-report-collector.ts"),
+            ],
+            { cwd: directory, env: environment, timeout: 30000, maxBuffer: 10 * 1024 * 1024 },
+            (error, stdout, stderr) => {
+              resolveChild({
+                status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+                stdout,
+                stderr,
+              });
+            },
+          );
+        },
+      );
+      expect(child.status, child.stdout + child.stderr).toBe(2); // Deliberate eligible-fail control.
+      const artifact: { observations: LiveObservation[] } = JSON.parse(
+        readFileSync(join(directory, "drift-observations.json"), "utf8"),
+      );
+      const actual = anthropicCatalogCases[0].expected;
+      expect(artifact.observations).toEqual([
+        ...[429, 400, 418].map((status, index) => ({
+          surface: "anthropic-catalog",
+          caseId: `local:a3-${["unavailable", "eligible-pass", "eligible-fail"][index]}`,
+          expected: {
+            status,
+            body:
+              status === 400
+                ? actual.body
+                : {
+                    type: "error",
+                    error: {
+                      type: "invalid_request_error",
+                      message: "controlled localhost response",
+                    },
+                  },
+          },
+          actual,
+          matched: status === 400,
+        })),
+        ...nativeRawResponseCases.map(({ id, status, body }) => ({
+          surface: "anthropic-catalog",
+          caseId: `local:a1-${id}`,
+          expected: { status, body },
+          actual,
+          matched: false,
+        })),
+        {
+          surface: "anthropic-catalog",
+          caseId: "local:a3-failed-owner",
+          expected: {
+            status: 418,
+            body: {
+              type: "error",
+              error: { type: "invalid_request_error", message: "controlled localhost response" },
+            },
+          },
+          actual,
+          matched: false,
+        },
+      ]);
+      const report: DriftReport = JSON.parse(
+        readFileSync(join(directory, "drift-report.json"), "utf8"),
+      );
+      expect(report.quarantine ?? []).toEqual([]);
+      expect(
+        report.entries.filter((entry) => entry.scenario.startsWith("Native catalog body control ")),
+      ).toEqual(
+        nativeBodyControls.map((control) => ({
+          provider: "Anthropic native catalog",
+          scenario: `Native catalog body control ${control.id}`,
+          builderFile: "src/response/catalog/anthropic-page.ts",
+          builderFunctions: ["anthropicPage", "renderAnthropicModels"],
+          typesFile: null,
+          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+          diffs: [
+            {
+              path: control.path,
+              id: control.path,
+              severity: "critical",
+              issue: "Native response value differs",
+              expected: control.expected,
+              real: control.expected,
+              mock: control.actual,
+            },
+          ],
+        })),
+      );
+      expect(
+        report.entries.find(
+          (entry) => entry.scenario === "Native catalog comparison html-unexpected",
+        ),
+      ).toMatchObject({
+        builderFile: "src/response/catalog/anthropic-page.ts",
+        builderFunctions: ["anthropicPage", "renderAnthropicModels"],
+        diffs: expect.arrayContaining([
+          expect.objectContaining({ path: "(root)", severity: "critical", real: "string" }),
+        ]),
+      });
+      const evidence: {
+        drift: {
+          assertions: {
+            title: string;
+            status: string;
+            disposition: string;
+            consoleContext: { recordCount: number };
+          }[];
+        };
+      } = JSON.parse(
+        readFileSync(
+          join(directory, "drift-evidence", readdirSync(join(directory, "drift-evidence"))[0]),
+          "utf8",
+        ),
+      );
+      expect(evidence.drift.assertions).toEqual(
+        expect.arrayContaining([
+          ...nativeRawResponseCases.flatMap(({ id }) => [
+            expect.objectContaining({
+              title: `${id} received status/body (evidence only)`,
+              status: "passed",
+              disposition: "UNAVAILABLE",
+              consoleContext: { availability: "available", recordCount: 1 },
+            }),
+            expect.objectContaining({
+              title: `${id} comparison`,
+              status: id === "html-unexpected" ? "failed" : "skipped",
+              disposition: id === "html-unexpected" ? "FAILED" : "SKIPPED",
+            }),
+          ]),
+          expect.objectContaining({
+            title: "eligible-pass received status/body (evidence only)",
+            status: "passed",
+          }),
+          expect.objectContaining({
+            title: "eligible-pass comparison",
+            status: "passed",
+          }),
+          expect.objectContaining({
+            title: "eligible-fail comparison",
+            status: "failed",
+            disposition: "FAILED",
+          }),
+          expect.objectContaining({
+            title: "eligible failed owner",
+            status: "failed",
+            disposition: "FAILED",
+            consoleContext: { availability: "available", recordCount: 1 },
+          }),
+          expect.objectContaining({
+            title: "unavailable comparison",
+            status: "skipped",
+            disposition: "SKIPPED",
+          }),
+          expect.objectContaining({
+            title: "unavailable received status/body (evidence only)",
+            status: "passed",
+            disposition: "UNAVAILABLE",
+          }),
+          expect.objectContaining({
+            title: "no-request skip",
+            status: "skipped",
+            consoleContext: { availability: "available", recordCount: 0 },
+          }),
+        ]),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("C4: detectDeprecatedFamilies (classified − live, fail-closed)", () => {
   it("FAIL-CLOSED: an empty live listing never proposes removal", () => {
@@ -354,6 +1081,11 @@ describe("recorded /models family waves are classified", () => {
       // bare chat alias (fixture-vs-live gap: present in live /models, was absent
       // from the static wave — this is the 2026-07-18 canary residual)
       "chat-latest",
+      // 2026-10-18 wave (Drift Tests run 39103216353): pre-GA `-alpha` codenames,
+      // listed for one run and 404 (`model_not_found`) since — explicit excludes
+      "aurora-blue-alpha",
+      "aurora-green-alpha",
+      "aurora-red-alpha",
     ];
     expect(unclassifiedFamilies(openaiLive, "openai")).toEqual([]);
   });
@@ -405,6 +1137,8 @@ describe("recorded /models family waves are classified", () => {
       "gemini-3.5-flash-lite",
       "gemini-3.6-flash",
       "gemini-3.7-flash",
+      // 2026-10-14 wave (run 38523200980): Gemini 4 Argon, probe-verified text chat
+      "gemini-4-argon",
       // Restricted EAP surface — explicit exclude (text-capable, but pre-GA)
       "gemini-3.7-flash-video-understanding-eap",
       // Preview text tiers — auto-excluded by the -preview pattern rule

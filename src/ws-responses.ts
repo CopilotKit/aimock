@@ -31,9 +31,7 @@ import {
   isErrorResponse,
   extractOverrides,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   flattenHeaders,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -46,6 +44,8 @@ import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { WebSocketConnection } from "./ws-framing.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { buildOpenAIError } from "./response/errors.js";
 
 type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
   replaySpeed?: number;
@@ -84,7 +84,7 @@ function buildErrorEvent(
 ): ResponsesSSEEvent {
   return {
     type: "error",
-    error: { message, type, code },
+    error: buildOpenAIError({ message, type, code }),
   };
 }
 
@@ -200,7 +200,7 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", "/v1/responses", skippedBySequenceOrTurn));
       journal.add({
@@ -344,7 +344,10 @@ async function processMessage(
   // The WS path has no per-request `req.headers`; strict is resolved from the
   // connection's upgrade headers (see the `!fixture` branch above). Used below
   // to gate the synthesized reasoning channel on the requested model's capability.
-  const effectiveStrict = resolveStrictMode(defaults.strict, defaults.upgradeHeaders);
+  const effectiveStrict = resolveRequestDecisions(
+    defaults.strict,
+    defaults.upgradeHeaders,
+  ).reasoningSuppression;
 
   // Error response
   if (isErrorResponse(response)) {

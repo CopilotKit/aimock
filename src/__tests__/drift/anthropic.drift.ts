@@ -31,6 +31,250 @@ import {
   type ResolvedModel,
 } from "./providers.js";
 import { httpPost, parseTypedSSE, startDriftServer, stopDriftServer } from "./helpers.js";
+import { startGoldenServer, type GoldenServer } from "../golden/harness.js";
+import { emitLiveObservation, type ObservedResponse } from "./live-observations.js";
+import { nativeResponseDiffs } from "./sdk-shapes.js";
+
+const nativeAuthExpected: ObservedResponse = {
+  status: 401,
+  body: { type: "error", error: { type: "authentication_error", message: "Invalid API key" } },
+};
+// F4B observes the default permissive version behavior; F5 owns enforcement.
+const nativeCountRequest = {
+  model: "claude-sonnet-4-5",
+  messages: [{ role: "user", content: "abcd" }],
+};
+let nativeAuthServer: GoldenServer;
+let nativeVersionServer: GoldenServer;
+const nativeVersionCases = [
+  { path: "/v1/messages", caseId: "anthropic-messages-missing-version-enforce" },
+  { path: "/v1/messages/count_tokens", caseId: "anthropic-count-missing-version-enforce" },
+] as const;
+const nativeVersionExpected: ObservedResponse = {
+  status: 400,
+  body: {
+    type: "error",
+    error: { type: "invalid_request_error", message: "anthropic-version: header is required" },
+    request_id: "req_f6b_required_version",
+  },
+};
+const nativeVersionRequest = (path: string) =>
+  path === "/v1/messages" ? { ...nativeCountRequest, max_tokens: 1 } : nativeCountRequest;
+beforeAll(async () => {
+  nativeAuthServer = await startGoldenServer([], { auth: { apiKeys: ["local-native-auth"] } });
+  nativeVersionServer = await startGoldenServer([], {
+    auth: { apiKeys: ["local-native-auth"] },
+    policy: { requiredHeaders: "enforce" },
+  });
+});
+afterAll(async () => {
+  await nativeAuthServer.close();
+  await nativeVersionServer.close();
+});
+
+describe("native provider Anthropic auth and missing-version local contracts", () => {
+  it.each(["/v1/messages", "/v1/messages/count_tokens"])("local auth %s", async (path) => {
+    const response = await fetch(`${nativeAuthServer.url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(nativeCountRequest),
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    emitLiveObservation({
+      surface: "anthropic-native-errors",
+      caseId: path.endsWith("count_tokens") ? "local:anthropic-count-auth" : "local:anthropic-auth",
+      expected: nativeAuthExpected,
+      actual,
+    });
+    const diffs = nativeResponseDiffs(nativeAuthExpected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(`Anthropic local auth ${path}`, diffs, "anthropic-native-errors"),
+    ).toEqual([]);
+  });
+  it("local missing-version count remains permissive", async () => {
+    const response = await fetch(`${nativeAuthServer.url}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "local-native-auth" },
+      body: JSON.stringify(nativeCountRequest),
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    const expected = { status: 200, body: { input_tokens: 1 } };
+    emitLiveObservation({
+      surface: "anthropic-native-errors",
+      caseId: "local:anthropic-missing-version",
+      expected,
+      actual,
+    });
+    const diffs = nativeResponseDiffs(expected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(
+        "Anthropic local missing-version default",
+        diffs,
+        "anthropic-native-errors",
+      ),
+    ).toEqual([]);
+  });
+  it.each(nativeVersionCases)("local enforced missing-version $path", async ({ path, caseId }) => {
+    const response = await fetch(`${nativeVersionServer.url}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "local-native-auth",
+        "x-request-id": "req_f6b_required_version",
+      },
+      body: JSON.stringify(nativeVersionRequest(path)),
+    });
+    const actual: ObservedResponse = { status: response.status, body: await response.json() };
+    emitLiveObservation({
+      surface: "anthropic-native-errors",
+      caseId: `local:${caseId}`,
+      expected: nativeVersionExpected,
+      actual,
+    });
+    const diffs = nativeResponseDiffs(nativeVersionExpected, actual, true);
+    expect(
+      diffs,
+      formatDriftReport(
+        `Anthropic enforced missing-version ${path}`,
+        diffs,
+        "anthropic-native-errors",
+      ),
+    ).toEqual([]);
+  });
+});
+
+// Official errors docs establish 401/authentication_error. Missing-version
+// exact body is measured only by this explicit, bounded vendor leg.
+function registerNativeAnthropicObservation(
+  id: string,
+  caseId: string,
+  unavailable: readonly number[],
+  capture: () => Promise<{ expected: ObservedResponse; actual: ObservedResponse }>,
+) {
+  let captured: ReturnType<typeof capture> | undefined;
+  const receive = () => (captured ??= capture());
+  it(`${id} received status/body (evidence only)`, async () => {
+    emitLiveObservation({ surface: "anthropic-native-errors", caseId, ...(await receive()) });
+  });
+  it(`${id} comparison`, async (context) => {
+    const { expected, actual } = await receive();
+    if (unavailable.includes(expected.status) || expected.status >= 500)
+      context.skip(
+        "Comparison UNAVAILABLE: access/rate/service error; vendor conformance unverified",
+      );
+    const diffs = nativeResponseDiffs(expected, actual);
+    expect(diffs, formatDriftReport(id, diffs, "anthropic-native-errors")).toEqual([]);
+  });
+}
+describe.skipIf(process.env.AIMOCK_NATIVE_PROVIDER_DRIFT !== "1")(
+  "native provider Anthropic vendor errors",
+  () => {
+    registerNativeAnthropicObservation(
+      "Anthropic vendor auth",
+      "vendor:anthropic-auth",
+      [403, 429],
+      async () => {
+        const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
+          method: "POST",
+          headers: { "content-type": "application/json", "anthropic-version": "2023-06-01" },
+          body: JSON.stringify(nativeCountRequest),
+          signal: AbortSignal.timeout(15000),
+        });
+        const expected: ObservedResponse = {
+          status: response.status,
+          body: await response
+            .clone()
+            .json()
+            .catch(() => response.text()),
+        };
+        const local = await fetch(`${nativeAuthServer.url}/v1/messages/count_tokens`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(nativeCountRequest),
+        });
+        const actual: ObservedResponse = { status: local.status, body: await local.json() };
+        return { expected, actual };
+      },
+    );
+    describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
+      "vendor missing-version status and body",
+      () => {
+        registerNativeAnthropicObservation(
+          "Anthropic vendor missing-version (intentional default divergence)",
+          "vendor:anthropic-missing-version",
+          [401, 403, 429],
+          async () => {
+            const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY ?? "" },
+              body: JSON.stringify(nativeCountRequest),
+              signal: AbortSignal.timeout(15000),
+            });
+            const expected: ObservedResponse = {
+              status: response.status,
+              body: await response
+                .clone()
+                .json()
+                .catch(() => response.text()),
+            };
+            const local = await fetch(`${nativeAuthServer.url}/v1/messages/count_tokens`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-api-key": "local-native-auth" },
+              body: JSON.stringify(nativeCountRequest),
+            });
+            const actual: ObservedResponse = { status: local.status, body: await local.json() };
+            // Missing-version rejection versus permissive default is approved policy
+            // divergence. Keep it visible in both channels without claiming equivalence.
+            return { expected, actual };
+          },
+        );
+      },
+    );
+    describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
+      "vendor missing-version compared with enforced policy",
+      () => {
+        for (const { path, caseId } of nativeVersionCases) {
+          registerNativeAnthropicObservation(
+            `Anthropic vendor enforced missing-version ${path}`,
+            `vendor:${caseId}`,
+            [401, 403, 429],
+            async () => {
+              const response = await fetch(`https://api.anthropic.com${path}`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-api-key": ANTHROPIC_API_KEY ?? "",
+                },
+                body: JSON.stringify(nativeVersionRequest(path)),
+                signal: AbortSignal.timeout(15000),
+              });
+              const expected: ObservedResponse = {
+                status: response.status,
+                body: await response
+                  .clone()
+                  .json()
+                  .catch(() => response.text()),
+              };
+              const local = await fetch(`${nativeVersionServer.url}${path}`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-api-key": "local-native-auth",
+                  "x-request-id": "req_f6b_required_version",
+                },
+                body: JSON.stringify(nativeVersionRequest(path)),
+              });
+              const actual: ObservedResponse = { status: local.status, body: await local.json() };
+              return { expected, actual };
+            },
+          );
+        }
+      },
+    );
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Server lifecycle

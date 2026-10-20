@@ -1,0 +1,33 @@
+{
+  "got": {
+    "status": 400,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-type": "application/json",
+      "x-request-id": "req-<#0>"
+    },
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"anthropic-version: header is required\"},\"request_id\":\"req-<#0>\"}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": null,
+      "response": {
+        "status": 400,
+        "fixture": null,
+        "source": "internal",
+        "strictOverride": false
+      },
+      "responseKeys": [
+        "status",
+        "fixture",
+        "source",
+        "strictOverride"
+      ]
+    }
+  ]
+}

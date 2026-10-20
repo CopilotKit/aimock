@@ -1,3 +1,4 @@
+import { renderError } from "./response/errors.js";
 import type * as http from "node:http";
 import crypto from "node:crypto";
 import type {
@@ -14,12 +15,11 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -405,7 +405,7 @@ export async function handleGrokVideoCreate(
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
       fixture
         ? "fixture"
-        : resolveStrictMode(defaults.strict, req.headers)
+        : resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss
           ? "internal"
           : defaults.record?.providers.grok
             ? "proxy"
@@ -417,8 +417,8 @@ export async function handleGrokVideoCreate(
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -507,9 +507,10 @@ export async function handleGrokVideoCreate(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not a video type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a video type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -610,7 +611,7 @@ export async function handleGrokVideoStatus(
     return;
 
   if (job.kind === "record") {
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: video job ${id} is proxied live upstream (record mode) — refusing the upstream poll`,
       );

@@ -526,6 +526,7 @@ export type {
   MisbehaviorFault,
   MisbehaviorConfig,
   MockServerOptions,
+  AimockPolicy,
   StreamingProfile,
   FixtureOpts,
   EmbeddingFixtureOpts,

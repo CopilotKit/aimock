@@ -70,8 +70,210 @@
               <td>/v1/messages</td>
               <td>SSE (event: + data:) or JSON</td>
             </tr>
+            <tr>
+              <td>GET</td>
+              <td>/v1/models</td>
+              <td>Native paged JSON with Anthropic headers</td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td>/v1/models/:id</td>
+              <td>Native model JSON with Anthropic headers</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td>/v1/messages/count_tokens</td>
+              <td>JSON: input_tokens</td>
+            </tr>
           </tbody>
         </table>
+
+        <h2 id="model-catalog">Model Catalog</h2>
+        <p>
+          The shared <code>/v1/models</code> list and detail paths select the Anthropic format when
+          <code>anthropic-version</code> is present, or when <code>x-api-key</code> is present
+          without <code>Authorization</code>. Other callers receive the OpenAI format.
+        </p>
+        <div class="info-box">
+          <p>
+            aimock also accepts <code>x-api-key</code> for its own inbound authentication. A
+            non-Anthropic client that uses this header without <code>Authorization</code>
+            receives the Anthropic catalog. To select the OpenAI format, send
+            <code>Authorization: Bearer &lt;key&gt;</code> and omit <code>anthropic-version</code>.
+          </p>
+        </div>
+        <p>
+          The native catalog contains Anthropic IDs and unrecognized IDs from fixtures, in
+          first-seen order. Empty fixture sets use the established default models. Known OpenAI and
+          Google IDs are excluded. Custom test IDs remain visible.
+        </p>
+        <p>
+          Lists return <code>data</code>, <code>has_more</code>, <code>first_id</code>, and
+          <code>last_id</code>. The default <code>limit</code> is 20, with an accepted range of
+          1–1000. Use <code>after_id</code> or <code>before_id</code> for another page. A client
+          that ignores <code>has_more</code> sees only the first page.
+        </p>
+        <p>
+          The <code>lifecycle</code> filter accepts <code>active</code>, <code>deprecated</code>,
+          and <code>retired</code>. Repeated keys and <code>lifecycle[]</code> values form a union.
+          All mock models are active, so a deprecated-only or retired-only filter returns an empty
+          page.
+        </p>
+        <p>
+          Invalid limits, lifecycle values, and unknown <code>after_id</code> or
+          <code>before_id</code> cursors return 400 <code>invalid_request_error</code>. Unknown
+          cursors return <code>Model with id &lt;id&gt; not found</code>, matching the status, error
+          type, and message observed in authenticated upstream probes. aimock validates cursors
+          before applying lifecycle filters, including filters that return an empty page.
+        </p>
+        <p>
+          Each model has <code>type: "model"</code>, its ID as <code>display_name</code>,
+          <code>created_at: "1970-01-01T00:00:00Z"</code>, and <code>lifecycle: "active"</code>.
+          Capabilities, line, token limits, and deprecation dates are null. This synthetic metadata
+          does not describe upstream capacity.
+        </p>
+        <p>
+          Detail paths accept raw or percent-encoded slashes in IDs. Missing IDs, malformed escapes,
+          and IDs outside the Anthropic catalog return a native 404. The examples assume fixtures
+          with <code>claude-test</code> and additional Claude IDs.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Native catalog <span class="lang-tag">shell</span></div>
+          <pre><code>curl 'http://localhost:4010/v1/models?limit=1' \
+  -H 'anthropic-version: 2023-06-01' -H 'x-api-key: mock'
+
+curl 'http://localhost:4010/v1/models?limit=1&amp;after_id=claude-test' \
+  -H 'anthropic-version: 2023-06-01' -H 'x-api-key: mock'
+
+curl 'http://localhost:4010/v1/models/claude-test' \
+  -H 'anthropic-version: 2023-06-01' -H 'x-api-key: mock'</code></pre>
+        </div>
+
+        <h2 id="token-counts">Approximate Token Counts</h2>
+        <p>
+          <code>POST /v1/messages/count_tokens</code> accepts a Messages-style body and returns
+          <code>{"input_tokens": N}</code>. It converts messages, system text, and tools through the
+          existing request translator, then estimates tokens with <code>ceil(chars / 4)</code>. This
+          deterministic estimate is not a tokenizer or an upstream count.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Count a prompt <span class="lang-tag">shell</span></div>
+          <pre><code>curl http://localhost:4010/v1/messages/count_tokens \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' -H 'x-api-key: mock' \
+  --data '{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}'</code></pre>
+        </div>
+        <p>
+          Counts ignore fixture usage. Messages responses use fixture counts and otherwise default
+          to zero. To make a response agree with an estimate, set its fixture usage explicitly.
+          Missing or invalid messages return a native 400.
+        </p>
+        <p>
+          Catalog and count routes never proxy or record. Count POSTs create internal journal
+          entries. Catalog GETs do not. See
+          <a href="/record-replay#catalog-and-count-routes">Record &amp; Replay</a>.
+        </p>
+
+        <h2 id="authentication-errors">Authentication Errors</h2>
+        <p>
+          With inbound API-key authentication enabled, rejected keys on Messages and count paths
+          return 401 with this body and a generated <code>request-id</code> response header:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Inbound rejection <span class="lang-tag">json</span></div>
+          <pre><code>{"type":"error","error":{"type":"authentication_error","message":"Invalid API key"}}</code></pre>
+        </div>
+        <p>
+          Compatibility change: these paths no longer return
+          <code>error.code: "invalid_api_key"</code>. Check HTTP 401 or
+          <code>error.type: "authentication_error"</code> instead. Update tests and clients that
+          read the old field.
+        </p>
+        <p>
+          Shared <code>/v1/models</code> paths retain their OpenAI-shaped authentication rejection,
+          even with Anthropic headers. WebSocket authentication also retains its existing body.
+        </p>
+        <p>
+          A live unauthenticated count probe returned Anthropic 401 with
+          <code>"x-api-key header is required"</code> and a body <code>request_id</code>. aimock
+          retains <code>"Invalid API key"</code> and omits that body field. The response header does
+          not make these bodies identical.
+        </p>
+        <p>
+          Missing <code>anthropic-version</code> remains accepted by default, including with strict
+          mode. Use the independent policy below to enable header enforcement.
+        </p>
+
+        <h2 id="required-header-policy">Required Header Policy</h2>
+        <p>
+          Set <code>policy.requiredHeaders</code> to <code>"enforce"</code> in
+          <code>createServer</code> or <code>LLMock</code> options to require
+          <code>anthropic-version</code>. The default is <code>"off"</code>. The exported
+          <code>AimockPolicy</code> type declares this option. Config and both CLIs expose the same
+          option; see <a href="/aimock-cli#required-header-policy">aimock CLI</a>.
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-api">
+          <div class="code-block-header">Opt in <span class="lang-tag">ts</span></div>
+          <pre><code>import { createServer } from "@copilotkit/aimock";
+
+const instance = await createServer([], {
+    port: 4010,
+    policy: { requiredHeaders: "enforce" },
+});</code></pre>
+        </div>
+        <p>
+          Enforcement applies to <code>POST /v1/messages</code>,
+          <code>POST /v1/messages/count_tokens</code>, and Anthropic-flavored
+          <code>GET /v1/models</code> list/detail requests. Bedrock's body-level
+          <code>anthropic_version</code> is separate.
+        </p>
+        <p>
+          Authentication runs first. A missing required header then returns 400 before thinking,
+          fixture matching, or proxy work. The policy is independent of strict mode:
+          <code>X-AIMock-Strict: false</code> does not disable enforcement.
+        </p>
+        <div class="info-box">
+          <p>
+            Shared model paths use the catalog selection described above.
+            <code>x-api-key</code> without <code>Authorization</code> selects Anthropic and can
+            trigger the version requirement. To retain the OpenAI format, send
+            <code>Authorization</code> without <code>anthropic-version</code>.
+          </p>
+        </div>
+        <div class="code-block" data-sample="inline:required-policy-reject">
+          <div class="code-block-header">Missing version <span class="lang-tag">shell</span></div>
+          <pre><code>curl http://localhost:4010/v1/messages/count_tokens \
+  -H 'content-type: application/json' \
+  -H 'x-request-id: req_policy_example' \
+  -d '{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}'</code></pre>
+        </div>
+        <div class="code-block" data-sample="inline:required-policy-error">
+          <div class="code-block-header">HTTP 400 <span class="lang-tag">json</span></div>
+          <pre><code>{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-version: header is required"},"request_id":"req_policy_example"}</code></pre>
+        </div>
+        <p>
+          Policy rejections include a safe <code>request_id</code> that matches the
+          <code>x-request-id</code> response header. aimock uses a valid caller ID after trimming,
+          or generates an ID when it cannot use the supplied value. This metadata addition applies
+          to policy rejection; the authentication body above retains its documented shape.
+        </p>
+        <p>
+          The request header has highest precedence. To disable enforcement for one request, send
+          <code>X-AIMock-Policy: requiredHeaders=off</code>:
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-off">
+          <div class="code-block-header">Request override <span class="lang-tag">shell</span></div>
+          <pre><code>curl http://localhost:4010/v1/messages/count_tokens \
+  -H 'content-type: application/json' \
+  -H 'X-AIMock-Policy: requiredHeaders=off' \
+  -d '{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}'</code></pre>
+        </div>
+        <p>
+          Earlier authenticated Anthropic captures returned 400 with the same error type and
+          diagnostic message. Local checks against those retained captures confirm the policy
+          fields; request IDs differ by request. This is not a fresh upstream comparison or a claim
+          of full vendor conformance.
+        </p>
 
         <h2>Unit Test: Text Streaming</h2>
 
@@ -138,6 +340,28 @@
           <li><code>message_delta</code> &mdash; stop_reason, usage</li>
           <li><code>message_stop</code></li>
         </ol>
+
+        <h2>Cache Usage</h2>
+        <p>
+          Set <code>response.usage.cache_read_input_tokens</code> and
+          <code>cache_creation_input_tokens</code> in a fixture to emit cache counts on Messages and
+          Bedrock Claude invoke responses. Both fields appear in final responses,
+          <code>message_start</code>, and <code>message_delta</code> when supplied.
+        </p>
+        <p>
+          The optional <code>cache_creation</code> object accepts
+          <code>ephemeral_5m_input_tokens</code> and <code>ephemeral_1h_input_tokens</code>. It
+          appears in final responses and <code>message_start</code>; omitted members render as zero.
+          Numeric <code>cache_creation</code> values remain accepted without being emitted.
+          Unrecognized usage fields are omitted on these responses.
+        </p>
+        <p>
+          Messages deltas use the fixture output count. Bedrock invoke deltas retain their zero
+          output count. Applied misbehavior uses estimated token counts and omits fixture cache
+          fields. Record mode retains upstream token and cache counts. Numeric delta counts replace
+          start counts; null values keep the earlier count. The resulting fixtures replay the
+          captured usage.
+        </p>
 
         <h2>Request Translation</h2>
         <p>

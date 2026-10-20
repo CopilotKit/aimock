@@ -528,3 +528,37 @@ describe("the 2026-10-08 model-family wave is classified", () => {
     expect(unclassifiedFamilies(["claude-haiku-5-6"], "anthropic")).toEqual(["claude-haiku-5-6"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The 2026-10-14..18 waves — BEHAVIOURAL coverage of `gemini-4-argon` (INCLUDE)
+// and the three `aurora-*-alpha` codenames (EXCLUDE), in the same shape as the
+// blocks above. Evidence sits beside each entry in model-registry.ts and in
+// drift-proposals/.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-10-14..18 model-family waves are classified", () => {
+  it("gemini-4-argon is INCLUDED in a /models-shaped payload", () => {
+    expect(isClassifiedFamily("gemini-4-argon", "gemini")).toBe(true);
+    expect(excludeFamilies.gemini.has("gemini-4-argon")).toBe(false);
+    expect(unclassifiedFamilies(["gemini-3.8-flash", "gemini-4-argon"], "gemini")).toEqual([]);
+  });
+
+  it("the aurora-*-alpha codenames are EXCLUDED in a /models-shaped payload", () => {
+    const aurora = ["aurora-blue-alpha", "aurora-green-alpha", "aurora-red-alpha"];
+    for (const id of aurora) expect(excludeFamilies.openai.has(id)).toBe(true);
+    expect(unclassifiedFamilies(aurora, "openai")).toEqual([]);
+  });
+
+  it("the new keys do not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("gemini-4-argon", "gemini")).toBe("gemini-4-argon");
+    expect(unclassifiedFamilies(["gemini-4-neon"], "gemini")).toEqual(["gemini-4-neon"]);
+    expect(unclassifiedFamilies(["gemini-4-argon-tts"], "gemini")).toEqual(["gemini-4-argon-tts"]);
+    expect(normalizeModelFamily("aurora-blue-alpha", "openai")).toBe("aurora-blue-alpha");
+    expect(unclassifiedFamilies(["aurora-blue"], "openai")).toEqual(["aurora-blue"]);
+    expect(unclassifiedFamilies(["aurora-violet-alpha"], "openai")).toEqual([
+      "aurora-violet-alpha",
+    ]);
+  });
+});

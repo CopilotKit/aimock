@@ -19,11 +19,11 @@ import {
   getContext,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import type { Logger } from "./logger.js";
@@ -597,13 +597,11 @@ export async function handleFal(
         });
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: detail,
-              type: "invalid_request_error",
-              code: "invalid_json",
-            },
-          }),
+          renderError("openai", "validation", {
+            message: detail,
+            type: "invalid_request_error",
+            code: "invalid_json",
+          }).body,
         );
         return "handled";
       }
@@ -624,8 +622,8 @@ export async function handleFal(
       );
 
       if (!fixture) {
-        const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-        if (effectiveStrict) {
+        const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+        if (fixtureMiss) {
           const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
           defaults.logger.error(
             strictNoMatchLogLine(req.method ?? "POST", pathname, skippedBySequenceOrTurn),
@@ -643,13 +641,11 @@ export async function handleFal(
           });
           res.writeHead(503, { "Content-Type": "application/json" });
           res.end(
-            JSON.stringify({
-              error: {
-                message: strictMessage,
-                type: "invalid_request_error",
-                code: "no_fixture_match",
-              },
-            }),
+            renderError("openai", "strict-miss", {
+              message: strictMessage,
+              type: "invalid_request_error",
+              code: "no_fixture_match",
+            }).body,
           );
           return "handled";
         }
@@ -714,13 +710,11 @@ export async function handleFal(
         });
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: "No fixture matched",
-              type: "invalid_request_error",
-              code: "no_fixture_match",
-            },
-          }),
+          renderError("openai", "fixture-miss", {
+            message: "No fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          }).body,
         );
         return "handled";
       }
@@ -758,12 +752,10 @@ export async function handleFal(
         });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: "Fixture response is not JSON or audio for fal endpoint",
-              type: "server_error",
-            },
-          }),
+          renderError("openai", "unknown-response", {
+            message: "Fixture response is not JSON or audio for fal endpoint",
+            type: "server_error",
+          }).body,
         );
         return "handled";
       }
@@ -1141,9 +1133,10 @@ async function proxyAndRecordFalQueueSubmit(args: {
     });
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
     return "handled";
   }
@@ -1289,8 +1282,9 @@ function respondNotFound(
   });
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(
-    JSON.stringify({
-      error: { message: `Request ${requestId} not found`, type: "not_found" },
-    }),
+    renderError("openai", "route-failure", {
+      message: `Request ${requestId} not found`,
+      type: "not_found",
+    }).body,
   );
 }

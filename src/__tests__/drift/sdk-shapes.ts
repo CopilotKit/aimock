@@ -7,7 +7,52 @@
  * required fields populated with representative values.
  */
 
-import { extractShape, type ShapeNode, type SSEEventShape } from "./schema.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+  extractShape,
+  triangulate,
+  type ShapeNode,
+  type SSEEventShape,
+  type ShapeDiff,
+} from "./schema.js";
+import type { ObservedResponse, ObservationBody } from "./live-observations.js";
+
+/** Native status and discriminator values supplement the existing shape channel.
+ * Exact messages/request IDs remain in observations; vendor comparisons do not
+ * require the mock's deterministic message to equal provider diagnostic text.
+ */
+export function nativeResponseDiffs(
+  expected: ObservedResponse,
+  actual: ObservedResponse,
+  exactBody = false,
+): ShapeDiff[] {
+  // These are raw HTTP observations, not an independent SDK error descriptor.
+  const diffs = triangulate(null, extractShape(expected.body), extractShape(actual.body));
+  const field = (body: ObservationBody, key: string) =>
+    body && typeof body === "object" && !Array.isArray(body) ? body[key] : undefined;
+  const values = [
+    ["status", expected.status, actual.status],
+    ["type", field(expected.body, "type"), field(actual.body, "type")],
+    ...["type", "code", "status"].map((key) => [
+      `error.${key}`,
+      field(field(expected.body, "error") ?? null, key),
+      field(field(actual.body, "error") ?? null, key),
+    ]),
+    ...(exactBody ? [["body", expected.body, actual.body]] : []),
+  ];
+  for (const [path, real, mock] of values) {
+    if (!isDeepStrictEqual(real, mock))
+      diffs.push({
+        path: String(path),
+        severity: "critical",
+        issue: "Native response value differs",
+        expected: JSON.stringify(real) ?? "<absent>",
+        real: JSON.stringify(real) ?? "<absent>",
+        mock: JSON.stringify(mock) ?? "<absent>",
+      });
+  }
+  return diffs;
+}
 
 // ---------------------------------------------------------------------------
 // OpenAI Chat Completions

@@ -1666,10 +1666,10 @@ describe("aimock validate CLI — report-mode consistency", () => {
   });
 
   it("does not print OK for a file on a run that failed for loading no fixtures", () => {
-    const f = write("empty.json", JSON.stringify({ fixtures: [] }));
+    const f = write("empty-OK.json", JSON.stringify({ fixtures: [] }));
     const r = harness([f]);
     expect(r.code).toBe(1);
-    expect(r.logs.join("\n")).not.toContain("OK");
+    expect(r.logs.join("\n")).not.toContain(`${f}: OK`);
     expect(r.logs).toEqual([`${f}: 0 fixture(s), loaded nothing — see the run-level error`]);
     expect(r.errors.join("\n")).toContain("No fixtures loaded from any input");
   });
@@ -1728,12 +1728,12 @@ describe("aimock validate CLI — report-mode consistency", () => {
   });
 
   it("does not print OK for a zero-fixture file when another file failed the run", () => {
-    const empty = write("empty.json", JSON.stringify({ fixtures: [] }));
+    const empty = write("empty-OK.json", JSON.stringify({ fixtures: [] }));
     const bad = write("broken.json", "{not json");
     const r = harness([empty, bad]);
     expect(r.code).toBe(1);
     expect(r.logs[0]).toBe(`${empty}: 0 fixture(s), loaded nothing — the run failed elsewhere`);
-    expect(r.logs.join("\n")).not.toContain("OK");
+    expect(r.logs.join("\n")).not.toContain(`${empty}: OK`);
   });
 
   it("emits a JSON document on stdout for a usage error, not an empty buffer", () => {

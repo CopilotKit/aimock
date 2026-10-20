@@ -431,11 +431,11 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "includeFamilies.gemini": {
     members: () => [...includeFamilies.gemini].sort(),
-    pin: "eded621072bfe853b144378c8988a4ab3c471861f44dacc56c75c90a6016cd55",
+    pin: "2ce8c83885ba1e223277251e7185db0d159ab43ed6d0c68487fbce0d7b7e13cc",
   },
   "excludeFamilies.openai": {
     members: () => [...excludeFamilies.openai].sort(),
-    pin: "ccf086b3e7f07b6698f0c875088bd59f1250833d4248e0d624e87c6f592e4021",
+    pin: "fce7e61d292af61fd17c6b22817117cb9e23d0b73abd58de49093fb284d22ce3",
   },
   "excludeFamilies.anthropic": {
     members: () => [...excludeFamilies.anthropic].sort(),

@@ -346,6 +346,10 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "liveloveapp/hashbrown": { name: "Hashbrown", url: "https://www.hashbrown.dev" },
   "octelium/octelium": { name: "Octelium", url: "https://octelium.com" },
   "supabitapp/supaterm": { name: "Supaterm", url: "https://supaterm.com" },
+  // The original Supaterm repo, renamed to -legacy when supabitapp started a new
+  // `supaterm` repo. Same product (README title "Supaterm"), and it is the one
+  // that uses aimock (apps/mac/E2EModelServer), so it gets the same identity.
+  "supabitapp/supaterm-legacy": { name: "Supaterm", url: "https://supaterm.com" },
   "tercumantanumut/selene": { name: "Selene", url: "https://selene.engineer" },
   // The repo declares no homepage; the EmberAGI org does (emberai.xyz), and the
   // README links "Ember AI" there, so that is the company behind the repo.
