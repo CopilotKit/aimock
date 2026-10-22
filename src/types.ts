@@ -298,7 +298,7 @@ export interface FixtureGeneratedFile {
  * Claude (5: no created, systemFingerprint); Gemini (2: only finishReason, usage).
  */
 export interface ResponseOverrides {
-  /** Model-generated files emitted before the response text (Gemini only). */
+  /** Model-generated files emitted before the response text and tool calls (Gemini only). */
   files?: FixtureGeneratedFile[];
   /** Source citations for the response text (OpenAI Responses API only). */
   citations?: FixtureCitation[];

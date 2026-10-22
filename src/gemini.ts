@@ -306,8 +306,8 @@ interface GeminiResponseChunk {
   };
 }
 
-// Fixture `files` as Gemini `inlineData` parts. Every text-bearing builder emits
-// these after any thought parts and before the text / functionCall parts.
+// Fixture `files` as Gemini `inlineData` parts. Every text and tool-call builder
+// emits these after any thought parts and before the text / functionCall parts.
 function geminiFileParts(overrides?: ResponseOverrides): GeminiPart[] {
   return (overrides?.files ?? []).map((f) => ({
     inlineData: { mimeType: f.mimeType, data: f.data },
@@ -431,6 +431,8 @@ function buildGeminiToolCallStreamChunks(
     }
   }
 
+  chunks.push(...geminiFileChunks(overrides));
+
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
 
   // Gemini sends all tool calls in a single response chunk
@@ -484,6 +486,7 @@ function buildGeminiToolCallResponse(
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
+  parts.push(...geminiFileParts(overrides));
   parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
 
   return {
