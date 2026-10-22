@@ -149,10 +149,11 @@ curl 'http://localhost:4010/v1beta/models/gemini-test'</code></pre>
           including system text and tools.
         </p>
         <p>
-          aimock converts the request through its existing translator, then estimates tokens with
-          <code>ceil(chars / 4)</code>. The estimate includes converted messages, system text, and
-          serialized converted tools. This deterministic estimate is not a tokenizer or an upstream
-          count. Optional cache counts and token-detail arrays are omitted.
+          aimock converts the request through its existing translator, then estimates about 1 token
+          per 4 characters of messages (plus tool definitions), minimum 1. The estimate includes
+          converted messages, system text, and serialized converted tools. This deterministic
+          estimate is not a tokenizer or an upstream count. Optional cache counts and token-detail
+          arrays are omitted.
         </p>
         <div class="code-block">
           <div class="code-block-header">Count a prompt <span class="lang-tag">shell</span></div>
@@ -178,24 +179,37 @@ curl http://localhost:4010/v1beta/models/gemini-test:countTokens \
         <h2 id="authentication-errors">Authentication Errors</h2>
         <p>
           With inbound API-key authentication enabled, rejected keys on Gemini and Vertex Google
-          HTTP paths return 401 with this body:
+          HTTP paths return 401 with the same body as every other HTTP route, unchanged from 1.45:
         </p>
         <div class="code-block">
-          <div class="code-block-header">Inbound rejection <span class="lang-tag">json</span></div>
+          <div class="code-block-header">
+            Default inbound rejection <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{"error":{"message":"Invalid API key","type":"authentication_error","code":"invalid_api_key"}}</code></pre>
+        </div>
+        <p>
+          To get the provider-native body instead, set <code>policy.authErrors</code> to
+          <code>"native"</code>, pass <code>--policy authErrors=native</code>, or send the request
+          header <code>X-AIMock-Policy: authErrors=native</code>. Gemini and Vertex Google HTTP
+          paths then return:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Native inbound rejection <span class="lang-tag">json</span>
+          </div>
           <pre><code>{"error":{"code":401,"message":"Invalid API key","status":"UNAUTHENTICATED"}}</code></pre>
         </div>
         <p>
-          Compatibility change: Gemini and Vertex Google HTTP paths replace the string
-          <code>error.code: "invalid_api_key"</code> with the numeric
-          <code>error.code: 401</code> and <code>error.status: "UNAUTHENTICATED"</code>. Check HTTP
-          401 or the status string instead of the old code. Update tests and clients that read that
-          field.
+          The native body uses the numeric <code>error.code: 401</code> and
+          <code>error.status: "UNAUTHENTICATED"</code> in place of the string
+          <code>error.code: "invalid_api_key"</code>. With the native policy, check HTTP 401 or the
+          status string.
         </p>
         <p>
           A live unauthenticated Gemini count probe returned 403 <code>PERMISSION_DENIED</code>
-          for an unregistered caller. aimock intentionally retains 401
+          for an unregistered caller. The native aimock body intentionally keeps 401
           <code>UNAUTHENTICATED</code> for configured inbound authentication. These policies differ.
-          WebSocket authentication retains its existing body.
+          WebSocket authentication always returns the default body.
         </p>
 
         <h2>Unit Test: Streaming Text</h2>

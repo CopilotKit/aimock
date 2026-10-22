@@ -964,6 +964,8 @@ export class AimockFakesReportError extends Error {
 
 // @public (undocumented)
 export interface AimockPolicy {
+    authErrors?: "legacy" | "native";
+    modelCatalog?: "legacy" | "native";
     requiredHeaders?: "off" | "enforce";
 }
 
@@ -2088,6 +2090,7 @@ export interface Fixture {
     };
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
+    nonStreamingTiming?: boolean;
     openRouterProcessing?: boolean;
     // (undocumented)
     recordedTimings?: RecordedTimings;
@@ -2193,6 +2196,7 @@ export interface FixtureFileEntry {
     };
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
+    nonStreamingTiming?: boolean;
     openRouterProcessing?: boolean;
     // (undocumented)
     recordedTimings?: RecordedTimings;

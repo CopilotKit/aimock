@@ -181,6 +181,9 @@ export function entryToFixture(
     ...(entry.openRouterProcessing !== undefined && {
       openRouterProcessing: entry.openRouterProcessing,
     }),
+    ...(entry.nonStreamingTiming !== undefined && {
+      nonStreamingTiming: entry.nonStreamingTiming,
+    }),
     ...(entry.metadata !== undefined && { metadata: entry.metadata }),
   };
 

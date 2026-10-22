@@ -9,8 +9,10 @@
  * Case-name prefixes carry a contract:
  * - `openai-*`: OpenAI-dialect `/v1/models` callers. Must stay identical.
  * - `anthropic-signal-*`: requests that carry an Anthropic signal
- *   (`anthropic-version`, or `x-api-key` without `Authorization`). Today they
- *   get the OpenAI list; these goldens are replaced when that is fixed.
+ *   (`anthropic-version`, or `x-api-key` without `Authorization`) under the
+ *   default policy. They get the 1.45 OpenAI list. Must stay identical.
+ * - `anthropic-native-*`: the same requests with `policy.modelCatalog: "native"`.
+ *   Anthropic-signal requests get the Anthropic-format catalog.
  * - `shared404-*`: GETs on Gemini `:verb` paths. Must stay identical, even
  *   after a `GET /v1beta/models/{model}` route exists.
  * - `ollama-*`, `openrouter-*`, `openrouter-video-*`: the other listings.
@@ -103,18 +105,24 @@ async function captureWithJournal(
 
 let multi: GoldenServer;
 let empty: GoldenServer;
+let multiNative: GoldenServer;
+let emptyNative: GoldenServer;
 let mixed: GoldenServer;
 let videoNoString: GoldenServer;
 
 beforeAll(async () => {
   multi = await startGoldenServer(multiProvider);
   empty = await startGoldenServer([]);
+  multiNative = await startGoldenServer(multiProvider, { policy: { modelCatalog: "native" } });
+  emptyNative = await startGoldenServer([], { policy: { modelCatalog: "native" } });
   mixed = await startGoldenServer(mixedEndpoints);
   videoNoString = await startGoldenServer(videoNoStringModel);
 });
 
 afterAll(async () => {
-  await Promise.all([multi, empty, mixed, videoNoString].map((s) => s?.close()));
+  await Promise.all(
+    [multi, empty, multiNative, emptyNative, mixed, videoNoString].map((s) => s?.close()),
+  );
 });
 
 // ─── GET /v1/models ─────────────────────────────────────────────────────────
@@ -179,6 +187,35 @@ describe("GET /v1/models", () => {
       "x-api-key": "k",
     });
     expectGolden(SUITE, "anthropic-signal-version-empty-fixtures", got);
+  });
+
+  it("anthropic-native-version", async () => {
+    const got = await get(multiNative, "/v1/models", {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": "k",
+    });
+    expectGolden(SUITE, "anthropic-native-version", got);
+  });
+
+  it("anthropic-native-xapikey-only", async () => {
+    const got = await get(multiNative, "/v1/models", { "x-api-key": "k" });
+    expectGolden(SUITE, "anthropic-native-xapikey-only", got);
+  });
+
+  it("anthropic-native-version-with-bearer", async () => {
+    const got = await get(multiNative, "/v1/models", {
+      "anthropic-version": "2023-06-01",
+      authorization: "Bearer k",
+    });
+    expectGolden(SUITE, "anthropic-native-version-with-bearer", got);
+  });
+
+  it("anthropic-native-version-empty-fixtures", async () => {
+    const got = await get(emptyNative, "/v1/models", {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": "k",
+    });
+    expectGolden(SUITE, "anthropic-native-version-empty-fixtures", got);
   });
 });
 

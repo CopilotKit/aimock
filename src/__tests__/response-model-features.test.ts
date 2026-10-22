@@ -30,6 +30,8 @@ const googleIds = ["test-model", "custom/slash", "gemini-test", "google/custom"]
 const ids = [...anthropicIds, "gpt-test", "openai/custom", "gemini-test", "google/custom"];
 const fixtures: Fixture[] = ids.map((model) => ({ match: { model }, response: { content: "ok" } }));
 const nativeHeaders = { "anthropic-version": "2023-06-01" };
+// The shared /v1/models catalog is OpenAI-format unless the server opts in.
+const nativeCatalog = { policy: { modelCatalog: "native" } } as const;
 
 function expectValidGeminiCapacities(model: Pick<Model, "inputTokenLimit" | "outputTokenLimit">) {
   for (const capacity of [model.inputTokenLimit, model.outputTokenLimit]) {
@@ -63,7 +65,7 @@ function modelInfo(id: string) {
 describe("native model catalogs on the source server", () => {
   let server: GoldenServer;
   beforeAll(async () => {
-    server = await startGoldenServer(fixtures);
+    server = await startGoldenServer(fixtures, nativeCatalog);
   });
   afterAll(async () => {
     await server.close();
@@ -379,9 +381,10 @@ describe("native model catalogs on the source server", () => {
 });
 
 it("empty provider lists have native envelopes and no fabricated fallback", async () => {
-  const server = await startGoldenServer([
-    { match: { model: "gpt-only" }, response: { content: "ok" } },
-  ]);
+  const server = await startGoldenServer(
+    [{ match: { model: "gpt-only" }, response: { content: "ok" } }],
+    nativeCatalog,
+  );
   try {
     const anthropic = await captureHttp(server.url + "/v1/models", { headers: nativeHeaders });
     const gemini = await captureHttp(server.url + "/v1beta/models");
@@ -400,7 +403,7 @@ it("empty provider lists have native envelopes and no fabricated fallback", asyn
 });
 
 it("empty fixtures use the established core defaults for native list/detail visibility", async () => {
-  const server = await startGoldenServer([]);
+  const server = await startGoldenServer([], nativeCatalog);
   try {
     for (const [path, headers, name] of [
       ["/v1/models?limit=1000", nativeHeaders, "claude-3-5-sonnet-20241022"],
@@ -430,6 +433,7 @@ describe("SDK Anthropic cursor direction on the source server", () => {
   beforeAll(async () => {
     server = await startGoldenServer(
       modelIds.map((model) => ({ match: { model }, response: { content: "ok" } })),
+      nativeCatalog,
     );
   });
   afterAll(async () => {
@@ -496,6 +500,7 @@ it.each([false, true])(
     });
     const directory = mkdtempSync(join(tmpdir(), "aimock-f2-record-"));
     const server = await startGoldenServer(fixtures, {
+      ...nativeCatalog,
       record: {
         providers: { openai: upstream.url, anthropic: upstream.url, gemini: upstream.url },
         fixturePath: directory,
@@ -553,6 +558,7 @@ it("provider prefix table drives list visibility without capability inference", 
   ] as const;
   const server = await startGoldenServer(
     prefixes.map(([model]) => ({ match: { model }, response: { content: "ok" } })),
+    nativeCatalog,
   );
   try {
     for (const provider of ["anthropic", "google"] as const) {

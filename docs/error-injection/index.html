@@ -187,6 +187,10 @@
             Interrupted requests are recorded in the journal with
             <code>response.interrupted: true</code> and <code>response.interruptReason</code>
           </li>
+          <li>
+            A client that disconnects from a Claude Messages stream is recorded the same way, with
+            <code>response.interruptReason: "client aborted"</code>
+          </li>
         </ul>
 
         <div class="info-box">

@@ -775,6 +775,20 @@ describe("extractFeatures keyword precision", () => {
     const features = extractFeatures(text);
     expect(features["Docker image"]).toBe(true);
   });
+
+  it("does not trigger Request journal on 'request history' (chat messages in a request)", () => {
+    // VidaiMock's README: the tool result is already in the request history.
+    const text =
+      "When a tool result is already in the request history (OpenAI role: tool), the mock ends the loop.";
+    const features = extractFeatures(text);
+    expect(features["Request journal"]).toBe(false);
+  });
+
+  it("triggers Request journal on 'request log'", () => {
+    const text = "View the most recent requests with View Request Log on the dashboard.";
+    const features = extractFeatures(text);
+    expect(features["Request journal"]).toBe(true);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -26,7 +26,7 @@ import { VectorMock } from "./vector-mock.js";
 import type { QueryResult } from "./vector-types.js";
 import { Logger } from "./logger.js";
 import { wireMcpRecording } from "./mcp-recorder.js";
-import { parsePolicy, parsePolicyEntry } from "./response/policy.js";
+import { assignPolicyEntry, parsePolicy, parsePolicyEntry } from "./response/policy.js";
 
 export interface MCPConfigTool extends MCPToolDefinition {
   result?: string;
@@ -204,7 +204,7 @@ export function parsePolicyFlags(entries: string[]) {
         error: `Invalid --policy ${JSON.stringify(entry)}: ${parsed.reason} Use key=value.`,
       } as const;
     }
-    policy[parsed.key] = parsed.value;
+    assignPolicyEntry(policy, parsed);
   }
   return { ok: true, policy } as const;
 }

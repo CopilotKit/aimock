@@ -219,7 +219,8 @@ interface LegEvidence {
 const reporterChannels = new WeakMap<LegEvidence, EvidenceReporterRecord[]>();
 const liveObservations = new WeakMap<LegEvidence, LiveObservation[]>();
 const observationRejections = new WeakSet<LegEvidence>();
-const observationUnavailability = new WeakSet<LegEvidence>();
+// Leg -> unbound assertion diagnostics ("file › ancestors › title: reason").
+const observationUnavailability = new WeakMap<LegEvidence, string[]>();
 
 function parseEvidenceRecord(line: string): EvidenceReporterRecord | null {
   if (Buffer.byteLength(line) > MAX_EVIDENCE_RECORD_BYTES) return null;
@@ -236,8 +237,12 @@ function parseEvidenceRecord(line: string): EvidenceReporterRecord | null {
     "taskId" in value &&
     typeof value.taskId === "string" &&
     value.taskId.length > 0
-  )
-    return { kind: "console-unavailable", taskId: value.taskId };
+  ) {
+    if (!("bytes" in value)) return { kind: "console-unavailable", taskId: value.taskId };
+    if (typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes < 0)
+      return null;
+    return { kind: "console-unavailable", taskId: value.taskId, bytes: value.bytes };
+  }
 
   if (
     value.kind === "console" &&
@@ -314,29 +319,93 @@ function evidenceFileName(file: string | undefined) {
     : boundedEvidenceIdentity(path.split(sep).join("/"));
 }
 
-function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
-  const records = reporterChannels.get(leg) ?? [];
-  const identities = records.filter((record) => record.kind === "identity");
-  const logs = records.filter((record) => record.kind === "console");
+const MAX_UNBOUND_ASSERTION_LINES = 50;
+
+type IdentityRecord = Extract<EvidenceReporterRecord, { kind: "identity" }>;
+
+// Identities that own a console-unavailable record (withheld console output).
+function taintedOwnerIdentities(records: EvidenceReporterRecord[]) {
   const taintedIds = new Set(
     records
       .filter((record) => record.kind === "console-unavailable")
       .map((record) => record.taskId),
   );
-  const taintedOwners = identities.filter((identity) => taintedIds.has(identity.id));
-  const isTainted = (identity: Extract<EvidenceReporterRecord, { kind: "identity" }>) =>
-    taintedOwners.some((owner) => {
-      if (resolve(identity.file) !== resolve(owner.file)) return false;
-      if (owner.entity === "module") return true;
-      if (owner.entity === "test") return identity.id === owner.id;
-      const path = [...owner.ancestors, owner.title];
-      return (
-        identity.id === owner.id || path.every((part, index) => identity.ancestors[index] === part)
-      );
-    });
+  return records.filter(
+    (record): record is IdentityRecord => record.kind === "identity" && taintedIds.has(record.id),
+  );
+}
 
-  const key = (file: string | undefined, ancestors: string[], title: string) =>
-    JSON.stringify([file === undefined ? null : resolve(file), ancestors, title]);
+// The tainted owners whose withheld output covers this identity.
+function taintingOwners(taintedOwners: IdentityRecord[], identity: IdentityRecord) {
+  return taintedOwners.filter((owner) => {
+    if (resolve(identity.file) !== resolve(owner.file)) return false;
+    if (owner.entity === "module") return true;
+    if (owner.entity === "test") return identity.id === owner.id;
+    const path = [...owner.ancestors, owner.title];
+    return (
+      identity.id === owner.id || path.every((part, index) => identity.ancestors[index] === part)
+    );
+  });
+}
+
+function contextKey(file: string | undefined, ancestors: string[], title: string) {
+  return JSON.stringify([file === undefined ? null : resolve(file), ancestors, title]);
+}
+
+// Names each passed/failed assertion with no console context, and why, so a
+// withheld observation artifact points at its cause instead of a bare ENOENT.
+function describeUnboundAssertions(
+  leg: LegEvidence,
+  result: VitestJsonResult,
+  contexts: Map<VitestAssertion, unknown>,
+) {
+  const records = reporterChannels.get(leg);
+  const identities = (records ?? []).filter(
+    (record): record is IdentityRecord => record.kind === "identity",
+  );
+  const tainted = taintedOwnerIdentities(records ?? []);
+  return result.testResults.flatMap((file) =>
+    file.assertionResults
+      .filter(
+        (assertion) => ["passed", "failed"].includes(assertion.status) && !contexts.has(assertion),
+      )
+      .map((assertion) => {
+        const name = [
+          evidenceFileName(file.name),
+          ...assertion.ancestorTitles.map(boundedEvidenceIdentity),
+          boundedEvidenceIdentity(assertion.title),
+        ].join(" › ");
+        if (!records) return `${name}: reporter evidence channel unavailable`;
+        const identityKey = contextKey(file.name, assertion.ancestorTitles, assertion.title);
+        const matches = identities.filter(
+          (identity) =>
+            identity.entity === "test" &&
+            contextKey(identity.file, identity.ancestors, identity.title) === identityKey,
+        );
+        const owners = matches.length === 1 ? taintingOwners(tainted, matches[0]) : [];
+        if (!owners.length) return `${name}: no console context matched`;
+        const sizes = records.flatMap((record) =>
+          record.kind === "console-unavailable" &&
+          record.bytes !== undefined &&
+          owners.some((owner) => owner.id === record.taskId)
+            ? [record.bytes]
+            : [],
+        );
+        return sizes.length
+          ? `${name}: console output unavailable: record exceeded ${MAX_EVIDENCE_RECORD_BYTES} bytes (${Math.max(...sizes)} bytes)`
+          : `${name}: console-unavailable`;
+      }),
+  );
+}
+
+function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
+  const records = reporterChannels.get(leg) ?? [];
+  const identities = records.filter((record) => record.kind === "identity");
+  const logs = records.filter((record) => record.kind === "console");
+  const taintedOwners = taintedOwnerIdentities(records);
+  const isTainted = (identity: IdentityRecord) =>
+    taintingOwners(taintedOwners, identity).length > 0;
+  const key = contextKey;
   const rows = result.testResults.flatMap((file) =>
     file.assertionResults.map((assertion) => ({
       assertion,
@@ -975,15 +1044,10 @@ function responsesWSObservations(
 function captureAssertionEvidence(leg: LegEvidence | undefined, result: VitestJsonResult) {
   if (!leg) return;
   const contexts = bindReporterContext(leg, result);
-  if (
-    result.testResults.some((file) =>
-      file.assertionResults.some(
-        (assertion) => ["passed", "failed"].includes(assertion.status) && !contexts.has(assertion),
-      ),
-    )
-  ) {
+  const unbound = describeUnboundAssertions(leg, result, contexts);
+  if (unbound.length) {
     // Unavailable assertion stdout cannot establish a complete observation artifact.
-    observationUnavailability.add(leg);
+    observationUnavailability.set(leg, unbound);
   }
   const collected: LiveObservation[] = [];
   for (const [assertion, messages] of contexts) {
@@ -3457,6 +3521,10 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   const unverifiedSurfaces = collectUnverifiedSurfaces(httpResults);
   const observationRejected =
     observationRejections.has(evidence.drift) || observationRejections.has(evidence.agui);
+  const unboundAssertions = [
+    ...(observationUnavailability.get(evidence.drift) ?? []),
+    ...(observationUnavailability.get(evidence.agui) ?? []),
+  ];
   const observationUnavailable =
     observationUnavailability.has(evidence.drift) || observationUnavailability.has(evidence.agui);
 
@@ -3528,6 +3596,11 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   }
   if (observationUnavailable) {
     console.error("Live observation evidence unavailable; observation artifact was not written.");
+    console.error(`  Assertions without console context: ${unboundAssertions.length}`);
+    for (const line of unboundAssertions.slice(0, MAX_UNBOUND_ASSERTION_LINES))
+      console.error(`    - ${line}`);
+    if (unboundAssertions.length > MAX_UNBOUND_ASSERTION_LINES)
+      console.error(`    ... and ${unboundAssertions.length - MAX_UNBOUND_ASSERTION_LINES} more`);
     // Preserve existing failing ShapeDiff/infra grading; a clean report cannot certify this channel.
     if (exitCode === 0) return 1;
   }

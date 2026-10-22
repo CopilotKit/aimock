@@ -2,17 +2,37 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { AimockPolicy, HandlerDefaults } from "../types.js";
 
 /** Entry points choose whether a failed parse warns or becomes a CLI usage error. */
-export function parsePolicyEntry(key: string, value: unknown) {
-  if (key !== "requiredHeaders") {
-    return { ok: false, reason: "unknown policy key." } as const;
-  }
-  if (typeof value === "string") {
-    const normalized = value.toLowerCase();
+export function parsePolicyEntry(
+  key: string,
+  value: unknown,
+):
+  | { ok: true; key: "requiredHeaders"; value: "off" | "enforce" }
+  | { ok: true; key: "authErrors" | "modelCatalog"; value: "legacy" | "native" }
+  | { ok: false; reason: string } {
+  if (key === "requiredHeaders") {
+    const normalized = typeof value === "string" ? value.toLowerCase() : undefined;
     if (normalized === "off" || normalized === "enforce") {
-      return { ok: true, key, value: normalized } as const;
+      return { ok: true, key, value: normalized };
     }
+    return { ok: false, reason: 'expected "off" or "enforce".' };
   }
-  return { ok: false, reason: 'expected "off" or "enforce".' } as const;
+  if (key === "authErrors" || key === "modelCatalog") {
+    const normalized = typeof value === "string" ? value.toLowerCase() : undefined;
+    if (normalized === "legacy" || normalized === "native") {
+      return { ok: true, key, value: normalized };
+    }
+    return { ok: false, reason: 'expected "legacy" or "native".' };
+  }
+  return { ok: false, reason: "unknown policy key." };
+}
+
+/** Store one parsed entry without widening either key's value type. */
+export function assignPolicyEntry(
+  target: AimockPolicy,
+  entry: Exclude<ReturnType<typeof parsePolicyEntry>, { ok: false }>,
+): void {
+  if (entry.key === "requiredHeaders") target.requiredHeaders = entry.value;
+  else target[entry.key] = entry.value;
 }
 
 /** Parse each programmatic entry independently without changing the caller's object. */
@@ -25,7 +45,7 @@ export function parsePolicy(value: unknown, warn: (message: string) => void): Ai
   }
   for (const [key, entry] of Object.entries(value)) {
     const parsed = parsePolicyEntry(key, entry);
-    if (parsed.ok) result[parsed.key] = parsed.value;
+    if (parsed.ok) assignPolicyEntry(result, parsed);
     else warn(`Ignoring policy.${key}: ${parsed.reason}`);
   }
   return result;
@@ -49,7 +69,7 @@ export function parsePolicyHeader(
     }
     const key = entry.slice(0, separator);
     const parsed = parsePolicyEntry(key, entry.slice(separator + 1));
-    if (parsed.ok) result[parsed.key] = parsed.value;
+    if (parsed.ok) assignPolicyEntry(result, parsed);
     else warn(`Ignoring policy.${key}: ${parsed.reason}`);
   }
   return result;
@@ -67,6 +87,8 @@ export function resolvePolicy(
   return Object.freeze({
     strict,
     requiredHeaders: request.requiredHeaders ?? server.requiredHeaders ?? "off",
+    authErrors: request.authErrors ?? server.authErrors ?? "legacy",
+    modelCatalog: request.modelCatalog ?? server.modelCatalog ?? "legacy",
   });
 }
 

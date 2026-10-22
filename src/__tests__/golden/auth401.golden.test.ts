@@ -7,8 +7,9 @@
  * - `openai-*`: routes whose 401 is the shared OpenAI-shaped error body today
  *   (chat, Responses, shared `/v1/models`, Bedrock, Ollama, OpenRouter,
  *   WebSocket upgrade). These bytes must stay identical.
- * - `replaced-*`: Anthropic and Gemini/Vertex routes. These goldens are
- *   expected to be replaced by provider-format goldens later.
+ * - `replaced-*`: Anthropic and Gemini/Vertex routes. With the default
+ *   `policy.authErrors` ("legacy") these keep the 1.45 OpenAI-shaped body;
+ *   provider-native bodies are opt-in and covered in response-auth-features.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {

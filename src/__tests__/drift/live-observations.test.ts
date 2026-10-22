@@ -435,6 +435,12 @@ describe.skipIf(child)("live observation collector transport", () => {
             expect(result.stderr).toContain(
               "Live observation evidence unavailable; observation artifact was not written.",
             );
+            // The record size includes the Vitest task ID, which varies with the checkout path.
+            const withheld = result.stderr.match(
+              / {2}Assertions without console context: 1\n {4}- \[outside-root\] › actual collector observation producer › ordinary emitter calls at reporter size boundary: console output unavailable: record exceeded 262144 bytes \((\d+) bytes\)\n/,
+            );
+            expect(withheld).not.toBeNull();
+            expect(Number(withheld?.[1])).toBeGreaterThan(262144);
             expect(existsSync(observations)).toBe(false);
             expect(result.status).toBe(1);
             return;
@@ -471,6 +477,12 @@ describe.skipIf(child)("live observation collector transport", () => {
             expect(result.stderr).toContain(
               "Live observation evidence unavailable; observation artifact was not written.",
             );
+            // The record size includes the Vitest task ID, which varies with the checkout path.
+            const withheld = result.stderr.match(
+              / {2}Assertions without console context: 1\n {4}- \[outside-root\] › actual collector observation producer › ordinary emitter calls at reporter size boundary: console output unavailable: record exceeded 262144 bytes \((\d+) bytes\)\n/,
+            );
+            expect(withheld).not.toBeNull();
+            expect(Number(withheld?.[1])).toBeGreaterThan(262144);
             expect(existsSync(observations)).toBe(false);
           }
           expect(result.status).not.toBe(0);

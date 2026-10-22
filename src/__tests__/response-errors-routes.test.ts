@@ -150,6 +150,7 @@ const fixtures: Fixture[] = [
 let server: GoldenServer;
 let crash: GoldenServer;
 let auth: GoldenServer;
+let nativeAuth: GoldenServer;
 beforeAll(async () => {
   server = await startGoldenServer(fixtures, { enableMisbehavior: true });
   crash = await startGoldenServer([
@@ -163,11 +164,16 @@ beforeAll(async () => {
     },
   ]);
   auth = await startGoldenServer([], { auth: { apiKeys: ["good"] } });
+  nativeAuth = await startGoldenServer([], {
+    auth: { apiKeys: ["good"] },
+    policy: { authErrors: "native" },
+  });
 });
 afterAll(async () => {
   await server?.close();
   await crash?.close();
   await auth?.close();
+  await nativeAuth?.close();
 });
 
 function expectedToolBody(id: string) {
@@ -291,6 +297,7 @@ describe("actual central route responses", () => {
 const authBody =
   '{"error":{"message":"Invalid API key","type":"authentication_error","code":"invalid_api_key"}}';
 describe("actual legacy auth bytes", () => {
+  // Default contract from 1.45: every HTTP route keeps the string error.code.
   it.each(routes)("preserves $id auth", async ({ id, path }) => {
     const got = await captureHttp(`${auth.url}${path}`, {
       method: "POST",
@@ -298,20 +305,35 @@ describe("actual legacy auth bytes", () => {
       body: requestBody("auth"),
     });
     expect(got.status).toBe(401);
-    const expectedBody =
-      id === "messages"
-        ? '{"type":"error","error":{"type":"authentication_error","message":"Invalid API key"}}'
-        : id === "interactions" || id === "gemini" || id === "vertex"
-          ? '{"error":{"code":401,"message":"Invalid API key","status":"UNAUTHENTICATED"}}'
-          : authBody;
-    expect(got.body).toBe(expectedBody);
-    expect(got.headers["content-length"]).toBe(String(Buffer.byteLength(expectedBody)));
-    if (id === "messages") expect(got.headers["request-id"]).toMatch(/^req_<#\d+>$/);
-    else if (id === "interactions" || id === "gemini" || id === "vertex")
-      expect(got.headers).not.toHaveProperty("request-id");
+    expect(got.body).toBe(authBody);
+    expect(got.headers["content-length"]).toBe(String(Buffer.byteLength(authBody)));
+    expect(got.headers).not.toHaveProperty("request-id");
     expect(got.headers["www-authenticate"]).toBe('Bearer realm="aimock"');
     evidence(`auth-${id}`, got);
   });
+  it.each(routes)(
+    "returns $id native auth only with policy authErrors=native",
+    async ({ id, path }) => {
+      const got = await captureHttp(`${nativeAuth.url}${path}`, {
+        method: "POST",
+        headers: { authorization: "Bearer bad", "x-request-id": "e1-fixed" },
+        body: requestBody("auth"),
+      });
+      expect(got.status).toBe(401);
+      const expectedBody =
+        id === "messages"
+          ? '{"type":"error","error":{"type":"authentication_error","message":"Invalid API key"}}'
+          : id === "interactions" || id === "gemini" || id === "vertex"
+            ? '{"error":{"code":401,"message":"Invalid API key","status":"UNAUTHENTICATED"}}'
+            : authBody;
+      expect(got.body).toBe(expectedBody);
+      expect(got.headers["content-length"]).toBe(String(Buffer.byteLength(expectedBody)));
+      if (id === "messages") expect(got.headers["request-id"]).toMatch(/^req_<#\d+>$/);
+      else if (id === "interactions" || id === "gemini" || id === "vertex")
+        expect(got.headers).not.toHaveProperty("request-id");
+      expect(got.headers["www-authenticate"]).toBe('Bearer realm="aimock"');
+    },
+  );
   it.each([
     "/v1/realtime",
     "/v1/responses",

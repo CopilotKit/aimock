@@ -11,6 +11,7 @@
  */
 
 import { normalizeModelFamily } from "./model-family.js";
+import { listOpenAIModels } from "./providers.js";
 
 /**
  * The GA realtime model FAMILIES. At least one voice/audio model whose
@@ -20,14 +21,14 @@ import { normalizeModelFamily } from "./model-family.js";
  * such as `gpt-realtime-2025-08-28` collapse onto `gpt-realtime` and so match
  * here without being listed separately.
  */
-export const gaRealtimeModels = [
+export const gaRealtimeModels: readonly string[] = Object.freeze([
   "gpt-realtime",
   "gpt-realtime-2",
   "gpt-realtime-2.1",
   "gpt-realtime-2.1-mini",
   "gpt-realtime-1.5",
   "gpt-realtime-mini",
-];
+]);
 
 /**
  * Normalize a voice/audio model id to its FAMILY KEY by stripping trailing
@@ -46,7 +47,7 @@ export const gaRealtimeModels = [
  * `gpt-live-1-mini` — an unknown family — and stays flagged, rather than being
  * over-stripped onto the now-known `gpt-live-1` (the whole point of the canary).
  */
-export function normalizeVoiceModelFamily(id: string): string {
+function normalizeVoiceModelFamily(id: string): string {
   return normalizeModelFamily(id, "openai");
 }
 
@@ -61,8 +62,13 @@ export function normalizeVoiceModelFamily(id: string): string {
  * The listed ids are the family keys; the seed values are already normalized
  * (they carry no dated/build suffix), so building the set through
  * `normalizeVoiceModelFamily` is idempotent and keeps the two in lockstep.
+ *
+ * Module-private on purpose, and so is the detector that reads it: code outside
+ * this file can neither add to the set nor run the detection on a listing it
+ * chose. Readers get {@link isKnownVoiceModelFamily} (membership) and
+ * {@link listKnownVoiceModelFamilies} (a sorted copy, for the membership pin).
  */
-export const knownVoiceModelFamilies = new Set(
+const knownVoiceModelFamilies = new Set(
   [
     // GA realtime family (dated/versioned variants normalize onto these).
     "gpt-realtime",
@@ -109,6 +115,20 @@ export const knownVoiceModelFamilies = new Set(
 );
 
 /**
+ * Is `id`'s NORMALIZED family already in the voice seed set? Read-only: this is
+ * the membership answer `needsVoiceSeedSetEdit` in scripts/drift-sync.ts needs,
+ * without handing out the set itself.
+ */
+export function isKnownVoiceModelFamily(id: string): boolean {
+  return knownVoiceModelFamilies.has(normalizeVoiceModelFamily(id));
+}
+
+/** A sorted COPY of the voice seed set, for logic-pin.test.ts's membership pin. */
+export function listKnownVoiceModelFamilies(): string[] {
+  return [...knownVoiceModelFamilies].sort();
+}
+
+/**
  * Match a model id that belongs to the voice/audio family the realtime canary
  * is responsible for. This is DELIBERATELY broader than the old
  * `id.includes("realtime")` filter: a new full-duplex voice family whose id
@@ -142,13 +162,13 @@ export interface VoiceModelDriftResult {
 }
 
 /**
- * The single detection code path shared by the live canary AND its unit test.
- * Given a raw `GET /v1/models` id list, compute the voice/audio candidates, the
- * unknown (new-family) subset, and GA presence. Keeping this pure lets the unit
- * test drive the EXACT logic the live canary runs against a representative
- * payload without a network call.
+ * The detection itself. Given a raw `GET /v1/models` id list, compute the
+ * voice/audio candidates, the unknown (new-family) subset, and GA presence.
+ * Module-private: the only caller is {@link detectOpenAIVoiceModelDrift}, so the
+ * detection only ever runs on the OpenAI listing. Unit tests reach it through
+ * that entry with `fetch` stubbed to return a representative listing.
  */
-export function detectVoiceModelDrift(models: string[]): VoiceModelDriftResult {
+function detectVoiceModelDrift(models: string[]): VoiceModelDriftResult {
   const candidateModels = models.filter(isVoiceModelId);
   const unknown = candidateModels.filter(
     (m) => !knownVoiceModelFamilies.has(normalizeVoiceModelFamily(m)),
@@ -157,4 +177,19 @@ export function detectVoiceModelDrift(models: string[]): VoiceModelDriftResult {
     gaRealtimeModels.includes(normalizeVoiceModelFamily(m)),
   );
   return { candidateModels, unknown, hasGA };
+}
+
+/**
+ * The ONLY exported way to run voice-drift detection. It fetches the OpenAI
+ * `/models` listing itself, so no caller can hand it any other provider's
+ * listing: there is no listing parameter to pass one through.
+ *
+ * `needsVoiceSeedSetEdit` in scripts/drift-sync.ts routes decided voice families
+ * to a human ONLY for `VOICE_SEED_SET_PROVIDER` ("openai"). That scope is correct
+ * only while the detection runs on OpenAI's listing and nobody else's.
+ * drift-sync-gate-determinism.test.ts pins this module's runtime exports and
+ * that this entry fetches only from api.openai.com.
+ */
+export async function detectOpenAIVoiceModelDrift(apiKey: string): Promise<VoiceModelDriftResult> {
+  return detectVoiceModelDrift(await listOpenAIModels(apiKey));
 }

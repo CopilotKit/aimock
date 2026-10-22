@@ -24,8 +24,9 @@ Options:
                         instead of serving {} (same as llm.strictToolArguments: true)
       --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or
                         extended (overrides llm.responsesTools)
-      --policy <key=value>  Request policy (repeatable): requiredHeaders=off|enforce
-                        Overrides individual llm.policy keys (default: off)
+      --policy <key=value>  Request policy (repeatable): requiredHeaders=off|enforce,
+                        authErrors=legacy|native, modelCatalog=legacy|native
+                        Overrides individual llm.policy keys (defaults: off, legacy, legacy)
   -h, --help            Show this help message
 
 Subcommands:

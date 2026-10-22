@@ -134,7 +134,9 @@ describe("required-version policy on real entry points", () => {
   it.each(["/v1/messages", "/v1/messages/count_tokens", "/v1/models", "/v1/models/claude-test"])(
     "enforces missing version on %s",
     async (path) => {
-      const server = await source({ policy: { requiredHeaders: "enforce" } });
+      const server = await source({
+        policy: { requiredHeaders: "enforce", modelCatalog: "native" },
+      });
       expectRequired(await send(server.url, path, { "x-api-key": "test" }));
       const entries = server.journal.getAll();
       if (path.startsWith("/v1/models")) expect(entries).toEqual([]);
@@ -156,8 +158,14 @@ describe("required-version policy on real entry points", () => {
   it.each(["/v1/messages/count_tokens", "/v1/models", "/v1/models/claude-test"])(
     "request policy overrides server defaults on %s",
     async (path) => {
-      const disabled = await source({ strict: true, policy: { requiredHeaders: "off" } });
-      const enabled = await source({ strict: true, policy: { requiredHeaders: "enforce" } });
+      const disabled = await source({
+        strict: true,
+        policy: { requiredHeaders: "off", modelCatalog: "native" },
+      });
+      const enabled = await source({
+        strict: true,
+        policy: { requiredHeaders: "enforce", modelCatalog: "native" },
+      });
       const headers = { "x-api-key": "test", "x-aimock-strict": "false" };
       const enforced = await send(disabled.url, path, {
         ...headers,
@@ -188,7 +196,7 @@ describe("required-version policy on real entry points", () => {
     async (path) => {
       const server = await source({
         auth: { apiKeys: ["accepted"] },
-        policy: { requiredHeaders: "enforce" },
+        policy: { requiredHeaders: "enforce", authErrors: "native" },
       });
       const result = await send(server.url, path, { "x-api-key": "bad" });
       expect(result.status).toBe(401);
@@ -257,7 +265,7 @@ describe("required-version policy on real entry points", () => {
   it("valid auth gets required-version rejection on shared paths", async () => {
     const server = await source({
       auth: { apiKeys: ["accepted"] },
-      policy: { requiredHeaders: "enforce" },
+      policy: { requiredHeaders: "enforce", modelCatalog: "native" },
     });
     expectRequired(await send(server.url, "/v1/models", { "x-api-key": "accepted" }));
     expect(
@@ -308,7 +316,9 @@ describe("policy request-ID metadata on real HTTP", () => {
   it.each(policyPaths.flatMap((path) => requestIdCases.map((control) => ({ path, ...control }))))(
     "correlates $name request ID on $path",
     async ({ path, value, expected }) => {
-      const server = await source({ policy: { requiredHeaders: "enforce" } });
+      const server = await source({
+        policy: { requiredHeaders: "enforce", modelCatalog: "native" },
+      });
       const { body, responseId } = await policyResponse(server.url, path, value);
       expect(body.request_id).toBe(responseId);
       if (expected) expect(body.request_id).toBe(expected);
@@ -359,7 +369,7 @@ describe("policy request-ID metadata on real HTTP", () => {
   });
 
   it("retains ordinary count validation and native catalog rejection bytes", async () => {
-    const server = await source({ policy: { requiredHeaders: "enforce" } });
+    const server = await source({ policy: { requiredHeaders: "enforce", modelCatalog: "native" } });
     const headers = { "anthropic-version": "2023-06-01", "x-api-key": "test" };
     const count = await send(server.url, "/v1/messages/count_tokens", headers, {
       model: "claude-test",

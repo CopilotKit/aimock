@@ -89,6 +89,33 @@ export function calculateDelay(
   return speed > 0 ? delayMs / speed : delayMs;
 }
 
+// Internal (not part of the public API): the total wait before a non-streaming
+// (`stream: false`) JSON response is written. Sums calculateDelay over the
+// content chunk count that `contentLength` at `chunkSize` would produce, so a
+// fixture with an explicit `streamingProfile` or `recordedTimings` pays roughly
+// the same ttft/tps cost as its streamed content chunks. It is an
+// approximation, not an exact match: a streamed reply also pays delays for its
+// role and finish chunks. There is deliberately no fallback-latency parameter:
+// bare `latency` / `--latency` is an inter-SSE-chunk gap and never delays a
+// non-streaming response. With neither a profile nor recorded timings, this
+// returns 0.
+// Kept as a line comment, not JSDoc: the bundled .d.ts drops this non-public
+// declaration but keeps a JSDoc block, which would then attach to writeSSEStream.
+export function calculateTotalDelay(
+  contentLength: number,
+  chunkSize: number,
+  profile?: StreamingProfile,
+  recordedTimings?: RecordedTimings,
+  replaySpeed?: number,
+): number {
+  const chunkCount = Math.max(1, Math.ceil(contentLength / chunkSize));
+  let total = 0;
+  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+    total += calculateDelay(chunkIndex, profile, undefined, recordedTimings, replaySpeed);
+  }
+  return total;
+}
+
 export async function writeSSEStream(
   res: http.ServerResponse,
   chunks: SSEChunk[],

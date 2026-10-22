@@ -429,7 +429,12 @@ describe("OpenAPI route catalog", () => {
     async (kind) => {
       const response = await fetch(
         `${mock.url}/v1/models${kind === "anthropic-retired" ? "?lifecycle=retired" : ""}`,
-        { headers: kind === "openai" ? {} : { "anthropic-version": "2023-06-01" } },
+        {
+          headers:
+            kind === "openai"
+              ? {}
+              : { "anthropic-version": "2023-06-01", "x-aimock-policy": "modelCatalog=native" },
+        },
       );
       expect(response.status).toBe(200);
       const body: { data: { id: string }[] } = await response.json();

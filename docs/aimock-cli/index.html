@@ -330,6 +330,34 @@ npx --package @copilotkit/aimock llmock -f ./fixtures --port 4010 --policy requi
           routes, the shared model-path caveat, and the rejection body.
         </p>
 
+        <h3 id="auth-error-policy">Auth Error Body Policy</h3>
+        <p>
+          The policy key <code>authErrors</code> selects the 401 body for rejected inbound API keys.
+          The default, <code>legacy</code>, returns the 1.45 body on every route:
+          <code
+            >{"error":{"message":"Invalid API
+            key","type":"authentication_error","code":"invalid_api_key"}}</code
+          >. Set <code>native</code> (for example <code>--policy authErrors=native</code>) to return
+          provider-native bodies on Anthropic Messages/count_tokens and Gemini/Vertex Google HTTP
+          paths. See <a href="/claude-messages#authentication-errors">Claude Messages</a> and
+          <a href="/gemini#authentication-errors">Gemini</a> for these bodies. Shared
+          <code>/v1/models</code>, other HTTP paths, and WebSocket rejections always return the
+          default body. The same input sources, precedence, and invalid-entry rules apply.
+        </p>
+
+        <h3 id="model-catalog-policy">Model Catalog Policy</h3>
+        <p>
+          The policy key <code>modelCatalog</code> selects the body format of the shared
+          <code>GET /v1/models</code> list path. The default, <code>legacy</code>, returns the 1.45
+          OpenAI-format list for every request. Set <code>native</code> (for example
+          <code>--policy modelCatalog=native</code>) to return the Anthropic catalog to requests
+          that send <code>anthropic-version</code>, or <code>x-api-key</code> without
+          <code>Authorization</code>. Anthropic SDK tests that list models need this opt-in.
+          <code>GET /v1/models/{id}</code> selects its format from the request headers and does not
+          use this key. See <a href="/claude-messages#model-catalog">Claude Messages</a> for the
+          catalog format. The same input sources, precedence, and invalid-entry rules apply.
+        </p>
+
         <h3>Recording Config (<code>llm.record</code>)</h3>
         <p>
           When <code>llm.record</code> is present, aimock proxies unmatched requests to real
@@ -572,11 +600,15 @@ npx --package @copilotkit/aimock llmock -f ./fixtures --port 4010 --policy requi
             </tr>
             <tr>
               <td><code>--policy &lt;key=value&gt;</code></td>
-              <td>config <code>llm.policy</code>, else <code>requiredHeaders=off</code></td>
+              <td>
+                config <code>llm.policy</code>, else <code>requiredHeaders=off</code>,
+                <code>authErrors=legacy</code>, and <code>modelCatalog=legacy</code>
+              </td>
               <td>
                 Repeatable policy override. See
-                <a href="#required-header-policy">Required Header Policy</a>. Invalid entries exit
-                1.
+                <a href="#required-header-policy">Required Header Policy</a> and
+                <a href="#auth-error-policy">Auth Error Body Policy</a>, and
+                <a href="#model-catalog-policy">Model Catalog Policy</a>. Invalid entries exit 1.
               </td>
             </tr>
             <tr>

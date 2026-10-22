@@ -14,8 +14,7 @@ import type { ServerInstance } from "../../server.js";
 import { extractShape, compareSSESequences, formatDriftReport } from "./schema.js";
 import { openaiRealtimeTextEventShapes, openaiRealtimeToolCallEventShapes } from "./sdk-shapes.js";
 import { openaiRealtimeWS } from "./ws-providers.js";
-import { listOpenAIModels } from "./providers.js";
-import { detectVoiceModelDrift } from "./voice-models.js";
+import { detectOpenAIVoiceModelDrift } from "./voice-models.js";
 import { startDriftServer, stopDriftServer, collectMockWSMessages } from "./helpers.js";
 import { connectWebSocket } from "../ws-test-client.js";
 
@@ -73,13 +72,17 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
     // credential CI provides) so the canary ALWAYS runs in CI and never skips —
     // gating this on OPENAI_REALTIME_KEY (which CI does NOT provide) would have
     // silently skipped the one check this whole suite exists to run.
-    const models = await listOpenAIModels(OPENAI_API_KEY!);
-
-    // Run the SHARED detection code path (also driven directly by the unit test
-    // in ws-realtime-canary.test.ts). The voice/audio family matcher is broader
-    // than the old `includes("realtime")` filter so a NEW voice family whose id
-    // lacks the "realtime" substring (e.g. gpt-live-1) is still flagged.
-    const { candidateModels: realtimeModels, unknown, hasGA } = detectVoiceModelDrift(models);
+    //
+    // The voice/audio family matcher is broader than the old
+    // `includes("realtime")` filter so a NEW voice family whose id lacks the
+    // "realtime" substring (e.g. gpt-live-1) is still flagged. The entry point
+    // fetches the OpenAI listing itself, so this canary cannot feed
+    // the voice seed set any other provider's listing.
+    const {
+      candidateModels: realtimeModels,
+      unknown,
+      hasGA,
+    } = await detectOpenAIVoiceModelDrift(OPENAI_API_KEY!);
 
     // Compute the unknown-model list BEFORE the hasGA assertion. A run can be
     // BOTH GA-family-gone AND carry new unknown models; because the hasGA

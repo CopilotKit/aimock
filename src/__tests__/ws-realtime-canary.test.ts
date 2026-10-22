@@ -1,10 +1,10 @@
 /**
  * Unit test for the ws-realtime known-voice-models drift canary.
  *
- * This drives the SAME detection code path the live canary runs
- * (`detectVoiceModelDrift` from ws-realtime.drift.ts) against a representative
- * `GET /v1/models` id list — no network call, but NOT a reimplemented fake: the
- * exported function under test IS the one the live canary invokes.
+ * This drives the SAME entry the live canary runs (`detectOpenAIVoiceModelDrift`)
+ * against a representative `GET /v1/models` id list, served by a stubbed `fetch`
+ * — no network call, but NOT a reimplemented fake: the detector is module-private
+ * and this reaches it exactly the way ws-realtime.drift.ts does.
  *
  * Regression guard for the voice-model-family blind spot: the canary used to
  * filter the model list with `models.filter((m) => m.includes("realtime"))`, so
@@ -14,12 +14,13 @@
  * matcher closes that blind spot generally.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  detectVoiceModelDrift,
+  detectOpenAIVoiceModelDrift,
+  isKnownVoiceModelFamily,
   isVoiceModelId,
-  knownVoiceModelFamilies,
-  normalizeVoiceModelFamily,
+  listKnownVoiceModelFamilies,
+  type VoiceModelDriftResult,
 } from "./drift/voice-models.js";
 import { normalizeModelFamily } from "./drift/model-family.js";
 
@@ -77,9 +78,25 @@ const REPRESENTATIVE_MODELS = [
   "gpt-live-1-mini",
 ];
 
+/** Run the canary's entry with `fetch` serving REPRESENTATIVE_MODELS as the listing. */
+async function detectRepresentative(): Promise<VoiceModelDriftResult> {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: REPRESENTATIVE_MODELS.map((id) => ({ id })) })),
+    ),
+  );
+  return detectOpenAIVoiceModelDrift("test-key");
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("ws-realtime known-voice-models canary detection", () => {
-  it("flags a new voice family whose id lacks the 'realtime' substring (gpt-live-*)", () => {
-    const { unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+  it("flags a new voice family whose id lacks the 'realtime' substring (gpt-live-*)", async () => {
+    const { unknown } = await detectRepresentative();
 
     // The whole point: an UNCLASSIFIED gpt-live-* family is surfaced as unknown
     // drift even though its id carries no "realtime" substring.
@@ -88,8 +105,8 @@ describe("ws-realtime known-voice-models canary detection", () => {
     expect(unknown).not.toContain("gpt-live-1");
   });
 
-  it("does not flag legitimately-known voice/audio models (no false positives)", () => {
-    const { unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+  it("does not flag legitimately-known voice/audio models (no false positives)", async () => {
+    const { unknown } = await detectRepresentative();
 
     // Every known-voice model in the payload stays green.
     for (const known of [
@@ -102,17 +119,17 @@ describe("ws-realtime known-voice-models canary detection", () => {
       "gpt-4o-realtime-preview",
       "tts-1",
     ]) {
-      expect(knownVoiceModelFamilies.has(normalizeVoiceModelFamily(known))).toBe(true);
+      expect(isKnownVoiceModelFamily(known)).toBe(true);
       expect(unknown).not.toContain(known);
     }
   });
 
-  it("does not flag dated-snapshot / build-tag variants of known families", () => {
+  it("does not flag dated-snapshot / build-tag variants of known families", async () => {
     // Regression guard for live Drift Tests run 28968203340: these 7 real ids
     // were flagged as critical drift by the pre-normalization id-set matcher.
     // Family normalization collapses each onto an already-known family, so none
     // may appear in `unknown`.
-    const { unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+    const { unknown } = await detectRepresentative();
     for (const snapshot of KNOWN_FAMILY_SNAPSHOTS) {
       expect(unknown).not.toContain(snapshot);
     }
@@ -120,39 +137,47 @@ describe("ws-realtime known-voice-models canary detection", () => {
 
   it("normalizes dated snapshots and build tags onto their family", () => {
     // Dated snapshot `-YYYY-MM-DD` and build tag `-NNN`/`-NNNN` are stripped.
-    expect(normalizeVoiceModelFamily("tts-1-1106")).toBe("tts-1");
-    expect(normalizeVoiceModelFamily("tts-1-hd-1106")).toBe("tts-1-hd");
-    expect(normalizeVoiceModelFamily("gpt-audio-2025-08-28")).toBe("gpt-audio");
-    expect(normalizeVoiceModelFamily("gpt-4o-mini-transcribe-2025-12-15")).toBe(
+    // normalizeVoiceModelFamily is module-private; it is exactly this primitive
+    // (pinned in logic-pin.test.ts), and isKnownVoiceModelFamily applies it.
+    expect(normalizeModelFamily("tts-1-1106", "openai")).toBe("tts-1");
+    expect(normalizeModelFamily("tts-1-hd-1106", "openai")).toBe("tts-1-hd");
+    expect(normalizeModelFamily("gpt-audio-2025-08-28", "openai")).toBe("gpt-audio");
+    expect(normalizeModelFamily("gpt-4o-mini-transcribe-2025-12-15", "openai")).toBe(
       "gpt-4o-mini-transcribe",
     );
-    expect(normalizeVoiceModelFamily("gpt-4o-mini-tts-2025-03-20")).toBe("gpt-4o-mini-tts");
+    expect(normalizeModelFamily("gpt-4o-mini-tts-2025-03-20", "openai")).toBe("gpt-4o-mini-tts");
+    for (const snapshot of KNOWN_FAMILY_SNAPSHOTS) {
+      expect(isKnownVoiceModelFamily(snapshot)).toBe(true);
+    }
     // A single-digit trailing tag is NOT a build tag, so neither id collapses
     // onto a shorter key. `gpt-live-1` is a classified family as of 2026-09-10;
     // `gpt-live-1-mini` is not, and must remain flaggable — over-stripping it
     // onto `gpt-live-1` would silence it.
-    expect(normalizeVoiceModelFamily("gpt-live-1")).toBe("gpt-live-1");
-    expect(normalizeVoiceModelFamily("gpt-live-1-mini")).toBe("gpt-live-1-mini");
-    expect(knownVoiceModelFamilies.has("gpt-live-1")).toBe(true);
-    expect(knownVoiceModelFamilies.has("gpt-live-1-mini")).toBe(false);
+    expect(normalizeModelFamily("gpt-live-1", "openai")).toBe("gpt-live-1");
+    expect(normalizeModelFamily("gpt-live-1-mini", "openai")).toBe("gpt-live-1-mini");
+    expect(isKnownVoiceModelFamily("gpt-live-1")).toBe(true);
+    expect(isKnownVoiceModelFamily("gpt-live-1-mini")).toBe(false);
   });
 
-  it("is byte-identical to the shared normalizeModelFamily(id, 'openai') primitive", () => {
+  it("is byte-identical to the shared normalizeModelFamily(id, 'openai') primitive", async () => {
     // Characterization guard for the A3.2 equivalence refactor: normalizeVoiceModelFamily
-    // is now a thin wrapper over normalizeModelFamily(id, "openai"), and the migrated
-    // wrapper must yield the SAME normalization for every representative id AND an
-    // identical knownVoiceModelFamilies set as re-seeding through the shared primitive.
-    for (const id of [...REPRESENTATIVE_MODELS, ...knownVoiceModelFamilies]) {
-      expect(normalizeVoiceModelFamily(id)).toBe(normalizeModelFamily(id, "openai"));
-    }
-    const reseeded = new Set(
-      [...knownVoiceModelFamilies].map((f) => normalizeModelFamily(f, "openai")),
+    // is a thin (now module-private) wrapper over normalizeModelFamily(id, "openai").
+    // Observed through its consumers: detection must flag exactly the voice ids whose
+    // PRIMITIVE-normalized family is outside the seed set, and the seed set must be
+    // identical to re-seeding it through the shared primitive.
+    const known = listKnownVoiceModelFamilies();
+    const { unknown } = await detectRepresentative();
+    expect(unknown).toEqual(
+      REPRESENTATIVE_MODELS.filter(isVoiceModelId).filter(
+        (id) => !known.includes(normalizeModelFamily(id, "openai")),
+      ),
     );
-    expect([...knownVoiceModelFamilies].sort()).toEqual([...reseeded].sort());
+    const reseeded = new Set(known.map((f) => normalizeModelFamily(f, "openai")));
+    expect(known).toEqual([...reseeded].sort());
   });
 
-  it("does not flag non-voice chat/image/embedding models as voice drift", () => {
-    const { candidateModels, unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+  it("does not flag non-voice chat/image/embedding models as voice drift", async () => {
+    const { candidateModels, unknown } = await detectRepresentative();
 
     for (const nonVoice of [
       "gpt-4o",
@@ -173,16 +198,16 @@ describe("ws-realtime known-voice-models canary detection", () => {
     }
   });
 
-  it("reports GA realtime presence when a GA model exists", () => {
-    const { hasGA } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+  it("reports GA realtime presence when a GA model exists", async () => {
+    const { hasGA } = await detectRepresentative();
     expect(hasGA).toBe(true);
   });
 
-  it("the unclassified gpt-live-* is the ONLY unknown in the representative payload", () => {
+  it("the unclassified gpt-live-* is the ONLY unknown in the representative payload", async () => {
     // Confirms the matcher is neither too narrow (misses gpt-live-*) nor too
     // broad (drags in non-voice models). The unknown set is exactly the one
     // family that is still unclassified.
-    const { unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+    const { unknown } = await detectRepresentative();
     expect([...unknown].sort()).toEqual(["gpt-live-1-mini"]);
   });
 });

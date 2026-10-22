@@ -266,6 +266,24 @@ describe("loadFixtureFile", () => {
     const fixtures = loadFixtureFile(filePath);
     expect(fixtures).toHaveLength(1);
     expect(fixtures[0].streamingProfile).toEqual({ ttft: 50, tps: 100, jitter: 0.1 });
+    expect(fixtures[0].nonStreamingTiming).toBeUndefined();
+  });
+
+  it("nonStreamingTiming passthrough from JSON", () => {
+    const filePath = writeJson(tmpDir, "non-streaming-timing.json", {
+      fixtures: [
+        {
+          match: { userMessage: "profile" },
+          response: { content: "Hello!" },
+          streamingProfile: { ttft: 50, tps: 100 },
+          nonStreamingTiming: true,
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].nonStreamingTiming).toBe(true);
   });
 
   it("chaos config passthrough from JSON", () => {

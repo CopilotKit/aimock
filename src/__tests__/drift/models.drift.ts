@@ -224,10 +224,11 @@ const nativeVersionExpected: ObservedResponse = {
   },
 };
 beforeAll(async () => {
-  nativeCatalogServer = await startGoldenServer([]);
+  // The shared /v1/models catalog is OpenAI-format by default; opt in to Anthropic.
+  nativeCatalogServer = await startGoldenServer([], { policy: { modelCatalog: "native" } });
   nativeVersionServer = await startGoldenServer([], {
     auth: { apiKeys: ["local-native-auth"] },
-    policy: { requiredHeaders: "enforce" },
+    policy: { requiredHeaders: "enforce", modelCatalog: "native" },
   });
 });
 afterAll(async () => {

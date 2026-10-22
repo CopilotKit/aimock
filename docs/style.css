@@ -486,6 +486,13 @@ body::before {
 .comparison-table .partial {
   color: var(--warning);
 }
+/* Muted release label for 1.46.0-only items. */
+.version-note {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
 .matrix-legend {
   margin: 0.35rem 0 0;
   font-size: 0.72rem;

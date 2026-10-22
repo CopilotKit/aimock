@@ -36,6 +36,8 @@ import {
   COMPETITOR_MIGRATION_PAGES,
   buildMigrationRowPatterns,
   runMatrixUpdate,
+  updateMigrationPage,
+  COMPETITORS,
   type DetectedChange,
 } from "../../scripts/update-competitive-matrix.js";
 
@@ -909,4 +911,55 @@ describe("body rows whose cell count does not match the header", () => {
     const changes = computeChanges(BASE, matrix, new Map([[competitor, { [label]: true }]]));
     expect(changes).toEqual([{ competitor, capability: label, from: "No", to: "Yes" }]);
   });
+});
+
+describe("hand-reviewed homepage rows with no scan rule", () => {
+  // These rows were checked by hand against each competitor's source. No
+  // FEATURE_RULES entry names them, so the weekly scan must leave every cell,
+  // on the homepage and on the migration pages, exactly as written.
+  const HAND_ROWS = [
+    "Native model catalogs (Anthropic, Gemini)",
+    "Token-count endpoints",
+    "Native 401 auth errors",
+  ];
+  const MIGRATION_HAND_ROWS = [
+    "Native model catalogs",
+    "Token-count endpoints",
+    "Native 401 auth errors",
+  ];
+  const everything = Object.fromEntries(FEATURE_RULES.map((r) => [r.rowLabel, true]));
+
+  it("are on the homepage and named by no rule or migration variant", () => {
+    const { rows } = parseCurrentMatrix(HOMEPAGE);
+    const ruleLabels = FEATURE_RULES.flatMap((r) => buildMigrationRowPatterns(r.rowLabel));
+    for (const label of HAND_ROWS) {
+      expect(rows.has(label), label).toBe(true);
+      expect(ruleLabels, label).not.toContain(label);
+    }
+    for (const label of MIGRATION_HAND_ROWS) expect(ruleLabels, label).not.toContain(label);
+  });
+
+  it("keep every homepage cell when every competitor matches every rule", () => {
+    const features = new Map(COMPETITORS.map((c) => [c.name, everything]));
+    const before = parseCurrentMatrix(HOMEPAGE);
+    const changes = computeChanges(HOMEPAGE, before, features);
+    expect(changes.map((c) => c.capability)).not.toEqual(expect.arrayContaining(HAND_ROWS));
+    const after = parseCurrentMatrix(applyChanges(HOMEPAGE, changes).html);
+    for (const label of HAND_ROWS)
+      expect(after.rows.get(label), label).toEqual(before.rows.get(label));
+  });
+
+  it.each(Object.entries(COMPETITOR_MIGRATION_PAGES))(
+    "keep every %s migration-page cell when every rule matches",
+    (competitor, page) => {
+      const html = readFileSync(resolve(REPO_ROOT, page), "utf-8");
+      const rowHtml = (src: string, label: string) =>
+        src.match(new RegExp(`<tr>\\s*<td>${label}</td>[\\s\\S]*?</tr>`))?.[0];
+      const updated = updateMigrationPage(html, competitor, everything, 99).html;
+      for (const label of MIGRATION_HAND_ROWS) {
+        expect(rowHtml(html, label), `${page}: ${label}`).toBeDefined();
+        expect(rowHtml(updated, label), `${page}: ${label}`).toBe(rowHtml(html, label));
+      }
+    },
+  );
 });

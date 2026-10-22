@@ -256,7 +256,10 @@ export const FEATURE_RULES = [
   },
   {
     rowLabel: "Request journal",
-    keywords: ["journal", "request log", "audit log", "request history"],
+    // "request history" is not a keyword: READMEs use it for the chat messages
+    // inside one request (VidaiMock: "a tool result is already in the request
+    // history"), not for a log of the requests the mock received.
+    keywords: ["journal", "request log", "audit log"],
   },
   {
     rowLabel: "Error injection",

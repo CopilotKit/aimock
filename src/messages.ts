@@ -1413,30 +1413,51 @@ async function writeClaudeSSEStream(
   const latency = opts.latency ?? 0;
   const profile = opts.streamingProfile;
   const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
   const onChunkSent = opts.onChunkSent;
 
   if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
+  if (res.destroyed) return false;
 
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
+  // Stop streaming when either the fixture's interruption signal fires or the
+  // client disconnects before the response finishes. Without the close
+  // listener, a dropped client leaves the loop sleeping through per-chunk
+  // latency and writing into a dead socket, and the journal records the
+  // request as complete.
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const abort = () => controller.abort();
+  const onClose = () => {
+    if (!res.writableFinished) abort();
+  };
+  res.once("close", onClose);
+  opts.signal?.addEventListener("abort", abort, { once: true });
+  if (opts.signal?.aborted) abort();
 
-  if (!res.writableEnded) {
-    res.end();
+  try {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    let chunkIndex = 0;
+    for (const event of events) {
+      const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+      if (chunkDelay > 0) await delay(chunkDelay, signal);
+      if (signal.aborted || res.destroyed) return false;
+      if (res.writableEnded) return true;
+      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      onChunkSent?.();
+      if (signal.aborted || res.destroyed) return false;
+      chunkIndex++;
+    }
+
+    if (!res.writableEnded) {
+      res.end();
+    }
+    return true;
+  } finally {
+    res.off("close", onClose);
+    opts.signal?.removeEventListener("abort", abort);
   }
-  return true;
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -1819,7 +1840,7 @@ export async function handleMessages(
         if (!completed) {
           if (!res.writableEnded) res.destroy();
           entry.response.interrupted = true;
-          entry.response.interruptReason = interruption?.reason();
+          entry.response.interruptReason = interruption?.reason() ?? "client aborted";
         }
       } finally {
         interruption?.cleanup();
@@ -1930,7 +1951,7 @@ export async function handleMessages(
       if (!completed) {
         if (!res.writableEnded) res.destroy();
         journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
+        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
       }
       interruption?.cleanup();
     }
@@ -2009,7 +2030,7 @@ export async function handleMessages(
       if (!completed) {
         if (!res.writableEnded) res.destroy();
         journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
+        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
       }
       interruption?.cleanup();
     }
@@ -2091,7 +2112,7 @@ export async function handleMessages(
       if (!completed) {
         if (!res.writableEnded) res.destroy();
         journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
+        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
       }
       interruption?.cleanup();
     }

@@ -949,6 +949,15 @@ jobs:
       # SECONDARY — skip when an open PR already proposes one of this run's note
       # files, matched by the per-note body marker. The Slack alert below still
       # fires either way.
+      #
+      # ONE ROLLING PR. The changeset key dedups an IDENTICAL family set only, so
+      # while a decision waited, every new or vanished family minted a new key and
+      # a new sibling PR beside the open one (#406..#412 and #475..#484 were each
+      # open together). So a run whose set differs is written onto the open
+      # ROLLING PR (force-push with lease, then a body rewrite) instead of opening
+      # another. That PR lives on `drift-needs-human/rolling-<date>-<run id>`, a
+      # branch with NO changeset key: its content changes, so a key in its name
+      # would go stale.
       - name: Persist needs-human note + open PR
         id: needs_human_pr
         if: steps.sync.outputs.reason == 'needs-human' && success()
@@ -957,6 +966,9 @@ jobs:
           BASE_SHA: ${{ steps.gitcfg.outputs.base_sha }}
           RUN_ID: ${{ github.run_id }}
           CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
+          # The login gh reports for every PR the app token above opens (app slug
+          # `copilotkit-bot`; checked on #337..#541). The rolling-PR guard reads it.
+          DRIFT_BOT_LOGIN: app/copilotkit-bot
         run: |
           set -euo pipefail
           # ---- RECORD WHAT ACTUALLY HAPPENS IN HERE ----------------------------
@@ -1218,7 +1230,8 @@ jobs:
             def drift_branch:
               (.headRefName // "") | test("^(fix/drift-|drift-needs-human/)");
             def bot_author:
-              ((.author.login // "") | ascii_downcase) == "app/copilotkit-devops-bot";
+              (($ENV.DRIFT_BOT_LOGIN // "") | ascii_downcase) as $bot
+              | $bot != "" and (((.author.login // "") | ascii_downcase) == $bot);
             def bot_managed: keyed_branch or (drift_branch and bot_author);
             def key_anchored($k): (.headRefName // "") | endswith("-" + $k);
             # WHICH STATES EACH ANCHOR MAY REACH. (No apostrophes in here: JQ_LIB is
@@ -1515,6 +1528,144 @@ jobs:
             exit 0
           fi
 
+          # ---- THE ONE BODY WRITER ------------------------------------------------
+          # Used to OPEN the rolling PR and to REWRITE it in place, so both carry
+          # exactly this run's markers and notes.
+          PR_BODY_FILE="${RUNNER_TEMP}/drift-needs-human-pr-body.md"
+          PR_TITLE="chore(drift-sync): needs-human model-family decision ($(date +%Y-%m-%d))"
+          write_nh_body() {
+            {
+              echo "## Needs a human decision (drift-sync)"
+              echo ""
+              echo "The deterministic, zero-LLM drift-sync found a model-family change it must"
+              echo "NOT auto-apply (a genuinely new/unclassified family, or a registry"
+              echo "structural mismatch). It wrote the note file(s) below and opened this PR so"
+              echo "the decision is REACHABLE in the repo."
+              echo ""
+              echo "This is the ONE open needs-human PR. A later run whose family set differs"
+              echo "rewrites this PR's branch and this body in place instead of opening another."
+              echo "A commit by anyone but the drift bot on this branch stops those rewrites."
+              echo ""
+              echo "> **Not auto-merged — a human decides, and applies it by hand.**"
+              echo "> For a *new-family* note, DO NOT expect merging this PR to apply anything:"
+              echo "> \`includeFamilies\` is checksum-pinned, and adding a family moves that pin,"
+              echo "> which reds the freeze test gate-2 re-runs. drift-sync cannot re-pin — the"
+              echo "> gate-1 allowlist permits only \`model-registry.ts\` and \`drift-proposals/\`."
+              echo "> So a follow-up run would report \`gate-failed\`, not \`ok-applied\`."
+              echo ">"
+              echo "> The procedure that actually works, in ONE commit: add the family to"
+              echo "> \`includeFamilies\` (or \`excludeFamilies\` to reject), re-pin BOTH checksums,"
+              echo "> resolve the note file(s) below, and update the offline \`/models\` wave."
+              echo "> Then close this PR. Prior examples: 72f85f8, 936b59c."
+              echo ""
+              echo "### Note file(s) in this PR"
+              echo ""
+              for note in "${NOTES[@]:-}"; do
+                [ -n "$note" ] || continue
+                echo "- \`${note}\`"
+              done
+              echo ""
+              # Emitted from the SINGLE MARKERS array built at the top of this step
+              # (the PRIMARY changeset marker plus one per note), so the set written
+              # here is by construction the set the marker self-heal re-asserts and
+              # the set the guards above match.
+              for m in "${MARKERS[@]}"; do
+                echo "<!-- ${m} -->"
+              done
+              echo ""
+              echo "### drift-sync outcome"
+              echo ""
+              echo '```'
+              cat "${RUNNER_TEMP}/drift-sync.log" 2>/dev/null || echo "(see drift-sync-log artifact)"
+              echo '```'
+            } > "$1"
+          }
+
+          # ---- THE ROLLING PR: UPDATE IT, DO NOT OPEN A SIBLING --------------------
+          # Reached only after DUP (no open PR carries this key), REJECTED (no human
+          # closed this key) and the no-new-commit return have all declined, so this
+          # run's set is un-proposed. If the bot's rolling PR is open, this run's
+          # commit goes onto ITS branch and its body is rewritten. Read from UNMERGED:
+          # the listing audited complete above, which holds every OPEN PR. The OLDEST
+          # open rolling PR opened by DRIFT_BOT_LOGIN is the one.
+          if [ -z "${DRIFT_BOT_LOGIN:-}" ]; then
+            echo "::error::DRIFT_BOT_LOGIN is not set, so this run cannot tell the drift bot's rolling PR from a human's — refusing to either rewrite one or open a sibling beside it."
+            exit 1
+          fi
+          ROLLING_ERR="${RUNNER_TEMP}/drift-rolling-select.err"
+          if ! ROLLING="$(printf '%s' "$UNMERGED" | jq -c '
+              [ .[]
+                | select(.state == "OPEN"
+                         and ((.headRefName // "") | test("^drift-needs-human/rolling-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+$"))
+                         and (((.author.login // "") | ascii_downcase) == ($ENV.DRIFT_BOT_LOGIN | ascii_downcase))) ]
+              | sort_by(.number) | .[0] // empty' 2>"$ROLLING_ERR")"; then
+            echo "::error::selecting the open rolling needs-human PR FAILED, so this run cannot tell whether to update it instead of opening another — refusing to risk a duplicate: $(cat "$ROLLING_ERR" 2>/dev/null)"
+            exit 1
+          fi
+          if [ -n "$ROLLING" ]; then
+            R_NUMBER="$(printf '%s' "$ROLLING" | jq -r '.number')"
+            R_URL="$(printf '%s' "$ROLLING" | jq -r '.url')"
+            R_BRANCH="$(printf '%s' "$ROLLING" | jq -r '.headRefName')"
+            # THE GUARD, read LIVE: still OPEN, opened by the drift bot, on its rolling
+            # branch, and EVERY commit on it made by the bot's own git identity (the
+            # gitcfg step's). A commit by anyone else means a human is working on it,
+            # and force-pushing would destroy that work. Anything this run cannot read
+            # fails CLOSED: neither a force-push nor a sibling.
+            BOT_EMAIL="$(git config user.email || true)"
+            if [ -z "$BOT_EMAIL" ]; then
+              echo "::error::no git user.email is configured, so the drift bot's commits on PR #${R_NUMBER} cannot be told from a human's — refusing to rewrite it or open a sibling."
+              exit 1
+            fi
+            if ! R_VIEW="$(gh pr view "$R_NUMBER" --json number,state,author,headRefName,headRefOid,commits 2>&1)"; then
+              echo "::error::open rolling PR #${R_NUMBER} could not be read (${R_VIEW}), so this run neither force-pushes over it nor opens a sibling beside it — refusing."
+              exit 1
+            fi
+            if ! R_VERDICT="$(printf '%s' "$R_VIEW" | jq -r --arg e "$BOT_EMAIL" --arg b "$R_BRANCH" '
+                if ((.commits | type) != "array") or ((.commits | length) == 0)
+                   or ((.headRefOid // "") == "")
+                then "unknown:it came back with no commit list or no head commit"
+                elif .state != "OPEN" then "refuse:it is \(.state), not OPEN"
+                elif ((.author.login // "") | ascii_downcase) != ($ENV.DRIFT_BOT_LOGIN | ascii_downcase)
+                then "refuse:it was opened by \(.author.login // "nobody"), not by the drift bot"
+                elif (.headRefName // "") != $b then "refuse:its branch is now \(.headRefName // "")"
+                elif any(.commits[]; ((.authors // []) | length) == 0
+                                     or any((.authors // [])[]; (.email // "") != $e))
+                then "refuse:it carries a commit NOT made by the drift bot, so a human is working on it"
+                else "ok" end' 2>&1)"; then
+              echo "::error::open rolling PR #${R_NUMBER} came back unusable (${R_VERDICT}) — refusing to rewrite it or open a sibling."
+              exit 1
+            fi
+            case "$R_VERDICT" in
+              ok) ;;
+              refuse:*)
+                # No sibling either: that is the duplicate this exists to prevent. The
+                # decision waits until a human merges or closes that PR, so the alert
+                # names it: resolving it is the action that unblocks this changeset.
+                echo "::warning::open needs-human PR #${R_NUMBER} is not the bot's to rewrite: ${R_VERDICT#refuse:}. So changeset ${CHANGESET_KEY} is NOT proposed this run — that PR is left alone and no sibling is opened. Merge or close #${R_NUMBER} and the next run proposes it."
+                emit_pr "$R_NUMBER" "$R_URL"
+                exit 0
+                ;;
+              *)
+                echo "::error::open rolling PR #${R_NUMBER} cannot be proven safe to rewrite (${R_VERDICT#unknown:}) — refusing to rewrite it or open a sibling."
+                exit 1
+                ;;
+            esac
+            R_HEAD="$(printf '%s' "$R_VIEW" | jq -r '.headRefOid')"
+            write_nh_body "$PR_BODY_FILE"
+            # Leased to the head the guard inspected: a push that landed after the
+            # check is rejected instead of overwritten.
+            git push --force-with-lease="refs/heads/${R_BRANCH}:${R_HEAD}" \
+              origin "HEAD:refs/heads/${R_BRANCH}"
+            echo "Pushed ${HEAD_SHA} onto rolling needs-human PR #${R_NUMBER}'s branch ${R_BRANCH}"
+            if ! EDIT_ERR="$(gh pr edit "$R_NUMBER" --title "$PR_TITLE" --body-file "$PR_BODY_FILE" 2>&1)"; then
+              echo "::error::pushed changeset ${CHANGESET_KEY} onto PR #${R_NUMBER}, but rewriting its body FAILED, so its markers still name the OLD changeset (the next run rewrites it again): ${EDIT_ERR}"
+              exit 1
+            fi
+            echo "needs-human: updated rolling PR #${R_NUMBER} IN PLACE to changeset ${CHANGESET_KEY} — not opening a sibling"
+            emit_pr "$R_NUMBER" "$R_URL"
+            exit 0
+          fi
+
           # A PER-NOTE OVERLAP IS REPORTED. IT DOES NOT DECIDE THE RUN.
           #
           # This loop used to `exit 0` the whole step on the FIRST note that some
@@ -1550,61 +1701,19 @@ jobs:
             fi
           done
 
-          # Distinct branch (never collides with the ok-applied fix/drift-* branch).
-          # The changeset key is the LAST segment on purpose: it is the
-          # body-INDEPENDENT anchor the marker self-heal above uses to recognise this
-          # PR again if a human ever deletes its body markers. Keep it last — the
-          # self-heal matches on `endswith("-<key>")`.
-          BRANCH="drift-needs-human/$(date +%Y-%m-%d)-${RUN_ID}-${CHANGESET_KEY}"
+          # No rolling PR is open: open it. Distinct from the ok-applied fix/drift-*
+          # branch, unique per run (a closed rolling PR is never reused, so reopening
+          # it stays a way out of a suppression), and with NO changeset key in it,
+          # because later runs rewrite its content.
+          BRANCH="drift-needs-human/rolling-$(date +%Y-%m-%d)-${RUN_ID}"
           git checkout -B "$BRANCH"
           git push -u origin "$BRANCH"
           echo "Pushed needs-human branch ${BRANCH} at ${HEAD_SHA}"
 
-          PR_BODY_FILE="${RUNNER_TEMP}/drift-needs-human-pr-body.md"
-          {
-            echo "## Needs a human decision (drift-sync)"
-            echo ""
-            echo "The deterministic, zero-LLM drift-sync found a model-family change it must"
-            echo "NOT auto-apply (a genuinely new/unclassified family, or a registry"
-            echo "structural mismatch). It wrote the note file(s) below and opened this PR so"
-            echo "the decision is REACHABLE in the repo."
-            echo ""
-            echo "> **Not auto-merged — a human decides, and applies it by hand.**"
-            echo "> For a *new-family* note, DO NOT expect merging this PR to apply anything:"
-            echo "> \`includeFamilies\` is checksum-pinned, and adding a family moves that pin,"
-            echo "> which reds the freeze test gate-2 re-runs. drift-sync cannot re-pin — the"
-            echo "> gate-1 allowlist permits only \`model-registry.ts\` and \`drift-proposals/\`."
-            echo "> So a follow-up run would report \`gate-failed\`, not \`ok-applied\`."
-            echo ">"
-            echo "> The procedure that actually works, in ONE commit: add the family to"
-            echo "> \`includeFamilies\` (or \`excludeFamilies\` to reject), re-pin BOTH checksums,"
-            echo "> resolve the note file(s) below, and update the offline \`/models\` wave."
-            echo "> Then close this PR. Prior examples: 72f85f8, 936b59c."
-            echo ""
-            echo "### Note file(s) in this PR"
-            echo ""
-            for note in "${NOTES[@]:-}"; do
-              [ -n "$note" ] || continue
-              echo "- \`${note}\`"
-            done
-            echo ""
-            # Emitted from the SINGLE MARKERS array built at the top of this step
-            # (the PRIMARY changeset marker plus one per note), so the set written
-            # here is by construction the set the marker self-heal re-asserts and
-            # the set the guards above match.
-            for m in "${MARKERS[@]}"; do
-              echo "<!-- ${m} -->"
-            done
-            echo ""
-            echo "### drift-sync outcome"
-            echo ""
-            echo '```'
-            cat "${RUNNER_TEMP}/drift-sync.log" 2>/dev/null || echo "(see drift-sync-log artifact)"
-            echo '```'
-          } > "$PR_BODY_FILE"
+          write_nh_body "$PR_BODY_FILE"
 
           gh pr create \
-            --title "chore(drift-sync): needs-human model-family decision ($(date +%Y-%m-%d))" \
+            --title "$PR_TITLE" \
             --assignee jpr5 \
             --body-file "$PR_BODY_FILE"
 
@@ -1741,6 +1850,9 @@ jobs:
           CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
           PR_REJECTED: ${{ steps.pr.outputs.rejected }}
           NH_REJECTED: ${{ steps.needs_human_pr.outputs.rejected }}
+          # The same login the self-healer's `bot_author` reads in the persist step
+          # above; a test holds the two values equal.
+          DRIFT_BOT_LOGIN: app/copilotkit-bot
         run: |
           # No `-e`: a run whose telling was DELIVERED must not go red because the
           # receipt could not be filed. Every failure below is handled explicitly
@@ -1773,9 +1885,10 @@ jobs:
           # only a repeated ping.
           BRANCH="$(printf '%s' "$PR_JSON" | jq -r '.headRefName // ""')"
           AUTHOR="$(printf '%s' "$PR_JSON" | jq -r '(.author.login // "") | ascii_downcase')"
+          BOT_LOGIN="$(jq -rn '($ENV.DRIFT_BOT_LOGIN // "") | ascii_downcase')"
           DRIFT_BRANCH=no
           case "$BRANCH" in fix/drift-*|drift-needs-human/*) DRIFT_BRANCH=yes ;; esac
-          if [ "$DRIFT_BRANCH" != yes ] || [ "$AUTHOR" != "app/copilotkit-devops-bot" ]; then
+          if [ "$DRIFT_BRANCH" != yes ] || [ -z "$BOT_LOGIN" ] || [ "$AUTHOR" != "$BOT_LOGIN" ]; then
             echo "::warning::PR #${CLOSED_PR} is not a PR this workflow opened (branch '${BRANCH}', author '${AUTHOR}'), so its body is not machine state to append to — no ack recorded, and the notice reports the suppression again next run"
             exit 0
           fi

@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { knownVoiceModelFamilies } from "./drift/voice-models.js";
+import { isKnownVoiceModelFamily } from "./drift/voice-models.js";
 import { excludeFamilies } from "./drift/model-registry.js";
 import { unclassifiedFamilies } from "./drift/text-drift.js";
 import { formatDriftReport } from "./drift/schema.js";
@@ -847,6 +847,7 @@ describe("collector invocation evidence", async () => {
     "duplicate-owner",
     "empty-id",
     "non-string-id",
+    "invalid-bytes",
     "missing-completion",
     "duplicate-completion",
     "malformed",
@@ -890,6 +891,7 @@ describe("collector invocation evidence", async () => {
           records.push({
             kind: "console-unavailable",
             taskId: fault === "empty-id" ? "" : fault === "non-string-id" ? 4 : id,
+            ...(fault === "invalid-bytes" ? { bytes: -1 } : {}),
           });
         const transport =
           records.map((record) => JSON.stringify(record) + "\n").join("") +
@@ -955,6 +957,39 @@ describe("collector invocation evidence", async () => {
       expect(evidence.drift.consoleScopes).not.toContainEqual(
         expect.objectContaining({ title: "c" }),
       );
+    });
+  }, 60_000);
+
+  it("names each assertion that withholds the observation artifact, with its reason", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      writeFileSync(
+        join(directory, "src/__tests__/drift/scope.drift.ts"),
+        `
+      import {describe,it,beforeAll} from 'vitest';
+      describe('a',()=>{
+        describe('b',()=>{
+          beforeAll(()=>console.log('x'.repeat(300000)));
+          it('tainted',()=>console.log('valid child'));
+        });
+        it('clean',()=>console.log('valid sibling'));
+      });
+    `,
+      );
+      const observations = join(directory, "drift-observations.json");
+      const child = await invoke(["--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      // Fail-closed is unchanged: existing grading kept, artifact withheld.
+      expect(child.status).toBe(2);
+      expect(existsSync(observations)).toBe(false);
+      expect(child.stderr).toContain(
+        "Live observation evidence unavailable; observation artifact was not written.",
+      );
+      expect(child.stderr).toContain("  Assertions without console context: 1\n");
+      expect(child.stderr).toContain(
+        "    - src/__tests__/drift/scope.drift.ts › a › b › tainted: console output unavailable: " +
+          "record exceeded 262144 bytes (300078 bytes)\n",
+      );
+      expect(child.stderr).not.toContain("› clean:");
     });
   }, 60_000);
 
@@ -5977,9 +6012,9 @@ describe("OpenAI Live collector attribution and runtime coverage", () => {
     expect(exitCodeOf(result)).toBe(2);
   });
   it("preserves text exclusion and the mini negative control", () => {
-    expect(knownVoiceModelFamilies.has("gpt-live-1")).toBe(true);
+    expect(isKnownVoiceModelFamily("gpt-live-1")).toBe(true);
     expect(excludeFamilies.openai.has("gpt-live-1")).toBe(true);
-    expect(knownVoiceModelFamilies.has("gpt-live-1-mini")).toBe(false);
+    expect(isKnownVoiceModelFamily("gpt-live-1-mini")).toBe(false);
     expect(unclassifiedFamilies(["gpt-live-1-mini"], "openai")).toContain("gpt-live-1-mini");
   });
 });

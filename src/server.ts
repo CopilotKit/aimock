@@ -52,7 +52,7 @@ import {
   responsesToolsExtendedView,
   responsesToolsViewSource,
 } from "./fixture-loader.js";
-import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
+import { writeSSEStream, writeErrorResponse, delay, calculateTotalDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import {
   prepareOpenAIChatMisbehavior,
@@ -2415,17 +2415,38 @@ async function handleCompletions(
   ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } =>
     appliedUsage ?? resolveUsage(overrides, streamingPromptText, completionText);
 
-  const resolveRecordedTimings = (chunks: SSEChunk[]) => {
+  const resolveRecordedTimings = (chunkCount: number) => {
     const timings = fixture.recordedTimings;
     if (!appliedPlan?.duplicateId || !timings) return timings;
     const gaps = timings.interChunkDelaysMs;
     return {
       ...timings,
       interChunkDelaysMs: Array.from(
-        { length: Math.max(gaps.length, chunks.length - 1) },
+        { length: Math.max(gaps.length, chunkCount - 1) },
         (_, index) => gaps[index] ?? gaps.at(-1) ?? 0,
       ),
     };
+  };
+
+  // Non-streaming (`stream: false`) timing is opt-in per fixture: only a
+  // fixture with `nonStreamingTiming: true` AND an explicit `streamingProfile`
+  // or `recordedTimings` delays the single JSON write, by the total a streamed
+  // reply at the same chunkSize would take. Without the flag the reply returns
+  // immediately (the pre-#545 default). Bare `latency` / `--latency` is the gap
+  // between SSE chunks only and never delays this path.
+  const awaitNonStreamingTiming = (contentLength: number): Promise<void> => {
+    if (fixture.nonStreamingTiming !== true) return Promise.resolve();
+    if (!fixture.streamingProfile && !fixture.recordedTimings) return Promise.resolve();
+    const chunkCount = Math.max(1, Math.ceil(contentLength / chunkSize));
+    return delay(
+      calculateTotalDelay(
+        contentLength,
+        chunkSize,
+        fixture.streamingProfile,
+        resolveRecordedTimings(chunkCount),
+        fixture.replaySpeed ?? defaults.replaySpeed,
+      ),
+    );
   };
 
   // OpenRouter response shaping (no-op for OpenAI callers). Applied as a
@@ -2547,6 +2568,13 @@ async function handleCompletions(
                 overrides,
                 body.messages,
               );
+      const nonStreamedContent =
+        appliedPlan.stop === "refusal"
+          ? (appliedPlan.refusal ?? "")
+          : appliedPlan.stop === "content_filter"
+            ? ""
+            : (appliedPlan.reasoning ?? "");
+      await awaitNonStreamingTiming(nonStreamedContent.length);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2579,7 +2607,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks),
+        recordedTimings: resolveRecordedTimings(chunks.length),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2633,7 +2661,13 @@ async function handleCompletions(
     // entry keeps the request body and the matched fixture (routeError amends
     // it).
     const toolCalls = requireEmittedFunctionToolCalls(response, wire);
+    // The same authoritative payload the streamed reply would carry: text
+    // content plus each tool call's name and arguments.
+    const completionText = blockOutcome
+      ? blockOutcome.content + blockOutcome.toolCalls.map((tc) => tc.name + tc.arguments).join("")
+      : (response.content ?? "") + toolCalls.map((tc) => tc.name + tc.arguments).join("");
     if (!streaming) {
+      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + completionText.length);
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
         blockOutcome?.toolCalls ?? toolCalls,
@@ -2661,9 +2695,6 @@ async function handleCompletions(
         blockOutcome?.ordered,
       );
       // Estimate usage from the same authoritative payload sent to the client.
-      const completionText = blockOutcome
-        ? blockOutcome.content + blockOutcome.toolCalls.map((tc) => tc.name + tc.arguments).join("")
-        : (response.content ?? "") + toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = emitStreamingUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",
@@ -2681,7 +2712,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks),
+        recordedTimings: resolveRecordedTimings(chunks.length),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2724,6 +2755,7 @@ async function handleCompletions(
     });
     recordOutcome(journalEntry);
     if (body.stream !== true) {
+      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + response.content.length);
       const completion = buildTextCompletion(
         response.content,
         responseModel,
@@ -2758,7 +2790,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks),
+        recordedTimings: resolveRecordedTimings(chunks.length),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2802,6 +2834,8 @@ async function handleCompletions(
     recordOutcome(journalEntry);
     const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
+      const toolCallText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + toolCallText.length);
       const completion = buildToolCallCompletion(
         toolCalls,
         responseModel,
@@ -2837,7 +2871,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks),
+        recordedTimings: resolveRecordedTimings(chunks.length),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -3715,7 +3749,12 @@ async function startServer(
       (pathname === HEALTH_PATH || pathname === READY_PATH || pathname === METRICS_PATH);
     if (!isPublicProbe) {
       if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
-        writeApiKeyHttpRejection(res, setCorsHeaders, pathname);
+        writeApiKeyHttpRejection(
+          res,
+          setCorsHeaders,
+          pathname,
+          resolvePolicy(defaults, req.headers).authErrors,
+        );
         return;
       }
       markAuthenticatedRequest(req, resolvedAuth.policy);
@@ -4053,8 +4092,13 @@ async function startServer(
     ) {
       setCorsHeaders(res);
       const google = pathname === GEMINI_MODELS_PATH || geminiModelDetailMatch !== null;
-      const anthropic = !google && isAnthropicModelRequest(req.headers);
       const policy = resolvePolicy(defaults, req.headers);
+      // The 1.45 list route stays OpenAI-format unless opted in; the newer detail route
+      // selects its dialect from the request headers.
+      const anthropic =
+        !google &&
+        (modelDetailMatch !== null || policy.modelCatalog === "native") &&
+        isAnthropicModelRequest(req.headers);
       const missingHeader =
         anthropic && policy.requiredHeaders === "enforce"
           ? missingRequiredHeader("messages", req.headers)

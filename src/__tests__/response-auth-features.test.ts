@@ -30,10 +30,13 @@ function assertRejection(exchange: CapturedExchange, body: string): void {
   expect(exchange.headers["content-length"]).toBe(String(Buffer.byteLength(body)));
 }
 
-describe("native auth bodies on the source HTTP and installed SDK surfaces", () => {
+describe("native auth bodies (policy authErrors=native) on the source HTTP and installed SDK surfaces", () => {
   let server: GoldenServer;
   beforeAll(async () => {
-    server = await startGoldenServer([], { auth: { apiKeys: ["accepted"] } });
+    server = await startGoldenServer([], {
+      auth: { apiKeys: ["accepted"] },
+      policy: { authErrors: "native" },
+    });
   });
   afterAll(async () => {
     await server.close();
@@ -219,5 +222,86 @@ describe("native auth bodies on the source HTTP and installed SDK surfaces", () 
     if (!(caught instanceof OpenAI.APIError)) throw new Error("Expected OpenAI APIError");
     expect(caught.code).toBe("invalid_api_key");
     expect(caught.message).toContain("Invalid API key");
+  });
+});
+
+// 1.45 contract: without the native opt-in, every HTTP route keeps the string
+// error.code "invalid_api_key", including Anthropic and Gemini/Vertex paths.
+describe("default inbound auth keeps the 1.45 legacy body on every HTTP route", () => {
+  let server: GoldenServer;
+  beforeAll(async () => {
+    server = await startGoldenServer([], { auth: { apiKeys: ["accepted"] } });
+  });
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it.each([
+    "/v1/messages",
+    "/v1/messages/count_tokens",
+    "/v1beta/models/gemini-test:generateContent",
+    "/v1beta/models/gemini-test:streamGenerateContent?alt=sse",
+    "/v1beta/models/gemini-test:countTokens",
+    "/v1beta/models",
+    "/v1beta/interactions",
+    "/v1/projects/p/locations/l/publishers/google/models/gemini-test:generateContent",
+  ])("%s returns error.code invalid_api_key", async (path) => {
+    for (const headers of [
+      new Headers(),
+      new Headers({ "x-api-key": "bad", "anthropic-version": "2023-06-01" }),
+      new Headers({ "x-goog-api-key": "bad" }),
+    ]) {
+      const exchange = await captureHttp(server.url + path, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      assertRejection(exchange, legacyBody);
+      expect(exchange.headers).not.toHaveProperty("request-id");
+    }
+  });
+
+  it("a request X-AIMock-Policy header opts one request into the native body", async () => {
+    const exchange = await captureHttp(server.url + "/v1beta/models", {
+      method: "POST",
+      headers: { "x-goog-api-key": "bad", "x-aimock-policy": "authErrors=native" },
+      body: "{}",
+    });
+    assertRejection(exchange, googleBody);
+  });
+
+  it("installed Anthropic SDK still sees error.code invalid_api_key", async () => {
+    const sdk = new Anthropic({ apiKey: "bad", baseURL: server.url, maxRetries: 0 });
+    let caught: unknown;
+    try {
+      await sdk.messages.create({
+        model: "claude-test",
+        max_tokens: 16,
+        messages: [{ role: "user", content: "hi" }],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Anthropic.AuthenticationError);
+    if (!(caught instanceof Anthropic.APIError)) throw new Error("Expected Anthropic APIError");
+    expect(caught.status).toBe(401);
+    expect(caught.error).toEqual(JSON.parse(legacyBody));
+  });
+
+  it("installed Gemini SDK still sees error.code invalid_api_key", async () => {
+    const sdk = new GoogleGenAI({
+      apiKey: "bad",
+      httpOptions: { baseUrl: server.url, apiVersion: "v1beta" },
+    });
+    let caught: unknown;
+    try {
+      await sdk.models.generateContent({ model: "gemini-test", contents: "hi" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    if (!(caught instanceof ApiError)) throw new Error("Expected Gemini ApiError");
+    expect(caught.status).toBe(401);
+    expect(caught.message).toContain("invalid_api_key");
   });
 });

@@ -935,8 +935,11 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
                 Gemini field names (<code>promptTokenCount</code>,
                 <code>candidatesTokenCount</code>, <code>totalTokenCount</code>). OpenAI Chat
                 Completions includes usage in the response body; the Responses API uses a separate
-                <code>response.usage</code> object. When omitted, token counts are auto-computed
-                from content length
+                <code>response.usage</code> object. Claude Messages and Bedrock Claude invoke also
+                accept <code>cache_read_input_tokens</code>,
+                <code>cache_creation_input_tokens</code> and a <code>cache_creation</code> object
+                (see <a href="/claude-messages#cache-usage">Cache Usage</a>). When omitted, token
+                counts are auto-computed from content length
               </td>
             </tr>
             <tr>
@@ -1038,6 +1041,16 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>
                 Streaming physics profile: <code>{ ttft, tps, jitter }</code>. See
                 <a href="/streaming-physics">Streaming Physics</a>
+              </td>
+            </tr>
+            <tr>
+              <td>nonStreamingTiming</td>
+              <td>boolean</td>
+              <td>
+                Also delay <code>stream: false</code> OpenAI Chat Completions replies by the
+                fixture's <code>streamingProfile</code> or <code>recordedTimings</code> (default
+                <code>false</code>). See
+                <a href="/streaming-physics#non-streaming">Non-Streaming Responses</a>
               </td>
             </tr>
             <tr>

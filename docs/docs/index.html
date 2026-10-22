@@ -262,41 +262,88 @@
 
         <div class="highlight-grid">
           <div class="highlight-card">
-            <span class="highlight-card-title">Framework Guides</span>
+            <span class="highlight-card-title">Model Catalogs &amp; Token Counts</span>
+            <span class="version-note">New in 1.46.0</span>
             <p class="highlight-card-desc">
-              Test your LangChain, CrewAI, PydanticAI, LlamaIndex, Mastra, ADK, or MAF agents
+              List and look up Gemini and Anthropic models in their native formats (the Anthropic
+              list is opt-in), and estimate prompt size with <code>count_tokens</code> /
+              <code>countTokens</code>
             </p>
-            <a href="/integrate-langchain" class="highlight-card-cta">Guides <span>&rarr;</span></a>
+            <a href="/claude-messages#model-catalog" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Multimedia APIs</span>
+            <span class="highlight-card-title">Native Auth Errors</span>
+            <span class="version-note">New in 1.46.0</span>
             <p class="highlight-card-desc">
-              Image generation, text-to-speech, transcription, and video mocking
+              Opt in to provider-native 401 bodies and required-header checks, so you can test how
+              your app handles a bad key or a missing <code>anthropic-version</code>
             </p>
-            <a href="/images" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/claude-messages#authentication-errors" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">AG-UI Protocol</span>
+            <span class="highlight-card-title">Model Misbehavior</span>
             <p class="highlight-card-desc">
-              Mock agent-to-UI event streams for CopilotKit frontends
+              Opt-in faults that real models produce: invalid tool JSON, unknown tools, schema
+              violations, length stops, refusals, and empty replies
             </p>
-            <a href="/agui-mock" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/model-misbehavior" class="highlight-card-cta">Docs <span>&rarr;</span></a>
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">GitHub Action</span>
-            <p class="highlight-card-desc">One-line CI setup for mock-backed test suites</p>
-            <a href="/github-action" class="highlight-card-cta">Setup <span>&rarr;</span></a>
+            <span class="highlight-card-title">MCP Record &amp; Replay</span>
+            <p class="highlight-card-desc">
+              Record a live MCP server once, replay it offline, script tool answers per scenario,
+              and see which fakes each test used
+            </p>
+            <a href="/mcp-mock#recorded-fakes" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Context Routing</span>
+            <span class="highlight-card-title">Stream Realism</span>
+            <span class="version-note">New in 1.46.0</span>
             <p class="highlight-card-desc">
-              Scope fixtures per integration with <code>X-AIMock-Context</code> header
+              Anthropic streams stop and journal when the client disconnects, and non-streaming
+              OpenAI replies can opt in to streaming-profile timing
             </p>
-            <a href="/fixtures#context" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/streaming-physics#non-streaming" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">Responses API Tools</span>
+            <p class="highlight-card-desc">
+              Opt-in namespaced functions and custom tool calls, plus <code>commentary</code> /
+              <code>final_answer</code> message phases (new in 1.46.0)
+            </p>
+            <a href="/responses-api#namespaced-and-custom-tool-calls" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">OpenAI Platform APIs</span>
+            <p class="highlight-card-desc">
+              Files, Batches, Fine-tuning jobs, and Vector Stores with deterministic search
+            </p>
+            <a href="/vector-stores" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">GPT-Live Sessions</span>
+            <p class="highlight-card-desc">
+              Mock, record, and replay OpenAI GPT-Live sessions, with message, audio, and lifetime
+              limits
+            </p>
+            <a href="/websocket#openai-live" class="highlight-card-cta">Docs <span>&rarr;</span></a>
           </div>
         </div>
 

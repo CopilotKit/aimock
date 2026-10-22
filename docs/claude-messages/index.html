@@ -73,7 +73,7 @@
             <tr>
               <td>GET</td>
               <td>/v1/models</td>
-              <td>Native paged JSON with Anthropic headers</td>
+              <td>OpenAI list; native paged JSON with <code>modelCatalog=native</code></td>
             </tr>
             <tr>
               <td>GET</td>
@@ -90,16 +90,24 @@
 
         <h2 id="model-catalog">Model Catalog</h2>
         <p>
-          The shared <code>/v1/models</code> list and detail paths select the Anthropic format when
-          <code>anthropic-version</code> is present, or when <code>x-api-key</code> is present
-          without <code>Authorization</code>. Other callers receive the OpenAI format.
+          By default, the shared <code>/v1/models</code> list path returns the OpenAI format for
+          every request, as in aimock 1.45. The Anthropic list is opt-in. Set
+          <code>policy.modelCatalog</code> to <code>"native"</code>, pass
+          <code>--policy modelCatalog=native</code>, or send the request header
+          <code>X-AIMock-Policy: modelCatalog=native</code>. With the opt-in, requests that send
+          <code>anthropic-version</code>, or <code>x-api-key</code> without
+          <code>Authorization</code>, get the Anthropic format. Other callers still get the OpenAI
+          format. The <code>/v1/models/:id</code> detail path uses the same header selection without
+          the opt-in.
         </p>
         <div class="info-box">
           <p>
-            aimock also accepts <code>x-api-key</code> for its own inbound authentication. A
-            non-Anthropic client that uses this header without <code>Authorization</code>
-            receives the Anthropic catalog. To select the OpenAI format, send
-            <code>Authorization: Bearer &lt;key&gt;</code> and omit <code>anthropic-version</code>.
+            The Anthropic SDK sends <code>anthropic-version</code> on every request. If your tests
+            call <code>client.models.list()</code>, start aimock with
+            <code>--policy modelCatalog=native</code> (or
+            <code>policy: { modelCatalog: "native" }</code>). With the opt-in, a non-Anthropic
+            client that sends <code>x-api-key</code> without <code>Authorization</code> also gets
+            the Anthropic catalog.
           </p>
         </div>
         <p>
@@ -134,8 +142,9 @@
         </p>
         <p>
           Detail paths accept raw or percent-encoded slashes in IDs. Missing IDs, malformed escapes,
-          and IDs outside the Anthropic catalog return a native 404. The examples assume fixtures
-          with <code>claude-test</code> and additional Claude IDs.
+          and IDs outside the Anthropic catalog return a native 404. The examples assume aimock runs
+          with <code>--policy modelCatalog=native</code> and fixtures with <code>claude-test</code>
+          and additional Claude IDs.
         </p>
         <div class="code-block">
           <div class="code-block-header">Native catalog <span class="lang-tag">shell</span></div>
@@ -153,8 +162,9 @@ curl 'http://localhost:4010/v1/models/claude-test' \
         <p>
           <code>POST /v1/messages/count_tokens</code> accepts a Messages-style body and returns
           <code>{"input_tokens": N}</code>. It converts messages, system text, and tools through the
-          existing request translator, then estimates tokens with <code>ceil(chars / 4)</code>. This
-          deterministic estimate is not a tokenizer or an upstream count.
+          existing request translator, then estimates about 1 token per 4 characters of messages
+          (plus tool definitions), minimum 1. This deterministic estimate is not a tokenizer or an
+          upstream count.
         </p>
         <div class="code-block">
           <div class="code-block-header">Count a prompt <span class="lang-tag">shell</span></div>
@@ -177,27 +187,39 @@ curl 'http://localhost:4010/v1/models/claude-test' \
         <h2 id="authentication-errors">Authentication Errors</h2>
         <p>
           With inbound API-key authentication enabled, rejected keys on Messages and count paths
-          return 401 with this body and a generated <code>request-id</code> response header:
+          return 401 with the same body as every other HTTP route, unchanged from 1.45:
         </p>
         <div class="code-block">
-          <div class="code-block-header">Inbound rejection <span class="lang-tag">json</span></div>
+          <div class="code-block-header">
+            Default inbound rejection <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{"error":{"message":"Invalid API key","type":"authentication_error","code":"invalid_api_key"}}</code></pre>
+        </div>
+        <p>
+          To get the provider-native body instead, set <code>policy.authErrors</code> to
+          <code>"native"</code>, pass <code>--policy authErrors=native</code>, or send the request
+          header <code>X-AIMock-Policy: authErrors=native</code>. Messages and count paths then
+          return this body and a generated <code>request-id</code> response header:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Native inbound rejection <span class="lang-tag">json</span>
+          </div>
           <pre><code>{"type":"error","error":{"type":"authentication_error","message":"Invalid API key"}}</code></pre>
         </div>
         <p>
-          Compatibility change: these paths no longer return
-          <code>error.code: "invalid_api_key"</code>. Check HTTP 401 or
-          <code>error.type: "authentication_error"</code> instead. Update tests and clients that
-          read the old field.
+          The native body omits <code>error.code</code>. With the native policy, check HTTP 401 or
+          <code>error.type: "authentication_error"</code>.
         </p>
         <p>
-          Shared <code>/v1/models</code> paths retain their OpenAI-shaped authentication rejection,
-          even with Anthropic headers. WebSocket authentication also retains its existing body.
+          Shared <code>/v1/models</code> paths always return the default body, even with Anthropic
+          headers and the native policy. WebSocket authentication also always returns it.
         </p>
         <p>
           A live unauthenticated count probe returned Anthropic 401 with
           <code>"x-api-key header is required"</code> and a body <code>request_id</code>. aimock
-          retains <code>"Invalid API key"</code> and omits that body field. The response header does
-          not make these bodies identical.
+          native bodies retain <code>"Invalid API key"</code> and omit that body field. The response
+          header does not make these bodies identical.
         </p>
         <p>
           Missing <code>anthropic-version</code> remains accepted by default, including with strict
@@ -223,9 +245,10 @@ const instance = await createServer([], {
         </div>
         <p>
           Enforcement applies to <code>POST /v1/messages</code>,
-          <code>POST /v1/messages/count_tokens</code>, and Anthropic-flavored
-          <code>GET /v1/models</code> list/detail requests. Bedrock's body-level
-          <code>anthropic_version</code> is separate.
+          <code>POST /v1/messages/count_tokens</code>, Anthropic-flavored
+          <code>GET /v1/models/:id</code> requests, and Anthropic-flavored
+          <code>GET /v1/models</code> list requests with <code>modelCatalog=native</code>. Bedrock's
+          body-level <code>anthropic_version</code> is separate.
         </p>
         <p>
           Authentication runs first. A missing required header then returns 400 before thinking,
@@ -234,10 +257,11 @@ const instance = await createServer([], {
         </p>
         <div class="info-box">
           <p>
-            Shared model paths use the catalog selection described above.
+            Shared model paths use the catalog selection described above. By default the list path
+            is OpenAI-format and the version requirement does not apply to it. On the detail path,
+            and on the list path with <code>modelCatalog=native</code>,
             <code>x-api-key</code> without <code>Authorization</code> selects Anthropic and can
-            trigger the version requirement. To retain the OpenAI format, send
-            <code>Authorization</code> without <code>anthropic-version</code>.
+            trigger the version requirement.
           </p>
         </div>
         <div class="code-block" data-sample="inline:required-policy-reject">
@@ -340,8 +364,15 @@ const instance = await createServer([], {
           <li><code>message_delta</code> &mdash; stop_reason, usage</li>
           <li><code>message_stop</code></li>
         </ol>
+        <p>
+          If the client disconnects mid-stream, aimock stops sending events and skips any remaining
+          per-chunk latency. The journal entry records <code>response.interrupted: true</code> and
+          <code>response.interruptReason: "client aborted"</code>. Fixture interruptions
+          (<code>truncateAfterChunks</code>, <code>disconnectAfterMs</code>) keep their own reasons.
+          See <a href="/error-injection">Error Injection</a>.
+        </p>
 
-        <h2>Cache Usage</h2>
+        <h2 id="cache-usage">Cache Usage</h2>
         <p>
           Set <code>response.usage.cache_read_input_tokens</code> and
           <code>cache_creation_input_tokens</code> in a fixture to emit cache counts on Messages and

@@ -61,7 +61,11 @@ const nativeVersionExpected: ObservedResponse = {
 const nativeVersionRequest = (path: string) =>
   path === "/v1/messages" ? { ...nativeCountRequest, max_tokens: 1 } : nativeCountRequest;
 beforeAll(async () => {
-  nativeAuthServer = await startGoldenServer([], { auth: { apiKeys: ["local-native-auth"] } });
+  // Native 401 bodies are opt-in; the drift gate compares the native contract.
+  nativeAuthServer = await startGoldenServer([], {
+    auth: { apiKeys: ["local-native-auth"] },
+    policy: { authErrors: "native" },
+  });
   nativeVersionServer = await startGoldenServer([], {
     auth: { apiKeys: ["local-native-auth"] },
     policy: { requiredHeaders: "enforce" },

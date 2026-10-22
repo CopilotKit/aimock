@@ -927,6 +927,14 @@ export interface Fixture {
    * this exercises that path. No effect on non-streaming or OpenAI responses.
    */
   openRouterProcessing?: boolean;
+  /**
+   * Opt into `streamingProfile` / `recordedTimings` timing on this fixture's
+   * non-streaming (`stream: false`) OpenAI chat completion replies (default OFF).
+   * When enabled, the single JSON reply waits about as long as the streamed
+   * reply would. Without it, non-streaming replies return immediately. Bare
+   * `latency` never delays non-streaming replies. Other providers ignore it.
+   */
+  nonStreamingTiming?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
@@ -1131,6 +1139,8 @@ export interface FixtureFileEntry {
   chaos?: ChaosConfig;
   /** See {@link Fixture.openRouterProcessing}. */
   openRouterProcessing?: boolean;
+  /** See {@link Fixture.nonStreamingTiming}. */
+  nonStreamingTiming?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
@@ -1496,6 +1506,20 @@ export type ResponsesToolsMode = "legacy" | "extended";
 export interface AimockPolicy {
   /** Reject requests missing a provider's required headers. Default "off"; independent of strict. */
   requiredHeaders?: "off" | "enforce";
+  /**
+   * Inbound-auth 401 body. Default "legacy" keeps the 1.45 body on every route:
+   * `{"error":{"message","type":"authentication_error","code":"invalid_api_key"}}`.
+   * "native" returns provider-native bodies on Anthropic Messages/count_tokens and
+   * Gemini/Vertex routes. WebSocket upgrade rejections always use the legacy body.
+   */
+  authErrors?: "legacy" | "native";
+  /**
+   * Shared `GET /v1/models` list body format. Default "legacy" keeps the 1.45
+   * OpenAI-format list for every request. "native" returns the Anthropic-format list
+   * when the request sends `anthropic-version`, or `x-api-key` without `Authorization`.
+   * `GET /v1/models/{id}` and the Gemini catalog routes always select by request.
+   */
+  modelCatalog?: "legacy" | "native";
 }
 
 export interface MockServerOptions {

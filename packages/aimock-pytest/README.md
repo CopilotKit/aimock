@@ -95,7 +95,7 @@ These need aimock 1.45.0 or later.
 
 ```
 --aimock-node PATH       Path to node binary
---aimock-version VER     aimock npm version (default: 1.45.1)
+--aimock-version VER     aimock npm version (default: 1.46.0)
 --aimock-api-key KEY     Inbound API key for the aimock child process
 ```
 

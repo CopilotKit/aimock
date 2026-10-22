@@ -11,7 +11,10 @@ export function authErrorDialectForPath(pathname: string): "messages" | "gemini"
   return "openai";
 }
 
-/** Shared catalog response dialect only; auth retains its pathname-selected dialect. */
+/**
+ * Shared catalog response dialect. The list route uses it only under
+ * `policy.modelCatalog: "native"`. Auth retains its pathname-selected dialect.
+ */
 export function isAnthropicModelRequest(headers: IncomingHttpHeaders): boolean {
   return (
     headers["anthropic-version"] !== undefined ||

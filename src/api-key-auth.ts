@@ -161,9 +161,11 @@ export function writeApiKeyHttpRejection(
   res: http.ServerResponse,
   setCorsHeaders: (res: http.ServerResponse) => void,
   pathname = "",
+  authErrors: "legacy" | "native" = "legacy",
 ): void {
   setCorsHeaders(res);
-  const dialect = authErrorDialectForPath(pathname);
+  // The 1.45 body stays the default on every route; native bodies are opt-in.
+  const dialect = authErrors === "native" ? authErrorDialectForPath(pathname) : "openai";
   const rendered = renderError(dialect, "authentication", { message: "Invalid API key" });
   res.writeHead(401, {
     "Content-Type": "application/json",

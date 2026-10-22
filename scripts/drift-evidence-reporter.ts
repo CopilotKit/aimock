@@ -15,7 +15,8 @@ export type EvidenceReporterRecord =
       ancestors: string[];
       title: string;
     }
-  | { kind: "console-unavailable"; taskId: string }
+  // `bytes` is the size of the withheld console record, so the collector can name the cause.
+  | { kind: "console-unavailable"; taskId: string; bytes?: number }
   | { kind: "unavailable" }
   | { kind: "complete" };
 
@@ -30,10 +31,11 @@ export default class DriftEvidenceReporter implements Reporter {
     if (this.broken) return;
     try {
       let encoded = JSON.stringify(record);
-      if (Buffer.byteLength(encoded) > MAX_EVIDENCE_RECORD_BYTES) {
+      const bytes = Buffer.byteLength(encoded);
+      if (bytes > MAX_EVIDENCE_RECORD_BYTES) {
         encoded = JSON.stringify(
           record.kind === "console" && record.taskId
-            ? { kind: "console-unavailable", taskId: record.taskId }
+            ? { kind: "console-unavailable", taskId: record.taskId, bytes }
             : { kind: "unavailable" },
         );
         if (Buffer.byteLength(encoded) > MAX_EVIDENCE_RECORD_BYTES)

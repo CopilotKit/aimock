@@ -2096,7 +2096,7 @@ const COMPONENTS: Record<string, unknown> = {
   },
   CatalogModelsListResponse: {
     description:
-      "Anthropic headers select the native paged Anthropic list; other callers receive the unchanged OpenAI list.",
+      "OpenAI list by default. With policy modelCatalog=native, Anthropic headers select the native paged Anthropic list.",
     oneOf: [
       { $ref: "#/components/schemas/ModelsListResponse" },
       { $ref: "#/components/schemas/AnthropicModelsListResponse" },

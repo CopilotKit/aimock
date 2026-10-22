@@ -8,5 +8,5 @@
     "content-type": "application/json",
     "x-request-id": "req-<#0>"
   },
-  "body": "{\"data\":[{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20241022\",\"display_name\":\"claude-3-5-sonnet-20241022\",\"created_at\":\"<iso-date>\",\"capabilities\":null,\"lifecycle\":\"active\",\"line\":null,\"max_input_tokens\":null,\"max_tokens\":null,\"deprecated_at\":null,\"retires_at\":null}],\"has_more\":false,\"first_id\":\"claude-3-5-sonnet-20241022\",\"last_id\":\"claude-3-5-sonnet-20241022\"}"
+  "body": "{\"object\":\"list\",\"data\":[{\"id\":\"gpt-4\",\"object\":\"model\",\"created\":1686935002,\"owned_by\":\"aimock\"},{\"id\":\"gpt-4o\",\"object\":\"model\",\"created\":1686935002,\"owned_by\":\"aimock\"},{\"id\":\"claude-3-5-sonnet-20241022\",\"object\":\"model\",\"created\":1686935002,\"owned_by\":\"aimock\"},{\"id\":\"gemini-2.0-flash\",\"object\":\"model\",\"created\":1686935002,\"owned_by\":\"aimock\"},{\"id\":\"text-embedding-3-small\",\"object\":\"model\",\"created\":1686935002,\"owned_by\":\"aimock\"}]}"
 }

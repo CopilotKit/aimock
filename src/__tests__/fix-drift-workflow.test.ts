@@ -469,9 +469,18 @@ function jqAssignment(
 }
 
 /** Run a jq program for real, and return its (parsed) output — `undefined` for `empty`. */
-function jqEval(program: string, input: unknown, args: Record<string, string> = {}): unknown {
+function jqEval(
+  program: string,
+  input: unknown,
+  args: Record<string, string> = {},
+  env: Record<string, string> = {},
+): unknown {
   const argv = ["-c", ...Object.entries(args).flatMap(([k, v]) => ["--arg", k, v]), program];
-  const res = spawnSync("jq", argv, { input: JSON.stringify(input), encoding: "utf-8" });
+  const res = spawnSync("jq", argv, {
+    input: JSON.stringify(input),
+    encoding: "utf-8",
+    env: { ...process.env, ...env },
+  });
   if (res.status !== 0) throw new Error(`jq failed (${res.status}): ${res.stderr}`);
   const out = res.stdout.trim();
   return out === "" ? undefined : JSON.parse(out);
@@ -1039,6 +1048,8 @@ interface PrStepRun {
   created: boolean;
   /** Did the step get as far as pushing a branch? */
   pushed: boolean;
+  /** The body `gh pr create --body-file` was handed, or "" when none was created. */
+  createdBody: string;
 }
 
 /** A PR in the scenario's repository, in `gh pr list --json`'s own shape. */
@@ -1050,6 +1061,9 @@ interface PrFixture {
   body: string;
   files?: { path: string }[];
   author?: { login: string };
+  /** `gh pr view`-only fields: the head commit and every commit on the PR. */
+  headRefOid?: string;
+  commits?: { authors: { email: string; login: string }[] }[];
 }
 
 interface PrStepScenario {
@@ -1069,6 +1083,10 @@ interface PrStepScenario {
   /** What the post-create `--json url,number,headRefOid --jq …` lookup prints. */
   matchOut?: string;
 }
+
+/** The commit identity the gitcfg step configures for the drift bot. */
+const DRIFT_BOT_EMAIL =
+  /git config user\.email "([^"]+)"/.exec(codeOf(stepById("gitcfg")))?.[1] ?? "";
 
 const REAL_GIT = (() => {
   const r = spawnSync("/usr/bin/env", ["which", "git"], { encoding: "utf-8" });
@@ -1099,8 +1117,9 @@ function observePrStep(
       if (r.status !== 0) throw new Error(`git ${argv.join(" ")} failed: ${r.stderr}`);
     };
     git("init", "-q", "-b", "main");
-    git("config", "user.email", "t@t.test");
-    git("config", "user.name", "t");
+    // The gitcfg step's own identity, so "is this commit the bot's" can be asked here.
+    git("config", "user.email", DRIFT_BOT_EMAIL);
+    git("config", "user.name", "aimock-drift-bot");
     writeFileSync(join(repo, "seed.txt"), "seed\n");
     git("add", "-A");
     git("commit", "-q", "-m", "base");
@@ -1186,7 +1205,14 @@ function observePrStep(
         '    while [ $# -gt 0 ]; do case "$1" in --body-file) BF="$2"; shift;; esac; shift; done',
         `    [ -n "$BF" ] && cp "$BF" ${JSON.stringify(edits)}/"$N".md`,
         "    exit 0;;",
-        '  "pr create"*) exit 0;;',
+        // `pr view <n>`: the one PR, from the same population, with its view-only fields.
+        '  "pr view"*)',
+        `    jq -c --argjson n "$3" '.[] | select(.number == $n)' ${JSON.stringify(join(fix, "all.json"))} | grep . || { echo "no PR $3" >&2; exit 1; }`,
+        "    exit 0;;",
+        '  "pr create"*)',
+        '    BF=""; while [ $# -gt 0 ]; do case "$1" in --body-file) BF="$2"; shift;; esac; shift; done',
+        `    [ -n "$BF" ] && cp "$BF" ${JSON.stringify(join(dir, "created.md"))}`,
+        "    exit 0;;",
         "esac",
         'echo "gh stub: unhandled invocation: $ARGS" >&2',
         "exit 64",
@@ -1215,6 +1241,8 @@ function observePrStep(
         CHANGESET_KEY: sc.changesetKey,
         GITHUB_OUTPUT: outFile,
         RUNNER_TEMP: dir,
+        // Step-level env the runner would inject, read off the step itself.
+        ...(step.env.DRIFT_BOT_LOGIN ? { DRIFT_BOT_LOGIN: step.env.DRIFT_BOT_LOGIN } : {}),
       },
     });
     const outputs: Record<string, string> = {};
@@ -1235,6 +1263,9 @@ function observePrStep(
       edits: editBodies,
       created: ghCalls.some((c) => c.startsWith("pr create")),
       pushed: ghCalls.some((c) => c.startsWith("PUSH ")),
+      createdBody: existsSync(join(dir, "created.md"))
+        ? readFileSync(join(dir, "created.md"), "utf-8")
+        : "",
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -3249,10 +3280,21 @@ describe("fix-drift.yml — bot_managed decides candidacy, and is pinned to both
     if (!m) throw new Error("needs_human_pr: no JQ_LIB definition block");
     return m[1];
   };
-  const def = (name: string, prJson: unknown): unknown => jqEval(`${jqLib()} ${name}`, prJson);
+  /** The step-level env the runner injects into the step that defines JQ_LIB. */
+  const libEnv = (): Record<string, string> => {
+    const login = stepById("needs_human_pr").env.DRIFT_BOT_LOGIN;
+    return login ? { DRIFT_BOT_LOGIN: login } : {};
+  };
+  const def = (name: string, prJson: unknown, env: Record<string, string> = libEnv()): unknown =>
+    jqEval(`${jqLib()} ${name}`, prJson, {}, env);
 
-  /** The drift bot's own login, as GitHub reports it for a GitHub App. */
-  const BOT = "app/copilotkit-devops-bot";
+  /**
+   * The drift bot's own login, as gh reports it for every PR the app token opens
+   * (`gh pr view 484 --json author` → `app/copilotkit-bot`). The self-heal used to
+   * compare against `app/copilotkit-devops-bot`, a login no PR here has, so
+   * `bot_author` never matched a real bot PR.
+   */
+  const BOT = "app/copilotkit-bot";
   const RUN_ID = "30885817052";
   const KEY = "eaa8db65f5647493";
 
@@ -3266,8 +3308,8 @@ describe("fix-drift.yml — bot_managed decides candidacy, and is pinned to both
    */
   const builtBranches = (): { okApplied: string; needsHuman: string } => {
     const checkout = /git checkout -B "([^"]+)"/.exec(codeOf(stepById("gitcfg")))?.[1];
-    const prBranch = /BRANCH="([^"]+)"/.exec(codeOf(stepById("pr")))?.[1];
-    const nhBranch = /BRANCH="([^"]+)"/.exec(codeOf(stepById("needs_human_pr")))?.[1];
+    const prBranch = /^\s*BRANCH="([^"]+)"/m.exec(codeOf(stepById("pr")))?.[1];
+    const nhBranch = /^\s*BRANCH="([^"]+)"/m.exec(codeOf(stepById("needs_human_pr")))?.[1];
     if (!checkout || !prBranch || !nhBranch) throw new Error("a BRANCH= builder moved");
     const res = runFragment(
       [
@@ -3287,20 +3329,27 @@ describe("fix-drift.yml — bot_managed decides candidacy, and is pinned to both
     return { okApplied, needsHuman };
   };
 
-  it("keyed_branch accepts what BOTH branch builders actually produce", () => {
-    const { okApplied, needsHuman } = builtBranches();
-    for (const branch of [okApplied, needsHuman]) {
-      expect(branch, "a branch builder produced nothing").toBeTruthy();
-      expect(
-        def("keyed_branch", { headRefName: branch }),
-        `keyed_branch does not match the branch this workflow actually pushes (${branch}), so ` +
-          "the marker self-heal will not recognise its own PR and silently selects nothing",
-      ).toBe(true);
-    }
-    // Both must therefore be bot-managed without needing the author signal.
-    for (const branch of [okApplied, needsHuman]) {
-      expect(def("bot_managed", { headRefName: branch, author: { login: "jpr5" } })).toBe(true);
-    }
+  it("keyed_branch accepts what the ok-applied branch builder actually produces", () => {
+    const { okApplied } = builtBranches();
+    expect(okApplied, "a branch builder produced nothing").toBeTruthy();
+    expect(
+      def("keyed_branch", { headRefName: okApplied }),
+      `keyed_branch does not match the branch this workflow actually pushes (${okApplied}), so ` +
+        "the marker self-heal will not recognise its own PR and silently selects nothing",
+    ).toBe(true);
+    // It must therefore be bot-managed without needing the author signal.
+    expect(def("bot_managed", { headRefName: okApplied, author: { login: "jpr5" } })).toBe(true);
+  });
+
+  it("the ROLLING needs-human branch is deliberately NOT key-anchored", () => {
+    // Later runs rewrite the rolling PR with a different changeset, so a key in its
+    // branch name would go stale, and the key-anchored self-heal would re-stamp that
+    // stale key onto a PR that no longer proposes it (a false dedup). Its markers are
+    // instead rewritten by every update.
+    const { needsHuman } = builtBranches();
+    expect(needsHuman).toMatch(/^drift-needs-human\/rolling-\d{4}-\d{2}-\d{2}-\d+$/);
+    expect(needsHuman).not.toContain(KEY);
+    expect(def("keyed_branch", { headRefName: needsHuman })).toBe(false);
   });
 
   it("a bot PR on a PRE-KEY-ERA drift branch is still a candidate (that is what bot_author is for)", () => {
@@ -3338,6 +3387,27 @@ describe("fix-drift.yml — bot_managed decides candidacy, and is pinned to both
     ).toBe(false);
     // A missing author must not throw (a deleted account is not a payload fault).
     expect(def("bot_managed", { headRefName: "fix/drift-alert-signal" })).toBe(false);
+  });
+
+  it("bot_author matches the login gh reports for the drift bot's real PRs, and nothing else", () => {
+    const legacy = { headRefName: `drift-needs-human/2026-08-04-${RUN_ID}` };
+    expect(
+      def("bot_author", { ...legacy, author: { login: BOT } }),
+      `bot_author does not recognise ${BOT}, the login on every PR the drift bot opens — so ` +
+        "the marker self-heal never treats a real bot PR on an unkeyed branch as its own",
+    ).toBe(true);
+    expect(
+      def("bot_author", { ...legacy, author: { login: "app/copilotkit-devops-bot" } }),
+      "bot_author still accepts app/copilotkit-devops-bot, a login no PR in this repo has",
+    ).toBe(false);
+    // With the login unset, an author-less PR must not compare equal to "".
+    for (const env of [{}, { DRIFT_BOT_LOGIN: "" }] as Record<string, string>[]) {
+      expect(
+        def("bot_managed", { ...legacy, author: null }, env),
+        `with DRIFT_BOT_LOGIN ${JSON.stringify(env)}, an author-less drift PR is bot-managed`,
+      ).toBe(false);
+      expect(def("bot_managed", { ...legacy, author: { login: BOT } }, env)).toBe(false);
+    }
   });
 });
 
@@ -3428,7 +3498,10 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
           "dedup blind and the next run opens a duplicate",
       ).toMatch(/gh pr edit .*--body-file/);
 
-      // (f) Identity is body-INDEPENDENT: the pushed branch carries the key.
+      // (f) Identity is body-INDEPENDENT: the pushed branch carries the key. Not
+      // for the needs-human step: its ROLLING branch is rewritten with later
+      // changesets, so a key there would go stale (pinned key-free elsewhere).
+      if (st.id === "needs_human_pr") continue;
       expect(
         code,
         `${st.name}: the pushed branch does not end in the changeset key, so the marker ` +
@@ -3802,7 +3875,7 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
   const closedBotPr = (body: string): unknown => ({
     body,
     headRefName: `drift-needs-human/2026-08-04-9876543210`,
-    author: { login: "app/copilotkit-devops-bot" },
+    author: { login: "app/copilotkit-bot" },
   });
 
   /**
@@ -3860,6 +3933,8 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       // the body — the same discipline as ALERT_ENV_STUB.
       const env: Record<string, string> = {};
       for (const key of Object.keys(step.env)) env[key] = "";
+      // A literal step-level value the runner injects as written.
+      if (step.env.DRIFT_BOT_LOGIN) env.DRIFT_BOT_LOGIN = step.env.DRIFT_BOT_LOGIN;
       const script = join(dir, "step.sh");
       writeFileSync(script, runOf(step));
       const res = spawnSync("/bin/bash", [script], {
@@ -4007,6 +4082,28 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
     expect(already.stepExit, "an already-acked PR fails the step").toBe(0);
   });
 
+  it("the ack WRITE lands on a PR the drift bot really opened (author as gh reports it)", () => {
+    const { step } = ackWriter();
+    const marker = `<!-- drift-suppression-reported: ${ACK_KEY} -->`;
+    for (const login of ["app/copilotkit-bot", "APP/CopilotKit-Bot"]) {
+      const res = observeAckWrite(step, {
+        prJson: {
+          body: `<!-- drift-changeset: ${ACK_KEY} -->`,
+          headRefName: "drift-needs-human/rolling-2026-10-02-30885817052",
+          author: { login },
+        },
+        env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "484" },
+      });
+      expect(
+        res.ghLog,
+        `${step.name}: declines a PR authored by ${login}, the drift bot's real login, so the ` +
+          `suppression notice is re-posted every run (stdio: ${res.stdio.trim()})`,
+      ).toContain("pr edit 484");
+      expect(res.written).toContain(marker);
+      expect(res.stepExit).toBe(0);
+    }
+  });
+
   it("the ack WRITE is scoped to PRs this workflow opened — a human's body is never rewritten", () => {
     // Unlike the marker self-healer, this write had NO ownership filter. Rejection
     // detection is body-keyed and state-blind, so a human PR that quotes or
@@ -4024,7 +4121,7 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         pr: {
           body: "chore(deps)",
           headRefName: "renovate/vitest",
-          author: { login: "app/copilotkit-devops-bot" },
+          author: { login: "app/copilotkit-bot" },
         },
       },
       {
@@ -4044,19 +4141,20 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       ).not.toContain("pr edit");
       expect(res.stepExit, `${step.name}: declining an unowned PR fails the step`).toBe(0);
     }
-    // …and the ownership predicate is the SELF-HEALER's, not a second hand-written
-    // one that can drift away from it.
-    const botLogin = /ascii_downcase\) == "(app\/[a-z0-9-]+)"/.exec(wf)?.[1];
+    // …and the ownership predicate reads the SAME login as the self-healer's
+    // `bot_author`, not a second hand-written one that can drift away from it.
     expect(
-      botLogin,
-      "the self-healer no longer pins a bot-author login, so nothing anchors the ack write's " +
-        "ownership test to it",
-    ).toBeTruthy();
+      step.env.DRIFT_BOT_LOGIN,
+      "the ack write does not declare the same DRIFT_BOT_LOGIN as the self-healer's step, so " +
+        "one of the two is looking for a login that does not exist",
+    ).toBe(stepById("needs_human_pr").env.DRIFT_BOT_LOGIN);
     expect(
-      codeOf(step),
-      "the ack write tests a DIFFERENT bot author than the self-healer's `bot_author`, so one " +
-        "of the two is looking for a login that does not exist",
-    ).toContain(botLogin!);
+      wf,
+      "a hard-coded bot login survives outside DRIFT_BOT_LOGIN, so it can drift from the real one",
+    ).not.toMatch(/ascii_downcase\) [!=]= "app\//);
+    expect(wf, "app/copilotkit-devops-bot is not the login of any PR in this repo").not.toContain(
+      "copilotkit-devops-bot",
+    );
     for (const prefix of ["fix/drift-", "drift-needs-human/"]) {
       expect(
         codeOf(step),
@@ -5056,7 +5154,7 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
 // a substring of the source.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not when read", () => {
-  const BOT = { login: "app/copilotkit-devops-bot" };
+  const BOT = { login: "app/copilotkit-bot" };
   const NOTE = "drift-proposals/openai-mythical-1.new-family.md";
   const REGISTRY = "src/__tests__/drift/model-registry.ts";
   /** This run's key: nothing anywhere proposes it yet. */
@@ -5171,6 +5269,37 @@ describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not whe
     ).toBe(false);
     expect(r.pushed).toBe(false);
     expect(r.outputs.number).toBe("42");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("needs_human_pr: the self-heal repairs a REAL bot PR on an unkeyed branch (author as gh reports it)", () => {
+    // `bot_author` is the only thing that makes a bot PR on a plain
+    // `drift-needs-human/<date>-<run id>` branch a candidate. It compared against
+    // `app/copilotkit-devops-bot`, a login no PR here has, so on the drift bot's
+    // real PRs (`app/copilotkit-bot`) the self-heal selected nothing.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 350,
+          url: "https://x/pr/350",
+          state: "OPEN",
+          headRefName: "drift-needs-human/2026-08-04-30885817052",
+          // A human rewrote the body and the note marker went with it.
+          body: "Keeping this open while we decide.\n",
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/351","number":351}',
+    });
+    expect(
+      r.ghCalls.some((c) => c.startsWith("pr edit 350")),
+      `the self-heal did not touch the drift bot's own PR #350 (author ${BOT.login}), so its ` +
+        `lost note marker stays lost. stdio: ${r.stdio}`,
+    ).toBe(true);
+    expect(r.edits["350"] ?? "").toContain(`<!-- drift-proposal-note: ${NOTE} -->`);
     expect(r.stepExit, r.stdio).toBe(0);
   });
 
@@ -5608,7 +5737,7 @@ describe("fix-drift.yml — every alert's payload is POSTed, and arrives as vali
 // on the runner.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — no PR listing is passed through argv (E2BIG killed this cron twice)", () => {
-  const BOT = { login: "app/copilotkit-devops-bot" };
+  const BOT = { login: "app/copilotkit-bot" };
   const HUMAN = { login: "octocat" };
   const REGISTRY = "src/__tests__/drift/model-registry.ts";
   const NOTE = "drift-proposals/2026-08-07-new-family.md";
@@ -5889,5 +6018,145 @@ describe("fix-drift.yml — the gate-failure alert reports the real exit code an
         `${id}.err`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ONE ROLLING needs-human PR, not a sibling per changeset.
+//
+// The changeset key dedups an IDENTICAL family set only. While a decision waits,
+// each newly-appearing (or vanishing) family mints a new key, and the needs-human
+// step opened a new PR for it beside the one still open: #406/#409/#411/#412 were
+// open together (2026-09-02..09-08), and #475/#477/#481/#483/#484 (2026-09-22..
+// 10-02). These replay that sequence through the REAL step body, run after run:
+// run 1's pushed branch and created body become run 2's open PR.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — needs-human keeps ONE rolling PR across changesets", () => {
+  const BOT_LOGIN = "app/copilotkit-bot";
+  const NOTE_A = "drift-proposals/openai-alpha-1.new-family.md";
+  const NOTE_B = "drift-proposals/gemini-beta-2.new-family.md";
+  const KEY_1 = "aaaa1111bbbb2222";
+  const KEY_2 = "cccc3333dddd4444";
+  const BOT_COMMIT = { authors: [{ email: DRIFT_BOT_EMAIL, login: "" }] };
+
+  /** The branch a run pushed, read off its `git push` call. */
+  const pushedBranch = (r: PrStepRun): string => {
+    const push = r.ghCalls.find((c) => c.startsWith("PUSH "));
+    if (!push) throw new Error(`no push: ${r.stdio}`);
+    const ref = push.split(" ").pop() ?? "";
+    return ref.replace(/^HEAD:refs\/heads\//, "");
+  };
+
+  /** Run 1: nothing open, so it opens the PR the later runs must reuse. */
+  const firstRun = (): { run: PrStepRun; pr: PrFixture } => {
+    const run = observePrStep("needs_human_pr", {
+      changesetKey: KEY_1,
+      committed: { [NOTE_A]: "note A\n" },
+      matchOut: '{"url":"https://x/pr/475","number":475}',
+    });
+    expect(run.created, `run 1 opened no PR: ${run.stdio}`).toBe(true);
+    const pr: PrFixture = {
+      number: 475,
+      url: "https://x/pr/475",
+      state: "OPEN",
+      headRefName: pushedBranch(run),
+      body: run.createdBody,
+      files: [{ path: NOTE_A }],
+      author: { login: BOT_LOGIN },
+      headRefOid: "0123456789abcdef0123456789abcdef01234567",
+      commits: [BOT_COMMIT],
+    };
+    return { run, pr };
+  };
+
+  const secondRun = (pr: PrFixture): PrStepRun =>
+    observePrStep("needs_human_pr", {
+      changesetKey: KEY_2,
+      committed: { [NOTE_A]: "note A\n", [NOTE_B]: "note B\n" },
+      prs: [pr],
+      matchOut: '{"url":"https://x/pr/477","number":477}',
+    });
+
+  it("a second run with a DIFFERENT changeset updates the open PR instead of opening a sibling", () => {
+    const { pr } = firstRun();
+    const r = secondRun(pr);
+    expect(
+      r.created,
+      "a run whose family set merely GREW opened a second needs-human PR beside the one " +
+        `still open (#475 -> #477). stdio: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.stepExit, r.stdio).toBe(0);
+    // It went onto THAT PR's branch, with a lease on the head it inspected.
+    const push = r.ghCalls.find((c) => c.startsWith("PUSH ")) ?? "";
+    expect(push, r.stdio).toContain(`HEAD:refs/heads/${pr.headRefName}`);
+    expect(push).toContain(`--force-with-lease=refs/heads/${pr.headRefName}:${pr.headRefOid}`);
+    // The body now names THIS changeset and both notes, and not the old key.
+    const body = r.edits["475"] ?? "";
+    expect(body, `PR #475's body was not rewritten. stdio: ${r.stdio}`).toContain(
+      `<!-- drift-changeset: ${KEY_2} -->`,
+    );
+    expect(body).not.toContain(`drift-changeset: ${KEY_1}`);
+    expect(body).toContain(NOTE_B);
+    expect(r.outputs.number).toBe("475");
+    expect(r.outputs.url).toBe("https://x/pr/475");
+  });
+
+  it("the rolling PR's branch carries NO changeset key, so its identity never goes stale", () => {
+    // A branch ending in KEY_1 that now carries KEY_2's content would be re-claimed
+    // by KEY_1's marker self-heal, which then dedups KEY_1 against the wrong content.
+    const { pr } = firstRun();
+    expect(pr.headRefName).toMatch(/^drift-needs-human\/rolling-\d{4}-\d{2}-\d{2}-\d+$/);
+    expect(pr.headRefName).not.toContain(KEY_1);
+  });
+
+  it("NEGATIVE CONTROL: the same changeset again is still a no-op (no push, no edit)", () => {
+    const { pr } = firstRun();
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY_1,
+      committed: { [NOTE_A]: "note A\n" },
+      prs: [pr],
+    });
+    expect(r.created, r.stdio).toBe(false);
+    expect(r.pushed, r.stdio).toBe(false);
+    expect(Object.keys(r.edits)).toEqual([]);
+    expect(r.outputs.number).toBe("475");
+  });
+
+  it("a rolling PR a HUMAN has committed to is never force-pushed, and no sibling is opened", () => {
+    const { pr } = firstRun();
+    const r = secondRun({
+      ...pr,
+      commits: [BOT_COMMIT, { authors: [{ email: "someone@example.com", login: "someone" }] }],
+    });
+    expect(r.pushed, `a human's work on #475 was force-pushed over. stdio: ${r.stdio}`).toBe(false);
+    expect(r.created, r.stdio).toBe(false);
+    expect(Object.keys(r.edits)).toEqual([]);
+    expect(r.stdio).toContain("::warning::");
+    expect(r.stdio).toContain("#475");
+    // The alert names the PR whose resolution unblocks this changeset.
+    expect(r.outputs.number).toBe("475");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("a rolling-shaped PR NOT opened by the drift bot is not reused", () => {
+    const { pr } = firstRun();
+    const r = secondRun({
+      ...pr,
+      headRefName: "drift-needs-human/rolling-2026-10-14-1234",
+      author: { login: "jpr5" },
+    });
+    expect(Object.keys(r.edits), r.stdio).toEqual([]);
+    expect(
+      r.ghCalls.some((c) => c.startsWith("PUSH ") && c.includes("rolling-2026-10-14-1234")),
+      `a human's rolling-shaped branch was force-pushed. stdio: ${r.stdio}`,
+    ).toBe(false);
+  });
+
+  it("a rolling PR whose commits cannot be read FAILS CLOSED (no push, no sibling)", () => {
+    const { pr } = firstRun();
+    const r = secondRun({ ...pr, commits: undefined });
+    expect(r.stepExit, r.stdio).not.toBe(0);
+    expect(r.pushed, r.stdio).toBe(false);
+    expect(r.created, r.stdio).toBe(false);
   });
 });

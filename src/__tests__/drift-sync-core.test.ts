@@ -24,7 +24,7 @@ import { join } from "node:path";
 import ts from "typescript";
 
 import { includeFamilies, excludeFamilies, deprecatedFamilies } from "./drift/model-registry.js";
-import { isVoiceModelId, knownVoiceModelFamilies } from "./drift/voice-models.js";
+import { isKnownVoiceModelFamily, isVoiceModelId } from "./drift/voice-models.js";
 import { MIN_LISTING_SIZE, FORWARD_LOOKING_FAMILIES } from "./drift/deprecation-detector.js";
 import {
   detectDeprecatedFamiliesForSync,
@@ -965,9 +965,9 @@ describe("runDriftSyncCore", () => {
 
   // THE VOICE HALF-CLASSIFICATION. `excludeFamilies` and
   // `knownVoiceModelFamilies` are deliberately disjoint surfaces and the sync
-  // writes only the first, so auto-applying a voice family's decision leaves
-  // ws-realtime.drift.ts reporting UNKNOWN_REALTIME_MODELS at critical severity:
-  // gate-3 refuses, both files revert, the note still says `Decision: exclude`,
+  // writes only the first, so auto-applying an OpenAI voice family's decision
+  // leaves ws-realtime.drift.ts reporting UNKNOWN_REALTIME_MODELS at critical
+  // severity: gate-3 refuses, both files revert, the note still says `Decision: exclude`,
   // and the identical apply/fail/revert/alert repeats every night forever.
   it("a DECIDED voice family is routed to a human instead of being half-applied", () => {
     for (const verdict of ["include", "exclude"] as const) {
@@ -977,7 +977,7 @@ describe("runDriftSyncCore", () => {
 
       const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
 
-      expect(needsVoiceSeedSetEdit("gpt-live")).toBe(true);
+      expect(needsVoiceSeedSetEdit("gpt-live", "openai")).toBe(true);
       expect(outcome.outcomes).toEqual([
         expect.objectContaining({ family: "gpt-live", action: "needs-human-voice-seed-set" }),
       ]);
@@ -996,24 +996,138 @@ describe("runDriftSyncCore", () => {
     // The predicate keys on the voice SEED SET, not on the id's shape. Every
     // seeded family is already classified in the registry, so the case is
     // constructed the way it arises in life: the human made the voice-models.ts
-    // half of the two-edit commit, and the registry half is what is left.
-    knownVoiceModelFamilies.add("gpt-live");
-    try {
-      expect(isVoiceModelId("gpt-live")).toBe(true);
-      expect(needsVoiceSeedSetEdit("gpt-live")).toBe(false);
+    // half of the two-edit commit, and the registry half is what is left. The
+    // seed set is private to voice-models.ts, so that half is modelled through
+    // the `isKnownVoiceFamily` seam (the same shape as `isRecorded`).
+    const seedSetWithGptLive = (family: string): boolean =>
+      family === "gpt-live" || isKnownVoiceModelFamily(family);
+    expect(isVoiceModelId("gpt-live")).toBe(true);
+    expect(isKnownVoiceModelFamily("gpt-live")).toBe(false);
+    expect(needsVoiceSeedSetEdit("gpt-live", "openai", seedSetWithGptLive)).toBe(false);
 
-      const { deps, registry } = makeFakeDeps();
-      notes_set(deps, proposalNoteRelPath("openai", "gpt-live", "new-family"), "exclude");
-      const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
+    const { deps, registry } = makeFakeDeps({ isKnownVoiceFamily: seedSetWithGptLive });
+    notes_set(deps, proposalNoteRelPath("openai", "gpt-live", "new-family"), "exclude");
+    const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
 
-      expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
-      expect(outcome.outcomes).toEqual([
-        expect.objectContaining({ family: "gpt-live", action: "excluded" }),
-      ]);
-      const excludeSection = registry.text.slice(registry.text.indexOf("excludeFamilies"));
-      expect(excludeSection).toContain('"gpt-live"');
-    } finally {
-      knownVoiceModelFamilies.delete("gpt-live");
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.outcomes).toEqual([
+      expect.objectContaining({ family: "gpt-live", action: "excluded" }),
+    ]);
+    const excludeSection = registry.text.slice(registry.text.indexOf("excludeFamilies"));
+    expect(excludeSection).toContain('"gpt-live"');
+  });
+
+  // The voice seed set is read by ONE canary: ws-realtime.drift.ts, against the
+  // OpenAI /models listing only. A voice-SHAPED family from another provider
+  // (a gemini *-flash-tts id matches isVoiceModelId on `-tts`) is invisible to that
+  // canary, so its registry edit is the whole job — routing it to a
+  // `-voice-seed-set` note demands an edit no gate needs, and the decided family
+  // is never applied.
+  it("a DECIDED voice-shaped family from a non-OpenAI provider IS applied (the seed set is OpenAI-only)", () => {
+    // gemini-3.8-flash-tts itself is classified now (by hand, in the commit that
+    // also excluded its -lite sibling), so a same-shape successor stands in.
+    expect(isVoiceModelId("gemini-4.1-flash-tts")).toBe(true);
+    expect(needsVoiceSeedSetEdit("gemini-4.1-flash-tts", "gemini")).toBe(false);
+    expect(needsVoiceSeedSetEdit("gemini-4.1-flash-tts", "openai")).toBe(true);
+
+    const { deps, registry, logicPin, notes } = makeFakeDeps();
+    logicPin.text = logicPin.text.replace(
+      "};\n",
+      [
+        '  "excludeFamilies.gemini": {',
+        "    members: () => [...excludeFamilies.gemini].sort(),",
+        '    pin: "' + "2".repeat(64) + '",',
+        "  },",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    notes_set(
+      deps,
+      proposalNoteRelPath("gemini", "gemini-4.1-flash-tts", "new-family"),
+      "exclude",
+      {
+        provider: "gemini",
+        family: "gemini-4.1-flash-tts",
+      },
+    );
+
+    const sets = ["includeFamilies", "excludeFamilies", "deprecatedFamilies"] as const;
+    const providers = ["openai", "anthropic", "gemini"] as const;
+    const arraysOf = (text: string) =>
+      Object.fromEntries(
+        sets.flatMap((set) =>
+          providers.map((p) => [`${set}.${p}`, parsedFamilyArray(text, set, p)]),
+        ),
+      );
+    const arraysBefore = arraysOf(registry.text);
+    const pinBefore = logicPin.text;
+
+    const outcome = runDriftSyncCore(
+      [{ provider: "gemini", liveModelIds: ["gemini-4.1-flash-tts"] }],
+      deps,
+    );
+
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.outcomes).toEqual([
+      expect.objectContaining({ family: "gemini-4.1-flash-tts", action: "excluded" }),
+    ]);
+    // The family landed in excludeFamilies.gemini — appended, nothing else in
+    // that array moved — and every OTHER array (other providers' excludes,
+    // includeFamilies, the deprecation ledger) is exactly as it was.
+    const arraysAfter = arraysOf(registry.text);
+    expect(arraysAfter["excludeFamilies.gemini"]).toEqual([
+      ...arraysBefore["excludeFamilies.gemini"],
+      "gemini-4.1-flash-tts",
+    ]);
+    for (const key of Object.keys(arraysBefore)) {
+      if (key === "excludeFamilies.gemini") continue;
+      expect(arraysAfter[key], key).toEqual(arraysBefore[key]);
+      expect(arraysAfter[key], key).not.toContain("gemini-4.1-flash-tts");
+    }
+    // The gemini exclude pin was re-pinned in the same run; the OpenAI pins
+    // were not touched.
+    expect(pinFor(logicPin.text, "excludeFamilies.gemini")).not.toBe(
+      pinFor(pinBefore, "excludeFamilies.gemini"),
+    );
+    expect(pinFor(logicPin.text, "excludeFamilies.gemini")).toMatch(/^[0-9a-f]{64}$/);
+    for (const key of ["includeFamilies.openai", "excludeFamilies.openai"]) {
+      expect(pinFor(logicPin.text, key), key).toBe(pinFor(pinBefore, key));
+    }
+    expect(notes.has(proposalNoteRelPath("gemini", "gemini-4.1-flash-tts", "voice-seed-set"))).toBe(
+      false,
+    );
+  });
+
+  it("only an OpenAI new-family note carries the voice seed-set exception", () => {
+    const render = (provider: "openai" | "anthropic" | "gemini") =>
+      renderProposalNote(provider, "x-tts", "new-family", "detail", "2026-10-05");
+    expect(render("openai")).toContain("knownVoiceModelFamilies");
+    expect(render("openai")).toContain("-voice-seed-set.md");
+    for (const provider of ["gemini", "anthropic"] as const) {
+      const note = render(provider);
+      expect(note).not.toContain("knownVoiceModelFamilies");
+      expect(note).not.toContain("voice-seed-set");
+      // The decision block itself is intact: the comment closes and the
+      // fail-closed `pending` line follows it.
+      expect(note).toMatch(
+        /is a human-authored decision, not generated code\)\. -->\nDecision: pending\n/,
+      );
+    }
+    // Every provider's note — the OpenAI one included, whose comment runs on
+    // through the seed-set paragraph — closes its HTML comment before the
+    // `Decision: pending` line. An unclosed comment would hide that line from
+    // a rendered view and from any comment-aware parser.
+    for (const provider of ["openai", "gemini", "anthropic"] as const) {
+      const note = render(provider);
+      const opens = note.split("<!--").length - 1;
+      const closes = note.split("-->").length - 1;
+      expect(opens).toBe(1);
+      expect(closes).toBe(opens);
+      expect(note.indexOf("-->")).toBeGreaterThan(note.indexOf("<!--"));
+      const uncommented = note.replace(/<!--[\s\S]*?-->/g, "");
+      expect(uncommented).not.toContain("<!--");
+      expect(uncommented).toMatch(/^Decision: pending$/m);
     }
   });
 
@@ -1479,14 +1593,26 @@ describe("buildSyncCommitMessage", () => {
   });
 });
 
-/** Set a note's Decision line to a human verdict. */
-function notes_set(deps: SyncCoreDeps, notePath: string, verdict: "include" | "exclude"): void {
+/**
+ * Set a note's Decision line to a human verdict. The body is the REAL
+ * renderProposalNote output for `subject` (default openai/gpt-zeta), not
+ * necessarily for the note at `notePath`.
+ */
+function notes_set(
+  deps: SyncCoreDeps,
+  notePath: string,
+  verdict: "include" | "exclude",
+  subject: { provider: Provider; family: string } = { provider: "openai", family: "gpt-zeta" },
+): void {
   deps.writeProposalNote(
     notePath,
-    renderProposalNote("openai", "gpt-zeta", "new-family", "detail", "2026-07-20").replace(
-      "Decision: pending",
-      `Decision: ${verdict}`,
-    ),
+    renderProposalNote(
+      subject.provider,
+      subject.family,
+      "new-family",
+      "detail",
+      "2026-07-20",
+    ).replace("Decision: pending", `Decision: ${verdict}`),
   );
 }
 

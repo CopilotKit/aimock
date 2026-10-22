@@ -538,6 +538,264 @@ describe("POST /v1/chat/completions (non-streaming)", () => {
     expect(tc[0].function.name).toBe("get_weather");
     expect(tc[0].function.arguments).toBe('{"city":"NYC"}');
   });
+
+  it("applies opted-in streamingProfile timing to a non-streaming response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming" },
+      response: { content: "Hi there!" },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    // 60ms ttft dominates here (tps is fast); allow scheduling slack, but a
+    // regression back to "non-streaming ignores streamingProfile" would
+    // return in a few ms, well under this floor.
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming tool-call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-tool" },
+      response: { toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }] },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-tool" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].finish_reason).toBe("tool_calls");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming content + tool-call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-combined" },
+      response: {
+        content: "Checking the weather.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-combined" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    const message = JSON.parse(res.body).choices[0].message;
+    expect(message.content).toBe("Checking the weather.");
+    expect(message.tool_calls[0].function.name).toBe("get_weather");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming blocks response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-blocks" },
+      response: {
+        content: "",
+        blocks: [
+          { type: "text", text: "Checking the weather." },
+          { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+        ],
+      },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-blocks" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].finish_reason).toBe("tool_calls");
+    expect(body.choices[0].message.content).toBe("Checking the weather.");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in recordedTimings to a non-streaming response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-recorded" },
+      response: { content: "Hi there!" },
+      recordedTimings: { ttftMs: 60, interChunkDelaysMs: [], totalDurationMs: 60 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-recorded" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("does not delay a non-streaming response for streamingProfile or recordedTimings by default", async () => {
+    // Default (no nonStreamingTiming): the v1.45.1 behavior. A fixture with a
+    // streamingProfile or recorded stream timings returns its non-streaming
+    // reply immediately; only the SSE path uses those values.
+    const profile = { ttft: 300, tps: 1000 };
+    const toolCalls = [{ name: "get_weather", arguments: '{"city":"NYC"}' }];
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "default-profile-text" },
+        response: { content: "Hi there!" },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-tool" },
+        response: { toolCalls },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-combined" },
+        response: { content: "Checking the weather.", toolCalls },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-blocks" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Checking the weather." },
+            { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+          ],
+        },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-recorded-text" },
+        response: { content: "Hi there!" },
+        recordedTimings: { ttftMs: 300, interChunkDelaysMs: [300], totalDurationMs: 600 },
+      },
+      {
+        match: { userMessage: "explicit-false-profile-text" },
+        response: { content: "Hi there!" },
+        streamingProfile: profile,
+        nonStreamingTiming: false,
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    for (const content of [
+      "default-profile-text",
+      "default-profile-tool",
+      "default-profile-combined",
+      "default-profile-blocks",
+      "default-recorded-text",
+      "explicit-false-profile-text",
+    ]) {
+      const started = Date.now();
+      const res = await post(`${instance.url}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content }],
+        stream: false,
+      });
+      const elapsed = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      // The 300ms ttft alone would exceed this ceiling if the reply waited.
+      expect(elapsed, content).toBeLessThan(150);
+    }
+  });
+
+  it("still applies streamingProfile timing to a streamed response by default", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "default-profile-streamed" },
+      response: { content: "Hi there!" },
+      streamingProfile: { ttft: 60, tps: 1000 },
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "default-profile-streamed" }],
+      stream: true,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("does not delay a non-streaming response for bare latency (no streamingProfile)", async () => {
+    // `latency` / `--latency` is the gap between SSE chunks. It is not a
+    // non-streaming delay, even with nonStreamingTiming: true.
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "bare-latency-text" }, response: { content: "x".repeat(200) } },
+      {
+        match: { userMessage: "bare-latency-fixture" },
+        response: { content: "x".repeat(200) },
+        latency: 200,
+        nonStreamingTiming: true,
+      },
+      {
+        match: { userMessage: "bare-latency-tool" },
+        response: { toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }] },
+      },
+      {
+        match: { userMessage: "bare-latency-combined" },
+        response: {
+          content: "x".repeat(200),
+          toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+        },
+      },
+    ];
+    instance = await createServer(fixtures, { latency: 200 });
+
+    for (const content of [
+      "bare-latency-text",
+      "bare-latency-fixture",
+      "bare-latency-tool",
+      "bare-latency-combined",
+    ]) {
+      const started = Date.now();
+      const res = await post(`${instance.url}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content }],
+        stream: false,
+      });
+      const elapsed = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      // One latency gap alone is 200ms; a regression would wait at least that.
+      expect(elapsed).toBeLessThan(150);
+    }
+  });
 });
 
 describe("routing", () => {

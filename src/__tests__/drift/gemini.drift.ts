@@ -30,7 +30,11 @@ const nativeAuthExpected: ObservedResponse = {
   body: { error: { code: 401, message: "Invalid API key", status: "UNAUTHENTICATED" } },
 };
 beforeAll(async () => {
-  nativeAuthServer = await startGoldenServer([], { auth: { apiKeys: ["local-native-auth"] } });
+  // Native 401 bodies are opt-in; the drift gate compares the native contract.
+  nativeAuthServer = await startGoldenServer([], {
+    auth: { apiKeys: ["local-native-auth"] },
+    policy: { authErrors: "native" },
+  });
 });
 afterAll(async () => {
   await nativeAuthServer.close();
