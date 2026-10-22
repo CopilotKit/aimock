@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Fixture `citations` serve OpenAI Responses `url_citation` annotations; fixture `files` serve Gemini `inlineData` parts (#550 by @abhiaiyer91)
+
 ## [1.46.0] - 2026-10-20
 
 ### Added
