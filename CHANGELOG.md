@@ -6,6 +6,10 @@
 
 - Fixture `citations` serve OpenAI Responses `url_citation` annotations; fixture `files` serve Gemini `inlineData` parts (#550 by @abhiaiyer91)
 
+### Fixed
+
+- Docker image: the base image is pinned to `node:22.23.4-alpine` by digest. Node 22.23.4 fixes CVE-2026-111497 (Brotli decompression memory bug); the 1.46.0 image shipped Node 22.23.3.
+
 ## [1.46.0] - 2026-10-20
 
 ### Added
