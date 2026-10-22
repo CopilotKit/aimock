@@ -306,6 +306,22 @@ interface GeminiResponseChunk {
   };
 }
 
+// Fixture `files` as Gemini `inlineData` parts. Every text-bearing builder emits
+// these after any thought parts and before the text / functionCall parts.
+function geminiFileParts(overrides?: ResponseOverrides): GeminiPart[] {
+  return (overrides?.files ?? []).map((f) => ({
+    inlineData: { mimeType: f.mimeType, data: f.data },
+  }));
+}
+
+// Streaming form of {@link geminiFileParts}: one chunk holding every file part,
+// or nothing when the fixture has no files.
+function geminiFileChunks(overrides?: ResponseOverrides): GeminiResponseChunk[] {
+  const parts = geminiFileParts(overrides);
+  if (parts.length === 0) return [];
+  return [{ candidates: [{ content: { role: "model", parts }, index: 0 }] }];
+}
+
 function buildGeminiTextStreamChunks(
   content: string,
   chunkSize: number,
@@ -331,21 +347,7 @@ function buildGeminiTextStreamChunks(
     }
   }
 
-  if (overrides?.files?.length) {
-    chunks.push({
-      candidates: [
-        {
-          content: {
-            role: "model",
-            parts: overrides.files.map((f) => ({
-              inlineData: { mimeType: f.mimeType, data: f.data },
-            })),
-          },
-          index: 0,
-        },
-      ],
-    });
-  }
+  chunks.push(...geminiFileChunks(overrides));
 
   // Content chunks
   for (let i = 0; i < content.length; i += chunkSize) {
@@ -457,9 +459,7 @@ function buildGeminiTextResponse(
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
-  for (const f of overrides?.files ?? []) {
-    parts.push({ inlineData: { mimeType: f.mimeType, data: f.data } });
-  }
+  parts.push(...geminiFileParts(overrides));
   parts.push({ text: content });
 
   return {
@@ -523,6 +523,8 @@ function buildGeminiContentWithToolCallsStreamChunks(
       });
     }
   }
+
+  chunks.push(...geminiFileChunks(overrides));
 
   if (blocks && blocks.length > 0) {
     // NEW path (#274): stream chunks whose parts follow the blocks' ARRAY ORDER,
@@ -642,6 +644,7 @@ function buildGeminiContentWithToolCallsResponse(
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
+  parts.push(...geminiFileParts(overrides));
 
   let blockHasTools: boolean | undefined;
   if (blocks && blocks.length > 0) {
