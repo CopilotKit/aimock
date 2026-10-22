@@ -578,6 +578,7 @@ export function buildTextStreamEvents(
     chunkSize,
     nextOutputIndex,
     overrides?.phase,
+    overrides?.citations,
   );
   events.push(...msgEvents);
 
@@ -1114,13 +1115,25 @@ interface MessageBlockResult {
   msgItem: object;
 }
 
+function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
+  return (citations ?? []).map((c) => ({
+    type: "url_citation",
+    url: c.url,
+    title: c.title ?? c.url,
+    start_index: c.startIndex ?? 0,
+    end_index: c.endIndex ?? content.length,
+  }));
+}
+
 function buildMessageOutputEvents(
   content: string,
   chunkSize: number,
   outputIndex: number,
   phase?: ResponseOverrides["phase"],
+  citations?: ResponseOverrides["citations"],
 ): MessageBlockResult {
   const msgId = itemId();
+  const annotations = buildAnnotations(content, citations);
   const events: ResponsesSSEEvent[] = [];
 
   events.push({
@@ -1160,12 +1173,22 @@ function buildMessageOutputEvents(
     content_index: 0,
     text: content,
   });
+  annotations.forEach((annotation, annotationIndex) => {
+    events.push({
+      type: "response.output_text.annotation.added",
+      item_id: msgId,
+      output_index: outputIndex,
+      content_index: 0,
+      annotation_index: annotationIndex,
+      annotation,
+    });
+  });
   events.push({
     type: "response.content_part.done",
     item_id: msgId,
     output_index: outputIndex,
     content_index: 0,
-    part: { type: "output_text", text: content, annotations: [] },
+    part: { type: "output_text", text: content, annotations },
   });
 
   const msgItem = {
@@ -1174,7 +1197,7 @@ function buildMessageOutputEvents(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    content: [{ type: "output_text", text: content, annotations }],
   };
 
   events.push({ type: "response.output_item.done", output_index: outputIndex, item: msgItem });
@@ -1320,6 +1343,7 @@ function buildOutputPrefix(
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
   phase?: ResponseOverrides["phase"],
+  citations?: ResponseOverrides["citations"],
 ): object[] {
   const output: object[] = [];
 
@@ -1352,7 +1376,9 @@ function buildOutputPrefix(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    content: [
+      { type: "output_text", text: content, annotations: buildAnnotations(content, citations) },
+    ],
   });
 
   return output;
@@ -1393,6 +1419,7 @@ export function buildTextResponse(
       emitEncryptedReasoning,
       synthesizeSummarylessReasoning,
       overrides?.phase,
+      overrides?.citations,
     ),
     overrides,
   );
@@ -1509,6 +1536,7 @@ export function contentWithToolCallsStreamEvents(
           chunkSize,
           outputIndex,
           overrides?.phase,
+          overrides?.citations,
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
@@ -1534,6 +1562,7 @@ export function contentWithToolCallsStreamEvents(
       chunkSize,
       nextOutputIndex,
       overrides?.phase,
+      overrides?.citations,
     );
     events.push(...msgEvents);
     orderedOutputItems.push(msgItem);
@@ -1585,14 +1614,20 @@ function buildToolCallOutputItem(tc: EmittableToolCall): object {
   );
 }
 
-function buildMessageOutputItem(content: string, phase?: ResponseOverrides["phase"]): object {
+function buildMessageOutputItem(
+  content: string,
+  phase?: ResponseOverrides["phase"],
+  citations?: ResponseOverrides["citations"],
+): object {
   return {
     type: "message",
     id: itemId(),
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    content: [
+      { type: "output_text", text: content, annotations: buildAnnotations(content, citations) },
+    ],
   };
 }
 
@@ -1637,7 +1672,7 @@ function buildContentWithToolCallsResponse(
     }
     for (const block of ordered) {
       if (block.type === "text") {
-        output.push(buildMessageOutputItem(block.text, overrides?.phase));
+        output.push(buildMessageOutputItem(block.text, overrides?.phase, overrides?.citations));
       } else {
         output.push(buildToolCallOutputItem(block));
       }
@@ -1656,6 +1691,7 @@ function buildContentWithToolCallsResponse(
     emitEncryptedReasoning,
     synthesizeSummarylessReasoning,
     overrides?.phase,
+    overrides?.citations,
   );
   for (const tc of toolCalls) {
     output.push(buildToolCallOutputItem(tc));
@@ -2407,6 +2443,7 @@ export function buildResponsesMisbehavior(
           chunkSize,
           outputIndex,
           overrides.phase,
+          overrides.citations,
         );
         events.push(...message.events);
         output.push(message.msgItem);

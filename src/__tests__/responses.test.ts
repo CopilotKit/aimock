@@ -2680,3 +2680,82 @@ describe("handleResponses debug logging", () => {
     expect(debugMessages.some((m) => m.includes("No responses fixture matched"))).toBe(true);
   });
 });
+
+describe("POST /v1/responses (citations)", () => {
+  let instance: ServerInstance | undefined;
+  afterEach(async () => {
+    if (instance) {
+      await new Promise<void>((resolve) => instance!.server.close(() => resolve()));
+      instance = undefined;
+    }
+  });
+
+  const fixture: Fixture = {
+    match: { userMessage: "cite-me" },
+    response: {
+      content: "Mastra is a TypeScript framework.",
+      citations: [
+        { url: "https://mastra.ai", title: "Mastra" },
+        { url: "https://mastra.ai/docs", startIndex: 0, endIndex: 6 },
+      ],
+    },
+  };
+
+  it("non-streaming output_text carries url_citation annotations", async () => {
+    instance = await createServer([fixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-me" }],
+      stream: false,
+    });
+    const body = JSON.parse(res.body);
+    const msg = body.output.find((o: { type: string }) => o.type === "message");
+    expect(msg.content[0].annotations).toEqual([
+      {
+        type: "url_citation",
+        url: "https://mastra.ai",
+        title: "Mastra",
+        start_index: 0,
+        end_index: 33,
+      },
+      {
+        type: "url_citation",
+        url: "https://mastra.ai/docs",
+        title: "https://mastra.ai/docs",
+        start_index: 0,
+        end_index: 6,
+      },
+    ]);
+  });
+
+  it("streaming emits annotation.added events and annotated done parts", async () => {
+    instance = await createServer([fixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-me" }],
+      stream: true,
+    });
+    const events = parseResponsesSSEEvents(res.body);
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => (e.annotation as { url: string }).url)).toEqual([
+      "https://mastra.ai",
+      "https://mastra.ai/docs",
+    ]);
+    expect(added.map((e) => e.annotation_index)).toEqual([0, 1]);
+    const done = events.find((e) => e.type === "response.content_part.done");
+    expect((done!.part as { annotations: unknown[] }).annotations).toHaveLength(2);
+  });
+
+  it("omitting citations keeps annotations empty", async () => {
+    instance = await createServer([
+      { match: { userMessage: "plain" }, response: { content: "hi" } },
+    ]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "plain" }],
+      stream: false,
+    });
+    const msg = JSON.parse(res.body).output.find((o: { type: string }) => o.type === "message");
+    expect(msg.content[0].annotations).toEqual([]);
+  });
+});

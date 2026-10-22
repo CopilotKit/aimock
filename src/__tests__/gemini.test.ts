@@ -1255,3 +1255,197 @@ describe("Gemini streaming interruptions", () => {
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 });
+
+describe("Gemini model-generated files", () => {
+  const png = "iVBORw0KGgo=";
+  const fileFixture: Fixture = {
+    match: { userMessage: "draw" },
+    response: { content: "Here is your image.", files: [{ mimeType: "image/png", data: png }] },
+  };
+
+  it("non-streaming emits inlineData parts before the text", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "draw" }] }],
+    });
+    const parts = JSON.parse(res.body).candidates[0].content.parts;
+    expect(parts).toEqual([
+      { inlineData: { mimeType: "image/png", data: png } },
+      { text: "Here is your image." },
+    ]);
+  });
+
+  it("streaming emits an inlineData chunk before the text chunks", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "draw" }] }],
+    });
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: { content: { parts: { text?: string; inlineData?: unknown }[] } }[];
+    }[];
+    expect(chunks[0].candidates[0].content.parts).toEqual([
+      { inlineData: { mimeType: "image/png", data: png } },
+    ]);
+    const text = chunks
+      .slice(1)
+      .map((c) => c.candidates[0].content.parts[0].text ?? "")
+      .join("");
+    expect(text).toBe("Here is your image.");
+  });
+
+  // Combined content+toolCalls turns (legacy and `blocks`) used to drop `files`
+  // on both wires; they must emit the same leading inlineData part as text turns.
+  type FilesChunk = {
+    candidates: {
+      content: {
+        parts: { text?: string; inlineData?: unknown; functionCall?: { name: string } }[];
+      };
+    }[];
+  };
+  const combinedFileFixtures: Fixture[] = [
+    {
+      match: { userMessage: "draw-empty-tools" },
+      response: {
+        content: "Here is your image.",
+        toolCalls: [],
+        files: [{ mimeType: "image/png", data: png }],
+      },
+    },
+    {
+      match: { userMessage: "draw-and-save" },
+      response: {
+        content: "Saving it.",
+        toolCalls: [{ name: "save", arguments: '{"x":1}' }],
+        files: [{ mimeType: "image/png", data: png }],
+      },
+    },
+    {
+      match: { userMessage: "draw-blocks" },
+      response: {
+        blocks: [
+          { type: "toolCall", name: "save", arguments: '{"x":1}' },
+          { type: "text", text: "Saved it." },
+        ],
+        files: [{ mimeType: "image/png", data: png }],
+      },
+    },
+  ];
+
+  it.each([
+    ["draw-empty-tools", [{ text: "Here is your image." }]],
+    ["draw-and-save", [{ text: "Saving it." }, { functionCall: { name: "save", args: { x: 1 } } }]],
+    ["draw-blocks", [{ functionCall: { name: "save", args: { x: 1 } } }, { text: "Saved it." }]],
+  ])("non-streaming combined turn %s emits inlineData before its parts", async (msg, rest) => {
+    instance = await createServer(combinedFileFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: msg }] }],
+    });
+    const parts = JSON.parse(res.body).candidates[0].content.parts;
+    expect(parts).toEqual([{ inlineData: { mimeType: "image/png", data: png } }, ...rest]);
+  });
+
+  it.each([
+    ["draw-empty-tools", "Here is your image.", []],
+    ["draw-and-save", "Saving it.", ["save"]],
+    ["draw-blocks", "Saved it.", ["save"]],
+  ])("streaming combined turn %s emits an inlineData chunk first", async (msg, text, toolNames) => {
+    instance = await createServer(combinedFileFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: msg }] }],
+    });
+    const chunks = parseGeminiSSEChunks(res.body) as FilesChunk[];
+    expect(chunks[0].candidates[0].content.parts).toEqual([
+      { inlineData: { mimeType: "image/png", data: png } },
+    ]);
+    const rest = chunks.slice(1).flatMap((c) => c.candidates[0].content.parts);
+    expect(rest.some((p) => p.inlineData !== undefined)).toBe(false);
+    expect(rest.map((p) => p.text ?? "").join("")).toBe(text);
+    expect(rest.flatMap((p) => (p.functionCall ? [p.functionCall.name] : []))).toEqual(toolNames);
+  });
+
+  // Tool-only turns (no text) keep their files too: after any thought part,
+  // before the functionCall parts, matching the text and combined shapes.
+  const toolOnlyFileFixtures: Fixture[] = [
+    {
+      match: { userMessage: "plain-tool-file" },
+      response: {
+        toolCalls: [{ name: "save", arguments: '{"x":1}' }],
+        files: [{ mimeType: "image/png", data: png }],
+      },
+    },
+    {
+      match: { userMessage: "thinking-tool-file" },
+      response: {
+        reasoning: "Plan.",
+        toolCalls: [{ name: "save", arguments: '{"x":1}' }],
+        files: [{ mimeType: "image/png", data: png }],
+      },
+    },
+  ];
+
+  it.each([
+    ["plain-tool-file", []],
+    ["thinking-tool-file", [{ text: "Plan.", thought: true }]],
+  ])("non-streaming tool-only turn %s emits inlineData before functionCall", async (msg, lead) => {
+    instance = await createServer(toolOnlyFileFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: msg }] }],
+    });
+    const parts = JSON.parse(res.body).candidates[0].content.parts;
+    expect(parts).toEqual([
+      ...lead,
+      { inlineData: { mimeType: "image/png", data: png } },
+      { functionCall: { name: "save", args: { x: 1 } } },
+    ]);
+  });
+
+  it.each([
+    ["plain-tool-file", []],
+    ["thinking-tool-file", [[{ text: "Plan.", thought: true }]]],
+  ])(
+    "streaming tool-only turn %s emits an inlineData chunk before functionCall",
+    async (msg, lead) => {
+      instance = await createServer(toolOnlyFileFixtures);
+      const res = await post(
+        `${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`,
+        {
+          contents: [{ role: "user", parts: [{ text: msg }] }],
+        },
+      );
+      const chunks = parseGeminiSSEChunks(res.body) as FilesChunk[];
+      expect(chunks.map((c) => c.candidates[0].content.parts)).toEqual([
+        ...lead,
+        [{ inlineData: { mimeType: "image/png", data: png } }],
+        [{ functionCall: { name: "save", args: { x: 1 } } }],
+      ]);
+    },
+  );
+
+  it("fixtures without files emit no inlineData on combined turns", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "plain-combined" },
+        response: { content: "Saving it.", toolCalls: [{ name: "save", arguments: "{}" }] },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "plain-combined" }] }],
+    });
+    expect(res.body).not.toContain("inlineData");
+  });
+
+  it("fixtures without files emit no inlineData on tool-only turns", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "plain-tool" },
+        response: { toolCalls: [{ name: "save", arguments: "{}" }] },
+      },
+    ]);
+    for (const ep of ["generateContent", "streamGenerateContent"]) {
+      const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:${ep}`, {
+        contents: [{ role: "user", parts: [{ text: "plain-tool" }] }],
+      });
+      expect(res.body).not.toContain("inlineData");
+    }
+  });
+});

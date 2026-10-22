@@ -545,6 +545,8 @@ export type {
   VideoResponse,
   RawJSONResponse,
   ResponseOverrides,
+  FixtureCitation,
+  FixtureGeneratedFile,
   ContentWithToolCallsResponse,
   FixtureFileResponse,
   FixtureFileToolCall,
