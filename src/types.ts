@@ -263,6 +263,22 @@ export interface FixtureMatch {
 
 // Fixture response types
 
+/** A source citation attached to a text response. Served on the OpenAI Responses API as `url_citation` annotations. */
+export interface FixtureCitation {
+  url: string;
+  title?: string;
+  /** Character offsets into the text; default to the whole text. */
+  startIndex?: number;
+  endIndex?: number;
+}
+
+/** A model-generated file (e.g. an inline image). Served on Gemini as `inlineData` parts. */
+export interface FixtureGeneratedFile {
+  mimeType: string;
+  /** Base64-encoded file bytes. */
+  data: string;
+}
+
 /**
  * Fields that override auto-generated envelope values in the built response.
  * Scalar fields (finishReason, role) use OpenAI-canonical values — provider
@@ -281,25 +297,9 @@ export interface FixtureMatch {
  * API honors five common fields (no role, systemFingerprint) plus optional phase;
  * Claude (5: no created, systemFingerprint); Gemini (2: only finishReason, usage).
  */
-/** A source citation attached to a text response. Served on the OpenAI Responses API as `url_citation` annotations. */
-export interface FixtureCitation {
-  url: string;
-  title?: string;
-  /** Character offsets into the text; default to the whole text. */
-  startIndex?: number;
-  endIndex?: number;
-}
-
-/** A model-generated file (e.g. an inline image). Served on Gemini as `inlineData` parts. */
-export interface FixtureFile {
-  mimeType: string;
-  /** Base64-encoded file bytes. */
-  data: string;
-}
-
 export interface ResponseOverrides {
   /** Model-generated files emitted before the response text (Gemini only). */
-  files?: FixtureFile[];
+  files?: FixtureGeneratedFile[];
   /** Source citations for the response text (OpenAI Responses API only). */
   citations?: FixtureCitation[];
   id?: string;

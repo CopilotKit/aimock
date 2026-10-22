@@ -2116,6 +2116,17 @@ export type FixtureBlock = {
     namespace?: string;
 };
 
+// @public
+export interface FixtureCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    // (undocumented)
+    url: string;
+}
+
 // @public (undocumented)
 export interface FixtureFile {
     // (undocumented)
@@ -2254,6 +2265,13 @@ export interface FixtureFileToolCallResponse extends ResponseOverrides {
     toolCalls: FixtureFileToolCall[];
     // (undocumented)
     webSearches?: string[];
+}
+
+// @public
+export interface FixtureGeneratedFile {
+    data: string;
+    // (undocumented)
+    mimeType: string;
 }
 
 // @public
@@ -4656,8 +4674,10 @@ type ResponseFactory = (req: ChatCompletionRequest) => FixtureResponse | Promise
 
 // @public
 export interface ResponseOverrides {
+    citations?: FixtureCitation[];
     // (undocumented)
     created?: number;
+    files?: FixtureGeneratedFile[];
     // (undocumented)
     finishReason?: string;
     // (undocumented)

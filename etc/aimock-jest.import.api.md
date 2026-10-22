@@ -297,6 +297,17 @@ type FixtureBlock = {
 };
 
 // @public
+interface FixtureCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    // (undocumented)
+    url: string;
+}
+
+// @public
 type FixtureFileBlock = {
     type: "text";
     text: string;
@@ -428,6 +439,13 @@ interface FixtureFileToolCallResponse extends ResponseOverrides {
     toolCalls: FixtureFileToolCall[];
     // (undocumented)
     webSearches?: string[];
+}
+
+// @public
+interface FixtureGeneratedFile {
+    data: string;
+    // (undocumented)
+    mimeType: string;
 }
 
 // @public (undocumented)
@@ -1175,8 +1193,10 @@ type ResponseFactory = (req: ChatCompletionRequest) => FixtureResponse | Promise
 
 // @public
 interface ResponseOverrides {
+    citations?: FixtureCitation[];
     // (undocumented)
     created?: number;
+    files?: FixtureGeneratedFile[];
     // (undocumented)
     finishReason?: string;
     // (undocumented)

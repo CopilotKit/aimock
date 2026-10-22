@@ -222,6 +222,24 @@ type FixtureBlock = {
     namespace?: string;
 };
 
+// @public
+interface FixtureCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    // (undocumented)
+    url: string;
+}
+
+// @public
+interface FixtureGeneratedFile {
+    data: string;
+    // (undocumented)
+    mimeType: string;
+}
+
 // @public (undocumented)
 interface FixtureMatch {
     // (undocumented)
@@ -699,8 +717,10 @@ type ResponseFactory = (req: ChatCompletionRequest) => FixtureResponse | Promise
 
 // @public
 interface ResponseOverrides {
+    citations?: FixtureCitation[];
     // (undocumented)
     created?: number;
+    files?: FixtureGeneratedFile[];
     // (undocumented)
     finishReason?: string;
     // (undocumented)
