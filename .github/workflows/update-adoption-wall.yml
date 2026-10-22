@@ -23,10 +23,11 @@ on:
 
 concurrency:
   group: adoption-wall
-  # NOT cancel-in-progress. This job pushes commits to main and opens PRs;
-  # cancelling it between `git push` and `gh pr create` leaves a pushed branch
-  # with no PR attached to it and nobody looking at it. A re-run queues behind
-  # the running one instead, which is the whole point of re-running after a fix.
+  # NOT cancel-in-progress. This job pushes branches and opens (and, for a safe
+  # refresh, merges) PRs; cancelling it between `git push` and `gh pr create`
+  # leaves a pushed branch with no PR attached to it and nobody looking at it.
+  # A re-run queues behind the running one instead, which is the whole point
+  # of re-running after a fix.
   cancel-in-progress: false
 
 permissions:
@@ -63,13 +64,12 @@ jobs:
       #
       # These permissions still cover every push EXCEPT the auto-land onto the
       # default branch. That one cannot use the workflow token at all: ruleset
-      # `blorpathupap` requires a pull request on the default branch, and the
-      # GitHub Actions app (id 15368) CANNOT be added as a bypass actor -- the
-      # API rejects it with "Actor GitHub Actions integration must be part of
-      # the ruleset source or owner organization", because it is not an org
-      # installation. So the workflow token gets GH013 and the weekly refresh
-      # is never delivered. The "Mint app token" step below is the ONLY path;
-      # see the note there for how its exposure is bounded.
+      # `blorpathupap` requires an approved pull request on the default branch,
+      # and the GitHub Actions app (id 15368) CANNOT be added as a bypass actor
+      # -- the API rejects it with "Actor GitHub Actions integration must be
+      # part of the ruleset source or owner organization", because it is not an
+      # org installation. The "Mint app token" step below is the ONLY path; see
+      # the note there for how its exposure is bounded.
       contents: write
       pull-requests: write
     steps:
@@ -436,13 +436,16 @@ jobs:
       # a reorder, an avatar refresh or an EXPLAINED removal auto-lands here too.
       #
       # NOTE: there is no separate opt-in variable gating this. A safe, changed,
-      # region-confined run pushes to ${{ github.ref_name }} unattended, and the
-      # Slack line below says so in those words.
-      # The ONE push the workflow token cannot make -- see the permissions
-      # note at the top of this job. copilotkit-bot (app 1108748) is already a
-      # bypass actor on ruleset `blorpathupap`, and this is the same app, the
-      # same pinned action and the same secret that .github/workflows/fix-drift.yml
-      # already uses in this repo; it is not a new key in this CI.
+      # region-confined run merges into ${{ github.ref_name }} unattended, and
+      # the Slack line below says so in those words.
+      # The ONE merge the workflow token cannot make -- see the permissions
+      # note at the top of this job. copilotkit-bot (app 1108748) is a
+      # PULL-REQUEST-ONLY bypass actor on ruleset `blorpathupap`: it can merge a
+      # PR without the required approval, but a direct push to the default
+      # branch is still rejected (GH013). So the refresh goes through a PR that
+      # the bot opens and merges itself. This is the same app, the same pinned
+      # action and the same secret that .github/workflows/fix-drift.yml already
+      # uses in this repo; it is not a new key in this CI.
       #
       # Minted HERE rather than at job start, and behind the SAME condition as
       # the push it serves, on purpose:
@@ -451,10 +454,11 @@ jobs:
       #     push an already-expired token;
       #   - a run that is not auto-landing (needs-review, unconfined, no change)
       #     never mints a token at all.
-      # Only `contents` is requested: this step pushes, and nothing else. The
-      # token is scoped to this repo, is never echoed and is never written to a
-      # file -- it reaches git through the environment only, exactly like the
-      # workflow token on the other pushing steps.
+      # Only `contents` (push the branch) and `pull-requests` (open and merge
+      # the PR) are requested. The token is scoped to this repo, is never
+      # echoed and is never written to a file -- it reaches git and gh through
+      # the environment only, exactly like the workflow token on the other
+      # pushing steps.
       - name: Mint app token
         id: app-token
         if: >-
@@ -467,8 +471,9 @@ jobs:
           app-id: "1108748"
           private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
           permission-contents: write
+          permission-pull-requests: write
 
-      - name: Commit to main
+      - name: Auto-land via bot PR
         if: >-
           steps.state_branch.outputs.exists == 'true' &&
           steps.wall.outputs.status == 'safe' &&
@@ -486,37 +491,32 @@ jobs:
           # identity" above, for THIS commit only. That step still serves the
           # review-PR path, which still pushes as the workflow token. The author
           # of a commit should be whoever actually put it on the branch, and on
-          # the default branch that is now copilotkit-bot.
+          # the default branch that is copilotkit-bot.
           git config user.name "copilotkit-bot[bot]"
           git config user.email "194550712+copilotkit-bot[bot]@users.noreply.github.com"
+          # Run id + attempt for the same reason as the review-PR branch below:
+          # a same-day re-run must not collide with the first run's branch.
+          BRANCH="bot/adoption-wall-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git checkout -b "$BRANCH"
           git add -A docs/
           # --no-verify: see the HUSKY note in the workflow env block.
           git commit --no-verify -m "docs: refresh adoption wall"
-          # Resolving ~180 repos of metadata and probing every avatar takes long
-          # enough that another commit can land on the default branch meanwhile.
-          # Without this the push is rejected non-fast-forward AFTER all the work
-          # is done, and the refreshed wall is thrown away with a "failed" Slack
-          # message that names no cause. `concurrency` only serialises this
-          # workflow against itself, not against everyone else pushing.
-          for attempt in 1 2 3; do
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              exit 0
-            fi
-            echo "Push attempt ${attempt} was rejected; re-reading ${GITHUB_REF_NAME} and rebasing onto it."
-            # The checkout is depth-1, so a plain fetch of the new tip shares no
-            # history with it; unshallow first (and tolerate a repo that is
-            # already complete).
-            git fetch --no-tags --unshallow origin "${GITHUB_REF_NAME}" 2>/dev/null \
-              || git fetch --no-tags origin "${GITHUB_REF_NAME}"
-            if ! git rebase FETCH_HEAD; then
-              git rebase --abort || true
-              echo "::error::The refreshed wall conflicts with ${GITHUB_REF_NAME}; a human has to look at it. Nothing was pushed."
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "::error::Could not push the refreshed wall to ${GITHUB_REF_NAME} after 3 attempts. Nothing was pushed."
-          exit 1
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "docs: refresh adoption wall" \
+            --body-file "${RUNNER_TEMP}/adoption-wall-summary.md" \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH"
+          # --admin merges now, through the bot's pull-request bypass, instead
+          # of waiting for the approval the ruleset requires (--auto would wait
+          # for it forever). --merge because the ruleset allows merge commits
+          # only. Another commit landing on the default branch meanwhile is
+          # fine: a merge commit does not need a fast-forward. A real conflict
+          # fails here and leaves the PR open for a human.
+          if ! gh pr merge "$BRANCH" --merge --admin; then
+            echo "::error::Opened the adoption-wall PR for ${BRANCH} but could not merge it into ${GITHUB_REF_NAME}; it is left open for a human."
+            exit 1
+          fi
 
       # Anything a human should look at — a shrinking wall, an adopter dropping
       # off, a dead logo — goes through a PR instead. A SAFE run whose diff
@@ -623,7 +623,7 @@ jobs:
             MSG="*Adoption wall needs review* — nothing changed under docs/, so there is nothing to merge; fix the source. Reason: ${WHY} ${RUN_LINK}"
           elif [ "$STATUS" = "safe" ] && [ "$CHANGED" = "true" ] && [ "$CONFINED" = "true" ]; then
             EMOJI="🧱"
-            MSG="Adoption wall refreshed and pushed to ${GITHUB_REF_NAME}. ${RUN_LINK}"
+            MSG="Adoption wall refreshed and merged into ${GITHUB_REF_NAME} via a bot PR. ${RUN_LINK}"
           elif [ "$STATUS" = "safe" ] && [ "$CHANGED" = "true" ]; then
             EMOJI="🛑"
             MSG="*Adoption wall refresh was NOT pushed* — the diff reaches outside the generated region (most likely a whole-page reformat), so it went to a review PR instead. ${RUN_LINK}"
