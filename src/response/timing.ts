@@ -141,6 +141,33 @@ export function responsesPayloadLength(response: FixtureResponse, reasoning?: st
 }
 
 /**
+ * The stream frames of one `image_generation_call` item: `output_item.added`,
+ * the `in_progress`, `generating` and `completed` events, and
+ * `output_item.done`.
+ */
+export const IMAGE_GENERATION_FRAMES = 5;
+
+/**
+ * The frames the OpenAI Responses stream sends for a fixture's `citations`
+ * and generated `files`, which carry no text for {@link responsesPayloadLength}
+ * to count: one `output_text.annotation.added` per citation on a turn with
+ * text, and {@link IMAGE_GENERATION_FRAMES} per file (its
+ * `image_generation_call` item has no deltas; these frames are its whole
+ * stream). The non-streaming wait counts each as one chunk, as the stream
+ * counts each as one frame, so the JSON wait is not undersized for them. A
+ * malformed value counts as none: this never throws, and the builder rejects
+ * it with its coded error before any byte is written.
+ */
+export function responsesOutputFrames(response: FixtureResponse): number {
+  const textTurn = isCombinedFixtureResponse(response) || isTextResponse(response);
+  if (!textTurn && !isToolCallResponse(response)) return 0;
+  const files = Array.isArray(response.files) ? response.files.length * IMAGE_GENERATION_FRAMES : 0;
+  // A tool-only turn has no text to annotate: its builder rejects citations.
+  const citations = textTurn && Array.isArray(response.citations) ? response.citations.length : 0;
+  return files + citations;
+}
+
+/**
  * The payload length for a misbehavior-applied reply. For the three fault
  * terminals on a text response (refusal, content filter, reasoning-only) it is
  * OpenAI's selection: the refusal text, nothing, or the reasoning. In every

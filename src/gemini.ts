@@ -16,10 +16,8 @@ import type {
   Fixture,
   FixtureBlock,
   HandlerDefaults,
-  RecordedTimings,
   RecordProviderKey,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
@@ -50,14 +48,16 @@ import {
   surrogateSafeChunks,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
+import { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { mapGeminiFinish } from "./response/finish.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import { render as renderGeminiUsage } from "./response/usage/codecs/gemini.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
@@ -984,50 +984,36 @@ function buildGeminiAudioStreamChunks(
 
 // ─── SSE writer for Gemini streaming ────────────────────────────────────────
 
-interface GeminiStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
+// Gemini streams data-only SSE frames (no `event:` prefix) and sends no
+// `[DONE]` trailer.
+const GEMINI_SSE = sseCodec<GeminiResponseChunk>({ done: false });
 
-async function writeGeminiSSEStream(
-  res: http.ServerResponse,
-  chunks: GeminiResponseChunk[],
-  optionsOrLatency?: number | GeminiStreamOptions,
-): Promise<boolean> {
-  const opts: GeminiStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
+const SILENT_LOGGER = new Logger("silent");
 
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    // Gemini uses data-only SSE (no event: prefix, no [DONE])
-    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
+/**
+ * The reasoning a misbehavior reply's non-streaming wait is sized with: the
+ * plan response's reasoning through the same model and strict gate the
+ * builders apply. The gate runs with a silent logger, so the builder's own
+ * warning stays the only one. A reasoning-only plan carries its reasoning on
+ * the plan, and `misbehaviorPayloadLength` reads it there.
+ */
+function misbehaviorPayloadReasoning(
+  plan: MisbehaviorPlan,
+  model: string | undefined,
+  strict: boolean,
+): string | undefined {
+  const response = plan.response;
+  if (
+    plan.reasoning !== undefined ||
+    !(
+      isCombinedFixtureResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  ) {
+    return undefined;
   }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
+  return resolveReasoningForModel(response.reasoning, model, strict, SILENT_LOGGER);
 }
 
 /** Prepare native fault output once; the journal describes these exact parts. */
@@ -1341,15 +1327,8 @@ export async function handleGemini(
     }
 
     if (decisions.upstream && defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        providerKey,
-        path,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, providerKey, path, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1358,7 +1337,12 @@ export async function handleGemini(
           path,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1425,6 +1409,20 @@ export async function handleGemini(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   if (misbehavior.kind === "applied") {
     // Journal first, as the success branches do, so a fixture error thrown
@@ -1437,34 +1435,36 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const strictReasoning = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const prepared = prepareGeminiMisbehavior(
       misbehavior,
       completionReq,
       streaming,
       chunkSize,
       logger,
-      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      strictReasoning,
     );
     recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
     if (!streaming) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(prepared.chunks[0]));
+      const preparedBody = prepared.chunks[0];
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => preparedBody,
+        jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehaviorPayloadReasoning(misbehavior, completionReq.model, strictReasoning),
+          ),
+          !!misbehavior.duplicateId,
+        ),
+      );
     } else {
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, prepared.chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        entry.response.interrupted = true;
-        entry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, entry, fixture, GEMINI_SSE, prepared.chunks, streamTiming);
     }
     return;
   }
@@ -1523,26 +1523,16 @@ export async function handleGemini(
       ? requireServedFunctionToolCalls(response, wire)
       : [];
     if (!streaming) {
-      const body = buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildGeminiAudioStreamChunks(response, audioToolCalls, logger, effReasoning);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
@@ -1578,16 +1568,21 @@ export async function handleGemini(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
-      const body = buildGeminiContentWithToolCallsResponse(
-        response.content ?? "",
-        functionToolCalls,
-        logger,
-        effReasoning,
-        overrides,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildGeminiContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            logger,
+            effReasoning,
+            overrides,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildGeminiContentWithToolCallsStreamChunks(
         response.content ?? "",
@@ -1598,21 +1593,7 @@ export async function handleGemini(
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
@@ -1647,9 +1628,13 @@ export async function handleGemini(
       testId,
     });
     if (!streaming) {
-      const body = buildGeminiTextResponse(response.content, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiTextResponse(response.content, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildGeminiTextStreamChunks(
         response.content,
@@ -1657,21 +1642,7 @@ export async function handleGemini(
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
@@ -1707,9 +1678,13 @@ export async function handleGemini(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
-      const body = buildGeminiToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiToolCallResponse(functionToolCalls, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildGeminiToolCallStreamChunks(
         functionToolCalls,
@@ -1718,21 +1693,7 @@ export async function handleGemini(
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }

@@ -13,11 +13,19 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { calculateDelay, delay, writeErrorResponse } from "./sse-writer.js";
+import { sseCodec, writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { deliverStream } from "./response/deliver.js";
+import type { FrameCodec } from "./response/frame-loop.js";
+
+/** One `transcript.text.delta` frame of a streamed transcription. */
+interface TranscriptDelta {
+  type: "transcript.text.delta";
+  delta: string;
+}
 
 /**
  * Extract the multipart boundary string from a Content-Type header.
@@ -191,15 +199,17 @@ export async function handleTranscription(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        syntheticReq,
-        "openai",
-        req.url ?? defaultPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          syntheticReq,
+          "openai",
+          req.url ?? defaultPath,
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -208,7 +218,12 @@ export async function handleTranscription(
           path,
           headers: flattenHeaders(req.headers),
           body: syntheticReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -292,46 +307,25 @@ export async function handleTranscription(
       ...(t.languages !== undefined ? { languages: t.languages } : {}),
       ...(t.usage !== undefined ? { usage: t.usage } : {}),
     };
-    const latency = fixture.latency ?? defaults.latency;
     const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
-    const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    let chunkIndex = 0;
-    const interruption = createInterruptionSignal(fixture);
+    const frames: TranscriptDelta[] = [];
     for (let index = 0; index < t.text.length; index += chunkSize) {
-      const chunkDelay = calculateDelay(
-        chunkIndex,
-        fixture.streamingProfile,
-        latency,
-        fixture.recordedTimings,
-        replaySpeed,
-      );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) break;
-      res.write(
-        `data: ${JSON.stringify({ type: "transcript.text.delta", delta: t.text.slice(index, index + chunkSize) })}\n\n`,
-      );
-      interruption?.tick();
-      chunkIndex++;
+      frames.push({ type: "transcript.text.delta", delta: t.text.slice(index, index + chunkSize) });
     }
-    if (interruption?.signal.aborted) {
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption.reason();
-      interruption.cleanup();
-      res.destroy();
-      return;
-    }
-    res.write(`data: ${JSON.stringify(done)}\n\n`);
     // The live `gpt-transcribe&stream=true` stream ends with the `[DONE]`
     // sentinel after `transcript.text.done`. Omitting it leaves clients that
     // loop until the sentinel waiting on a stream that never terminates.
-    res.write("data: [DONE]\n\n");
-    res.end();
-    interruption?.cleanup();
+    const codec: FrameCodec<TranscriptDelta> = {
+      ...sseCodec<TranscriptDelta>({ done: false }),
+      writeHeadImmediately: true,
+      trailer: () => [`data: ${JSON.stringify(done)}\n\n`, "data: [DONE]\n\n"],
+    };
+    await deliverStream(res, journalEntry, fixture, codec, frames, {
+      latency: fixture.latency ?? defaults.latency,
+      streamingProfile: fixture.streamingProfile,
+      recordedTimings: fixture.recordedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+    });
     return;
   }
 

@@ -17,11 +17,11 @@ import type {
   Fixture,
   FixtureBlock,
   FixtureGeneratedFile,
+  FixtureResponse,
   FixtureToolCall,
   HandlerDefaults,
   ResponseOverrides,
   ResponsesFixtureBlock,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
@@ -60,9 +60,16 @@ import {
 import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
 import { matchFixtureDiagnostic, recordMatchOptions, setResponsesOfferedTools } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
-import type { RecordedTimings } from "./types.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import {
+  extendRecordedTimings,
+  misbehaviorPayloadLength,
+  nonStreamingTimingEnabled,
+  responsesOutputFrames,
+  responsesPayloadLength,
+} from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
@@ -1873,53 +1880,6 @@ function buildContentWithToolCallsResponse(
   return buildResponseEnvelope(model, output, overrides);
 }
 
-// ─── SSE writer for Responses API ───────────────────────────────────────────
-
-interface ResponsesStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeResponsesSSEStream(
-  res: http.ServerResponse,
-  events: ResponsesSSEEvent[],
-  optionsOrLatency?: number | ResponsesStreamOptions,
-): Promise<boolean> {
-  const opts: ResponsesStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
-}
-
 // ─── Request handler ────────────────────────────────────────────────────────
 
 export async function handleResponses(
@@ -2125,15 +2085,17 @@ export async function handleResponses(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "openai",
-        req.url ?? "/v1/responses",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "openai",
+          req.url ?? "/v1/responses",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -2142,7 +2104,12 @@ export async function handleResponses(
           path: req.url ?? "/v1/responses",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -2213,6 +2180,28 @@ export async function handleResponses(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const fixtureTimings = fixture.recordedTimings;
   const effectiveReplaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixtureTimings,
+    replaySpeed: effectiveReplaySpeed,
+  };
+  // The payload length only sizes the opt-in wait. With timing off it is not
+  // read, so it is not computed: a malformed fixture then fails in its builder,
+  // with the same error as before.
+  const timedJson = nonStreamingTimingEnabled(fixture, "other");
+  // The JSON reply's payload: the served text and calls, plus one chunk per
+  // stream frame its citations and generated files add (responsesOutputFrames).
+  const jsonPayloadLength = (r: FixtureResponse, reasoning?: string): number =>
+    responsesPayloadLength(r, reasoning) + responsesOutputFrames(r) * chunkSize;
+  const jsonOpts = (payloadLength: () => number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength: timedJson ? payloadLength() : 0,
+    chunkSize,
+    recordedTimings: fixtureTimings,
+    duplicateId,
+    replaySpeed: effectiveReplaySpeed,
+  });
 
   if (misbehavior.kind === "applied") {
     // Journal first, as the success branches do, so a fixture error thrown
@@ -2226,42 +2215,47 @@ export async function handleResponses(
       response: { status: 200, fixture },
     });
     const prepared = prepareResponsesMisbehavior(misbehavior);
-    const output = buildResponsesMisbehavior(
-      prepared,
-      completionReq,
-      chunkSize,
-      emitEncryptedReasoning,
-    );
-    recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    const build = () =>
+      buildResponsesMisbehavior(prepared, completionReq, chunkSize, emitEncryptedReasoning);
+    const record = () =>
+      recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    // A timed JSON reply is built after the wait (inside deliverJson, still
+    // before writeHead), so `created_at` is the write time, and its outcome is
+    // recorded there, once the build succeeds. Every other reply is built
+    // here, before the outcome is recorded.
+    const output = timedJson && responsesReq.stream !== true ? undefined : build();
+    if (output) record();
     if (responsesReq.stream !== true) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(output.response));
+      // The reasoning buildResponsesMisbehavior serves: the fault's, else the fixture's.
+      const servedReasoning =
+        prepared.reasoning ??
+        ("reasoning" in prepared.response ? prepared.response.reasoning : undefined);
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => {
+          if (output) return output.response;
+          const built = build();
+          record();
+          return built.response;
+        },
+        jsonOpts(
+          () => misbehaviorPayloadLength(prepared, servedReasoning, jsonPayloadLength),
+          !!prepared.duplicateId,
+        ),
+      );
     } else {
-      const appliedTimings =
-        prepared.duplicateId && fixtureTimings
-          ? { ...fixtureTimings, interChunkDelaysMs: [...fixtureTimings.interChunkDelaysMs] }
-          : fixtureTimings;
-      if (prepared.duplicateId && appliedTimings) {
-        const lastGap = appliedTimings.interChunkDelaysMs.at(-1) ?? 0;
-        while (appliedTimings.interChunkDelaysMs.length < output.events.length - 1) {
-          appliedTimings.interChunkDelaysMs.push(lastGap);
-        }
-      }
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, output.events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: appliedTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
+      // Always built above for a stream.
+      const { events } = output ?? build();
+      await deliverStream(res, entry, fixture, typedSseCodec(), events, {
+        ...streamTiming,
+        recordedTimings: extendRecordedTimings(
+          fixtureTimings,
+          events.length,
+          !!prepared.duplicateId,
+        ),
       });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        entry.response.interrupted = true;
-        entry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
     }
     return;
   }
@@ -2321,19 +2315,24 @@ export async function handleResponses(
     if (!ordered) assertCustomToolCalls(response);
     const toolCalls = servedToolCalls(response);
     if (responsesReq.stream !== true) {
-      const body = buildContentWithToolCallsResponse(
-        response.content ?? "",
-        toolCalls,
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        ordered,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildContentWithToolCallsResponse(
+            response.content ?? "",
+            toolCalls,
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            ordered,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = contentWithToolCallsStreamEvents(
         response.content ?? "",
@@ -2347,21 +2346,7 @@ export async function handleResponses(
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -2394,17 +2379,22 @@ export async function handleResponses(
       testId,
     });
     if (responsesReq.stream !== true) {
-      const body = buildTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildTextResponse(
+            response.content,
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildTextStreamEvents(
         response.content,
@@ -2416,21 +2406,7 @@ export async function handleResponses(
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -2464,17 +2440,22 @@ export async function handleResponses(
     });
     assertCustomToolCalls(response);
     if (responsesReq.stream !== true) {
-      const body = buildToolCallResponse(
-        servedToolCalls(response),
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildToolCallResponse(
+            servedToolCalls(response),
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = toolCallStreamEvents(
         servedToolCalls(response),
@@ -2486,21 +2467,7 @@ export async function handleResponses(
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }

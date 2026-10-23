@@ -54,8 +54,14 @@ import {
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { writeNDJSONStream } from "./ndjson-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { ndjsonCodec } from "./ndjson-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import {
+  misbehaviorPayloadLength,
+  nonStreamingTimingEnabled,
+  servedPayloadLength,
+} from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
@@ -540,7 +546,8 @@ function prepareOllamaMisbehavior(
       ? [...buildOllamaChatTextChunks(priorContent, model, chunkSize).slice(0, -1), { error }]
       : [{ error }];
     return {
-      chunks,
+      build: () => chunks,
+      reasoning: undefined,
       status: stream ? 200 : 500,
       summary: { ...plan.summary, servedToolCalls: [] },
     };
@@ -553,48 +560,56 @@ function prepareOllamaMisbehavior(
     if (parsed.kind === "verbatim") throw new InvalidToolArgumentsError(call);
     return { name: call.name, arguments: parsed.text };
   });
-  let chunks: object[];
-  let reasoning = "";
-  if (plan.summary.fault === "reasoning-only") {
-    reasoning = plan.reasoning ?? "";
-    const createdAt = new Date().toISOString();
-    const base = { model, created_at: createdAt };
-    if (stream) {
-      chunks = [];
-      for (let i = 0; i < reasoning.length; i += chunkSize) {
+  const reasoning =
+    plan.summary.fault === "reasoning-only"
+      ? (plan.reasoning ?? "")
+      : (resolveReasoningForModel(
+          "reasoning" in response ? response.reasoning : undefined,
+          model,
+          effectiveStrict,
+          logger,
+        ) ?? "");
+  const completion =
+    content + reasoning + servedToolCalls.map((call) => call.name + call.arguments).join("");
+  // Built on demand, so a timed non-streaming reply is built after its wait
+  // and its `created_at` is the write time.
+  const build = (): object[] => {
+    let chunks: object[];
+    if (plan.summary.fault === "reasoning-only") {
+      const createdAt = new Date().toISOString();
+      const base = { model, created_at: createdAt };
+      if (stream) {
+        chunks = [];
+        for (let i = 0; i < reasoning.length; i += chunkSize) {
+          chunks.push({
+            ...base,
+            message: {
+              role: "assistant",
+              content: "",
+              thinking: reasoning.slice(i, i + chunkSize),
+            },
+            done: false,
+          });
+        }
         chunks.push({
           ...base,
-          message: { role: "assistant", content: "", thinking: reasoning.slice(i, i + chunkSize) },
-          done: false,
-        });
-      }
-      chunks.push({
-        ...base,
-        message: { role: "assistant", content: "" },
-        done: true,
-        ...DURATION_FIELDS,
-        done_reason: "length",
-      });
-    } else {
-      chunks = [
-        {
-          ...base,
-          message: { role: "assistant", content: "", thinking: reasoning },
+          message: { role: "assistant", content: "" },
           done: true,
           ...DURATION_FIELDS,
           done_reason: "length",
-        },
-      ];
-    }
-  } else {
-    reasoning =
-      resolveReasoningForModel(
-        "reasoning" in response ? response.reasoning : undefined,
-        model,
-        effectiveStrict,
-        logger,
-      ) ?? "";
-    if (combined) {
+        });
+      } else {
+        chunks = [
+          {
+            ...base,
+            message: { role: "assistant", content: "", thinking: reasoning },
+            done: true,
+            ...DURATION_FIELDS,
+            done_reason: "length",
+          },
+        ];
+      }
+    } else if (combined) {
       chunks = stream
         ? buildOllamaChatContentWithToolCallsChunks(
             content,
@@ -622,15 +637,14 @@ function prepareOllamaMisbehavior(
         ? buildOllamaChatTextChunks(content, model, chunkSize, reasoning)
         : [buildOllamaChatTextResponse(content, model, reasoning)];
     }
-  }
-  const completion =
-    content + reasoning + servedToolCalls.map((call) => call.name + call.arguments).join("");
-  const terminal = chunks.length - 1;
-  chunks[terminal] = {
-    ...chunks[terminal],
-    ...renderUsage({ kind: "applied-chat-estimate", messages: request.messages, completion }),
+    const terminal = chunks.length - 1;
+    chunks[terminal] = {
+      ...chunks[terminal],
+      ...renderUsage({ kind: "applied-chat-estimate", messages: request.messages, completion }),
+    };
+    return chunks;
   };
-  return { chunks, status: 200, summary: { ...plan.summary, servedToolCalls } };
+  return { build, reasoning, status: 200, summary: { ...plan.summary, servedToolCalls } };
 }
 
 // ─── Response builders: /api/generate ────────────────────────────────────────
@@ -862,15 +876,8 @@ export async function handleOllama(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "ollama",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "ollama", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -879,7 +886,12 @@ export async function handleOllama(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -940,6 +952,21 @@ export async function handleOllama(
   }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   // Ollama defaults to streaming when stream is absent or true
   const streaming = ollamaReq.stream !== false;
@@ -953,6 +980,12 @@ export async function handleOllama(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
+    // A timed non-streaming reply is built after the wait (inside deliverJson,
+    // still before writeHead), so `created_at` is the write time. Every other
+    // reply is built here, before journaling, as before.
+    const timedBody =
+      !streaming && prepared.status === 200 && nonStreamingTimingEnabled(fixture, "other");
+    const chunks = timedBody ? undefined : prepared.build();
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -961,25 +994,24 @@ export async function handleOllama(
       response: { status: prepared.status, fixture },
     });
     recordMisbehaviorOutcome({ entry: journalEntry, summary: prepared.summary, defaults, testId });
-    if (!streaming) {
+    if (!streaming && prepared.status !== 200) {
+      // A modeled error reply (plan n1): written as before, never delayed.
       res.writeHead(prepared.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(prepared.chunks[0]));
-    } else {
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, prepared.chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
+      res.end(JSON.stringify((chunks ?? prepared.build())[0]));
+    } else if (!streaming) {
+      await deliverJson(res, journalEntry, fixture, () => (chunks ?? prepared.build())[0], {
+        ...jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+          ),
+          !!misbehavior.duplicateId,
+        ),
+        status: prepared.status,
       });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+    } else {
+      const frames = chunks ?? prepared.build();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), frames, streamTiming);
     }
     return;
   }
@@ -1037,15 +1069,20 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatContentWithToolCallsResponse(
-        response.content ?? "",
-        functionToolCalls,
-        completionReq.model,
-        effReasoning,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildOllamaChatContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            completionReq.model,
+            effReasoning,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatContentWithToolCallsChunks(
         response.content ?? "",
@@ -1055,21 +1092,7 @@ export async function handleOllama(
         effReasoning,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
@@ -1104,9 +1127,13 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatTextResponse(response.content, completionReq.model, effReasoning);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaChatTextResponse(response.content, completionReq.model, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildOllamaChatTextChunks(
         response.content,
@@ -1114,21 +1141,7 @@ export async function handleOllama(
         chunkSize,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
@@ -1164,13 +1177,13 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatToolCallResponse(
-        functionToolCalls,
-        completionReq.model,
-        effReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaChatToolCallResponse(functionToolCalls, completionReq.model, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatToolCallChunks(
         functionToolCalls,
@@ -1178,21 +1191,7 @@ export async function handleOllama(
         chunkSize,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
@@ -1370,15 +1369,8 @@ export async function handleOllamaGenerate(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "ollama",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "ollama", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1387,7 +1379,12 @@ export async function handleOllamaGenerate(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1449,6 +1446,21 @@ export async function handleOllamaGenerate(
   }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   // Ollama defaults to streaming when stream is absent or true
   const streaming = generateReq.stream !== false;
@@ -1502,13 +1514,15 @@ export async function handleOllamaGenerate(
       defaults.logger,
     );
     if (!streaming) {
-      const body = buildOllamaGenerateTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaGenerateTextResponse(response.content, completionReq.model, effReasoning),
+        // /api/generate serves only the text content and never reads blocks,
+        // so the wait is sized from that text, not from the fixture's blocks.
+        jsonOpts(servedPayloadLength({ content: response.content }, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaGenerateTextChunks(
         response.content,
@@ -1516,21 +1530,7 @@ export async function handleOllamaGenerate(
         chunkSize,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }

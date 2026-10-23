@@ -54,8 +54,10 @@ import {
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { writeEventStream } from "./aws-event-stream.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { encodeEventStreamMessage, eventStreamCodec } from "./aws-event-stream.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
@@ -547,15 +549,8 @@ export async function handleBedrock(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -564,7 +559,12 @@ export async function handleBedrock(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -630,12 +630,21 @@ export async function handleBedrock(
     writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
 
   if (misbehavior.kind === "applied") {
     const prepared = prepareClaudeMisbehavior(misbehavior, {
       request: completionReq,
       stream: false,
-      chunkSize: Math.max(1, fixture.chunkSize ?? defaults.chunkSize),
+      chunkSize,
       logger,
       strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       citations: false,
@@ -649,8 +658,20 @@ export async function handleBedrock(
       response: { status: 200, fixture },
     });
     recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(prepared.body));
+    const preparedBody = prepared.body;
+    await deliverJson(
+      res,
+      entry,
+      fixture,
+      () => preparedBody,
+      jsonOpts(
+        misbehaviorPayloadLength(
+          misbehavior,
+          misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+        ),
+        !!misbehavior.duplicateId,
+      ),
+    );
     return;
   }
 
@@ -684,7 +705,7 @@ export async function handleBedrock(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -692,46 +713,52 @@ export async function handleBedrock(
       response: { status: 200, fixture },
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
-    if (response.blocks && response.blocks.length > 0) {
+    const blocks = response.blocks;
+    if (blocks && blocks.length > 0) {
       // NEW PATH: honor the fixture's ordered `blocks` in the positionally
       // observable Anthropic-style content array (tool-first expressible).
-      const blocksBody = buildBedrockBlocksResponse(
-        response.blocks,
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildBedrockBlocksResponse(blocks, completionReq.model, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(blocksBody));
       return;
     }
-    const textBody = buildBedrockTextResponse(
-      response.content ?? "",
-      completionReq.model,
-      effReasoning,
-      overrides,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () => {
+        const textBody = buildBedrockTextResponse(
+          response.content ?? "",
+          completionReq.model,
+          effReasoning,
+          overrides,
+        );
+        const toolBody = buildBedrockToolCallResponse(
+          functionToolCalls,
+          completionReq.model,
+          logger,
+          // Reasoning is rendered by the text response in this merged path; pass
+          // undefined here to avoid emitting a duplicate thinking block.
+          undefined,
+          overrides,
+        );
+        // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
+        return {
+          ...(textBody as Record<string, unknown>),
+          content: [
+            ...((textBody as Record<string, unknown>).content as object[]),
+            ...((toolBody as Record<string, unknown>).content as object[]),
+          ],
+          stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
+        };
+      },
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    const toolBody = buildBedrockToolCallResponse(
-      functionToolCalls,
-      completionReq.model,
-      logger,
-      // Reasoning is rendered by the text response in this merged path; pass
-      // undefined here to avoid emitting a duplicate thinking block.
-      undefined,
-      overrides,
-    );
-    // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
-    const merged = {
-      ...(textBody as Record<string, unknown>),
-      content: [
-        ...((textBody as Record<string, unknown>).content as object[]),
-        ...((toolBody as Record<string, unknown>).content as object[]),
-      ],
-      stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
-    };
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(merged));
     return;
   }
 
@@ -747,21 +774,21 @@ export async function handleBedrock(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockTextResponse(
-      response.content,
-      completionReq.model,
-      effReasoning,
-      overrides,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () =>
+        buildBedrockTextResponse(response.content, completionReq.model, effReasoning, overrides),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
     return;
   }
 
@@ -777,7 +804,7 @@ export async function handleBedrock(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -785,15 +812,20 @@ export async function handleBedrock(
       response: { status: 200, fixture },
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
-    const body = buildBedrockToolCallResponse(
-      functionToolCalls,
-      completionReq.model,
-      logger,
-      effReasoning,
-      overrides,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () =>
+        buildBedrockToolCallResponse(
+          functionToolCalls,
+          completionReq.model,
+          logger,
+          effReasoning,
+          overrides,
+        ),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
     return;
   }
 
@@ -819,20 +851,11 @@ export async function handleBedrock(
 
 const BEDROCK_INVOKE_STREAM_EVENT_TYPE = "chunk";
 /** Serialize Claude events as InvokeModel PayloadPart, leaving generic AWS framing unchanged. */
-function writeBedrockInvokeStream(
-  res: http.ServerResponse,
-  events: Parameters<typeof writeEventStream>[1],
-  options: Parameters<typeof writeEventStream>[2],
-): Promise<boolean> {
-  return writeEventStream(
-    res,
-    events.map((event) => ({
-      eventType: event.eventType,
-      payload: { bytes: Buffer.from(JSON.stringify(event.payload), "utf8").toString("base64") },
-    })),
-    options,
-  );
-}
+const bedrockInvokeCodec = eventStreamCodec<{ eventType: string; payload: object }>((event) =>
+  encodeEventStreamMessage(event.eventType, {
+    bytes: Buffer.from(JSON.stringify(event.payload), "utf8").toString("base64"),
+  }),
+);
 
 function buildBedrockInvokeMessageStart(
   model: string,
@@ -1456,15 +1479,8 @@ export async function handleBedrockStream(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1473,7 +1489,12 @@ export async function handleBedrockStream(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1539,8 +1560,13 @@ export async function handleBedrockStream(
     writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
-  const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const streamTiming = {
+    latency: fixture.latency ?? defaults.latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  };
 
   if (misbehavior.kind === "applied") {
     const prepared = prepareClaudeMisbehavior(misbehavior, {
@@ -1564,24 +1590,7 @@ export async function handleBedrockStream(
       eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
       payload: event,
     }));
-    const interruption = createInterruptionSignal(fixture);
-    try {
-      const completed = await writeBedrockInvokeStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        entry.response.interrupted = true;
-        entry.response.interruptReason = interruption?.reason();
-      }
-    } finally {
-      interruption?.cleanup();
-    }
+    await deliverStream(res, entry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
@@ -1633,21 +1642,7 @@ export async function handleBedrockStream(
       overrides,
       response.blocks,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeBedrockInvokeStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
@@ -1677,21 +1672,7 @@ export async function handleBedrockStream(
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeBedrockInvokeStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
@@ -1723,21 +1704,7 @@ export async function handleBedrockStream(
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeBedrockInvokeStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 

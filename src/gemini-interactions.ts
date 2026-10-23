@@ -43,8 +43,11 @@ import {
   resolveOpenAIChatMisbehaviorUsage,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
+import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
@@ -768,6 +771,15 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
 
 // ─── SSE writer for Interactions streaming ────────────────────────────────
 
+// Data-only SSE (no event: prefix, no [DONE]). Only step deltas count for the
+// chunk index and truncateAfterChunks: framing events (interaction.created,
+// step.start, step.stop, interaction.completed) pay the delay at the current
+// index but do not consume chunk budget or trigger the chunk-sent callback.
+const interactionsCodec: FrameCodec<InteractionsSSEEvent> = {
+  ...sseCodec<InteractionsSSEEvent>({ done: false }),
+  counts: (event) => event.event_type === "step.delta",
+};
+
 interface InteractionsStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
@@ -784,39 +796,21 @@ export async function writeGeminiInteractionsSSEStream(
 ): Promise<boolean> {
   const opts: InteractionsStreamOptions =
     typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    // Data-only SSE (no event: prefix, no [DONE])
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-    // Only count step deltas for truncateAfterChunks — framing events
-    // (interaction.created, step.start, step.stop, interaction.completed)
-    // should not consume chunk budget or trigger the chunk-sent callback.
-    if (event.event_type === "step.delta") {
-      onChunkSent?.();
-      chunkIndex++;
-    }
-    if (signal?.aborted) return false;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
+  // No lifecycle: a caller gets close-awareness only through its own `signal`.
+  // With no events an aborted signal does not stop the writer (it still ends
+  // the response and returns true), so the loop gets no signal then.
+  return runFrameLoop(
+    httpSink(res),
+    events,
+    interactionsCodec,
+    {
+      latency: opts.latency,
+      streamingProfile: opts.streamingProfile,
+      recordedTimings: opts.recordedTimings,
+      replaySpeed: opts.replaySpeed,
+    },
+    { signal: events.length > 0 ? opts.signal : undefined, onChunkSent: opts.onChunkSent },
+  );
 }
 
 // ─── Request handler ──────────────────────────────────────────────────────
@@ -1019,15 +1013,17 @@ export async function handleGeminiInteractions(
       return;
     }
     if (decisions.upstream && defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "gemini-interactions",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "gemini-interactions",
+          urlPath,
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1040,6 +1036,7 @@ export async function handleGeminiInteractions(
             status: res.statusCode ?? 200,
             fixture: null,
             source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
           },
         });
         return;
@@ -1112,6 +1109,29 @@ export async function handleGeminiInteractions(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  // Non-streaming replies size their (opt-in) wait from the served payload.
+  // An applied plan is merged into `response`, so every JSON site below is a
+  // misbehavior path when one applied. Interactions serves no fixture
+  // reasoning, so there is no effective reasoning to count.
+  const applied = misbehavior.kind === "applied" ? misbehavior : undefined;
+  const jsonOpts = () => ({
+    surface: "other" as const,
+    payloadLength: applied
+      ? misbehaviorPayloadLength(applied, undefined)
+      : servedPayloadLength(response),
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!applied?.duplicateId,
+    replaySpeed,
+  });
+  const markIncomplete = <T extends object>(body: T): T | (T & { status: "incomplete" }) =>
+    applied?.summary.fault === "stop-length-mid-tool" ? { ...body, status: "incomplete" } : body;
 
   // Error response
   if (isErrorResponse(response)) {
@@ -1174,9 +1194,12 @@ export async function handleGeminiInteractions(
         isCombinedFixtureResponse(response)
           ? extractOverrides(response)
           : undefined;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
+      const reasoning = misbehavior.reasoning ?? "";
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => ({
           id: interactionId,
           model: overrides?.model ?? model,
           status: "incomplete",
@@ -1184,11 +1207,12 @@ export async function handleGeminiInteractions(
             {
               type: "thought",
               signature: "",
-              summary: [{ type: "text", text: misbehavior.reasoning ?? "" }],
+              summary: [{ type: "text", text: reasoning }],
             },
           ],
           usage,
         }),
+        jsonOpts(),
       );
       return;
     }
@@ -1219,21 +1243,7 @@ export async function handleGeminiInteractions(
         event_id: nextEventId(),
       },
     ];
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeGeminiInteractionsSSEStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, interactionsCodec, events, streamTiming);
     return;
   }
 
@@ -1264,22 +1274,25 @@ export async function handleGeminiInteractions(
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
     const interactionId = nextInteractionId();
     if (!streaming) {
-      const body = buildInteractionsContentWithToolCallsResponse(
-        response.content ?? "",
-        functionToolCalls,
-        model,
-        interactionId,
-        logger,
-        overrides,
-        response.blocks,
-      );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify(
-          misbehavior.kind === "applied" && misbehavior.summary.fault === "stop-length-mid-tool"
-            ? { ...body, status: "incomplete" }
-            : body,
-        ),
+      const content = response.content ?? "";
+      const blocks = response.blocks;
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(
+            buildInteractionsContentWithToolCallsResponse(
+              content,
+              functionToolCalls,
+              model,
+              interactionId,
+              logger,
+              overrides,
+              blocks,
+            ),
+          ),
+        jsonOpts(),
       );
     } else {
       const events = buildInteractionsContentWithToolCallsSSEEvents(
@@ -1291,25 +1304,14 @@ export async function handleGeminiInteractions(
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(
+      await deliverStream(
         res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
         finalizeInteractionsMisbehavior(events, misbehavior),
-        {
-          latency,
-          streamingProfile: fixture.streamingProfile,
-          recordedTimings: fixture.recordedTimings,
-          replaySpeed,
-          signal: interruption?.signal,
-          onChunkSent: interruption?.tick,
-        },
+        streamTiming,
       );
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
     }
     return;
   }
@@ -1340,14 +1342,14 @@ export async function handleGeminiInteractions(
     });
     const interactionId = nextInteractionId();
     if (!streaming) {
-      const body = buildInteractionsTextResponse(response.content, model, interactionId, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify(
-          misbehavior.kind === "applied" && misbehavior.summary.fault === "stop-length-mid-tool"
-            ? { ...body, status: "incomplete" }
-            : body,
-        ),
+      const content = response.content;
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(buildInteractionsTextResponse(content, model, interactionId, overrides)),
+        jsonOpts(),
       );
     } else {
       const events = buildInteractionsTextSSEEvents(
@@ -1356,25 +1358,14 @@ export async function handleGeminiInteractions(
         chunkSize,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(
+      await deliverStream(
         res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
         finalizeInteractionsMisbehavior(events, misbehavior),
-        {
-          latency,
-          streamingProfile: fixture.streamingProfile,
-          recordedTimings: fixture.recordedTimings,
-          replaySpeed,
-          signal: interruption?.signal,
-          onChunkSent: interruption?.tick,
-        },
+        streamTiming,
       );
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
     }
     return;
   }
@@ -1406,20 +1397,21 @@ export async function handleGeminiInteractions(
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
     const interactionId = nextInteractionId();
     if (!streaming) {
-      const body = buildInteractionsToolCallResponse(
-        functionToolCalls,
-        model,
-        interactionId,
-        logger,
-        overrides,
-      );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify(
-          misbehavior.kind === "applied" && misbehavior.summary.fault === "stop-length-mid-tool"
-            ? { ...body, status: "incomplete" }
-            : body,
-        ),
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(
+            buildInteractionsToolCallResponse(
+              functionToolCalls,
+              model,
+              interactionId,
+              logger,
+              overrides,
+            ),
+          ),
+        jsonOpts(),
       );
     } else {
       const events = buildInteractionsToolCallSSEEvents(
@@ -1428,25 +1420,14 @@ export async function handleGeminiInteractions(
         logger,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(
+      await deliverStream(
         res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
         finalizeInteractionsMisbehavior(events, misbehavior),
-        {
-          latency,
-          streamingProfile: fixture.streamingProfile,
-          recordedTimings: fixture.recordedTimings,
-          replaySpeed,
-          signal: interruption?.signal,
-          onChunkSent: interruption?.tick,
-        },
+        streamTiming,
       );
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
     }
     return;
   }

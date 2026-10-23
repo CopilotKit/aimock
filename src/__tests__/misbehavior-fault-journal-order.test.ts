@@ -10,10 +10,31 @@
  * /metrics.
  */
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { InvalidFixtureOutputError } from "../helpers.js";
 import type { ServerInstance } from "../server.js";
 import type { Fixture, FixtureResponse, MisbehaviorFault, TextResponse, WireId } from "../types.js";
 import { createServer } from "./helpers/misbehavior-enabled.js";
+
+// The planner pre-check rejects every malformed `citations` and `files` value
+// before a fault is chosen, so no fixture alone can make the Responses
+// misbehavior builder throw. This switch makes the builder's usage renderer
+// throw the same coded error the fixture checks throw. It is off by default,
+// so every other test sees the real renderer.
+const responsesBuild = vi.hoisted(() => ({ fail: false, calls: 0 }));
+vi.mock("../response/usage/codecs/responses.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../response/usage/codecs/responses.js")>();
+  return {
+    ...actual,
+    render: (...args: Parameters<typeof actual.render>) => {
+      responsesBuild.calls++;
+      if (responsesBuild.fail) {
+        throw new InvalidFixtureOutputError("aimock_invalid_fixture_citation", "forced by test");
+      }
+      return actual.render(...args);
+    },
+  };
+});
 
 const png = { mimeType: "image/png", data: "iVBORw0KGgo=" };
 const badCitations = [{ url: "https://example.com", startIndex: 0, endIndex: 999 }];
@@ -426,6 +447,51 @@ describe("a non-stream Chat reply records its fault before the timing wait", () 
       expect(entries[0].response.interruptReason).toBe("client aborted");
       // The fault was prepared for this request; the entry still says which.
       expect(entries[0].response.misbehavior?.applied).toBe(true);
+    });
+  }
+});
+
+describe("a non-stream Responses reply that throws while it is built records no applied fault", () => {
+  // The fixture passes the planner pre-check; the builder then throws. The
+  // request was not served with the fault, so the journal and the counter must
+  // not record it as applied, whether the reply is built before writeHead
+  // (untimed) or after the timing wait (timed).
+  const route = responsesCite[0];
+  for (const timed of [false, true]) {
+    it(`${route.name}, ${timed ? "nonStreamingTimingAllProviders" : "untimed"}`, async () => {
+      const fixture: Fixture = {
+        match: {},
+        response: { content: text, toolCalls },
+        misbehavior: { faults: [{ fault: "tool-unknown-name", rate: 1 }] },
+        ...(timed
+          ? { streamingProfile: { ttft: 50, tps: 1_000_000 }, nonStreamingTimingAllProviders: true }
+          : {}),
+      };
+      instance = await createServer([fixture], { metrics: true });
+      responsesBuild.fail = true;
+      responsesBuild.calls = 0;
+      let raw: string;
+      let status: number;
+      try {
+        const res = await post(`${instance.url}${route.path}`, route.body);
+        raw = await res.text();
+        status = res.status;
+      } finally {
+        responsesBuild.fail = false;
+      }
+      // The forced throw came from the builder, not from anything before it.
+      expect(responsesBuild.calls).toBe(1);
+      expect(status).toBe(500);
+      expect(raw).toContain(CITE);
+
+      const entries = instance.journal.getAll();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].response.status).toBe(500);
+      expect(entries[0].response.fixture).toBe(fixture);
+      expect(entries[0].response.misbehavior).toBeUndefined();
+
+      const metrics = await (await fetch(`${instance.url}/metrics`)).text();
+      expect(misbehaviorLines(metrics)).toEqual([]);
     });
   }
 });

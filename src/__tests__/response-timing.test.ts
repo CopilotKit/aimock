@@ -4,6 +4,7 @@ import {
   misbehaviorPayloadLength,
   nonStreamingDelayMs,
   nonStreamingTimingEnabled,
+  responsesOutputFrames,
   responsesPayloadLength,
   servedPayloadLength,
 } from "../response/timing.js";
@@ -213,6 +214,38 @@ describe("responsesPayloadLength", () => {
     };
     expect(misbehaviorPayloadLength(plan, undefined, responsesPayloadLength)).toBe(5);
     expect(misbehaviorPayloadLength(plan, undefined)).toBe(0);
+  });
+});
+
+describe("responsesOutputFrames", () => {
+  const png = { mimeType: "image/png", data: "iVBORw0KGgo=" };
+  const url = { url: "https://example.com/a" };
+
+  it("counts one frame per citation and five per generated file on a text turn", () => {
+    const r: FixtureResponse = { content: "Cited.", citations: [url, url], files: [png] };
+    expect(responsesOutputFrames(r)).toBe(2 + 5);
+  });
+
+  it("counts them on a combined turn", () => {
+    const r: FixtureResponse = {
+      content: "Cited.",
+      toolCalls: [{ name: "t", arguments: "{}" }],
+      citations: [url],
+      files: [png, png],
+    };
+    expect(responsesOutputFrames(r)).toBe(1 + 10);
+  });
+
+  it("counts files but no citations on a tool-only turn", () => {
+    const r: FixtureResponse = { toolCalls: [{ name: "t", arguments: "{}" }], files: [png] };
+    expect(responsesOutputFrames(r)).toBe(5);
+  });
+
+  it("is 0 without citations or files, and never throws on a malformed value", () => {
+    expect(responsesOutputFrames({ content: "plain" })).toBe(0);
+    const malformed = { content: "x", citations: "nope", files: 7 } as unknown as FixtureResponse;
+    expect(responsesOutputFrames(malformed)).toBe(0);
+    expect(responsesOutputFrames({ error: { message: "x", type: "y" } })).toBe(0);
   });
 });
 
