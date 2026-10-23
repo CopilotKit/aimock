@@ -1,18 +1,21 @@
 import type * as http from "node:http";
 import type { SSEChunk, StreamingProfile, RecordedTimings } from "./types.js";
+import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
 
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0 || signal?.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    // Remove the abort listener when the timer fires, so a long stream sharing
+    // one lifecycle signal does not keep one listener per delayed frame.
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -123,46 +126,72 @@ export async function writeSSEStream(
 ): Promise<boolean> {
   const opts: StreamOptions =
     typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
+  // No lifecycle: an external caller gets close-awareness only through its own
+  // `signal` (a gone client still returns true).
+  // Base contract (public API): with no frames, an aborted signal does not
+  // stop the writer; it still finishes the stream (any trailer, then end())
+  // and returns true. The frame loop returns false there, so pass it no
+  // signal when there are no frames (it reads the signal only per frame and
+  // after the loop).
+  return runFrameLoop(
+    httpSink(res),
+    chunks,
+    sseCodec({
+      done: true,
+      usageChunk: opts.usageChunk,
+      openRouterProcessing: opts.openRouterProcessing,
+    }),
+    {
+      latency: opts.latency,
+      streamingProfile: opts.streamingProfile,
+      recordedTimings: opts.recordedTimings,
+      replaySpeed: opts.replaySpeed,
+    },
+    { signal: chunks.length > 0 ? opts.signal : undefined, onChunkSent: opts.onChunkSent },
+  );
+}
 
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
+const SSE_HEADERS: Record<string, string> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+};
 
-  // OpenRouter emits exactly ONE `: OPENROUTER PROCESSING` keepalive comment
-  // first — before any data frame (opt-in; see or-capture/chat-stream.sse). A
-  // faithful client discards `:`-prefixed lines before JSON-parsing a `data:`.
-  if (opts.openRouterProcessing && !res.writableEnded) {
-    res.write(OPENROUTER_PROCESSING_COMMENT);
-  }
+// Internal (not part of the public API): data-only SSE (`data: <json>\n\n`).
+// `done: true` writes the optional usage chunk then `data: [DONE]` after the
+// last frame (OpenAI chat); `done: false` writes no trailer.
+// `openRouterProcessing` writes the OpenRouter keepalive comment first. Line
+// comments, not JSDoc: see calculateTotalDelay.
+export function sseCodec<F = SSEChunk>(opts: {
+  done: boolean;
+  usageChunk?: SSEChunk;
+  openRouterProcessing?: boolean;
+}): FrameCodec<F> {
+  return {
+    headers: SSE_HEADERS,
+    ...(opts.openRouterProcessing ? { prelude: () => OPENROUTER_PROCESSING_COMMENT } : {}),
+    encode: (frame) => `data: ${JSON.stringify(frame)}\n\n`,
+    trailer: () => {
+      if (!opts.done) return [];
+      const parts: string[] = [];
+      if (opts.usageChunk) parts.push(`data: ${JSON.stringify(opts.usageChunk)}\n\n`);
+      parts.push("data: [DONE]\n\n");
+      return parts;
+    },
+  };
+}
 
-  let chunkIndex = 0;
-  for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) {
-      await delay(chunkDelay, signal);
-    }
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    if (opts.usageChunk) {
-      res.write(`data: ${JSON.stringify(opts.usageChunk)}\n\n`);
-    }
-    res.write("data: [DONE]\n\n");
-    res.end();
-  }
-  return true;
+// Internal: typed SSE (`event: <type>\ndata: <json>\n\n`), used by Anthropic.
+// `terminalSentinel` writes `data: [DONE]` after the last frame, only when the
+// stream was not aborted.
+export function typedSseCodec<F extends { type: string }>(opts?: {
+  terminalSentinel?: boolean;
+}): FrameCodec<F> {
+  return {
+    headers: SSE_HEADERS,
+    encode: (frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`,
+    trailer: () => (opts?.terminalSentinel ? ["data: [DONE]\n\n"] : []),
+  };
 }
 
 /**
