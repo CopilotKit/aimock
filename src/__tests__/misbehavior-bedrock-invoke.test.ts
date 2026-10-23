@@ -720,3 +720,57 @@ for (const stream of [false, true]) {
     }
   });
 }
+
+const citedResponse: FixtureFileResponse = {
+  content: "Before",
+  toolCalls: [tool],
+  citations: [{ url: "https://mastra.ai", title: "Mastra" }],
+};
+
+test.each([
+  { label: "normal", stream: false, faulted: false },
+  { label: "normal", stream: true, faulted: false },
+  { label: "fault", stream: false, faulted: true },
+  { label: "fault", stream: true, faulted: true },
+])(
+  "Invoke $label path (stream=$stream) never emits fixture citations",
+  async ({ stream, faulted }) => {
+    await withClaudeFault(
+      faulted ? { faults: [{ fault: "tool-unknown-name" }] } : undefined,
+      async ({ url, mock }) => {
+        const { wire, tools } = await read(url, stream);
+        expect(mock.getLastRequest()?.response.misbehavior?.applied ?? false).toBe(faulted);
+        expect(tools.map((t) => t.name)).toEqual([faulted ? "lookup_v2" : "lookup"]);
+        expect(wire).toContain(stream ? '"text_delta"' : '"text":"Before"');
+        expect(wire).not.toContain("citations");
+        expect(wire).not.toContain("mastra.ai");
+      },
+      citedResponse,
+    );
+  },
+);
+
+test.each([false, true])(
+  "Messages fault path (stream=%s) still emits fixture citations",
+  async (stream) => {
+    await withClaudeFault(
+      { faults: [{ fault: "tool-unknown-name" }] },
+      async ({ url, mock }) => {
+        const res = await fetch(`${url}/v1/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...request, stream }),
+          signal: AbortSignal.timeout(5000),
+        });
+        const text = await res.text();
+        expect(res.status).toBe(200);
+        expect(mock.getLastRequest()?.response.misbehavior?.applied).toBe(true);
+        expect(text).toContain("lookup_v2");
+        expect(text).toContain(stream ? "citations_delta" : '"citations"');
+        expect(text).toContain("web_search_result_location");
+        expect(text).toContain("https://mastra.ai");
+      },
+      citedResponse,
+    );
+  },
+);

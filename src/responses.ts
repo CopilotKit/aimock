@@ -51,6 +51,8 @@ import {
   servedToolCalls,
   toolCallFixtureBlock,
   withoutLegacyNamespaces,
+  fixtureCitations,
+  surrogateSafeChunks,
 } from "./helpers.js";
 import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
@@ -578,7 +580,7 @@ export function buildTextStreamEvents(
     chunkSize,
     nextOutputIndex,
     overrides?.phase,
-    overrides?.citations,
+    buildAnnotations(content, overrides?.citations),
   );
   events.push(...msgEvents);
 
@@ -751,6 +753,8 @@ export function toolCallStreamEvents(
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
     chunkSize,
@@ -1115,28 +1119,105 @@ interface MessageBlockResult {
   msgItem: object;
 }
 
-function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
-  // Only URL citations have a wire shape here so far; file citations are skipped.
-  return (citations ?? [])
-    .flatMap((c) => (c.type === "file" ? [] : [c]))
-    .map((c) => ({
+/**
+ * Fixture `citations` as `output_text` annotations for each text in `texts`
+ * (one per message item), in fixture order: a URL citation becomes
+ * `url_citation`, a file citation (`type: "file"`) becomes `file_citation`
+ * (`file_id`, `filename`, `index`; see `ResponseOutputText.FileCitation` in
+ * the openai SDK). Offsets index the joined text of all texts, as on every
+ * other provider. A URL citation is a range and goes only to the text holding
+ * its `startIndex`. A file citation is a point after the cited text, so it
+ * goes to the last text starting before its `index`: an `index` equal to a
+ * text's end stays at the end of that text (not at 0 of the next text), and
+ * an `index` of 0 goes to the first text. Each citation is rebased onto its
+ * text since Responses offsets are per `output_text`, with `end_index`
+ * clamped to it. Anthropic and Gemini need no point rule: they have no file
+ * citation. Anthropic URL citations follow the same start-owns-range rule;
+ * Gemini does not, and splits a citation that spans several text parts into
+ * one grounding support per part (see geminiGroundingSupports).
+ * Missing offsets take the defaults `resolveCitations` applies: a URL
+ * citation starts at 0 and ends at the end of the joined text, so one without
+ * offsets goes on the first text and covers all of it; a file citation's
+ * `index` defaults to the end of the joined text (the last text).
+ */
+function blockAnnotations(texts: string[], citations?: ResponseOverrides["citations"]): object[][] {
+  const perText: object[][] = texts.map(() => []);
+  if (texts.length === 0) {
+    // Blocks with no text block: a turn with no text for `citations` to point at.
+    fixtureCitations("", citations);
+    return perText;
+  }
+  const starts: number[] = [];
+  let offset = 0;
+  for (const text of texts) {
+    starts.push(offset);
+    offset += text.length;
+  }
+  const joinedLength = offset;
+  // A range goes to the last text starting at or before its start.
+  const ownerOf = (start: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] <= start) owner = k;
+    return owner;
+  };
+  // A point goes to the last text starting before it, so a point on a
+  // boundary stays at the end of the text before the boundary.
+  const pointOwnerOf = (index: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] < index) owner = k;
+    return owner;
+  };
+  for (const c of fixtureCitations(texts.join(""), citations)) {
+    if (c.type === "file") {
+      const index = c.index ?? joinedLength;
+      const owner = pointOwnerOf(index);
+      perText[owner].push({
+        type: "file_citation",
+        file_id: c.fileId,
+        filename: c.filename,
+        index: index - starts[owner],
+      });
+      continue;
+    }
+    // The defaults `resolveCitations` applies on every other provider.
+    const start = c.startIndex ?? 0;
+    const end = c.endIndex ?? joinedLength;
+    const owner = ownerOf(start);
+    perText[owner].push({
       type: "url_citation",
       url: c.url,
       title: c.title ?? c.url,
-      start_index: c.startIndex ?? 0,
-      end_index: c.endIndex ?? content.length,
-    }));
+      start_index: start - starts[owner],
+      end_index: Math.min(end - starts[owner], texts[owner].length),
+    });
+  }
+  return perText;
+}
+
+/** {@link blockAnnotations} for a turn with a single text. */
+function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
+  return blockAnnotations([content], citations)[0];
+}
+
+/** The annotations of each text block in `blocks`, in block order. */
+function orderedBlockAnnotations(
+  blocks: ResponsesFixtureBlock[],
+  citations?: ResponseOverrides["citations"],
+): object[][] {
+  return blockAnnotations(
+    blocks.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+    citations,
+  );
 }
 
 function buildMessageOutputEvents(
   content: string,
   chunkSize: number,
   outputIndex: number,
-  phase?: ResponseOverrides["phase"],
-  citations?: ResponseOverrides["citations"],
+  phase: ResponseOverrides["phase"] | undefined,
+  annotations: object[],
 ): MessageBlockResult {
   const msgId = itemId();
-  const annotations = buildAnnotations(content, citations);
   const events: ResponsesSSEEvent[] = [];
 
   events.push({
@@ -1258,27 +1339,6 @@ function buildFunctionCallOutputEvents(
   events.push({ type: "response.output_item.done", output_index: outputIndex, item });
 
   return { events, item };
-}
-
-/**
- * `text` cut into slices of at most `chunkSize` UTF-16 units, never between
- * the two halves of a surrogate pair: a cut that would land inside a pair
- * moves back before it, or, when that would leave the slice empty
- * (`chunkSize` 1), forward past it. The slices rejoin to `text` exactly.
- */
-function surrogateSafeChunks(text: string, chunkSize: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; ) {
-    let end = Math.min(i + chunkSize, text.length);
-    const high = text.charCodeAt(end - 1);
-    const low = text.charCodeAt(end);
-    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) {
-      end = end - 1 > i ? end - 1 : end + 1;
-    }
-    chunks.push(text.slice(i, end));
-    i = end;
-  }
-  return chunks;
 }
 
 /**
@@ -1438,6 +1498,8 @@ function buildToolCallResponse(
   synthesizeSummarylessReasoning = false,
 ): object {
   assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const output: object[] = [];
   if (
     reasoning ||
@@ -1532,6 +1594,8 @@ export function contentWithToolCallsStreamEvents(
     // placed before a text block therefore yields a tool call item at
     // a LOWER output_index than the message — it leads the output array.
     let outputIndex = nextOutputIndex;
+    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
+    let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
         const { events: msgEvents, msgItem } = buildMessageOutputEvents(
@@ -1539,7 +1603,7 @@ export function contentWithToolCallsStreamEvents(
           chunkSize,
           outputIndex,
           overrides?.phase,
-          overrides?.citations,
+          textAnnotations[textPos++],
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
@@ -1565,7 +1629,7 @@ export function contentWithToolCallsStreamEvents(
       chunkSize,
       nextOutputIndex,
       overrides?.phase,
-      overrides?.citations,
+      buildAnnotations(content, overrides?.citations),
     );
     events.push(...msgEvents);
     orderedOutputItems.push(msgItem);
@@ -1619,8 +1683,8 @@ function buildToolCallOutputItem(tc: EmittableToolCall): object {
 
 function buildMessageOutputItem(
   content: string,
-  phase?: ResponseOverrides["phase"],
-  citations?: ResponseOverrides["citations"],
+  phase: ResponseOverrides["phase"] | undefined,
+  annotations: object[],
 ): object {
   return {
     type: "message",
@@ -1628,9 +1692,7 @@ function buildMessageOutputItem(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [
-      { type: "output_text", text: content, annotations: buildAnnotations(content, citations) },
-    ],
+    content: [{ type: "output_text", text: content, annotations }],
   };
 }
 
@@ -1673,9 +1735,13 @@ function buildContentWithToolCallsResponse(
         });
       }
     }
+    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
+    let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
-        output.push(buildMessageOutputItem(block.text, overrides?.phase, overrides?.citations));
+        output.push(
+          buildMessageOutputItem(block.text, overrides?.phase, textAnnotations[textPos++]),
+        );
       } else {
         output.push(buildToolCallOutputItem(block));
       }
@@ -2439,6 +2505,8 @@ export function buildResponsesMisbehavior(
         : []),
     ];
     let callIndex = 0;
+    const textAnnotations = orderedBlockAnnotations(blocks, overrides.citations);
+    let textPos = 0;
     for (const block of blocks) {
       if (block.type === "text") {
         const message = buildMessageOutputEvents(
@@ -2446,7 +2514,7 @@ export function buildResponsesMisbehavior(
           chunkSize,
           outputIndex,
           overrides.phase,
-          overrides.citations,
+          textAnnotations[textPos++],
         );
         events.push(...message.events);
         output.push(message.msgItem);

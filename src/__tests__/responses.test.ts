@@ -2746,6 +2746,373 @@ describe("POST /v1/responses (citations)", () => {
     expect((done!.part as { annotations: unknown[] }).annotations).toHaveLength(2);
   });
 
+  const fileFixture: Fixture = {
+    match: { userMessage: "cite-file" },
+    response: {
+      content: "The plan ships in Q3.",
+      citations: [
+        { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+        { url: "https://mastra.ai", title: "Mastra" },
+        { type: "file", fileId: "file-def456", filename: "notes.md", index: 8 },
+      ],
+    },
+  };
+  const expectedFileAnnotations = [
+    { type: "file_citation", file_id: "file-abc123", filename: "plan.pdf", index: 21 },
+    {
+      type: "url_citation",
+      url: "https://mastra.ai",
+      title: "Mastra",
+      start_index: 0,
+      end_index: 21,
+    },
+    { type: "file_citation", file_id: "file-def456", filename: "notes.md", index: 8 },
+  ];
+
+  it("non-streaming output_text carries file_citation annotations in fixture order", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-file" }],
+      stream: false,
+    });
+    const msg = JSON.parse(res.body).output.find((o: { type: string }) => o.type === "message");
+    expect(msg.content[0].annotations).toEqual(expectedFileAnnotations);
+  });
+
+  it("streaming emits file_citation through annotation.added events", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-file" }],
+      stream: true,
+    });
+    const events = parseResponsesSSEEvents(res.body);
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => e.annotation)).toEqual(expectedFileAnnotations);
+    expect(added.map((e) => e.annotation_index)).toEqual([0, 1, 2]);
+    const done = events.find((e) => e.type === "response.content_part.done");
+    expect((done!.part as { annotations: unknown[] }).annotations).toEqual(expectedFileAnnotations);
+  });
+
+  // `blocks` citation offsets index the joined text of all text blocks (the
+  // Chat Completions / Anthropic / Gemini convention): "Alpha one. " +
+  // "Beta two.". Responses offsets are per output_text, so each citation is
+  // rebased onto the message item it starts in.
+  const blocksCiteFixture: Fixture = {
+    match: { userMessage: "cite-blocks" },
+    response: {
+      content: "",
+      blocks: [
+        { type: "text", text: "Alpha one. " },
+        { type: "toolCall", name: "lookup", arguments: "{}" },
+        { type: "text", text: "Beta two." },
+      ],
+      citations: [
+        { url: "https://alpha.example", title: "Alpha", startIndex: 0, endIndex: 5 },
+        { url: "https://beta.example", title: "Beta", startIndex: 11, endIndex: 15 },
+        { url: "https://whole.example" },
+        { type: "file", fileId: "file-beta", filename: "beta.md", index: 13 },
+      ],
+    },
+  };
+  // The offset-less citation takes the shared defaults (start 0, end of the
+  // joined text), so it goes on the first message, clamped to its text.
+  const alphaAnnotations = [
+    {
+      type: "url_citation",
+      url: "https://alpha.example",
+      title: "Alpha",
+      start_index: 0,
+      end_index: 5,
+    },
+    {
+      type: "url_citation",
+      url: "https://whole.example",
+      title: "https://whole.example",
+      start_index: 0,
+      end_index: 11,
+    },
+  ];
+  const betaAnnotations = [
+    {
+      type: "url_citation",
+      url: "https://beta.example",
+      title: "Beta",
+      start_index: 0,
+      end_index: 4,
+    },
+    { type: "file_citation", file_id: "file-beta", filename: "beta.md", index: 2 },
+  ];
+
+  it("non-streaming blocks attach each citation only to the message it starts in, rebased", async () => {
+    instance = await createServer([blocksCiteFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    expect(output.map((o: { type: string }) => o.type)).toEqual([
+      "message",
+      "function_call",
+      "message",
+    ]);
+    expect(output[0].content[0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content[0].annotations).toEqual(betaAnnotations);
+  });
+
+  it("streaming blocks emit each annotation.added once, on the owning message", async () => {
+    instance = await createServer([blocksCiteFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const events = parseResponsesSSEEvents(res.body);
+    const added = events
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => ({
+        output_index: e.output_index,
+        content_index: e.content_index,
+        annotation_index: e.annotation_index,
+        annotation: e.annotation,
+      }));
+    expect(added).toEqual([
+      ...alphaAnnotations.map((annotation, i) => ({
+        output_index: 0,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+      ...betaAnnotations.map((annotation, i) => ({
+        output_index: 2,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+    ]);
+    const parts = events
+      .filter((e) => e.type === "response.content_part.done")
+      .map((e) => (e.part as { annotations: unknown[] }).annotations);
+    expect(parts).toEqual([alphaAnnotations, betaAnnotations]);
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (completed!.response as { output: { content?: { annotations: unknown[] }[] }[] })
+      .output;
+    expect(output[0].content![0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content![0].annotations).toEqual(betaAnnotations);
+  });
+
+  it("blocks put an offset-less citation only on the first message, streaming and not", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-whole" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Alpha one. " },
+            { type: "text", text: "Beta two." },
+          ],
+          citations: [{ url: "https://whole.example" }],
+        },
+      },
+    ]);
+    const whole = {
+      type: "url_citation",
+      url: "https://whole.example",
+      title: "https://whole.example",
+      start_index: 0,
+      end_index: 11,
+    };
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-whole" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    const output = JSON.parse(res.body).output;
+    expect(
+      output.map((o: { content: { annotations: unknown[] }[] }) => o.content[0].annotations),
+    ).toEqual([[whole], []]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body(true))).body,
+    );
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => [e.output_index, e.annotation])).toEqual([[0, whole]]);
+  });
+
+  // A file citation is a point after the cited text, so an `index` equal to a
+  // block's end belongs to that block (at its end), not to index 0 of the
+  // next one. A URL citation is a range, owned by the block holding its start.
+  // "Alpha one. " is 11 long, "Beta two." 9, so the joined text is 20 long.
+  const boundaryFixture: Fixture = {
+    match: { userMessage: "cite-boundary" },
+    response: {
+      content: "",
+      blocks: [
+        { type: "text", text: "Alpha one. " },
+        { type: "text", text: "Beta two." },
+      ],
+      citations: [
+        { type: "file", fileId: "file-boundary", filename: "boundary.md", index: 11 },
+        { type: "file", fileId: "file-zero", filename: "zero.md", index: 0 },
+        { type: "file", fileId: "file-end", filename: "end.md", index: 20 },
+        { url: "https://beta.example", startIndex: 11, endIndex: 15 },
+      ],
+    },
+  };
+  const boundaryFirst = [
+    { type: "file_citation", file_id: "file-boundary", filename: "boundary.md", index: 11 },
+    { type: "file_citation", file_id: "file-zero", filename: "zero.md", index: 0 },
+  ];
+  const boundarySecond = [
+    { type: "file_citation", file_id: "file-end", filename: "end.md", index: 9 },
+    {
+      type: "url_citation",
+      url: "https://beta.example",
+      title: "https://beta.example",
+      start_index: 0,
+      end_index: 4,
+    },
+  ];
+  const boundaryBody = (stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: "cite-boundary" }],
+    stream,
+  });
+
+  it("non-streaming blocks attach a file citation on a block boundary to the block before it", async () => {
+    instance = await createServer([boundaryFixture]);
+    const res = await post(`${instance.url}/v1/responses`, boundaryBody(false));
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    expect(
+      output.map((o: { content: { annotations: unknown[] }[] }) => o.content[0].annotations),
+    ).toEqual([boundaryFirst, boundarySecond]);
+  });
+
+  it("streaming blocks attach a file citation on a block boundary to the block before it", async () => {
+    instance = await createServer([boundaryFixture]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, boundaryBody(true))).body,
+    );
+    const added = events
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => ({
+        output_index: e.output_index,
+        content_index: e.content_index,
+        annotation_index: e.annotation_index,
+        annotation: e.annotation,
+      }));
+    expect(added).toEqual([
+      ...boundaryFirst.map((annotation, i) => ({
+        output_index: 0,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+      ...boundarySecond.map((annotation, i) => ({
+        output_index: 1,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+    ]);
+  });
+
+  it("a citation spanning two messages goes to the one it starts in, end clamped to it", async () => {
+    // [6, 15) starts in "Alpha one. " (0-11) and ends in "Beta two." (11-20):
+    // the starting message owns it, rebased, with end_index clamped to its text.
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-span" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Alpha one. " },
+            { type: "text", text: "Beta two." },
+          ],
+          citations: [{ url: "https://span.example", title: "Span", startIndex: 6, endIndex: 15 }],
+        },
+      },
+    ]);
+    const span = {
+      type: "url_citation",
+      url: "https://span.example",
+      title: "Span",
+      start_index: 6,
+      end_index: 11,
+    };
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-span" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    const output = JSON.parse(res.body).output as {
+      content: { text: string; annotations: unknown[] }[];
+    }[];
+    expect(output.map((o) => [o.content[0].text, o.content[0].annotations])).toEqual([
+      ["Alpha one. ", [span]],
+      ["Beta two.", []],
+    ]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body(true))).body,
+    );
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => [e.output_index, e.annotation_index, e.annotation])).toEqual([
+      [0, 0, span],
+    ]);
+    const completed = events.find((e) => e.type === "response.completed");
+    const streamedOutput = (
+      completed!.response as { output: { content: { annotations: unknown[] }[] }[] }
+    ).output;
+    expect(streamedOutput.map((o) => o.content[0].annotations)).toEqual([[span], []]);
+  });
+
+  it("misbehavior blocks turns attach each citation only to the owning message", async () => {
+    instance = await createServer([{ ...blocksCiteFixture, misbehavior: "tool-unknown-name" }], {
+      enableMisbehavior: true,
+    });
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    // The fault was applied: the call between the messages is renamed.
+    expect(output.map((o: { type: string; name?: string }) => [o.type, o.name])).toEqual([
+      ["message", undefined],
+      ["function_call", "lookup_v2"],
+      ["message", undefined],
+    ]);
+    expect(output[0].content[0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content[0].annotations).toEqual(betaAnnotations);
+    const streamed = await post(`${instance.url}/v1/responses`, body(true));
+    expect(streamed.status).toBe(200);
+    const streamedEvents = parseResponsesSSEEvents(streamed.body);
+    const doneItems = streamedEvents
+      .filter((e) => e.type === "response.output_item.done")
+      .map((e) => e.item as { type: string; name?: string })
+      .map((item) => [item.type, item.name]);
+    expect(doneItems).toEqual([
+      ["message", undefined],
+      ["function_call", "lookup_v2"],
+      ["message", undefined],
+    ]);
+    const added = streamedEvents
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => [e.output_index, e.annotation_index, e.annotation]);
+    expect(added).toEqual([
+      ...alphaAnnotations.map((annotation, i) => [0, i, annotation]),
+      ...betaAnnotations.map((annotation, i) => [2, i, annotation]),
+    ]);
+  });
+
   it("omitting citations keeps annotations empty", async () => {
     instance = await createServer([
       { match: { userMessage: "plain" }, response: { content: "hi" } },

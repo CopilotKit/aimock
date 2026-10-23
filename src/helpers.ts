@@ -49,6 +49,7 @@ import type {
   FixtureFileResponsesBlock,
   ResponsesFixtureBlock,
   ChatCompletion,
+  ChatCompletionAnnotation,
   FixtureCitation,
   FixtureGeneratedFile,
   ResponseOverrides,
@@ -749,6 +750,55 @@ export function resolveCitations(
       startIndex: c.startIndex ?? 0,
       endIndex: c.endIndex ?? content.length,
     }));
+}
+
+/**
+ * Fixture `citations` as Chat Completions `url_citation` annotations. File
+ * citations are skipped (see {@link resolveCitations}): Chat Completions has no
+ * `file_citation` annotation.
+ */
+function chatCompletionAnnotations(
+  content: string,
+  citations?: ResponseOverrides["citations"],
+): ChatCompletionAnnotation[] {
+  return resolveCitations(content, citations).map((c) => ({
+    type: "url_citation",
+    url_citation: { url: c.url, title: c.title, start_index: c.startIndex, end_index: c.endIndex },
+  }));
+}
+
+/** `{ annotations }` for a Chat Completions message, or nothing when the fixture has no citations. */
+function annotationsField(
+  content: string,
+  overrides?: ResponseOverrides,
+): { annotations?: ChatCompletionAnnotation[] } {
+  const annotations = chatCompletionAnnotations(content, overrides?.citations);
+  return annotations.length > 0 ? { annotations } : {};
+}
+
+/**
+ * The streamed form of {@link chatCompletionAnnotations}: one chunk whose
+ * `delta.annotations` holds every annotation, sent after the content and
+ * before the finish chunk. Nothing when the fixture has no citations.
+ */
+function chatAnnotationChunks(
+  content: string,
+  overrides: ResponseOverrides | undefined,
+  envelope: { id: string; created: number; model: string },
+): SSEChunk[] {
+  const annotations = chatCompletionAnnotations(content, overrides?.citations);
+  if (annotations.length === 0) return [];
+  const fingerprint = overrides?.systemFingerprint;
+  return [
+    {
+      id: envelope.id,
+      object: "chat.completion.chunk",
+      created: envelope.created,
+      model: envelope.model,
+      choices: [{ index: 0, delta: { annotations }, logprobs: null, finish_reason: null }],
+      ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+    },
+  ];
 }
 
 /**
@@ -2087,6 +2137,8 @@ export function buildTextChunks(
     });
   }
 
+  chunks.push(...chatAnnotationChunks(content, overrides, { id, created, model: effectiveModel }));
+
   // Finish chunk
   chunks.push({
     id,
@@ -2112,6 +2164,7 @@ export function buildOpenAIReasoningChunks(
 ): SSEChunk[] {
   return buildTextChunks(exposeReasoning ? reasoning : "", model, chunkSize, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "length",
   }).map((chunk) => ({
@@ -2155,6 +2208,7 @@ export function buildOpenAIReasoningCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "length",
       usage: undefined,
@@ -2194,6 +2248,7 @@ export function buildOpenAIContentFilterChunks(
 ): SSEChunk[] {
   return buildTextChunks("", model, 1, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "content_filter",
   }).map((chunk) => ({
@@ -2217,6 +2272,7 @@ export function buildOpenAIContentFilterCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "content_filter",
       usage: undefined,
@@ -2241,6 +2297,7 @@ export function buildOpenAIRefusalChunks(
 ) {
   return buildTextChunks(refusal, model, chunkSize, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "stop",
   }).map((chunk) => ({
@@ -2270,6 +2327,7 @@ export function buildOpenAIRefusalCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "stop",
       usage: undefined,
@@ -2292,6 +2350,8 @@ export function buildToolCallChunks(
   reasoning?: string,
   overrides?: ResponseOverrides,
 ): SSEChunk[] {
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const id = overrides?.id ?? generateId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
   const effectiveModel = overrides?.model ?? model;
@@ -2440,6 +2500,7 @@ export function buildTextCompletion(
           content,
           refusal: null,
           ...(reasoning ? { reasoning_content: reasoning } : {}),
+          ...annotationsField(content, overrides),
         },
         logprobs: null,
         finish_reason: overrides?.finishReason ?? "stop",
@@ -2459,6 +2520,8 @@ export function buildToolCallCompletion(
   overrides?: ResponseOverrides,
   requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const promptText = requestMessages
     ? requestMessages
         .map((m) =>
@@ -2641,6 +2704,15 @@ export function buildContentWithToolCallsChunks(
       }
     }
 
+    // Cite the block text this path streams, not the `content` argument.
+    chunks.push(
+      ...chatAnnotationChunks(outcome.content, overrides, {
+        id,
+        created,
+        model: effectiveModel,
+      }),
+    );
+
     // Derive the default terminal from the blocks actually emitted.
     chunks.push({
       id,
@@ -2661,7 +2733,8 @@ export function buildContentWithToolCallsChunks(
     return chunks;
   }
 
-  // EXISTING legacy code, byte-for-byte UNCHANGED.
+  // EXISTING legacy code. It is unchanged except for the annotations chunk
+  // (chatAnnotationChunks) emitted before the finish chunk.
   // Reasoning chunks (emitted before content, OpenRouter format)
   if (reasoning) {
     for (let i = 0; i < reasoning.length; i += chunkSize) {
@@ -2772,6 +2845,8 @@ export function buildContentWithToolCallsChunks(
     }
   }
 
+  chunks.push(...chatAnnotationChunks(content, overrides, { id, created, model: effectiveModel }));
+
   // Finish chunk
   chunks.push({
     id,
@@ -2838,6 +2913,7 @@ export function buildContentWithToolCallsCompletion(
             type: "function" as const,
             function: { name: tc.name, arguments: tc.arguments },
           })),
+          ...annotationsField(content, overrides),
         },
         logprobs: null,
         finish_reason: overrides?.finishReason ?? "tool_calls",

@@ -1393,6 +1393,65 @@ for (const stream of [false, true]) {
 }
 
 test.each([
+  {
+    fault: { fault: "refusal", message: "No." },
+    deltas: [{ role: "assistant", content: null }, { refusal: "No." }, {}],
+    finish: "stop",
+  },
+  {
+    fault: { fault: "content-filter" },
+    deltas: [{ role: "assistant", content: null }, {}],
+    finish: "content_filter",
+  },
+  {
+    fault: { fault: "reasoning-only", reasoning: "Hm." },
+    deltas: [{ role: "assistant", content: null }, {}],
+    finish: "length",
+  },
+])(
+  "OpenAI $fault.fault stream sends no annotation chunk for a citations fixture",
+  async ({ fault, deltas, finish }) => {
+    await withFaultFixture(
+      { faults: [fault] },
+      async ({ url }) => {
+        const res = await fetch(`${url}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4o",
+            stream: true,
+            messages: [{ role: "user", content: "weather" }],
+          }),
+        });
+        const text = await res.text();
+        expect(res.status, text).toBe(200);
+        const chunks = text
+          .split("\n\n")
+          .map((frame) => frame.replace(/^data: /, "").trim())
+          .filter((data) => data !== "" && data !== "[DONE]")
+          .map(
+            (data) =>
+              JSON.parse(data) as {
+                choices: { delta: Record<string, unknown>; finish_reason: string | null }[];
+              },
+          );
+        expect(chunks.map((chunk) => chunk.choices[0].delta)).toEqual(deltas);
+        expect(chunks.map((chunk) => chunk.choices[0].finish_reason)).toEqual([
+          ...deltas.slice(0, -1).map(() => null),
+          finish,
+        ]);
+      },
+      {
+        response: {
+          content: "Sunny.",
+          citations: [{ url: "https://example.com/weather" }],
+        },
+      },
+    );
+  },
+);
+
+test.each([
   undefined,
   "Request refused.",
   "拒否します。 " + "Please choose another request. ".repeat(8),

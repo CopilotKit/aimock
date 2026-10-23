@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import Anthropic from "@anthropic-ai/sdk";
 import { PassThrough } from "node:stream";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -1758,5 +1759,262 @@ describe("handleMessages (direct call — ?? fallback branches)", () => {
     expect(entry!.method).toBe("POST");
     expect(entry!.path).toBe("/v1/messages");
     expect(entry!.response.status).toBe(503);
+  });
+});
+
+describe("POST /v1/messages (citations and files)", () => {
+  const citeFixture: Fixture = {
+    match: { userMessage: "cite-me" },
+    response: {
+      content: "Mastra is a TypeScript framework.",
+      citations: [
+        { url: "https://mastra.ai", title: "Mastra" },
+        { url: "https://mastra.ai/docs", startIndex: 0, endIndex: 6 },
+      ],
+    },
+  };
+  const messagesBody = (msg: string, stream: boolean) => ({
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 100,
+    stream,
+    messages: [{ role: "user", content: msg }],
+  });
+  const citation = (cited: string, url: string, title: string) => ({
+    type: "web_search_result_location",
+    cited_text: cited,
+    url,
+    title,
+    encrypted_index: expect.any(String),
+  });
+
+  it("non-streaming text block carries web_search_result_location citations", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-me", false));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).content[0].citations).toEqual([
+      citation("Mastra is a TypeScript framework.", "https://mastra.ai", "Mastra"),
+      citation("Mastra", "https://mastra.ai/docs", "https://mastra.ai/docs"),
+    ]);
+  });
+
+  it("streaming emits citations_delta after the text deltas, before content_block_stop", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-me", true));
+    const events = parseClaudeSSEEvents(res.body);
+    const kinds = events
+      .filter((e) => e.type === "content_block_delta" || e.type === "content_block_stop")
+      .map((e) => (e.type === "content_block_stop" ? "stop" : (e.delta as { type: string }).type));
+    const firstCitation = kinds.indexOf("citations_delta");
+    expect(firstCitation).toBeGreaterThan(0);
+    expect(kinds.slice(0, firstCitation).every((k) => k === "text_delta")).toBe(true);
+    expect(kinds.slice(firstCitation)).toEqual(["citations_delta", "citations_delta", "stop"]);
+    const citations = events
+      .filter((e) => (e.delta as { type?: string } | undefined)?.type === "citations_delta")
+      .map((e) => (e.delta as { citation: unknown }).citation);
+    expect(citations).toEqual([
+      citation("Mastra is a TypeScript framework.", "https://mastra.ai", "Mastra"),
+      citation("Mastra", "https://mastra.ai/docs", "https://mastra.ai/docs"),
+    ]);
+  });
+
+  it("content+toolCalls turns carry citations on the text block", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-tools" },
+        response: {
+          content: "Checking.",
+          toolCalls: [{ name: "lookup", arguments: "{}" }],
+          citations: [{ url: "https://example.com" }],
+        },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-tools", false));
+    const content = JSON.parse(res.body).content;
+    expect(content[0].citations).toEqual([
+      citation("Checking.", "https://example.com", "https://example.com"),
+    ]);
+    expect(content[1].type).toBe("tool_use");
+    const streamed = await post(`${instance.url}/v1/messages`, messagesBody("cite-tools", true));
+    const deltas = parseClaudeSSEEvents(streamed.body).filter(
+      (e) => (e.delta as { type?: string } | undefined)?.type === "citations_delta",
+    );
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].index).toBe(0);
+  });
+
+  // `blocks` citation offsets index the joined text of all text blocks (the
+  // Chat Completions / Gemini convention): "Alpha one. " + "Beta two.".
+  const blocksCiteFixture = (reasoning?: string): Fixture => ({
+    match: { userMessage: "cite-blocks" },
+    response: {
+      content: "",
+      ...(reasoning !== undefined ? { reasoning } : {}),
+      blocks: [
+        { type: "text", text: "Alpha one. " },
+        { type: "toolCall", name: "lookup", arguments: "{}" },
+        { type: "text", text: "Beta two." },
+      ],
+      citations: [
+        { url: "https://alpha.example", title: "Alpha", startIndex: 0, endIndex: 5 },
+        { url: "https://beta.example", title: "Beta", startIndex: 11, endIndex: 15 },
+      ],
+    },
+  });
+  const alphaCite = citation("Alpha", "https://alpha.example", "Alpha");
+  const betaCite = citation("Beta", "https://beta.example", "Beta");
+  const citationDeltas = (body: string) =>
+    parseClaudeSSEEvents(body)
+      .filter((e) => (e.delta as { type?: string } | undefined)?.type === "citations_delta")
+      .map((e) => ({ index: e.index, citation: (e.delta as { citation: unknown }).citation }));
+
+  it("non-streaming blocks attach each citation only to the text block it starts in", async () => {
+    instance = await createServer([blocksCiteFixture()]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-blocks", false));
+    const content = JSON.parse(res.body).content;
+    expect(content.map((b: { type: string }) => b.type)).toEqual(["text", "tool_use", "text"]);
+    expect(content[0].citations).toEqual([alphaCite]);
+    expect(content[1].citations).toBeUndefined();
+    expect(content[2].citations).toEqual([betaCite]);
+  });
+
+  it("streaming blocks emit each citations_delta once, on the owning text block", async () => {
+    instance = await createServer([blocksCiteFixture()]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-blocks", true));
+    expect(citationDeltas(res.body)).toEqual([
+      { index: 0, citation: alphaCite },
+      { index: 2, citation: betaCite },
+    ]);
+  });
+
+  it("thinking-first blocks: citations_delta indexes shift with the thinking block", async () => {
+    instance = await createServer([blocksCiteFixture("Let me think.")]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-blocks", true));
+    expect(citationDeltas(res.body)).toEqual([
+      { index: 1, citation: alphaCite },
+      { index: 3, citation: betaCite },
+    ]);
+    const nonStream = await post(`${instance.url}/v1/messages`, messagesBody("cite-blocks", false));
+    const content = JSON.parse(nonStream.body).content;
+    expect(content[0].type).toBe("thinking");
+    expect(content[1].citations).toEqual([alphaCite]);
+    expect(content[3].citations).toEqual([betaCite]);
+  });
+
+  it("a citation spanning two text blocks goes to the block it starts in, cut at its end", async () => {
+    // [6, 15) starts in "Alpha one. " (0-11) and ends in "Beta two." (11-20):
+    // the starting block owns it, and cited_text stops at that block's end.
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-span" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Alpha one. " },
+            { type: "text", text: "Beta two." },
+          ],
+          citations: [{ url: "https://span.example", title: "Span", startIndex: 6, endIndex: 15 }],
+        },
+      },
+    ]);
+    const spanCite = citation("one. ", "https://span.example", "Span");
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-span", false));
+    const content = JSON.parse(res.body).content;
+    expect(content.map((b: { type: string; text: string }) => [b.type, b.text])).toEqual([
+      ["text", "Alpha one. "],
+      ["text", "Beta two."],
+    ]);
+    expect(content[0].citations).toEqual([spanCite]);
+    expect(content[1].citations).toBeUndefined();
+    const streamed = await post(`${instance.url}/v1/messages`, messagesBody("cite-span", true));
+    expect(citationDeltas(streamed.body)).toEqual([{ index: 0, citation: spanCite }]);
+  });
+
+  it("@anthropic-ai/sdk stream helper assembles per-block citations like the non-streaming body", async () => {
+    instance = await createServer([blocksCiteFixture("Let me think.")]);
+    const client = new Anthropic({ apiKey: "local", baseURL: instance.url, maxRetries: 0 });
+    const params = {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 100,
+      messages: [{ role: "user" as const, content: "cite-blocks" }],
+    };
+    const assembled = await client.messages.stream(params).finalMessage();
+    const direct = await client.messages.create(params);
+    const citesOf = (content: Anthropic.ContentBlock[]) =>
+      content.map((b) => (b.type === "text" ? (b.citations ?? []).map((c) => c.cited_text) : null));
+    expect(citesOf(assembled.content)).toEqual([null, ["Alpha"], null, ["Beta"]]);
+    expect(citesOf(direct.content)).toEqual(citesOf(assembled.content));
+  });
+
+  it.each([false, true])(
+    "omitting citations leaves the wire byte-identical to the no-citations baseline (stream: %s)",
+    async (stream) => {
+      instance = await createServer([textFixture]);
+      const res = await post(`${instance.url}/v1/messages`, messagesBody("hello", stream));
+      // Ids are random; everything else must match byte for byte.
+      const normalized = res.body.replace(/"id":"[^"]*"/g, '"id":"<id>"');
+      const model = '"model":"claude-3-5-sonnet-20241022"';
+      if (!stream) {
+        expect(normalized).toBe(
+          `{"id":"<id>","type":"message","role":"assistant","content":[{"type":"text","text":"Hi there!"}],${model},"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`,
+        );
+        return;
+      }
+      const sse = (type: string, data: string) =>
+        `event: ${type}\ndata: {"type":"${type}"${data}}\n\n`;
+      expect(normalized).toBe(
+        [
+          sse(
+            "message_start",
+            `,"message":{"id":"<id>","type":"message","role":"assistant","content":[],${model},"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`,
+          ),
+          sse("content_block_start", ',"index":0,"content_block":{"type":"text","text":""}'),
+          sse("content_block_delta", ',"index":0,"delta":{"type":"text_delta","text":"Hi there!"}'),
+          sse("content_block_stop", ',"index":0'),
+          sse(
+            "message_delta",
+            ',"delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}',
+          ),
+          sse("message_stop", ""),
+        ].join(""),
+      );
+    },
+  );
+
+  it("skips file citations, which Anthropic has no URL-sourced form for (both modes)", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-file" },
+        response: {
+          content: "Hello.",
+          citations: [
+            { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+            { url: "https://example.com" },
+          ],
+        },
+      },
+      {
+        match: { userMessage: "file-only" },
+        response: {
+          content: "Hello.",
+          citations: [{ type: "file", fileId: "file-abc123", filename: "plan.pdf" }],
+        },
+      },
+    ]);
+    const urlOnly = [citation("Hello.", "https://example.com", "https://example.com")];
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("cite-file", false));
+    expect(JSON.parse(res.body).content[0].citations).toEqual(urlOnly);
+    const streamed = await post(`${instance.url}/v1/messages`, messagesBody("cite-file", true));
+    const deltas = parseClaudeSSEEvents(streamed.body)
+      .filter((e) => (e.delta as { type?: string } | undefined)?.type === "citations_delta")
+      .map((e) => (e.delta as { citation: unknown }).citation);
+    expect(deltas).toEqual(urlOnly);
+
+    const fileOnly = await post(`${instance.url}/v1/messages`, messagesBody("file-only", false));
+    expect("citations" in JSON.parse(fileOnly.body).content[0]).toBe(false);
+    const fileOnlyStream = await post(
+      `${instance.url}/v1/messages`,
+      messagesBody("file-only", true),
+    );
+    expect(fileOnlyStream.body).not.toContain("citations_delta");
   });
 });
