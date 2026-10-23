@@ -16,10 +16,8 @@ import type {
   Fixture,
   FixtureResponse,
   HandlerDefaults,
-  RecordedTimings,
   FixtureBlock,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
@@ -51,8 +49,10 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
@@ -1225,6 +1225,8 @@ function buildClaudeContentWithToolCallsResponse(
 /** Internal Claude-family prepared output; the transport owns delivery and journaling. */
 export type PreparedClaudeMisbehavior = {
   plan: MisbehaviorPlan;
+  /** The reasoning the reply serves: the fault's for reasoning-only, else the model-gated fixture reasoning. */
+  reasoning: string | undefined;
   usage: { input_tokens: number; output_tokens: number };
 } & ({ stream: true; events: ClaudeSSEEvent[] } | { stream: false; body: object });
 
@@ -1354,7 +1356,7 @@ export function prepareClaudeMisbehavior(
       stop_sequence: null,
       usage,
     };
-    if (!context.stream) return { stream: false, body, plan: preparedPlan, usage };
+    if (!context.stream) return { reasoning, stream: false, body, plan: preparedPlan, usage };
     const events: ClaudeSSEEvent[] = [
       { type: "message_start", message: { ...body, content: [], stop_reason: null } },
       {
@@ -1381,7 +1383,7 @@ export function prepareClaudeMisbehavior(
       },
       { type: "message_stop" },
     );
-    return { stream: true, events, plan: preparedPlan, usage };
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
   }
   const empty = plan.summary.fault === "empty-response" || plan.summary.fault === "refusal";
   if (empty) {
@@ -1407,7 +1409,7 @@ export function prepareClaudeMisbehavior(
       ...detail,
       usage,
     };
-    if (!context.stream) return { stream: false, body, plan: preparedPlan, usage };
+    if (!context.stream) return { reasoning, stream: false, body, plan: preparedPlan, usage };
     const events: ClaudeSSEEvent[] = [
       {
         type: "message_start",
@@ -1424,7 +1426,7 @@ export function prepareClaudeMisbehavior(
       },
       { type: "message_stop" },
     ];
-    return { stream: true, events, plan: preparedPlan, usage };
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
   }
   if (context.stream) {
     const args = [
@@ -1462,6 +1464,7 @@ export function prepareClaudeMisbehavior(
           event.content_block.type === "tool_use",
       )[plan.target?.index ?? 0]?.index;
       return {
+        reasoning,
         stream: true,
         events: events.filter(
           (event) => !(event.type === "content_block_stop" && event.index === cutIndex),
@@ -1470,7 +1473,7 @@ export function prepareClaudeMisbehavior(
         usage,
       };
     }
-    return { stream: true, events, plan: preparedPlan, usage };
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
   }
   const args = [
     reasoning,
@@ -1490,75 +1493,7 @@ export function prepareClaudeMisbehavior(
     : isToolCallResponse(preparedResponse)
       ? buildClaudeToolCallResponse(toolCalls, model, context.logger, ...args)
       : buildClaudeTextResponse(content, model, ...args);
-  return { stream: false, body, plan: preparedPlan, usage };
-}
-
-// ─── SSE writer for Claude Messages API ─────────────────────────────────────
-
-interface ClaudeStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeClaudeSSEStream(
-  res: http.ServerResponse,
-  events: ClaudeSSEEvent[],
-  optionsOrLatency?: number | ClaudeStreamOptions,
-): Promise<boolean> {
-  const opts: ClaudeStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  if (res.destroyed) return false;
-
-  // Stop streaming when either the fixture's interruption signal fires or the
-  // client disconnects before the response finishes. Without the close
-  // listener, a dropped client leaves the loop sleeping through per-chunk
-  // latency and writing into a dead socket, and the journal records the
-  // request as complete.
-  const controller = new AbortController();
-  const signal = controller.signal;
-  const abort = () => controller.abort();
-  const onClose = () => {
-    if (!res.writableFinished) abort();
-  };
-  res.once("close", onClose);
-  opts.signal?.addEventListener("abort", abort, { once: true });
-  if (opts.signal?.aborted) abort();
-
-  try {
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
-    let chunkIndex = 0;
-    for (const event of events) {
-      const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-      if (chunkDelay > 0) await delay(chunkDelay, signal);
-      if (signal.aborted || res.destroyed) return false;
-      if (res.writableEnded) return true;
-      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-      onChunkSent?.();
-      if (signal.aborted || res.destroyed) return false;
-      chunkIndex++;
-    }
-
-    if (!res.writableEnded) {
-      res.end();
-    }
-    return true;
-  } finally {
-    res.off("close", onClose);
-    opts.signal?.removeEventListener("abort", abort);
-  }
+  return { reasoning, stream: false, body, plan: preparedPlan, usage };
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -1826,15 +1761,17 @@ export async function handleMessages(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "anthropic",
-        req.url ?? "/v1/messages",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "anthropic",
+          req.url ?? "/v1/messages",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1843,7 +1780,12 @@ export async function handleMessages(
           path: req.url ?? "/v1/messages",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1907,6 +1849,21 @@ export async function handleMessages(
   }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   if (misbehavior.kind === "applied") {
     // Journal first, as the success branches do, so a fixture error thrown
@@ -1933,27 +1890,22 @@ export async function handleMessages(
     });
     recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
     if (!prepared.stream) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(prepared.body));
+      const preparedBody = prepared.body;
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => preparedBody,
+        jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+          ),
+          !!misbehavior.duplicateId,
+        ),
+      );
     } else {
-      const interruption = createInterruptionSignal(fixture);
-      try {
-        const completed = await writeClaudeSSEStream(res, prepared.events, {
-          latency,
-          streamingProfile: fixture.streamingProfile,
-          recordedTimings: fixture.recordedTimings,
-          replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-          signal: interruption?.signal,
-          onChunkSent: interruption?.tick,
-        });
-        if (!completed) {
-          if (!res.writableEnded) res.destroy();
-          entry.response.interrupted = true;
-          entry.response.interruptReason = interruption?.reason() ?? "client aborted";
-        }
-      } finally {
-        interruption?.cleanup();
-      }
+      await deliverStream(res, entry, fixture, typedSseCodec(), prepared.events, streamTiming);
     }
     return;
   }
@@ -2024,19 +1976,24 @@ export async function handleMessages(
     rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeContentWithToolCallsResponse(
-        response.content ?? "",
-        functionToolCalls,
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            completionReq.model,
+            logger,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeContentWithToolCallsStreamEvents(
         response.content ?? "",
@@ -2050,21 +2007,7 @@ export async function handleMessages(
         effRedactedThinking,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -2111,16 +2054,21 @@ export async function handleMessages(
     // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
     rejectGeneratedFiles(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeTextResponse(
+            response.content,
+            completionReq.model,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeTextStreamEvents(
         response.content,
@@ -2131,21 +2079,7 @@ export async function handleMessages(
         effReasoningSignature,
         effRedactedThinking,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -2193,17 +2127,22 @@ export async function handleMessages(
     rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeToolCallResponse(
-        functionToolCalls,
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeToolCallResponse(
+            functionToolCalls,
+            completionReq.model,
+            logger,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeToolCallStreamEvents(
         functionToolCalls,
@@ -2215,21 +2154,7 @@ export async function handleMessages(
         effReasoningSignature,
         effRedactedThinking,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason() ?? "client aborted";
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }

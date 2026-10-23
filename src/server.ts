@@ -52,8 +52,11 @@ import {
   responsesToolsExtendedView,
   responsesToolsViewSource,
 } from "./fixture-loader.js";
-import { writeSSEStream, writeErrorResponse, delay, calculateTotalDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { CLIENT_ABORTED } from "./response/lifecycle.js";
+import { extendRecordedTimings, misbehaviorPayloadLength } from "./response/timing.js";
 import {
   prepareOpenAIChatMisbehavior,
   resolveOpenAIChatMisbehaviorUsage,
@@ -1636,7 +1639,7 @@ async function handleCompletions(
       // and chaos `disconnect` do, never a status the client did not get.
       const interruptReason = bodyLimitDisconnect
         ? "request body exceeded size limit"
-        : "client aborted";
+        : CLIENT_ABORTED;
       defaults.logger.warn(
         bodyLimitDisconnect ? `${route}: ${msg}` : `${route}: client aborted mid-body (${msg})`,
       );
@@ -2210,22 +2213,10 @@ async function handleCompletions(
             }
           : undefined;
 
-      // WHO killed a mid-flight stream decides what the journal says, and
-      // after the fact the two look identical: `req.aborted`, `req.destroyed`
-      // and `res.destroyed` all read the same whether the peer hung up or the
-      // recorder tore the response down. The one signal that separates them is
-      // the peer's FIN/RST, which arrives on the request socket as `end` (or
-      // `error`) and only ever when the CLIENT went away. Removed afterwards:
-      // a keep-alive socket outlives this request.
-      let clientHungUp = false;
-      const noteClientHangUp = (): void => {
-        if (!res.writableEnded) clientHungUp = true;
-      };
-      req.socket?.on("end", noteClientHangUp);
-      req.socket?.on("error", noteClientHangUp);
-      let outcome: Awaited<ReturnType<typeof proxyAndRecord>>;
-      try {
-        outcome = await proxyAndRecord(
+      // A client hang-up and a recorder tear-down look identical after the
+      // fact; withHangUpDetection watches the request socket while relaying.
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
           req,
           res,
           body,
@@ -2235,19 +2226,17 @@ async function handleCompletions(
           defaults,
           raw,
           hookOptions,
-        );
-      } finally {
-        req.socket?.off("end", noteClientHangUp);
-        req.socket?.off("error", noteClientHangUp);
-      }
+        ),
+      );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
-        // A stream that died mid-flight still carries the 200 it opened with;
-        // mark it interrupted so the journal shows what the client actually
-        // got rather than a clean success, and name the side that killed it —
-        // a client hang-up is normal caller behaviour, an upstream/recorder
-        // tear-down is a fault worth chasing.
-        const destroyedMidStream = res.destroyed && !res.writableEnded;
+        // A proxied response torn down before it finished is marked
+        // interrupted, so the journal shows what the client actually got
+        // rather than a clean success, and names the side that killed it — a
+        // client hang-up is normal caller behaviour, an upstream/recorder
+        // tear-down is a fault worth chasing. Its status is the one it opened
+        // with (`res.statusCode`, e.g. 200) when its status line reached the
+        // socket, and 0 when it did not: the client never got a status.
         journal.add({
           method: req.method ?? "POST",
           path: req.url ?? COMPLETIONS_PATH,
@@ -2257,12 +2246,7 @@ async function handleCompletions(
             status: res.statusCode ?? 200,
             fixture: null,
             source: "proxy",
-            ...(destroyedMidStream
-              ? {
-                  interrupted: true,
-                  interruptReason: clientHungUp ? "client aborted" : "proxy stream destroyed",
-                }
-              : {}),
+            ...proxyInterruption(res, clientHungUp),
           },
         });
         recordBypass("proxied");
@@ -2423,54 +2407,45 @@ async function handleCompletions(
   ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } =>
     appliedUsage ?? resolveUsage(overrides, streamingPromptText, completionText);
 
-  const resolveRecordedTimings = (chunkCount: number) => {
-    const timings = fixture.recordedTimings;
-    if (!appliedPlan?.duplicateId || !timings) return timings;
-    const gaps = timings.interChunkDelaysMs;
-    return {
-      ...timings,
-      interChunkDelaysMs: Array.from(
-        { length: Math.max(gaps.length, chunkCount - 1) },
-        (_, index) => gaps[index] ?? gaps.at(-1) ?? 0,
-      ),
-    };
-  };
-
   // Non-streaming (`stream: false`) timing is opt-in per fixture: only a
-  // fixture with `nonStreamingTiming: true` AND an explicit `streamingProfile`
-  // or `recordedTimings` delays the single JSON write, by the total a streamed
-  // reply at the same chunkSize would take. Without the flag the reply returns
-  // immediately (the pre-#545 default). Bare `latency` / `--latency` is the gap
-  // between SSE chunks only and never delays this path.
-  const awaitNonStreamingTiming = (contentLength: number): Promise<void> => {
-    if (fixture.nonStreamingTiming !== true) return Promise.resolve();
-    if (!fixture.streamingProfile && !fixture.recordedTimings) return Promise.resolve();
-    const chunkCount = Math.max(1, Math.ceil(contentLength / chunkSize));
-    return delay(
-      calculateTotalDelay(
-        contentLength,
-        chunkSize,
-        fixture.streamingProfile,
-        resolveRecordedTimings(chunkCount),
-        fixture.replaySpeed ?? defaults.replaySpeed,
-      ),
-    );
-  };
+  // fixture with `nonStreamingTiming: true` (OpenAI chat only) or
+  // `nonStreamingTimingAllProviders: true`, AND an explicit `streamingProfile`
+  // or `recordedTimings`, delays the single JSON write, by the total a streamed
+  // reply at the same chunkSize would take. Without it the reply returns
+  // immediately. Bare `latency` / `--latency` is the gap between SSE chunks
+  // only and never delays this path. deliverJson owns the wait, which a client
+  // hang-up cancels. A K4 duplicate-id plan extends the recorded gaps.
+  const nonStreamingOpts = (payloadLength: number) => ({
+    surface: "openai-chat" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!appliedPlan?.duplicateId,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
+  const streamTiming = (frameCount: number) => ({
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: extendRecordedTimings(
+      fixture.recordedTimings,
+      frameCount,
+      !!appliedPlan?.duplicateId,
+    ),
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
 
   // A built non-stream reply is committed to be served: record the outcome
-  // before the timing wait, so the journal carries it while the reply waits.
-  // A client that hangs up during the wait got nothing, so the entry records a
-  // torn socket (status 0, interrupted), as routeError does for one that hangs
-  // up before its body arrives. False when there is no one left to answer.
-  const commitNonStream = async (entry: JournalEntry, contentLength: number): Promise<boolean> => {
+  // before deliverJson's timing wait, so the journal carries it while the reply
+  // waits. deliverJson journals a client that hangs up during the wait as a
+  // torn socket (status 0, interrupted, "client aborted"), as routeError does
+  // for one that hangs up before its body arrives, and then writes nothing.
+  const commitNonStream = async (
+    entry: JournalEntry,
+    reply: unknown,
+    payloadLength: number,
+  ): Promise<void> => {
     recordOutcome(entry);
-    await awaitNonStreamingTiming(contentLength);
-    const gone = responseGoneReason(res);
-    if (gone === null) return true;
-    entry.response.status = 0;
-    entry.response.interrupted = true;
-    entry.response.interruptReason = gone === "client-gone" ? "client aborted" : gone;
-    return false;
+    await deliverJson(res, entry, fixture, () => reply, nonStreamingOpts(payloadLength));
   };
 
   // OpenRouter response shaping (no-op for OpenAI callers). Applied as a
@@ -2595,15 +2570,11 @@ async function handleCompletions(
                 overrides,
                 body.messages,
               );
-      const nonStreamedContent =
-        appliedPlan.stop === "refusal"
-          ? (appliedPlan.refusal ?? "")
-          : appliedPlan.stop === "content_filter"
-            ? ""
-            : (appliedPlan.reasoning ?? "");
-      if (!(await commitNonStream(entry, nonStreamedContent.length))) return;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      await commitNonStream(
+        entry,
+        shapeORCompletion(completion, overrides),
+        misbehaviorPayloadLength(appliedPlan, appliedReasoning),
+      );
     } else {
       const chunks =
         appliedPlan.stop === "refusal"
@@ -2628,23 +2599,14 @@ async function handleCompletions(
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
       recordOutcome(entry);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks.length),
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        entry.response.interrupted = true;
-        entry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        entry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -2711,9 +2673,7 @@ async function handleCompletions(
         body.messages,
       );
       const contentLength = (effReasoning?.length ?? 0) + completionText.length;
-      if (!(await commitNonStream(journalEntry, contentLength))) return;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildContentWithToolCallsChunks(
         blockOutcome?.content ?? response.content ?? "",
@@ -2736,23 +2696,14 @@ async function handleCompletions(
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
       recordOutcome(journalEntry);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks.length),
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -2795,9 +2746,7 @@ async function handleCompletions(
         body.messages,
       );
       const contentLength = (effReasoning?.length ?? 0) + response.content.length;
-      if (!(await commitNonStream(journalEntry, contentLength))) return;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildTextChunks(
         response.content,
@@ -2817,23 +2766,14 @@ async function handleCompletions(
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
       recordOutcome(journalEntry);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks.length),
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -2878,9 +2818,7 @@ async function handleCompletions(
         body.messages,
       );
       const contentLength = (effReasoning?.length ?? 0) + toolCallText.length;
-      if (!(await commitNonStream(journalEntry, contentLength))) return;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildToolCallChunks(
         toolCalls,
@@ -2901,23 +2839,14 @@ async function handleCompletions(
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
       recordOutcome(journalEntry);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: resolveRecordedTimings(chunks.length),
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -3483,7 +3412,7 @@ async function startServer(
     if ((clientAbort || bodyLimitDisconnect) && !res.headersSent) {
       const interruptReason = bodyLimitDisconnect
         ? "request body exceeded size limit"
-        : "client aborted";
+        : CLIENT_ABORTED;
       // Nothing reached the client and nothing crashed: the entry records a
       // torn socket (status 0, same as chaos `disconnect` before headers), and
       // there is no socket left to answer on.
@@ -3573,7 +3502,7 @@ async function startServer(
       // `interrupted` means the client did not get a complete body. Once
       // `end()` has run it did, so a crash after that point is recorded in
       // `error` with the status that was delivered, never as an interruption.
-      const midStreamReason = clientAbort ? "client aborted" : "handler crashed mid-stream";
+      const midStreamReason = clientAbort ? CLIENT_ABORTED : "handler crashed mid-stream";
       if (existing) {
         if (res.writableEnded) {
           if (existing.response.error === undefined) existing.response.error = msg;

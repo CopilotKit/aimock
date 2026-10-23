@@ -1,7 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { withClaudeFault } from "./helpers/misbehavior-claude-stage3.js";
 import type { FixtureFileResponse, MisbehaviorFault } from "../types.js";
+import * as deliver from "../response/deliver.js";
+import * as timing from "../response/timing.js";
 
 const request: Anthropic.MessageCreateParamsNonStreaming = {
   model: "claude-sonnet-4-20250514",
@@ -713,3 +715,45 @@ test.each(["truncateAfterChunks", "disconnectAfterMs"] as const)(
     );
   },
 );
+
+test("Claude non-streaming K4 duplicate-id sizes its wait from the served reasoning and extends the gaps", async () => {
+  // Hand-computed: the duplicated plan serves two `lookup` calls with
+  // `{"city":"Paris"}` (6 + 16 chars each) and the 10-char fixture reasoning:
+  // 54 chars at the mock's chunkSize 2 is 27 chunks. The recorded gaps [0, 10]
+  // are extended to 26 gaps by repeating the last one, so the wait is
+  // ttft 0 + 0 + 25 * 10 = 250ms. Without the extension the 25 extra chunks
+  // would average the recorded gaps (5ms): 0 + 0 + 10 + 24 * 5 = 130ms.
+  const deliverJson = vi.spyOn(deliver, "deliverJson");
+  const delayMs = vi.spyOn(timing, "nonStreamingDelayMs");
+  try {
+    await withClaudeFault(
+      { faults: [{ fault: "tool-call-id-duplicate" }] },
+      async ({ client, mock }) => {
+        const fixture = mock.getFixtures()[0];
+        if (!fixture) throw new Error("Missing fixture");
+        fixture.nonStreamingTimingAllProviders = true;
+        fixture.recordedTimings = { ttftMs: 0, interChunkDelaysMs: [0, 10], totalDurationMs: 10 };
+        const started = performance.now();
+        await client.messages.create(request);
+        const elapsed = performance.now() - started;
+        expect(deliverJson).toHaveBeenCalledOnce();
+        expect(deliverJson.mock.calls[0]?.[4]).toMatchObject({
+          surface: "other",
+          payloadLength: 10 + 2 * (6 + 16),
+          chunkSize: 2,
+          duplicateId: true,
+        });
+        expect(delayMs).toHaveBeenCalledOnce();
+        expect(delayMs.mock.calls[0]?.[3]?.interChunkDelaysMs).toEqual([0, ...Array(25).fill(10)]);
+        expect(delayMs.mock.results[0]?.value).toBe(250);
+        expect(elapsed).toBeGreaterThanOrEqual(245);
+        // The fixture's own timings are not changed by the extension.
+        expect(fixture.recordedTimings.interChunkDelaysMs).toEqual([0, 10]);
+      },
+      { reasoning: "think hard", toolCalls: [{ name: "lookup", arguments: { city: "Paris" } }] },
+    );
+  } finally {
+    delayMs.mockRestore();
+    deliverJson.mockRestore();
+  }
+});
