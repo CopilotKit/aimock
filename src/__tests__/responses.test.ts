@@ -2746,6 +2746,373 @@ describe("POST /v1/responses (citations)", () => {
     expect((done!.part as { annotations: unknown[] }).annotations).toHaveLength(2);
   });
 
+  const fileFixture: Fixture = {
+    match: { userMessage: "cite-file" },
+    response: {
+      content: "The plan ships in Q3.",
+      citations: [
+        { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+        { url: "https://mastra.ai", title: "Mastra" },
+        { type: "file", fileId: "file-def456", filename: "notes.md", index: 8 },
+      ],
+    },
+  };
+  const expectedFileAnnotations = [
+    { type: "file_citation", file_id: "file-abc123", filename: "plan.pdf", index: 21 },
+    {
+      type: "url_citation",
+      url: "https://mastra.ai",
+      title: "Mastra",
+      start_index: 0,
+      end_index: 21,
+    },
+    { type: "file_citation", file_id: "file-def456", filename: "notes.md", index: 8 },
+  ];
+
+  it("non-streaming output_text carries file_citation annotations in fixture order", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-file" }],
+      stream: false,
+    });
+    const msg = JSON.parse(res.body).output.find((o: { type: string }) => o.type === "message");
+    expect(msg.content[0].annotations).toEqual(expectedFileAnnotations);
+  });
+
+  it("streaming emits file_citation through annotation.added events", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-file" }],
+      stream: true,
+    });
+    const events = parseResponsesSSEEvents(res.body);
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => e.annotation)).toEqual(expectedFileAnnotations);
+    expect(added.map((e) => e.annotation_index)).toEqual([0, 1, 2]);
+    const done = events.find((e) => e.type === "response.content_part.done");
+    expect((done!.part as { annotations: unknown[] }).annotations).toEqual(expectedFileAnnotations);
+  });
+
+  // `blocks` citation offsets index the joined text of all text blocks (the
+  // Chat Completions / Anthropic / Gemini convention): "Alpha one. " +
+  // "Beta two.". Responses offsets are per output_text, so each citation is
+  // rebased onto the message item it starts in.
+  const blocksCiteFixture: Fixture = {
+    match: { userMessage: "cite-blocks" },
+    response: {
+      content: "",
+      blocks: [
+        { type: "text", text: "Alpha one. " },
+        { type: "toolCall", name: "lookup", arguments: "{}" },
+        { type: "text", text: "Beta two." },
+      ],
+      citations: [
+        { url: "https://alpha.example", title: "Alpha", startIndex: 0, endIndex: 5 },
+        { url: "https://beta.example", title: "Beta", startIndex: 11, endIndex: 15 },
+        { url: "https://whole.example" },
+        { type: "file", fileId: "file-beta", filename: "beta.md", index: 13 },
+      ],
+    },
+  };
+  // The offset-less citation takes the shared defaults (start 0, end of the
+  // joined text), so it goes on the first message, clamped to its text.
+  const alphaAnnotations = [
+    {
+      type: "url_citation",
+      url: "https://alpha.example",
+      title: "Alpha",
+      start_index: 0,
+      end_index: 5,
+    },
+    {
+      type: "url_citation",
+      url: "https://whole.example",
+      title: "https://whole.example",
+      start_index: 0,
+      end_index: 11,
+    },
+  ];
+  const betaAnnotations = [
+    {
+      type: "url_citation",
+      url: "https://beta.example",
+      title: "Beta",
+      start_index: 0,
+      end_index: 4,
+    },
+    { type: "file_citation", file_id: "file-beta", filename: "beta.md", index: 2 },
+  ];
+
+  it("non-streaming blocks attach each citation only to the message it starts in, rebased", async () => {
+    instance = await createServer([blocksCiteFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    expect(output.map((o: { type: string }) => o.type)).toEqual([
+      "message",
+      "function_call",
+      "message",
+    ]);
+    expect(output[0].content[0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content[0].annotations).toEqual(betaAnnotations);
+  });
+
+  it("streaming blocks emit each annotation.added once, on the owning message", async () => {
+    instance = await createServer([blocksCiteFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const events = parseResponsesSSEEvents(res.body);
+    const added = events
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => ({
+        output_index: e.output_index,
+        content_index: e.content_index,
+        annotation_index: e.annotation_index,
+        annotation: e.annotation,
+      }));
+    expect(added).toEqual([
+      ...alphaAnnotations.map((annotation, i) => ({
+        output_index: 0,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+      ...betaAnnotations.map((annotation, i) => ({
+        output_index: 2,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+    ]);
+    const parts = events
+      .filter((e) => e.type === "response.content_part.done")
+      .map((e) => (e.part as { annotations: unknown[] }).annotations);
+    expect(parts).toEqual([alphaAnnotations, betaAnnotations]);
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (completed!.response as { output: { content?: { annotations: unknown[] }[] }[] })
+      .output;
+    expect(output[0].content![0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content![0].annotations).toEqual(betaAnnotations);
+  });
+
+  it("blocks put an offset-less citation only on the first message, streaming and not", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-whole" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Alpha one. " },
+            { type: "text", text: "Beta two." },
+          ],
+          citations: [{ url: "https://whole.example" }],
+        },
+      },
+    ]);
+    const whole = {
+      type: "url_citation",
+      url: "https://whole.example",
+      title: "https://whole.example",
+      start_index: 0,
+      end_index: 11,
+    };
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-whole" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    const output = JSON.parse(res.body).output;
+    expect(
+      output.map((o: { content: { annotations: unknown[] }[] }) => o.content[0].annotations),
+    ).toEqual([[whole], []]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body(true))).body,
+    );
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => [e.output_index, e.annotation])).toEqual([[0, whole]]);
+  });
+
+  // A file citation is a point after the cited text, so an `index` equal to a
+  // block's end belongs to that block (at its end), not to index 0 of the
+  // next one. A URL citation is a range, owned by the block holding its start.
+  // "Alpha one. " is 11 long, "Beta two." 9, so the joined text is 20 long.
+  const boundaryFixture: Fixture = {
+    match: { userMessage: "cite-boundary" },
+    response: {
+      content: "",
+      blocks: [
+        { type: "text", text: "Alpha one. " },
+        { type: "text", text: "Beta two." },
+      ],
+      citations: [
+        { type: "file", fileId: "file-boundary", filename: "boundary.md", index: 11 },
+        { type: "file", fileId: "file-zero", filename: "zero.md", index: 0 },
+        { type: "file", fileId: "file-end", filename: "end.md", index: 20 },
+        { url: "https://beta.example", startIndex: 11, endIndex: 15 },
+      ],
+    },
+  };
+  const boundaryFirst = [
+    { type: "file_citation", file_id: "file-boundary", filename: "boundary.md", index: 11 },
+    { type: "file_citation", file_id: "file-zero", filename: "zero.md", index: 0 },
+  ];
+  const boundarySecond = [
+    { type: "file_citation", file_id: "file-end", filename: "end.md", index: 9 },
+    {
+      type: "url_citation",
+      url: "https://beta.example",
+      title: "https://beta.example",
+      start_index: 0,
+      end_index: 4,
+    },
+  ];
+  const boundaryBody = (stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: "cite-boundary" }],
+    stream,
+  });
+
+  it("non-streaming blocks attach a file citation on a block boundary to the block before it", async () => {
+    instance = await createServer([boundaryFixture]);
+    const res = await post(`${instance.url}/v1/responses`, boundaryBody(false));
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    expect(
+      output.map((o: { content: { annotations: unknown[] }[] }) => o.content[0].annotations),
+    ).toEqual([boundaryFirst, boundarySecond]);
+  });
+
+  it("streaming blocks attach a file citation on a block boundary to the block before it", async () => {
+    instance = await createServer([boundaryFixture]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, boundaryBody(true))).body,
+    );
+    const added = events
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => ({
+        output_index: e.output_index,
+        content_index: e.content_index,
+        annotation_index: e.annotation_index,
+        annotation: e.annotation,
+      }));
+    expect(added).toEqual([
+      ...boundaryFirst.map((annotation, i) => ({
+        output_index: 0,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+      ...boundarySecond.map((annotation, i) => ({
+        output_index: 1,
+        content_index: 0,
+        annotation_index: i,
+        annotation,
+      })),
+    ]);
+  });
+
+  it("a citation spanning two messages goes to the one it starts in, end clamped to it", async () => {
+    // [6, 15) starts in "Alpha one. " (0-11) and ends in "Beta two." (11-20):
+    // the starting message owns it, rebased, with end_index clamped to its text.
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-span" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Alpha one. " },
+            { type: "text", text: "Beta two." },
+          ],
+          citations: [{ url: "https://span.example", title: "Span", startIndex: 6, endIndex: 15 }],
+        },
+      },
+    ]);
+    const span = {
+      type: "url_citation",
+      url: "https://span.example",
+      title: "Span",
+      start_index: 6,
+      end_index: 11,
+    };
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-span" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    const output = JSON.parse(res.body).output as {
+      content: { text: string; annotations: unknown[] }[];
+    }[];
+    expect(output.map((o) => [o.content[0].text, o.content[0].annotations])).toEqual([
+      ["Alpha one. ", [span]],
+      ["Beta two.", []],
+    ]);
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body(true))).body,
+    );
+    const added = events.filter((e) => e.type === "response.output_text.annotation.added");
+    expect(added.map((e) => [e.output_index, e.annotation_index, e.annotation])).toEqual([
+      [0, 0, span],
+    ]);
+    const completed = events.find((e) => e.type === "response.completed");
+    const streamedOutput = (
+      completed!.response as { output: { content: { annotations: unknown[] }[] }[] }
+    ).output;
+    expect(streamedOutput.map((o) => o.content[0].annotations)).toEqual([[span], []]);
+  });
+
+  it("misbehavior blocks turns attach each citation only to the owning message", async () => {
+    instance = await createServer([{ ...blocksCiteFixture, misbehavior: "tool-unknown-name" }], {
+      enableMisbehavior: true,
+    });
+    const body = (stream: boolean) => ({
+      model: "gpt-4",
+      input: [{ role: "user", content: "cite-blocks" }],
+      stream,
+    });
+    const res = await post(`${instance.url}/v1/responses`, body(false));
+    expect(res.status).toBe(200);
+    const output = JSON.parse(res.body).output;
+    // The fault was applied: the call between the messages is renamed.
+    expect(output.map((o: { type: string; name?: string }) => [o.type, o.name])).toEqual([
+      ["message", undefined],
+      ["function_call", "lookup_v2"],
+      ["message", undefined],
+    ]);
+    expect(output[0].content[0].annotations).toEqual(alphaAnnotations);
+    expect(output[2].content[0].annotations).toEqual(betaAnnotations);
+    const streamed = await post(`${instance.url}/v1/responses`, body(true));
+    expect(streamed.status).toBe(200);
+    const streamedEvents = parseResponsesSSEEvents(streamed.body);
+    const doneItems = streamedEvents
+      .filter((e) => e.type === "response.output_item.done")
+      .map((e) => e.item as { type: string; name?: string })
+      .map((item) => [item.type, item.name]);
+    expect(doneItems).toEqual([
+      ["message", undefined],
+      ["function_call", "lookup_v2"],
+      ["message", undefined],
+    ]);
+    const added = streamedEvents
+      .filter((e) => e.type === "response.output_text.annotation.added")
+      .map((e) => [e.output_index, e.annotation_index, e.annotation]);
+    expect(added).toEqual([
+      ...alphaAnnotations.map((annotation, i) => [0, i, annotation]),
+      ...betaAnnotations.map((annotation, i) => [2, i, annotation]),
+    ]);
+  });
+
   it("omitting citations keeps annotations empty", async () => {
     instance = await createServer([
       { match: { userMessage: "plain" }, response: { content: "hi" } },
@@ -2758,4 +3125,350 @@ describe("POST /v1/responses (citations)", () => {
     const msg = JSON.parse(res.body).output.find((o: { type: string }) => o.type === "message");
     expect(msg.content[0].annotations).toEqual([]);
   });
+});
+
+describe("POST /v1/responses (generated files)", () => {
+  const png = "iVBORw0KGgo=";
+  const fileFixture: Fixture = {
+    match: { userMessage: "draw" },
+    response: { content: "Here is your image.", files: [{ mimeType: "image/png", data: png }] },
+  };
+  const body = (msg: string, stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: msg }],
+    stream,
+  });
+
+  it("non-streaming output leads with a completed image_generation_call item", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, body("draw", false));
+    const output = JSON.parse(res.body).output;
+    expect(output.map((o: { type: string }) => o.type)).toEqual([
+      "image_generation_call",
+      "message",
+    ]);
+    expect(output[0]).toEqual({
+      type: "image_generation_call",
+      id: expect.any(String),
+      status: "completed",
+      result: png,
+    });
+  });
+
+  it("streaming emits the image_generation_call lifecycle before the message", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, body("draw", true));
+    const events = parseResponsesSSEEvents(res.body);
+    const types = events.map((e) => e.type);
+    const added = types.indexOf("response.output_item.added");
+    expect(types.slice(added, added + 5)).toEqual([
+      "response.output_item.added",
+      "response.image_generation_call.in_progress",
+      "response.image_generation_call.generating",
+      "response.image_generation_call.completed",
+      "response.output_item.done",
+    ]);
+    expect(events[added].item).toMatchObject({ type: "image_generation_call", result: null });
+    expect(events[added + 4].item).toMatchObject({ status: "completed", result: png });
+    // One item: added, the three phase events and done all name the same id.
+    const igId = (events[added].item as { id: string }).id;
+    expect(igId).toEqual(expect.any(String));
+    expect((events[added + 4].item as { id: string }).id).toBe(igId);
+    for (const phase of events.slice(added + 1, added + 4)) expect(phase.item_id).toBe(igId);
+    const message = events.find(
+      (e) =>
+        e.type === "response.output_item.added" && (e.item as { type: string }).type === "message",
+    );
+    expect(message!.output_index).toBe(1);
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (completed!.response as { output: { type: string; id: string }[] }).output;
+    expect(output.map((o) => o.type)).toEqual(["image_generation_call", "message"]);
+    expect(output[0].id).toBe(igId);
+  });
+
+  it.each([
+    ["tool-only", { toolCalls: [{ name: "save", arguments: "{}" }] }, ["function_call"]],
+    [
+      "content+toolCalls",
+      { content: "Saving.", toolCalls: [{ name: "save", arguments: "{}" }] },
+      ["message", "function_call"],
+    ],
+    [
+      "blocks",
+      {
+        blocks: [
+          { type: "toolCall" as const, name: "save", arguments: "{}" },
+          { type: "text" as const, text: "Saved." },
+        ],
+      },
+      ["function_call", "message"],
+    ],
+  ])("%s turns lead with the image_generation_call item", async (_name, response, rest) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-tools" },
+        response: { ...response, files: [{ mimeType: "image/png", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("draw-tools", stream));
+      const output = stream
+        ? (
+            parseResponsesSSEEvents(res.body).find((e) => e.type === "response.completed")!
+              .response as { output: { type: string }[] }
+          ).output
+        : (JSON.parse(res.body).output as { type: string }[]);
+      expect(output.map((o) => o.type)).toEqual(["image_generation_call", ...rest]);
+    }
+  });
+
+  it.each([
+    ["text", { content: "Here is your file." }],
+    ["tool-only", { toolCalls: [{ name: "save", arguments: "{}" }] }],
+    ["content+toolCalls", { content: "Saving.", toolCalls: [{ name: "save", arguments: "{}" }] }],
+    ["blocks", { blocks: [{ type: "text" as const, text: "Saved." }] }],
+  ])(
+    "%s turns reject a non-image file with a coded 500 naming its mimeType",
+    async (_name, response) => {
+      instance = await createServer([
+        {
+          match: { userMessage: "pdf" },
+          response: {
+            ...response,
+            files: [
+              { mimeType: "image/png", data: png },
+              { mimeType: "application/pdf", data: "JVBERi0=" },
+            ],
+          },
+        },
+      ]);
+      for (const stream of [false, true]) {
+        const res = await post(`${instance.url}/v1/responses`, body("pdf", stream));
+        expect(res.status).toBe(500);
+        expect(res.body).not.toContain('"type":"image_generation_call"');
+        const err = JSON.parse(res.body).error;
+        expect(err.code).toBe("aimock_unsupported_generated_file");
+        expect(err.message).toContain("application/pdf");
+      }
+    },
+  );
+
+  it("still serves image/* files on both paths", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "jpeg" },
+        response: { content: "ok", files: [{ mimeType: "image/jpeg", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("jpeg", stream));
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("image_generation_call");
+    }
+  });
+
+  it("an upper-case IMAGE/* mimeType is still an image on both paths", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "upper" },
+        response: { content: "ok", files: [{ mimeType: "IMAGE/PNG", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("upper", stream));
+      expect(res.status, res.body).toBe(200);
+      expect(res.body).toContain('"type":"image_generation_call"');
+    }
+  });
+
+  it("two files stream as two image_generation_call items, in fixture order, before the message", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-two" },
+        response: {
+          content: "Two images.",
+          files: [
+            { mimeType: "image/png", data: "AAAA" },
+            { mimeType: "image/png", data: "BBBB" },
+          ],
+        },
+      },
+    ]);
+    type Item = { type: string; id: string; result?: string | null };
+    const nonStreamed = JSON.parse(
+      (await post(`${instance.url}/v1/responses`, body("draw-two", false))).body,
+    ).output as Item[];
+    expect(nonStreamed.map((o) => [o.type, o.result])).toEqual([
+      ["image_generation_call", "AAAA"],
+      ["image_generation_call", "BBBB"],
+      ["message", undefined],
+    ]);
+    expect(nonStreamed[0].id).not.toBe(nonStreamed[1].id);
+
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body("draw-two", true))).body,
+    );
+    const done = events.filter((e) => e.type === "response.output_item.done");
+    expect(
+      done.map((e) => [e.output_index, (e.item as Item).type, (e.item as Item).result]),
+    ).toEqual([
+      [0, "image_generation_call", "AAAA"],
+      [1, "image_generation_call", "BBBB"],
+      [2, "message", undefined],
+    ]);
+    const completed = events.find((e) => e.type === "response.completed")!.response as {
+      output: Item[];
+    };
+    expect(completed.output.map((o) => o.id)).toEqual(done.map((e) => (e.item as Item).id));
+  });
+
+  it("files with reasoning order the output reasoning, image_generation_call, message", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-think" },
+        response: {
+          content: "Here.",
+          reasoning: "Plan the image.",
+          files: [{ mimeType: "image/png", data: png }],
+        },
+      },
+    ]);
+    const want = ["reasoning", "image_generation_call", "message"];
+    const nonStreamed = JSON.parse(
+      (await post(`${instance.url}/v1/responses`, body("draw-think", false))).body,
+    ).output as { type: string }[];
+    expect(nonStreamed.map((o) => o.type)).toEqual(want);
+
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body("draw-think", true))).body,
+    );
+    const done = events.filter((e) => e.type === "response.output_item.done");
+    expect(done.map((e) => [e.output_index, (e.item as { type: string }).type])).toEqual(
+      want.map((type, i) => [i, type]),
+    );
+    const completed = events.find((e) => e.type === "response.completed")!.response as {
+      output: { type: string }[];
+    };
+    expect(completed.output.map((o) => o.type)).toEqual(want);
+  });
+
+  it.each([false, true])(
+    "omitting files leaves the wire byte-identical to the no-files baseline (stream: %s)",
+    async (stream) => {
+      instance = await createServer([
+        { match: { userMessage: "plain" }, response: { content: "hi" } },
+      ]);
+      const res = await post(`${instance.url}/v1/responses`, body("plain", stream));
+      // Ids and timestamps are random; everything else must match byte for byte.
+      const normalized = res.body
+        .replace(/"(id|item_id)":"[^"]*"/g, '"$1":"<id>"')
+        .replace(/"created_at":\d+/g, '"created_at":0');
+      const envelope = '"id":"<id>","object":"response","created_at":0,"model":"gpt-4"';
+      const message =
+        '{"type":"message","id":"<id>","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}';
+      const usage = '"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}';
+      if (!stream) {
+        expect(normalized).toBe(
+          `{${envelope},"status":"completed","output":[${message}],${usage}}`,
+        );
+        return;
+      }
+      const sse = (type: string, data: string) =>
+        `event: ${type}\ndata: {"type":"${type}",${data}}\n\n`;
+      const part = (text: string) =>
+        `"item_id":"<id>","output_index":0,"content_index":0,"part":{"type":"output_text","text":"${text}","annotations":[]}`;
+      const inProgress = `"response":{${envelope},"status":"in_progress","output":[]}`;
+      expect(normalized).toBe(
+        [
+          sse("response.created", inProgress),
+          sse("response.in_progress", inProgress),
+          sse(
+            "response.output_item.added",
+            '"output_index":0,"item":{"type":"message","id":"<id>","status":"in_progress","role":"assistant","content":[]}',
+          ),
+          sse("response.content_part.added", part("")),
+          sse(
+            "response.output_text.delta",
+            '"item_id":"<id>","output_index":0,"content_index":0,"delta":"hi"',
+          ),
+          sse(
+            "response.output_text.done",
+            '"item_id":"<id>","output_index":0,"content_index":0,"text":"hi"',
+          ),
+          sse("response.content_part.done", part("hi")),
+          sse("response.output_item.done", `"output_index":0,"item":${message}`),
+          sse(
+            "response.completed",
+            `"response":{${envelope},"status":"completed","output":[${message}],${usage}}`,
+          ),
+        ].join(""),
+      );
+    },
+  );
+});
+
+describe("POST /v1/responses (generated files under output-withholding faults)", () => {
+  const png = "iVBORw0KGgo=";
+  const files = [{ mimeType: "image/png", data: png }];
+  const body = (stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: "draw" }],
+    stream,
+  });
+  const outputOf = (res: { body: string }, stream: boolean): { type: string }[] =>
+    stream
+      ? (
+          parseResponsesSSEEvents(res.body).find(
+            (e) => e.type === "response.completed" || e.type === "response.incomplete",
+          )!.response as { output: { type: string }[] }
+        ).output
+      : JSON.parse(res.body).output;
+
+  it.each([
+    ["empty-response", false, []],
+    ["empty-response", true, []],
+    ["refusal", false, ["message"]],
+    ["refusal", true, ["message"]],
+    ["content-filter", false, []],
+    ["content-filter", true, []],
+    ["reasoning-only", false, ["reasoning"]],
+    ["reasoning-only", true, ["reasoning"]],
+  ] as const)("%s emits no image_generation_call, stream=%s", async (fault, stream, types) => {
+    instance = await createServer(
+      [
+        {
+          match: { userMessage: "draw" },
+          response: { content: "Here.", files },
+          misbehavior: fault,
+        },
+      ],
+      { enableMisbehavior: true },
+    );
+    const res = await post(`${instance.url}/v1/responses`, body(stream));
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("image_generation_call");
+    expect(outputOf(res, stream).map((o) => o.type)).toEqual(types);
+  });
+
+  it.each([false, true])(
+    "a fault that keeps the turn's output still serves the images, stream=%s",
+    async (stream) => {
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { toolCalls: [{ name: "save", arguments: '{"a":1}' }], files },
+            misbehavior: "tool-unknown-name",
+          },
+        ],
+        { enableMisbehavior: true },
+      );
+      const res = await post(`${instance.url}/v1/responses`, body(stream));
+      expect(res.status).toBe(200);
+      const output = outputOf(res, stream) as { type: string; name?: string }[];
+      expect(output.map((o) => o.type)).toEqual(["image_generation_call", "function_call"]);
+      // The fault was applied: the call is renamed to an undeclared tool.
+      expect(output[1].name).toBe("save_v2");
+    },
+  );
 });

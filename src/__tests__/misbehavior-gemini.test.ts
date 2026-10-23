@@ -533,3 +533,60 @@ test.each(routes.flatMap((route) => idCases.map((scenario) => ({ ...route, ...sc
     }
   },
 );
+
+// stop-length-mid-tool keeps the text before the cut, so it keeps the
+// fixture's generated files too, as `inlineData` parts before the text part,
+// and the grounding supports index that text part.
+test.each([false, true])(
+  "stop-length-mid-tool keeps files before the text stream=%s",
+  async (stream) => {
+    const png = Buffer.from("png-bytes").toString("base64");
+    const cited = "https://example.com/cited";
+    await withFaultFixture(
+      { faults: [{ fault: "stop-length-mid-tool" }] },
+      async ({ url }) => {
+        const res = await fetch(
+          `${url}/v1beta/models/gemini-2.5-flash:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [{ text: "weather" }] }],
+              tools: [{ functionDeclarations: [{ name: "weather" }] }],
+            }),
+            signal: AbortSignal.timeout(5000),
+          },
+        );
+        const body = await res.text();
+        expect(res.status, body).toBe(200);
+        const payloads: GenerateContentResponse[] = stream
+          ? body
+              .split("\n")
+              .filter((line) => line.startsWith("data: "))
+              .map((line) => JSON.parse(line.slice("data: ".length)))
+          : [JSON.parse(body)];
+        const candidates = payloads.flatMap((p) => p.candidates ?? []);
+        const parts = candidates.flatMap((c) => c.content?.parts ?? []);
+        expect(parts).toEqual([
+          { inlineData: { mimeType: "image/png", data: png } },
+          { text: "Sunny skies today." },
+        ]);
+        const supports = candidates.flatMap((c) => c.groundingMetadata?.groundingSupports ?? []);
+        expect(supports).toHaveLength(1);
+        expect(supports[0].segment).toMatchObject({ partIndex: 1, text: "skies today" });
+        expect(candidates.at(-1)?.finishReason).toBe("MAX_TOKENS");
+        expect(body).toContain(cited);
+      },
+      {
+        response: {
+          blocks: [
+            { type: "text", text: "Sunny skies today." },
+            { type: "toolCall", id: "call_weather", name: "weather", arguments: { city: "Paris" } },
+          ],
+          files: [{ mimeType: "image/png", data: png }],
+          citations: [{ url: cited, title: "Forecast", startIndex: 6, endIndex: 17 }],
+        },
+      },
+    );
+  },
+);

@@ -2480,3 +2480,333 @@ describe("per-request journal attribution and client-fault classification", () =
     expect(entries[0].path).toBe("/v1/voices/%E0%A4%A");
   });
 });
+
+describe("POST /v1/chat/completions (citations and files)", () => {
+  const citeFixture: Fixture = {
+    match: { userMessage: "cite-me" },
+    response: {
+      content: "Mastra is a TypeScript framework.",
+      citations: [
+        { url: "https://mastra.ai", title: "Mastra" },
+        { url: "https://mastra.ai/docs", startIndex: 0, endIndex: 6 },
+      ],
+    },
+  };
+  const expectedAnnotations = [
+    {
+      type: "url_citation",
+      url_citation: { url: "https://mastra.ai", title: "Mastra", start_index: 0, end_index: 33 },
+    },
+    {
+      type: "url_citation",
+      url_citation: {
+        url: "https://mastra.ai/docs",
+        title: "https://mastra.ai/docs",
+        start_index: 0,
+        end_index: 6,
+      },
+    },
+  ];
+  const chatBody = (msg: string, stream: boolean) => ({
+    model: "gpt-4",
+    stream,
+    messages: [{ role: "user", content: msg }],
+  });
+  type ChatChunk = {
+    choices: { delta: { content?: string; annotations?: unknown }; finish_reason: string | null }[];
+  };
+
+  it("non-streaming message carries url_citation annotations", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-me", false));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(expectedAnnotations);
+  });
+
+  it("streaming sends one delta.annotations chunk after the content, before the finish chunk", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-me", true));
+    const chunks = parseSSEEvents(res.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations).toHaveLength(1);
+    expect(withAnnotations[0].choices[0].delta.annotations).toEqual(expectedAnnotations);
+    const idx = chunks.indexOf(withAnnotations[0]);
+    expect(chunks[idx + 1].choices[0].finish_reason).toBe("stop");
+    expect(chunks.slice(0, idx).some((c) => c.choices[0].delta.content)).toBe(true);
+  });
+
+  it("content+toolCalls turns carry the annotations on both modes", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-tools" },
+        response: {
+          content: "Checking.",
+          toolCalls: [{ name: "lookup", arguments: "{}" }],
+          citations: [{ url: "https://example.com" }],
+        },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-tools", false));
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual([
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 9,
+        },
+      },
+    ]);
+    const streamed = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("cite-tools", true),
+    );
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    expect(chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined)).toHaveLength(1);
+  });
+
+  it("blocks turns carry the annotations on both modes", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-blocks" },
+        response: {
+          blocks: [
+            { type: "text", text: "Checking." },
+            { type: "toolCall", name: "lookup", arguments: "{}" },
+          ],
+          citations: [{ url: "https://example.com" }],
+        },
+      },
+    ]);
+    const expected = [
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 9,
+        },
+      },
+    ];
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-blocks", false));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(expected);
+    const streamed = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("cite-blocks", true),
+    );
+    expect(streamed.status).toBe(200);
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations.map((c) => c.choices[0].delta.annotations)).toEqual([expected]);
+    const idx = chunks.indexOf(withAnnotations[0]);
+    expect(chunks[idx + 1].choices[0].finish_reason).toBe("tool_calls");
+  });
+
+  it("skips file citations, which Chat Completions has no annotation for (both modes)", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-file" },
+        response: {
+          content: "Hello.",
+          citations: [
+            { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+            { url: "https://example.com" },
+          ],
+        },
+      },
+      {
+        match: { userMessage: "file-only" },
+        response: {
+          content: "Hello.",
+          citations: [{ type: "file", fileId: "file-abc123", filename: "plan.pdf" }],
+        },
+      },
+    ]);
+    const urlOnly = [
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 6,
+        },
+      },
+    ];
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-file", false));
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(urlOnly);
+    const streamed = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-file", true));
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations.map((c) => c.choices[0].delta.annotations)).toEqual([urlOnly]);
+
+    const fileOnly = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("file-only", false),
+    );
+    expect("annotations" in JSON.parse(fileOnly.body).choices[0].message).toBe(false);
+    const fileOnlyStream = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("file-only", true),
+    );
+    expect(fileOnlyStream.body).not.toContain("annotations");
+  });
+
+  it.each([false, true])(
+    "omitting citations leaves the wire byte-identical to the no-citations baseline (stream: %s)",
+    async (stream) => {
+      instance = await createServer([
+        { match: { userMessage: "plain" }, response: { content: "hi" } },
+      ]);
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("plain", stream));
+      // Ids and timestamps are random; everything else must match byte for byte.
+      const normalized = res.body
+        .replace(/"id":"[^"]*"/g, '"id":"<id>"')
+        .replace(/"created":\d+/g, '"created":0');
+      const envelope = '"id":"<id>","object":"chat.completion","created":0,"model":"gpt-4"';
+      if (!stream) {
+        expect(normalized).toBe(
+          `{${envelope},"choices":[{"index":0,"message":{"role":"assistant","content":"hi","refusal":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+        );
+        return;
+      }
+      const chunk = (delta: string, finish: string) =>
+        `data: {"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4","choices":[{"index":0,"delta":${delta},"logprobs":null,"finish_reason":${finish}}]}\n\n`;
+      expect(normalized).toBe(
+        chunk('{"role":"assistant","content":""}', "null") +
+          chunk('{"content":"hi"}', "null") +
+          chunk("{}", '"stop"') +
+          "data: [DONE]\n\n",
+      );
+    },
+  );
+
+  it.each([false, true])("rejects fixture files with a coded 500 (stream: %s)", async (stream) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("aimock_unsupported_generated_file");
+    expect(body.error.message).toContain("OpenAI Chat Completions");
+  });
+
+  const generatedFile = [{ mimeType: "image/png", data: "iVBORw0KGgo=" }];
+
+  it.each<[string, Fixture["response"]]>([
+    ["tool-only", { toolCalls: [{ name: "lookup", arguments: "{}" }], files: generatedFile }],
+    [
+      "content + tool calls",
+      {
+        content: "Checking.",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        files: generatedFile,
+      },
+    ],
+  ])("rejects fixture files on the %s path with a coded 500", async (_label, response) => {
+    instance = await createServer([{ match: { userMessage: "draw" }, response }]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      expect(res.status).toBe(500);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe("aimock_unsupported_generated_file");
+      expect(body.error.message).toContain("OpenAI Chat Completions");
+    }
+  });
+
+  // What a turn looks like on the wire, folded the same way for both modes.
+  const chatTurn = (body: string, stream: boolean) => {
+    if (!stream) {
+      const choice = JSON.parse(body).choices[0];
+      return {
+        content: choice.message.content ?? "",
+        refusal: choice.message.refusal ?? "",
+        finish: choice.finish_reason,
+      };
+    }
+    const chunks = body
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)).choices[0]);
+    return {
+      content: chunks.map((c) => c.delta.content ?? "").join(""),
+      refusal: chunks.map((c) => c.delta.refusal ?? "").join(""),
+      finish: chunks.map((c) => c.finish_reason).filter((f) => f !== null)[0],
+    };
+  };
+
+  it.each([
+    {
+      fault: { fault: "refusal" as const },
+      turn: { content: "", refusal: "I can't help with that.", finish: "stop" },
+    },
+    {
+      fault: { fault: "content-filter" as const },
+      turn: { content: "", refusal: "", finish: "content_filter" },
+    },
+    {
+      fault: { fault: "reasoning-only" as const, reasoning: "Thinking only." },
+      turn: { content: "", refusal: "", finish: "length" },
+    },
+  ])(
+    "rejects fixture files under the $fault.fault misbehavior with a coded 500",
+    async ({ fault, turn }) => {
+      const misbehavior = { faults: [{ ...fault, rate: 1 }] };
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { content: "Here.", files: generatedFile },
+            misbehavior,
+          },
+          // Control: the same fault on a servable fixture is applied on this wire.
+          { match: { userMessage: "plain" }, response: { content: "Here." }, misbehavior },
+        ],
+        { enableMisbehavior: true },
+      );
+      for (const stream of [false, true]) {
+        const control = await post(
+          `${instance.url}/v1/chat/completions`,
+          chatBody("plain", stream),
+        );
+        expect(control.status).toBe(200);
+        expect(chatTurn(control.body, stream)).toEqual(turn);
+
+        const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+        expect(res.status).toBe(500);
+        const body = JSON.parse(res.body);
+        expect(body.error.code).toBe("aimock_unsupported_generated_file");
+        expect(body.error.message).toContain("OpenAI Chat Completions");
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "journals the rejected files fixture as a 500 with the error (stream: %s)",
+    async (stream) => {
+      const fixture: Fixture = {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      };
+      instance = await createServer([fixture]);
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      const wireError = JSON.parse(res.body).error as { message: string; code: string };
+      expect(wireError.code).toBe("aimock_unsupported_generated_file");
+      const entries = instance.journal.getAll();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].path).toBe("/v1/chat/completions");
+      expect(entries[0].response.status).toBe(500);
+      expect(entries[0].response.fixture).toBe(fixture);
+      // The journal keeps the message the client got, which names the error.
+      expect(entries[0].response.error).toBe(wireError.message);
+      expect(entries[0].response.error).toContain('fixture "files" (model-generated files)');
+    },
+  );
+});

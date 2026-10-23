@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { GoogleGenAI } from "@google/genai";
 import * as http from "node:http";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -1448,4 +1449,748 @@ describe("Gemini model-generated files", () => {
       expect(res.body).not.toContain("inlineData");
     }
   });
+});
+
+describe("Gemini citations (groundingMetadata)", () => {
+  const citeFixture: Fixture = {
+    match: { userMessage: "cite-me" },
+    response: {
+      // "é" is two UTF-8 bytes, so byte offsets differ from character offsets.
+      content: "Café Mastra is a framework.",
+      citations: [
+        { url: "https://mastra.ai", title: "Mastra", startIndex: 5, endIndex: 11 },
+        { url: "https://mastra.ai/docs" },
+      ],
+    },
+  };
+  const expected = {
+    groundingChunks: [
+      { web: { uri: "https://mastra.ai", title: "Mastra" } },
+      { web: { uri: "https://mastra.ai/docs", title: "https://mastra.ai/docs" } },
+    ],
+    groundingSupports: [
+      {
+        segment: { partIndex: 0, startIndex: 6, endIndex: 12, text: "Mastra" },
+        groundingChunkIndices: [0],
+      },
+      {
+        segment: { partIndex: 0, startIndex: 0, endIndex: 28, text: "Café Mastra is a framework." },
+        groundingChunkIndices: [1],
+      },
+    ],
+  };
+  type GroundedChunk = {
+    candidates: {
+      content?: { parts: { text?: string }[] };
+      finishReason?: string;
+      groundingMetadata?: unknown;
+    }[];
+  };
+
+  it("non-streaming candidate carries groundingMetadata with byte offsets", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "cite-me" }] }],
+    });
+    expect(JSON.parse(res.body).candidates[0].groundingMetadata).toEqual(expected);
+  });
+
+  it("streaming grounds each chunk with byte offsets into its own text part", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "cite-me" }] }],
+    });
+    const chunks = parseGeminiSSEChunks(res.body) as GroundedChunk[];
+    // The default chunkSize (20) streams "Café Mastra is a fra" then "mework.".
+    expect(chunks.map((c) => c.candidates[0].content?.parts[0].text)).toEqual([
+      "Café Mastra is a fra",
+      "mework.",
+    ]);
+    expect(chunks[1].candidates[0].finishReason).toBe("STOP");
+    const { groundingChunks } = expected;
+    expect(chunks.map((c) => c.candidates[0].groundingMetadata)).toEqual([
+      {
+        groundingChunks,
+        groundingSupports: [
+          {
+            segment: { partIndex: 0, startIndex: 6, endIndex: 12, text: "Mastra" },
+            groundingChunkIndices: [0],
+          },
+          {
+            segment: { partIndex: 0, startIndex: 0, endIndex: 21, text: "Café Mastra is a fra" },
+            groundingChunkIndices: [1],
+          },
+        ],
+      },
+      {
+        groundingChunks,
+        groundingSupports: [
+          {
+            segment: { partIndex: 0, startIndex: 0, endIndex: 7, text: "mework." },
+            groundingChunkIndices: [1],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      "legacy",
+      0,
+      {
+        content: "Checking.",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        citations: [{ url: "https://example.com" }],
+      },
+      "FUNCTION_CALL",
+    ],
+    [
+      "blocks",
+      1,
+      {
+        blocks: [
+          { type: "toolCall" as const, name: "lookup", arguments: "{}" },
+          { type: "text" as const, text: "Checking." },
+        ],
+        citations: [{ url: "https://example.com" }],
+      },
+      "FUNCTION_CALL",
+    ],
+  ])(
+    "content+toolCalls (%s) carries groundingMetadata on both modes",
+    async (_name, textPart, response, finishReason) => {
+      instance = await createServer([{ match: { userMessage: "cite-tools" }, response }]);
+      const want = (partIndex: number) => ({
+        groundingChunks: [{ web: { uri: "https://example.com", title: "https://example.com" } }],
+        groundingSupports: [
+          {
+            segment: { partIndex, startIndex: 0, endIndex: 9, text: "Checking." },
+            groundingChunkIndices: [0],
+          },
+        ],
+      });
+      const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        contents: [{ role: "user", parts: [{ text: "cite-tools" }] }],
+      });
+      expect(JSON.parse(res.body).candidates[0].groundingMetadata).toEqual(want(textPart));
+      expect(JSON.parse(res.body).candidates[0].finishReason).toBe(finishReason);
+      const streamed = await post(
+        `${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`,
+        { contents: [{ role: "user", parts: [{ text: "cite-tools" }] }] },
+      );
+      const chunks = parseGeminiSSEChunks(streamed.body) as GroundedChunk[];
+      // The stream finishes with the fixture's finish reason. The grounded
+      // chunk is the text chunk, which is not always the finishing chunk.
+      expect(chunks[chunks.length - 1].candidates[0].finishReason).toBe(finishReason);
+      const grounded = chunks.filter((c) => c.candidates[0].groundingMetadata !== undefined);
+      expect(grounded).toHaveLength(1);
+      // The grounded chunk carries the text the offsets refer to, as part 0.
+      expect(grounded[0].candidates[0].content?.parts[0].text).toBe("Checking.");
+      expect(grounded[0].candidates[0].groundingMetadata).toEqual(want(0));
+    },
+  );
+
+  it("skips file citations, which grounding metadata has no form for (both modes)", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-file" },
+        response: {
+          content: "Hello.",
+          citations: [
+            { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+            { url: "https://example.com" },
+          ],
+        },
+      },
+      {
+        match: { userMessage: "file-only" },
+        response: {
+          content: "Hello.",
+          citations: [{ type: "file", fileId: "file-abc123", filename: "plan.pdf" }],
+        },
+      },
+    ]);
+    const want = {
+      groundingChunks: [{ web: { uri: "https://example.com", title: "https://example.com" } }],
+      groundingSupports: [
+        {
+          segment: { partIndex: 0, startIndex: 0, endIndex: 6, text: "Hello." },
+          groundingChunkIndices: [0],
+        },
+      ],
+    };
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "cite-file" }] }],
+    });
+    expect(JSON.parse(res.body).candidates[0].groundingMetadata).toEqual(want);
+    const streamed = await post(
+      `${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`,
+      { contents: [{ role: "user", parts: [{ text: "cite-file" }] }] },
+    );
+    const grounded = (parseGeminiSSEChunks(streamed.body) as GroundedChunk[]).filter(
+      (c) => c.candidates[0].groundingMetadata !== undefined,
+    );
+    expect(grounded.map((c) => c.candidates[0].groundingMetadata)).toEqual([want]);
+
+    for (const path of ["generateContent", "streamGenerateContent"]) {
+      const fileOnly = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:${path}`, {
+        contents: [{ role: "user", parts: [{ text: "file-only" }] }],
+      });
+      expect(fileOnly.body).not.toContain("groundingMetadata");
+    }
+  });
+
+  it.each([
+    [
+      "generateContent",
+      '{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0}}',
+    ],
+    [
+      "streamGenerateContent",
+      'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0}}\n\n',
+    ],
+  ])(
+    "omitting citations leaves :%s byte-identical to the no-citations baseline",
+    async (method, baseline) => {
+      instance = await createServer([
+        { match: { userMessage: "plain" }, response: { content: "hi" } },
+      ]);
+      const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:${method}`, {
+        contents: [{ role: "user", parts: [{ text: "plain" }] }],
+      });
+      expect(res.body).toBe(baseline);
+    },
+  );
+});
+
+// `groundingSupports[].segment.partIndex` must name the text part the byte
+// offsets refer to, within the parts of the candidate that carries the
+// grounding. Leading thought and inlineData parts shift that index, and a
+// trailing functionCall part must never be the one it names.
+describe("Gemini citations — segment.partIndex", () => {
+  type Part = { text?: string; thought?: boolean; inlineData?: unknown; functionCall?: unknown };
+  type Support = {
+    segment: { partIndex?: number; startIndex: number; endIndex: number; text: string };
+    groundingChunkIndices: number[];
+  };
+  type Candidate = {
+    content?: { parts: Part[] };
+    finishReason?: string;
+    groundingMetadata?: { groundingSupports: Support[] };
+  };
+  type Body = { candidates: Candidate[] };
+
+  const png = "iVBORw0KGgo=";
+  const citations = [
+    { url: "https://mastra.ai", title: "Mastra", startIndex: 5, endIndex: 11 },
+    { url: "https://mastra.ai/docs" },
+  ];
+  // Byte offsets of "Mastra" (after the two-byte "é") and of the whole text.
+  const segments = [
+    { startIndex: 6, endIndex: 12, text: "Mastra" },
+    { startIndex: 0, endIndex: 28, text: "Café Mastra is a framework." },
+  ];
+  const content = "Café Mastra is a framework.";
+
+  async function nonStreaming(userMessage: string): Promise<Candidate> {
+    const res = await post(`${instance!.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: userMessage }] }],
+    });
+    expect(res.status).toBe(200);
+    return (JSON.parse(res.body) as Body).candidates[0];
+  }
+
+  // The streamed candidates carrying groundingMetadata, and the streamed
+  // (non-thought) text.
+  async function streaming(userMessage: string): Promise<{ grounded: Candidate[]; text: string }> {
+    const res = await post(
+      `${instance!.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`,
+      { contents: [{ role: "user", parts: [{ text: userMessage }] }] },
+    );
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as Body[];
+    const grounded = chunks
+      .map((c) => c.candidates[0])
+      .filter((c) => c.groundingMetadata !== undefined);
+    const text = chunks
+      .flatMap((c) => c.candidates[0].content?.parts ?? [])
+      .filter((p) => p.text !== undefined && !p.thought)
+      .map((p) => p.text)
+      .join("");
+    return { grounded, text };
+  }
+
+  // Every streamed support names part 0 of its chunk, and its byte offsets
+  // slice that part's text to `segment.text`. Returns the cited text per
+  // grounding chunk index, joined across chunks in stream order.
+  function streamedCitedText(grounded: Candidate[]): string[] {
+    const cited: string[] = [];
+    for (const candidate of grounded) {
+      for (const { segment, part } of citedParts(candidate)) {
+        expect(segment.partIndex).toBe(0);
+        expect(bytes(part.text!, segment.startIndex, segment.endIndex)).toBe(segment.text);
+      }
+      for (const s of candidate.groundingMetadata!.groundingSupports) {
+        for (const i of s.groundingChunkIndices) cited[i] = (cited[i] ?? "") + s.segment.text;
+      }
+    }
+    return cited;
+  }
+
+  // Every support names a non-thought text part of `candidate`; returns the
+  // segments with that part's text for offset checks.
+  function citedParts(candidate: Candidate): { segment: Support["segment"]; part: Part }[] {
+    const parts = candidate.content?.parts ?? [];
+    return (candidate.groundingMetadata?.groundingSupports ?? []).map((s) => {
+      expect(s.segment.partIndex).toBeTypeOf("number");
+      const part = parts[s.segment.partIndex ?? 0];
+      expect(part?.text).toBeTypeOf("string");
+      expect(part?.thought).toBeUndefined();
+      return { segment: s.segment, part };
+    });
+  }
+
+  function bytes(text: string, start: number, end: number): string {
+    return Buffer.from(text, "utf8").subarray(start, end).toString("utf8");
+  }
+
+  it.each([
+    ["reasoning", { content, reasoning: "Thinking it through.", citations }, 1],
+    ["files", { content, files: [{ mimeType: "image/png", data: png }], citations }, 1],
+    [
+      "reasoning + files",
+      {
+        content,
+        reasoning: "Thinking it through.",
+        files: [{ mimeType: "image/png", data: png }],
+        citations,
+      },
+      2,
+    ],
+  ])("%s: non-streaming partIndex names the text part", async (_n, response, want) => {
+    instance = await createServer([{ match: { userMessage: "pi-text" }, response }]);
+    const candidate = await nonStreaming("pi-text");
+    const cited = citedParts(candidate);
+    expect(cited.map((c) => c.segment)).toEqual(segments.map((s) => ({ ...s, partIndex: want })));
+    for (const { segment, part } of cited) {
+      expect(bytes(part.text!, segment.startIndex, segment.endIndex)).toBe(segment.text);
+    }
+  });
+
+  it.each([
+    ["reasoning", { content, reasoning: "Thinking it through.", citations }],
+    ["files", { content, files: [{ mimeType: "image/png", data: png }], citations }],
+  ])("%s: streaming partIndex names the text part of each grounded chunk", async (_n, response) => {
+    instance = await createServer([{ match: { userMessage: "pi-text" }, response }]);
+    const { grounded, text } = await streaming("pi-text");
+    expect(grounded[grounded.length - 1].finishReason).toBe("STOP");
+    expect(text).toBe(content);
+    expect(streamedCitedText(grounded)).toEqual(segments.map((s) => s.text));
+  });
+
+  const toolLast = {
+    legacy: {
+      content,
+      toolCalls: [{ name: "lookup", arguments: "{}" }],
+      files: [{ mimeType: "image/png", data: png }],
+      reasoning: "Thinking it through.",
+      citations,
+    },
+    blocks: {
+      blocks: [
+        { type: "text" as const, text: content },
+        { type: "toolCall" as const, name: "lookup", arguments: "{}" },
+      ],
+      files: [{ mimeType: "image/png", data: png }],
+      reasoning: "Thinking it through.",
+      citations,
+    },
+  };
+
+  it.each(Object.entries(toolLast))(
+    "content + trailing toolCall (%s): non-streaming partIndex skips thought/files and names the text",
+    async (_n, response) => {
+      instance = await createServer([{ match: { userMessage: "pi-tool" }, response }]);
+      const candidate = await nonStreaming("pi-tool");
+      expect(candidate.content?.parts.map((p) => Object.keys(p).sort().join(","))).toEqual([
+        "text,thought",
+        "inlineData",
+        "text",
+        "functionCall",
+      ]);
+      const cited = citedParts(candidate);
+      expect(cited.map((c) => c.segment)).toEqual(segments.map((s) => ({ ...s, partIndex: 2 })));
+      for (const { segment, part } of cited) {
+        expect(bytes(part.text!, segment.startIndex, segment.endIndex)).toBe(segment.text);
+      }
+    },
+  );
+
+  it.each(Object.entries(toolLast))(
+    "content + trailing toolCall (%s): streaming grounds the text chunk, not the functionCall chunk",
+    async (_n, response) => {
+      instance = await createServer([{ match: { userMessage: "pi-tool" }, response }]);
+      const { grounded, text } = await streaming("pi-tool");
+      for (const candidate of grounded) {
+        expect(candidate.content?.parts.some((p) => p.functionCall !== undefined)).toBe(false);
+      }
+      expect(text).toBe(content);
+      expect(streamedCitedText(grounded)).toEqual(segments.map((s) => s.text));
+    },
+  );
+
+  it.each(Object.entries(toolLast))(
+    "content + trailing toolCall (%s): @google/genai parses partIndex onto the cited text part",
+    async (_n, response) => {
+      instance = await createServer([{ match: { userMessage: "pi-tool" }, response }]);
+      // Loopback only: the SDK talks to the local aimock instance.
+      const client = new GoogleGenAI({
+        apiKey: "local",
+        httpOptions: { baseUrl: instance.url, timeout: 5000, retryOptions: { attempts: 1 } },
+      });
+      const request = { model: "gemini-2.5-flash", contents: "pi-tool" };
+      const whole = await client.models.generateContent(request);
+      const candidate = whole.candidates![0];
+      const support = candidate.groundingMetadata!.groundingSupports![0];
+      expect(support.segment).toEqual({ ...segments[0], partIndex: 2 });
+      expect(candidate.content!.parts![support.segment!.partIndex!].text).toBe(content);
+      const grounded = [];
+      for await (const chunk of await client.models.generateContentStream(request)) {
+        if (chunk.candidates?.[0].groundingMetadata) grounded.push(chunk.candidates[0]);
+      }
+      // The default chunkSize streams "Café Mastra is a fra" then "mework.";
+      // "Mastra" lies in the first chunk, at the same byte offsets.
+      expect(grounded).toHaveLength(2);
+      const streamed = grounded[0].groundingMetadata!.groundingSupports![0].segment!;
+      expect(streamed).toEqual({ ...segments[0], partIndex: 0 });
+      // Every streamed segment slices its own chunk's part, as a client reads it.
+      for (const chunk of grounded) {
+        for (const { segment } of chunk.groundingMetadata!.groundingSupports!) {
+          const part = chunk.content!.parts![segment!.partIndex!];
+          expect(part.functionCall).toBeUndefined();
+          expect(bytes(part.text!, segment!.startIndex!, segment!.endIndex!)).toBe(segment!.text);
+        }
+      }
+    },
+  );
+
+  it("blocks with two text parts: non-streaming names the part holding the citation", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "pi-two" },
+        response: {
+          blocks: [
+            { type: "text", text: "Hi. " },
+            { type: "toolCall", name: "lookup", arguments: "{}" },
+            { type: "text", text: content },
+          ],
+          // "Mastra" in the concatenated text "Hi. Café Mastra is a framework."
+          citations: [{ url: "https://mastra.ai", title: "Mastra", startIndex: 9, endIndex: 15 }],
+        },
+      },
+    ]);
+    const candidate = await nonStreaming("pi-two");
+    const cited = citedParts(candidate);
+    expect(cited.map((c) => c.segment)).toEqual([{ ...segments[0], partIndex: 2 }]);
+    expect(bytes(cited[0].part.text!, 6, 12)).toBe("Mastra");
+  });
+
+  it("blocks with two text parts: streaming grounds every text chunk, through the last text block", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "pi-two-stream" },
+        response: {
+          blocks: [
+            { type: "text", text: "Hi. " },
+            { type: "toolCall", name: "lookup", arguments: "{}" },
+            { type: "text", text: content },
+          ],
+          citations: [{ url: "https://mastra.ai" }],
+        },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "pi-two-stream" }] }],
+    });
+    expect(res.status).toBe(200);
+    const candidates = (parseGeminiSSEChunks(res.body) as Body[]).map((c) => c.candidates[0]);
+    // Per-chunk grounding: the offset-less citation covers the joined text, so
+    // every chunk carrying text is grounded within its own part, and the
+    // functionCall chunk is not.
+    const groundedAt = candidates.flatMap((c, i) => (c.groundingMetadata ? [i] : []));
+    const textAt = candidates.flatMap((c, i) =>
+      c.content?.parts.some((p) => typeof p.text === "string" && p.text !== "" && !p.thought)
+        ? [i]
+        : [],
+    );
+    expect(groundedAt).toEqual(textAt);
+    const callAt = candidates.findIndex((c) =>
+      c.content?.parts.some((p) => p.functionCall !== undefined),
+    );
+    expect(callAt).toBeGreaterThanOrEqual(0);
+    expect(groundedAt).not.toContain(callAt);
+    // The last grounded chunk comes after the functionCall, and ends the last text block.
+    const last = groundedAt[groundedAt.length - 1];
+    expect(last).toBeGreaterThan(callAt);
+    expect(content.endsWith(candidates[last].content!.parts[0].text!)).toBe(true);
+    expect(streamedCitedText(candidates.filter((c) => c.groundingMetadata))).toEqual([
+      "Hi. " + content,
+    ]);
+  });
+
+  it.each([
+    ["text", { content: "", citations: [{ url: "https://example.com" }] }],
+    [
+      "legacy content + toolCall",
+      {
+        content: "",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        citations: [{ url: "https://example.com" }],
+      },
+    ],
+    [
+      "blocks empty text + toolCall",
+      {
+        blocks: [
+          { type: "text" as const, text: "" },
+          { type: "toolCall" as const, name: "lookup", arguments: "{}" },
+        ],
+        citations: [{ url: "https://example.com" }],
+      },
+    ],
+  ])("empty text (%s): both modes answer the no-text citation 500", async (_n, response) => {
+    // Citations on a turn with no text have nothing to cite: a fixture error.
+    instance = await createServer([{ match: { userMessage: "pi-empty" }, response }]);
+    for (const path of [
+      "/v1beta/models/gemini-2.5-flash:generateContent",
+      "/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+    ]) {
+      const res = await post(`${instance!.url}${path}`, {
+        contents: [{ role: "user", parts: [{ text: "pi-empty" }] }],
+      });
+      expect(res.status, res.body).toBe(500);
+      const body = JSON.parse(res.body) as {
+        error: { message: string; details?: { metadata?: { code?: string } }[] };
+      };
+      expect(body.error.details?.[0]?.metadata?.code).toBe("aimock_invalid_fixture_citation");
+      expect(body.error.message).toContain("add text to the response or remove the citations");
+    }
+  });
+});
+
+// A client reads each support the way the @google/genai `Segment` type
+// documents it: UTF-8 byte offsets into `parts[partIndex]` of the Content that
+// carries the grounding. In every candidate (non-streaming) or streamed chunk
+// carrying groundingMetadata, that slice must equal `segment.text`, and the
+// slices for one grounding source, joined in order, must equal the cited text.
+describe("Gemini citations — client-side segment slicing", () => {
+  type Part = { text?: string; thought?: boolean };
+  type Candidate = {
+    content?: { parts: Part[] };
+    groundingMetadata?: {
+      groundingChunks: { web: { uri: string } }[];
+      groundingSupports: {
+        segment: { partIndex: number; startIndex: number; endIndex: number; text: string };
+        groundingChunkIndices: number[];
+      }[];
+    };
+  };
+
+  // The cited text per grounding source URI, as a client rebuilds it from the
+  // candidates that carry groundingMetadata.
+  function clientCitedText(candidates: Candidate[]): Record<string, string> {
+    const cited: Record<string, string> = {};
+    for (const candidate of candidates) {
+      const meta = candidate.groundingMetadata;
+      if (!meta) continue;
+      for (const support of meta.groundingSupports) {
+        const part = candidate.content?.parts[support.segment.partIndex];
+        expect(part?.text).toBeTypeOf("string");
+        expect(part?.thought).toBeUndefined();
+        const sliced = Buffer.from(part?.text ?? "", "utf8")
+          .subarray(support.segment.startIndex, support.segment.endIndex)
+          .toString("utf8");
+        expect(sliced).toBe(support.segment.text);
+        for (const idx of support.groundingChunkIndices) {
+          const uri = meta.groundingChunks[idx].web.uri;
+          cited[uri] = (cited[uri] ?? "") + sliced;
+        }
+      }
+    }
+    return cited;
+  }
+
+  const textContent = "Café Mastra is a framework.";
+  const blockA = "Hi é. ";
+  const fullBlocks = blockA + textContent;
+  const cases: [string, Fixture["response"], number | undefined, Record<string, string>][] = [
+    [
+      "single text, default chunkSize",
+      {
+        content: textContent,
+        citations: [
+          { url: "https://mastra.ai", title: "Mastra", startIndex: 5, endIndex: 11 },
+          { url: "https://mastra.ai/docs" },
+        ],
+      },
+      undefined,
+      { "https://mastra.ai": "Mastra", "https://mastra.ai/docs": textContent },
+    ],
+    [
+      "single text, chunkSize 4",
+      {
+        content: textContent,
+        citations: [
+          { url: "https://mastra.ai", title: "Mastra", startIndex: 2, endIndex: 11 },
+          { url: "https://mastra.ai/docs" },
+        ],
+      },
+      4,
+      { "https://mastra.ai": "fé Mastra", "https://mastra.ai/docs": textContent },
+    ],
+    [
+      "multi-block, a citation spanning blocks",
+      {
+        blocks: [
+          { type: "text", text: blockA },
+          { type: "toolCall", name: "lookup", arguments: "{}" },
+          { type: "text", text: textContent },
+        ],
+        citations: [
+          { url: "https://span.example", startIndex: 3, endIndex: 15 },
+          { url: "https://mastra.ai", startIndex: 11, endIndex: 17 },
+        ],
+      },
+      5,
+      {
+        "https://span.example": fullBlocks.slice(3, 15),
+        "https://mastra.ai": fullBlocks.slice(11, 17),
+      },
+    ],
+  ];
+
+  async function serve(response: Fixture["response"], chunkSize: number | undefined) {
+    instance = await createServer([
+      { match: { userMessage: "slice" }, response, ...(chunkSize ? { chunkSize } : {}) },
+    ]);
+  }
+
+  it.each(cases)(
+    "%s: non-streaming slices equal the cited text",
+    async (_n, response, cs, want) => {
+      await serve(response, cs);
+      const res = await post(`${instance!.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+        contents: [{ role: "user", parts: [{ text: "slice" }] }],
+      });
+      expect(res.status).toBe(200);
+      const body = JSON.parse(res.body) as { candidates: Candidate[] };
+      expect(clientCitedText(body.candidates)).toEqual(want);
+    },
+  );
+
+  it.each(cases)("%s: streaming slices equal the cited text", async (_n, response, cs, want) => {
+    await serve(response, cs);
+    const res = await post(
+      `${instance!.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`,
+      {
+        contents: [{ role: "user", parts: [{ text: "slice" }] }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as { candidates: Candidate[] }[];
+    expect(clientCitedText(chunks.map((c) => c.candidates[0]))).toEqual(want);
+  });
+});
+
+// A chunk boundary that falls inside an emoji must not split its surrogate
+// pair: each streamed part must be valid UTF-16, and the byte offsets of the
+// citations after the emoji must slice the part to the cited text.
+describe("Gemini citations — emoji at a stream chunk boundary", () => {
+  type Part = { text?: string };
+  type Candidate = {
+    content?: { parts: Part[] };
+    groundingMetadata?: {
+      groundingChunks: { web: { uri: string } }[];
+      groundingSupports: {
+        segment: { partIndex: number; startIndex: number; endIndex: number; text: string };
+        groundingChunkIndices: number[];
+      }[];
+    };
+  };
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+  // "Hi " is 3 UTF-16 units, so chunkSize 4 cuts between the emoji's halves.
+  const text = "Hi \u{1F600} Mastra rocks.";
+  const cites = [
+    { url: "https://mastra.ai", startIndex: 6, endIndex: 12 },
+    { url: "https://mastra.ai/docs" },
+  ];
+  const cases: [string, Fixture["response"], Record<string, string>][] = [
+    [
+      "text",
+      { content: text, citations: cites },
+      { "https://mastra.ai": "Mastra", "https://mastra.ai/docs": text },
+    ],
+    [
+      "content with tool calls",
+      {
+        content: text,
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        citations: cites,
+      },
+      { "https://mastra.ai": "Mastra", "https://mastra.ai/docs": text },
+    ],
+    [
+      "blocks",
+      {
+        blocks: [
+          { type: "toolCall", name: "lookup", arguments: "{}" },
+          { type: "text", text },
+        ],
+        citations: cites,
+      },
+      { "https://mastra.ai": "Mastra", "https://mastra.ai/docs": text },
+    ],
+  ];
+
+  it.each(cases)(
+    "%s: parts stay valid UTF-16 and offsets slice the cited text",
+    async (_n, response, want) => {
+      instance = await createServer([{ match: { userMessage: "emoji" }, response, chunkSize: 4 }]);
+      const res = await post(
+        `${instance!.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`,
+        { contents: [{ role: "user", parts: [{ text: "emoji" }] }] },
+      );
+      expect(res.status).toBe(200);
+      const chunks = parseGeminiSSEChunks(res.body) as { candidates: Candidate[] }[];
+      const candidates = chunks.map((c) => c.candidates[0]);
+      let joined = "";
+      for (const candidate of candidates) {
+        for (const part of candidate.content?.parts ?? []) {
+          if (typeof part.text !== "string") continue;
+          expect(part.text).not.toMatch(LONE_SURROGATE);
+          joined += part.text;
+        }
+      }
+      expect(joined).toBe(text);
+      const cited: Record<string, string> = {};
+      for (const candidate of candidates) {
+        const meta = candidate.groundingMetadata;
+        if (!meta) continue;
+        for (const support of meta.groundingSupports) {
+          const part = candidate.content!.parts[support.segment.partIndex];
+          const sliced = Buffer.from(part.text ?? "", "utf8")
+            .subarray(support.segment.startIndex, support.segment.endIndex)
+            .toString("utf8");
+          expect(sliced).toBe(support.segment.text);
+          for (const idx of support.groundingChunkIndices) {
+            const uri = meta.groundingChunks[idx].web.uri;
+            cited[uri] = (cited[uri] ?? "") + sliced;
+          }
+        }
+      }
+      expect(cited).toEqual(want);
+    },
+  );
 });

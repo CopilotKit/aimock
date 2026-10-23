@@ -16,6 +16,7 @@ import type {
   CustomToolDefinition,
   Fixture,
   FixtureBlock,
+  FixtureGeneratedFile,
   FixtureToolCall,
   HandlerDefaults,
   ResponseOverrides,
@@ -51,6 +52,10 @@ import {
   servedToolCalls,
   toolCallFixtureBlock,
   withoutLegacyNamespaces,
+  UnsupportedGeneratedFileError,
+  fixtureFiles,
+  fixtureCitations,
+  surrogateSafeChunks,
 } from "./helpers.js";
 import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
@@ -578,7 +583,7 @@ export function buildTextStreamEvents(
     chunkSize,
     nextOutputIndex,
     overrides?.phase,
-    overrides?.citations,
+    buildAnnotations(content, overrides?.citations),
   );
   events.push(...msgEvents);
 
@@ -751,6 +756,8 @@ export function toolCallStreamEvents(
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
     chunkSize,
@@ -1025,6 +1032,91 @@ function buildWebSearchStreamEvents(
   return events;
 }
 
+/**
+ * A Responses `image_generation_call` output item for one fixture file (see
+ * `ResponseOutputItem.ImageGenerationCall` in the openai SDK): `result` holds
+ * the base64 bytes once completed and is null while in progress.
+ */
+function imageGenerationCallItem(
+  id: string,
+  file: FixtureGeneratedFile,
+  status: "in_progress" | "completed",
+): object {
+  return {
+    type: "image_generation_call",
+    id,
+    status,
+    result: status === "completed" ? file.data : null,
+  };
+}
+
+/**
+ * A fixture file that is not `image/*` reached the Responses API, which
+ * carries generated files only as `image_generation_call` items. Surfaces as
+ * the same coded 500 (`aimock_unsupported_generated_file`), naming `mimeType`.
+ */
+class NonImageGeneratedFileError extends UnsupportedGeneratedFileError {
+  constructor(mimeType: string) {
+    super("the OpenAI Responses API");
+    this.message =
+      `aimock: fixture "files" on the OpenAI Responses API carry only image/* files ` +
+      `(as image_generation_call items); got mimeType "${mimeType}"`;
+  }
+}
+
+/**
+ * Throw {@link NonImageGeneratedFileError} for the first fixture file whose
+ * `mimeType` is not `image/*`. Called before any output item is built, so
+ * nothing reaches the client.
+ */
+function requireImageFiles(files: FixtureGeneratedFile[]): void {
+  const nonImage = files.find((f) => !f.mimeType.toLowerCase().startsWith("image/"));
+  if (nonImage) throw new NonImageGeneratedFileError(nonImage.mimeType);
+}
+
+/** Fixture `files` as completed `image_generation_call` items (non-streaming). */
+function imageGenerationCallItems(files?: FixtureGeneratedFile[]): object[] {
+  const validated = fixtureFiles(files);
+  requireImageFiles(validated);
+  return validated.map((f) => imageGenerationCallItem(generateId("ig"), f, "completed"));
+}
+
+/**
+ * Streamed form of {@link imageGenerationCallItems}: per file, the item's
+ * `output_item.added`, the `image_generation_call` `in_progress`,
+ * `generating` and `completed` events, then `output_item.done` carrying the
+ * completed item.
+ */
+function buildImageGenerationStreamEvents(
+  files: FixtureGeneratedFile[],
+  startOutputIndex: number,
+): ResponsesSSEEvent[] {
+  requireImageFiles(files);
+  const events: ResponsesSSEEvent[] = [];
+  files.forEach((file, i) => {
+    const id = generateId("ig");
+    const outputIndex = startOutputIndex + i;
+    events.push({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "in_progress"),
+    });
+    for (const phase of ["in_progress", "generating", "completed"]) {
+      events.push({
+        type: `response.image_generation_call.${phase}`,
+        output_index: outputIndex,
+        item_id: id,
+      });
+    }
+    events.push({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "completed"),
+    });
+  });
+  return events;
+}
+
 // ─── Shared streaming helpers ────────────────────────────────────────────────
 
 interface PreambleResult {
@@ -1107,6 +1199,16 @@ function buildResponsePreamble(
     nextOutputIndex += webSearches.length;
   }
 
+  const files = fixtureFiles(overrides?.files);
+  if (files.length > 0) {
+    const fileEvents = buildImageGenerationStreamEvents(files, nextOutputIndex);
+    events.push(...fileEvents);
+    for (const e of fileEvents) {
+      if (e.type === "response.output_item.done") prefixOutputItems.push(e.item as object);
+    }
+    nextOutputIndex += files.length;
+  }
+
   return { respId, created, events, prefixOutputItems, nextOutputIndex };
 }
 
@@ -1115,25 +1217,105 @@ interface MessageBlockResult {
   msgItem: object;
 }
 
+/**
+ * Fixture `citations` as `output_text` annotations for each text in `texts`
+ * (one per message item), in fixture order: a URL citation becomes
+ * `url_citation`, a file citation (`type: "file"`) becomes `file_citation`
+ * (`file_id`, `filename`, `index`; see `ResponseOutputText.FileCitation` in
+ * the openai SDK). Offsets index the joined text of all texts, as on every
+ * other provider. A URL citation is a range and goes only to the text holding
+ * its `startIndex`. A file citation is a point after the cited text, so it
+ * goes to the last text starting before its `index`: an `index` equal to a
+ * text's end stays at the end of that text (not at 0 of the next text), and
+ * an `index` of 0 goes to the first text. Each citation is rebased onto its
+ * text since Responses offsets are per `output_text`, with `end_index`
+ * clamped to it. Anthropic and Gemini need no point rule: they have no file
+ * citation. Anthropic URL citations follow the same start-owns-range rule;
+ * Gemini does not, and splits a citation that spans several text parts into
+ * one grounding support per part (see geminiGroundingSupports).
+ * Missing offsets take the defaults `resolveCitations` applies: a URL
+ * citation starts at 0 and ends at the end of the joined text, so one without
+ * offsets goes on the first text and covers all of it; a file citation's
+ * `index` defaults to the end of the joined text (the last text).
+ */
+function blockAnnotations(texts: string[], citations?: ResponseOverrides["citations"]): object[][] {
+  const perText: object[][] = texts.map(() => []);
+  if (texts.length === 0) {
+    // Blocks with no text block: a turn with no text for `citations` to point at.
+    fixtureCitations("", citations);
+    return perText;
+  }
+  const starts: number[] = [];
+  let offset = 0;
+  for (const text of texts) {
+    starts.push(offset);
+    offset += text.length;
+  }
+  const joinedLength = offset;
+  // A range goes to the last text starting at or before its start.
+  const ownerOf = (start: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] <= start) owner = k;
+    return owner;
+  };
+  // A point goes to the last text starting before it, so a point on a
+  // boundary stays at the end of the text before the boundary.
+  const pointOwnerOf = (index: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] < index) owner = k;
+    return owner;
+  };
+  for (const c of fixtureCitations(texts.join(""), citations)) {
+    if (c.type === "file") {
+      const index = c.index ?? joinedLength;
+      const owner = pointOwnerOf(index);
+      perText[owner].push({
+        type: "file_citation",
+        file_id: c.fileId,
+        filename: c.filename,
+        index: index - starts[owner],
+      });
+      continue;
+    }
+    // The defaults `resolveCitations` applies on every other provider.
+    const start = c.startIndex ?? 0;
+    const end = c.endIndex ?? joinedLength;
+    const owner = ownerOf(start);
+    perText[owner].push({
+      type: "url_citation",
+      url: c.url,
+      title: c.title ?? c.url,
+      start_index: start - starts[owner],
+      end_index: Math.min(end - starts[owner], texts[owner].length),
+    });
+  }
+  return perText;
+}
+
+/** {@link blockAnnotations} for a turn with a single text. */
 function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
-  return (citations ?? []).map((c) => ({
-    type: "url_citation",
-    url: c.url,
-    title: c.title ?? c.url,
-    start_index: c.startIndex ?? 0,
-    end_index: c.endIndex ?? content.length,
-  }));
+  return blockAnnotations([content], citations)[0];
+}
+
+/** The annotations of each text block in `blocks`, in block order. */
+function orderedBlockAnnotations(
+  blocks: ResponsesFixtureBlock[],
+  citations?: ResponseOverrides["citations"],
+): object[][] {
+  return blockAnnotations(
+    blocks.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+    citations,
+  );
 }
 
 function buildMessageOutputEvents(
   content: string,
   chunkSize: number,
   outputIndex: number,
-  phase?: ResponseOverrides["phase"],
-  citations?: ResponseOverrides["citations"],
+  phase: ResponseOverrides["phase"] | undefined,
+  annotations: object[],
 ): MessageBlockResult {
   const msgId = itemId();
-  const annotations = buildAnnotations(content, citations);
   const events: ResponsesSSEEvent[] = [];
 
   events.push({
@@ -1258,27 +1440,6 @@ function buildFunctionCallOutputEvents(
 }
 
 /**
- * `text` cut into slices of at most `chunkSize` UTF-16 units, never between
- * the two halves of a surrogate pair: a cut that would land inside a pair
- * moves back before it, or, when that would leave the slice empty
- * (`chunkSize` 1), forward past it. The slices rejoin to `text` exactly.
- */
-function surrogateSafeChunks(text: string, chunkSize: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; ) {
-    let end = Math.min(i + chunkSize, text.length);
-    const high = text.charCodeAt(end - 1);
-    const low = text.charCodeAt(end);
-    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) {
-      end = end - 1 > i ? end - 1 : end + 1;
-    }
-    chunks.push(text.slice(i, end));
-    i = end;
-  }
-  return chunks;
-}
-
-/**
  * Emit output_item.added → custom_tool_call_input.delta×N →
  * custom_tool_call_input.done → output_item.done for one `custom_tool_call` at
  * `outputIndex`, returning the completed item. An empty `input`
@@ -1344,6 +1505,7 @@ function buildOutputPrefix(
   synthesizeSummarylessReasoning = false,
   phase?: ResponseOverrides["phase"],
   citations?: ResponseOverrides["citations"],
+  files?: ResponseOverrides["files"],
 ): object[] {
   const output: object[] = [];
 
@@ -1369,6 +1531,8 @@ function buildOutputPrefix(
       });
     }
   }
+
+  output.push(...imageGenerationCallItems(files));
 
   output.push({
     type: "message",
@@ -1420,6 +1584,7 @@ export function buildTextResponse(
       synthesizeSummarylessReasoning,
       overrides?.phase,
       overrides?.citations,
+      overrides?.files,
     ),
     overrides,
   );
@@ -1435,6 +1600,8 @@ function buildToolCallResponse(
   synthesizeSummarylessReasoning = false,
 ): object {
   assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const output: object[] = [];
   if (
     reasoning ||
@@ -1457,6 +1624,7 @@ function buildToolCallResponse(
       });
     }
   }
+  output.push(...imageGenerationCallItems(overrides?.files));
   for (const tc of toolCalls) {
     output.push(buildToolCallOutputItem(tc));
   }
@@ -1529,6 +1697,8 @@ export function contentWithToolCallsStreamEvents(
     // placed before a text block therefore yields a tool call item at
     // a LOWER output_index than the message — it leads the output array.
     let outputIndex = nextOutputIndex;
+    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
+    let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
         const { events: msgEvents, msgItem } = buildMessageOutputEvents(
@@ -1536,7 +1706,7 @@ export function contentWithToolCallsStreamEvents(
           chunkSize,
           outputIndex,
           overrides?.phase,
-          overrides?.citations,
+          textAnnotations[textPos++],
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
@@ -1562,7 +1732,7 @@ export function contentWithToolCallsStreamEvents(
       chunkSize,
       nextOutputIndex,
       overrides?.phase,
-      overrides?.citations,
+      buildAnnotations(content, overrides?.citations),
     );
     events.push(...msgEvents);
     orderedOutputItems.push(msgItem);
@@ -1616,8 +1786,8 @@ function buildToolCallOutputItem(tc: EmittableToolCall): object {
 
 function buildMessageOutputItem(
   content: string,
-  phase?: ResponseOverrides["phase"],
-  citations?: ResponseOverrides["citations"],
+  phase: ResponseOverrides["phase"] | undefined,
+  annotations: object[],
 ): object {
   return {
     type: "message",
@@ -1625,9 +1795,7 @@ function buildMessageOutputItem(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [
-      { type: "output_text", text: content, annotations: buildAnnotations(content, citations) },
-    ],
+    content: [{ type: "output_text", text: content, annotations }],
   };
 }
 
@@ -1670,9 +1838,14 @@ function buildContentWithToolCallsResponse(
         });
       }
     }
+    output.push(...imageGenerationCallItems(overrides?.files));
+    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
+    let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
-        output.push(buildMessageOutputItem(block.text, overrides?.phase, overrides?.citations));
+        output.push(
+          buildMessageOutputItem(block.text, overrides?.phase, textAnnotations[textPos++]),
+        );
       } else {
         output.push(buildToolCallOutputItem(block));
       }
@@ -1692,6 +1865,7 @@ function buildContentWithToolCallsResponse(
     synthesizeSummarylessReasoning,
     overrides?.phase,
     overrides?.citations,
+    overrides?.files,
   );
   for (const tc of toolCalls) {
     output.push(buildToolCallOutputItem(tc));
@@ -2041,13 +2215,9 @@ export async function handleResponses(
   const effectiveReplaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
   if (misbehavior.kind === "applied") {
-    const prepared = prepareResponsesMisbehavior(misbehavior);
-    const output = buildResponsesMisbehavior(
-      prepared,
-      completionReq,
-      chunkSize,
-      emitEncryptedReasoning,
-    );
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
     const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -2055,6 +2225,13 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const output = buildResponsesMisbehavior(
+      prepared,
+      completionReq,
+      chunkSize,
+      emitEncryptedReasoning,
+    );
     recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
     if (responsesReq.stream !== true) {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -2372,12 +2549,20 @@ export function buildResponsesMisbehavior(
   const overrides = extractOverrides(response);
   const reasoning = plan.reasoning ?? ("reasoning" in response ? response.reasoning : undefined);
   const webSearches = "webSearches" in response ? response.webSearches : undefined;
+  // Refusal, empty-response, content-filter and reasoning-only withhold the
+  // turn's normal output. Their candidates already drop text, tool calls and
+  // web searches, so the fixture's generated images are withheld too.
+  const outputWithheld =
+    plan.refusal !== undefined ||
+    plan.summary.fault === "empty-response" ||
+    plan.stop === "content_filter" ||
+    plan.reasoning !== undefined;
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     request.model,
     chunkSize,
     reasoning,
     webSearches,
-    overrides,
+    outputWithheld ? { ...overrides, files: undefined } : overrides,
     emitEncryptedReasoning,
     false,
     plan.reasoning !== undefined,
@@ -2419,11 +2604,7 @@ export function buildResponsesMisbehavior(
       { type: "response.output_item.done", output_index: outputIndex, item },
     );
     output.push(item);
-  } else if (
-    plan.summary.fault !== "empty-response" &&
-    plan.stop !== "content_filter" &&
-    plan.reasoning === undefined
-  ) {
+  } else if (!outputWithheld) {
     const combined = isCombinedFixtureResponse(response);
     // Custom tool calls and namespaces pass through a fault unchanged.
     const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
@@ -2436,6 +2617,8 @@ export function buildResponsesMisbehavior(
         : []),
     ];
     let callIndex = 0;
+    const textAnnotations = orderedBlockAnnotations(blocks, overrides.citations);
+    let textPos = 0;
     for (const block of blocks) {
       if (block.type === "text") {
         const message = buildMessageOutputEvents(
@@ -2443,7 +2626,7 @@ export function buildResponsesMisbehavior(
           chunkSize,
           outputIndex,
           overrides.phase,
-          overrides.citations,
+          textAnnotations[textPos++],
         );
         events.push(...message.events);
         output.push(message.msgItem);

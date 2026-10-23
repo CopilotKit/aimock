@@ -39,11 +39,15 @@ import {
   getContext,
   getTestId,
   resolveFixtureBlockOutcome,
+  resolveCitations,
   resolveResponse,
   resolveReasoningForModel,
   strictNoMatchMessage,
   strictNoMatchLogLine,
   servedToolArgs,
+  fixtureFiles,
+  type ResolvedCitation,
+  surrogateSafeChunks,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -297,6 +301,7 @@ interface GeminiResponseChunk {
     finishReason?: string;
     finishMessage?: string;
     safetyRatings?: { category: string; probability: string; blocked: boolean }[];
+    groundingMetadata?: GeminiGroundingMetadata;
     index: number;
   }[];
   usageMetadata?: {
@@ -306,10 +311,163 @@ interface GeminiResponseChunk {
   };
 }
 
+interface GeminiGroundingMetadata {
+  groundingChunks: { web: { uri: string; title: string } }[];
+  groundingSupports: {
+    segment: { partIndex: number; startIndex: number; endIndex: number; text: string };
+    groundingChunkIndices: number[];
+  }[];
+}
+
+// A text part of the Content that carries the grounding: its index in that
+// Content's `parts`, and the character span [start, end) of the cited text
+// it holds.
+interface GeminiCitedTextPart {
+  partIndex: number;
+  start: number;
+  end: number;
+}
+
+type GeminiGroundingSupport = GeminiGroundingMetadata["groundingSupports"][number];
+
+// The whole cited text as the single text part `partIndex`.
+function geminiWholeTextPart(text: string, partIndex: number): GeminiCitedTextPart[] {
+  return [{ partIndex, start: 0, end: text.length }];
+}
+
+// Fixture `citations` as Gemini grounding supports, one or more per citation,
+// each pointing at grounding chunk `i` (the citation's index). The @google/genai
+// `Segment` type documents `startIndex` / `endIndex` as byte offsets "in the
+// given Part" — the Part at `partIndex` within its parent Content — so every
+// segment holds UTF-8 byte offsets into the text of one part. A citation that
+// spans several text parts becomes one support per part, in text order, all
+// naming the same grounding chunk; a client joining their segments gets the
+// whole cited text. An empty citation names the part holding its start.
+function geminiGroundingSupports(
+  text: string,
+  citations: ResolvedCitation[],
+  textParts: GeminiCitedTextPart[],
+): GeminiGroundingSupport[] {
+  const segment = (
+    part: GeminiCitedTextPart,
+    from: number,
+    to: number,
+  ): GeminiGroundingSupport["segment"] => {
+    const partText = text.slice(part.start, part.end);
+    const start = Math.min(Math.max(from - part.start, 0), partText.length);
+    const end = Math.min(Math.max(to - part.start, start), partText.length);
+    const byteOffset = (charIndex: number) =>
+      Buffer.byteLength(partText.slice(0, charIndex), "utf8");
+    return {
+      partIndex: part.partIndex,
+      startIndex: byteOffset(start),
+      endIndex: byteOffset(end),
+      text: partText.slice(start, end),
+    };
+  };
+  return citations.flatMap((c, i) => {
+    const spanned = textParts.filter(
+      (p) => Math.max(c.startIndex, p.start) < Math.min(c.endIndex, p.end),
+    );
+    const parts =
+      spanned.length > 0
+        ? spanned
+        : [textParts.find((p) => c.startIndex < p.end) ?? textParts[textParts.length - 1]];
+    return parts.map((p) => ({
+      segment: segment(p, c.startIndex, c.endIndex),
+      groundingChunkIndices: [i],
+    }));
+  });
+}
+
+// Fixture `citations` as Gemini `groundingMetadata` for one Content holding
+// `textParts`: one `web` grounding chunk per citation and the supports from
+// {@link geminiGroundingSupports}. File citations are skipped (see
+// resolveCitations): grounding chunks carry no file IDs. Nothing when the
+// fixture has no URL citations or the Content has no text part to cite.
+function geminiGroundingMetadata(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  textParts: GeminiCitedTextPart[],
+): GeminiGroundingMetadata | undefined {
+  const citations = resolveCitations(text, overrides?.citations);
+  if (citations.length === 0 || textParts.length === 0) return undefined;
+  return {
+    groundingChunks: geminiGroundingChunks(citations),
+    groundingSupports: geminiGroundingSupports(text, citations, textParts),
+  };
+}
+
+function geminiGroundingChunks(
+  citations: ResolvedCitation[],
+): GeminiGroundingMetadata["groundingChunks"] {
+  return citations.map((c) => ({ web: { uri: c.url, title: c.title } }));
+}
+
+// `{ groundingMetadata }` for the candidate holding `textParts`, or nothing
+// when {@link geminiGroundingMetadata} yields none.
+function geminiGroundingField(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  textParts: GeminiCitedTextPart[],
+): { groundingMetadata?: GeminiGroundingMetadata } {
+  const groundingMetadata = geminiGroundingMetadata(text, overrides, textParts);
+  return groundingMetadata ? { groundingMetadata } : {};
+}
+
+// Streaming form of {@link geminiGroundingField}. `spans` are the character
+// spans of `text` that the streamed text chunks carry, in stream order, each
+// as part 0 of its own chunk. Each chunk's Content holds only that chunk's
+// text, so, per the `Segment` contract above, a chunk's supports must index
+// that chunk's part. (Neither @google/genai nor Google's public Gemini API
+// docs say streamed segments index the accumulated text instead.) Every chunk
+// holding some cited text carries groundingMetadata whose supports cover just
+// its part (partIndex 0, byte offsets into the chunk's text), splitting a
+// citation across chunks as across parts. Each grounded chunk lists every grounding
+// chunk, so `groundingChunkIndices` mean the same in every chunk and in the
+// non-streaming response. Returns one field per span; empty for a span that
+// holds no cited text.
+function geminiStreamGroundingFields(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  spans: { start: number; end: number }[],
+): { groundingMetadata?: GeminiGroundingMetadata }[] {
+  const fields: { groundingMetadata?: GeminiGroundingMetadata }[] = spans.map(() => ({}));
+  const citations = resolveCitations(text, overrides?.citations);
+  if (citations.length === 0 || spans.length === 0) return fields;
+  // Number the spans as parts so each support says which chunk it belongs to.
+  const textParts = spans.map((s, k) => ({ partIndex: k, start: s.start, end: s.end }));
+  const groundingChunks = geminiGroundingChunks(citations);
+  for (const support of geminiGroundingSupports(text, citations, textParts)) {
+    const k = support.segment.partIndex;
+    const metadata = (fields[k].groundingMetadata ??= { groundingChunks, groundingSupports: [] });
+    metadata.groundingSupports.push({ ...support, segment: { ...support.segment, partIndex: 0 } });
+  }
+  return fields;
+}
+
+// The [start, end) spans of the chunks that streaming `text` as
+// {@link surrogateSafeChunks} yields, as offsets into the joined text, where
+// `text` starts at `offset`. Empty `text` yields one empty span at `offset`.
+function geminiTextChunkSpans(
+  text: string,
+  chunkSize: number,
+  offset = 0,
+): { start: number; end: number }[] {
+  if (text.length === 0) return [{ start: offset, end: offset }];
+  const spans: { start: number; end: number }[] = [];
+  let start = offset;
+  for (const slice of surrogateSafeChunks(text, chunkSize)) {
+    spans.push({ start, end: start + slice.length });
+    start += slice.length;
+  }
+  return spans;
+}
+
 // Fixture `files` as Gemini `inlineData` parts. Every text and tool-call builder
 // emits these after any thought parts and before the text / functionCall parts.
 function geminiFileParts(overrides?: ResponseOverrides): GeminiPart[] {
-  return (overrides?.files ?? []).map((f) => ({
+  return fixtureFiles(overrides?.files).map((f) => ({
     inlineData: { mimeType: f.mimeType, data: f.data },
   }));
 }
@@ -349,22 +507,31 @@ function buildGeminiTextStreamChunks(
 
   chunks.push(...geminiFileChunks(overrides));
 
-  // Content chunks
-  for (let i = 0; i < content.length; i += chunkSize) {
-    const slice = content.slice(i, i + chunkSize);
-    const isLast = i + chunkSize >= content.length;
+  // Each content chunk carries the grounding for the cited text it holds.
+  const grounding = geminiStreamGroundingFields(
+    content,
+    overrides,
+    geminiTextChunkSpans(content, chunkSize),
+  );
+
+  // Content chunks, never cutting a surrogate pair, so each chunk is valid
+  // UTF-16 and its grounding byte offsets count whole characters.
+  const contentSlices = surrogateSafeChunks(content, chunkSize);
+  contentSlices.forEach((slice, k) => {
+    const isLast = k === contentSlices.length - 1;
     const chunk: GeminiResponseChunk = {
       candidates: [
         {
           content: { role: "model", parts: [{ text: slice }] },
           index: 0,
           ...(isLast ? { finishReason: effectiveFinish } : {}),
+          ...grounding[k],
         },
       ],
       ...(isLast ? { usageMetadata: usage } : {}),
     };
     chunks.push(chunk);
-  }
+  });
 
   // Handle empty content
   if (content.length === 0) {
@@ -373,6 +540,7 @@ function buildGeminiTextStreamChunks(
         {
           content: { role: "model", parts: [{ text: "" }] },
           finishReason: effectiveFinish,
+          ...grounding[0],
           index: 0,
         },
       ],
@@ -433,6 +601,8 @@ function buildGeminiToolCallStreamChunks(
 
   chunks.push(...geminiFileChunks(overrides));
 
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
 
   // Gemini sends all tool calls in a single response chunk
@@ -462,6 +632,7 @@ function buildGeminiTextResponse(
     parts.push({ text: reasoning, thought: true });
   }
   parts.push(...geminiFileParts(overrides));
+  const textParts = geminiWholeTextPart(content, parts.length);
   parts.push({ text: content });
 
   return {
@@ -469,6 +640,7 @@ function buildGeminiTextResponse(
       {
         content: { role: "model", parts },
         finishReason: geminiFinishReason(overrides?.finishReason, "STOP"),
+        ...geminiGroundingField(content, overrides, textParts),
         index: 0,
       },
     ],
@@ -482,6 +654,8 @@ function buildGeminiToolCallResponse(
   reasoning?: string,
   overrides?: ResponseOverrides,
 ): GeminiResponseChunk {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const parts: GeminiPart[] = [];
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
@@ -535,8 +709,20 @@ function buildGeminiContentWithToolCallsStreamChunks(
     // its text part. Gemini's ordered `parts` make this fully expressible. The
     // terminal block carries the finishReason regardless of its type. Legacy
     // fixtures (no `blocks`) never enter here — see the else branch below.
+    // The grounding rides on the text chunks holding the cited text, never on
+    // a functionCall chunk: each text block streams as chunks whose part 0 is
+    // the text their offsets refer to.
     const outcome = resolveFixtureBlockOutcome(blocks);
     const resolved = outcome.ordered;
+    const spans: { start: number; end: number }[] = [];
+    let offset = 0;
+    for (const block of resolved) {
+      if (block.type !== "text") continue;
+      spans.push(...geminiTextChunkSpans(block.text, chunkSize, offset));
+      offset += block.text.length;
+    }
+    const grounding = geminiStreamGroundingFields(outcome.content, overrides, spans);
+    let textChunk = 0;
     resolved.forEach((block, i) => {
       const isLast = i === resolved.length - 1;
       const finishReason = isLast
@@ -568,27 +754,29 @@ function buildGeminiContentWithToolCallsStreamChunks(
               {
                 content: { role: "model", parts: [{ text: "" }] },
                 ...(finishReason ? { finishReason } : {}),
+                ...grounding[textChunk++],
                 index: 0,
               },
             ],
             ...(isLast ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
           });
         } else {
-          for (let j = 0; j < text.length; j += chunkSize) {
-            const slice = text.slice(j, j + chunkSize);
-            const lastSlice = j + chunkSize >= text.length;
+          const slices = surrogateSafeChunks(text, chunkSize);
+          slices.forEach((slice, j) => {
+            const lastSlice = j === slices.length - 1;
             const sliceFinish = isLast && lastSlice ? finishReason : undefined;
             chunks.push({
               candidates: [
                 {
                   content: { role: "model", parts: [{ text: slice }] },
                   ...(sliceFinish ? { finishReason: sliceFinish } : {}),
+                  ...grounding[textChunk++],
                   index: 0,
                 },
               ],
               ...(isLast && lastSlice ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
             });
-          }
+          });
         }
       }
     });
@@ -596,27 +784,35 @@ function buildGeminiContentWithToolCallsStreamChunks(
     return chunks;
   }
 
+  // The grounding rides on the text chunks holding the cited text, not on the
+  // functionCall chunk, so their part 0 is the text the offsets refer to.
+  const grounding = geminiStreamGroundingFields(
+    content,
+    overrides,
+    geminiTextChunkSpans(content, chunkSize),
+  );
   if (content.length === 0) {
     chunks.push({
       candidates: [
         {
           content: { role: "model", parts: [{ text: "" }] },
+          ...grounding[0],
           index: 0,
         },
       ],
     });
   } else {
-    for (let i = 0; i < content.length; i += chunkSize) {
-      const slice = content.slice(i, i + chunkSize);
+    surrogateSafeChunks(content, chunkSize).forEach((slice, k) => {
       chunks.push({
         candidates: [
           {
             content: { role: "model", parts: [{ text: slice }] },
+            ...grounding[k],
             index: 0,
           },
         ],
       });
-    }
+    });
   }
 
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
@@ -650,6 +846,9 @@ function buildGeminiContentWithToolCallsResponse(
   parts.push(...geminiFileParts(overrides));
 
   let blockHasTools: boolean | undefined;
+  let groundingText = content;
+  // Each text part, with the span of `groundingText` it holds.
+  const textParts: GeminiCitedTextPart[] = [];
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-streaming `parts[]` array is positionally observable, so
     // emit parts in the fixture's ARRAY ORDER (after any leading thought part).
@@ -658,17 +857,21 @@ function buildGeminiContentWithToolCallsResponse(
     const outcome = resolveFixtureBlockOutcome(blocks);
     const resolved = outcome.ordered;
     blockHasTools = outcome.hasToolCalls;
+    groundingText = outcome.content;
     for (const block of resolved) {
       if (block.type === "toolCall") {
         parts.push(
           parseToolCallPart({ name: block.name, arguments: block.arguments, id: block.id }, logger),
         );
       } else {
+        const start = textParts.length > 0 ? textParts[textParts.length - 1].end : 0;
+        textParts.push({ partIndex: parts.length, start, end: start + block.text.length });
         parts.push({ text: block.text });
       }
     }
   } else {
-    // LEGACY PATH (unchanged): text part first, then functionCall parts.
+    // LEGACY PATH: text part first, then functionCall parts.
+    textParts.push(...geminiWholeTextPart(content, parts.length));
     parts.push({ text: content });
     parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
   }
@@ -681,6 +884,7 @@ function buildGeminiContentWithToolCallsResponse(
           overrides?.finishReason,
           blockHasTools === false ? "STOP" : "FUNCTION_CALL",
         ),
+        ...geminiGroundingField(groundingText, overrides, textParts),
         index: 0,
       },
     ],
@@ -873,7 +1077,18 @@ function prepareGeminiMisbehavior(
     chunks = [{ candidates: [candidate] }];
   } else if (fault === "stop-length-mid-tool") {
     // Object arguments cannot be partial; preserve only text preceding the cut.
-    candidate.content.parts = content ? [{ text: content }] : [];
+    // The fixture's files precede that text, as on the normal path.
+    const parts = geminiFileParts(overrides);
+    const textPartIndex = parts.length;
+    if (content) parts.push({ text: content });
+    candidate.content.parts = parts;
+    // The planner drops `citations` whenever the fault changes the served
+    // text in any way, not only when the cut removes cited text.
+    if (content)
+      Object.assign(
+        candidate,
+        geminiGroundingField(content, overrides, geminiWholeTextPart(content, textPartIndex)),
+      );
     candidate.finishReason = "MAX_TOKENS";
     chunks = [{ candidates: [candidate] }];
   } else if (fault === "empty-response") {
@@ -1212,6 +1427,16 @@ export async function handleGemini(
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
   if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
     const prepared = prepareGeminiMisbehavior(
       misbehavior,
       completionReq,
@@ -1220,13 +1445,6 @@ export async function handleGemini(
       logger,
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
     );
-    const entry = journal.add({
-      method: req.method ?? "POST",
-      path,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
     recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
     if (!streaming) {
       res.writeHead(200, { "Content-Type": "application/json" });

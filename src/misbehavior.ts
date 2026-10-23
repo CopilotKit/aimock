@@ -1,6 +1,8 @@
 import {
   assertCustomToolCalls,
   assertResponsesToolCalls,
+  fixtureCitations,
+  fixtureFiles,
   isCombinedFixtureResponse,
   isErrorResponse,
   isTextResponse,
@@ -16,6 +18,8 @@ import {
   toolArgsForWire,
   strictToolArgumentsEnabled,
   keepAuthoredToolArguments,
+  rejectGeneratedFiles,
+  UnsupportedGeneratedFileError,
 } from "./helpers.js";
 import { parseChaosNumber } from "./chaos.js";
 import type {
@@ -1292,7 +1296,10 @@ export function prepareLengthCandidate(
   };
 }
 
-/** Remove all chat output channels while preserving response metadata. */
+/**
+ * Remove all chat output channels while preserving response metadata. The
+ * fixture `files` and `citations` keys survive: they are not removed here.
+ */
 function clearChatOutput(response: ContentWithToolCallsResponse): ContentWithToolCallsResponse {
   const cleared = { ...response, content: "" };
   delete cleared.blocks;
@@ -1533,15 +1540,21 @@ function misbehaviorRoll(seed: number): number {
  * function call whose `arguments` are not valid JSON (see
  * {@link rejectsInvalidToolArguments}). A rejection is either a coded fixture
  * tool-call error or the plain Error for a malformed text block or an unknown
- * block type; all of them mean the wire cannot serve the fixture.
+ * block type; all of them mean the wire cannot serve the fixture. The ordered
+ * blocks the planner itself reads ({@link resolveServedBlockOutcome}) are
+ * checked on every wire, so the planner never throws for them. So are the
+ * fixture's `citations` and `files` (see {@link assertServableFixtureOutput}),
+ * on the original turn before any fault rewrites it, so a fixture that will
+ * be rejected never consumes a fault's budget.
  */
 function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse): boolean {
   if (typeof response !== "object" || response === null) return true;
   const blocks = "blocks" in response ? response.blocks : undefined;
   let functionCalls: Pick<ToolCall, "name" | "arguments">[] = [];
   try {
+    const outcome = resolveServedBlockOutcome(response);
     if (wire === "openai-responses") {
-      if (!resolveServedBlockOutcome(response) && "toolCalls" in response) {
+      if (!outcome && "toolCalls" in response) {
         assertCustomToolCalls(response);
         assertResponsesToolCalls(servedToolCalls(response));
       }
@@ -1551,6 +1564,7 @@ function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse)
         functionCalls = resolveFixtureBlocks(blocks).filter((block) => block.type === "toolCall");
       }
     }
+    assertServableFixtureOutput(wire, response);
   } catch {
     return false;
   }
@@ -1561,6 +1575,47 @@ function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse)
     !normalPathReplaces || functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
   );
 }
+
+/**
+ * Throw when this wire's normal path would answer a coded 500 for the
+ * fixture's `citations` or `files`, checked against the original turn before
+ * any fault rewrites it: a malformed value (`aimock_invalid_fixture_citation`
+ * / `aimock_invalid_fixture_file`, including citations on a turn with no
+ * text), or generated files the wire cannot carry
+ * (`aimock_unsupported_generated_file`: any file on Chat Completions and
+ * Anthropic Messages, a non-`image/*` file on the OpenAI Responses API). Only
+ * the wires that read these keys check them; the others ignore them. A valid
+ * fixture passes, and a fault that alters the reply text then drops its
+ * citations ({@link citationsForServedText}).
+ */
+function assertServableFixtureOutput(wire: WireId, response: FixtureResponse): void {
+  if (!OUTPUT_WIRES.has(wire)) return;
+  if (
+    !(
+      isCombinedFixtureResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  )
+    return;
+  // The same checks the handlers run before any byte is written.
+  if (wire === "openai-chat" || wire === "anthropic") rejectGeneratedFiles(response, wire);
+  const files = fixtureFiles(response.files);
+  if (
+    wire === "openai-responses" &&
+    !files.every((file) => file.mimeType.toLowerCase().startsWith("image/"))
+  )
+    throw new UnsupportedGeneratedFileError(wire);
+  fixtureCitations(servedText(response), response.citations);
+}
+
+/** The wires whose normal path reads a fixture's `citations` and `files`. */
+const OUTPUT_WIRES: ReadonlySet<WireId> = new Set<WireId>([
+  "openai-chat",
+  "openai-responses",
+  "anthropic",
+  "gemini",
+]);
 
 /**
  * Whether the normal path of this wire serves invalid-JSON `arguments` as
@@ -1594,6 +1649,44 @@ function rejectsInvalidToolArguments(wire: WireId, stream: boolean): boolean {
     default:
       return false;
   }
+}
+
+/** The reply text a response serves: its ordered text blocks, else `content`. */
+function servedText(response: FixtureResponse): string {
+  if (isCombinedFixtureResponse(response) || isTextResponse(response)) {
+    return resolveServedBlockOutcome(response)?.content ?? response.content ?? "";
+  }
+  return "";
+}
+
+/**
+ * Fixture `citations` index the reply text. A fault that replaces, truncates
+ * or empties that text drops them for the turn, so every wire serves no
+ * citation into text it no longer sends; a fault that serves the original
+ * text unchanged keeps them.
+ */
+function citationsForServedText(
+  original: FixtureResponse,
+  candidate: MisbehaviorCandidate,
+): FixtureResponse {
+  const response = candidate.response;
+  if (
+    !(
+      isCombinedFixtureResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  )
+    return response;
+  if (response.citations === undefined) return response;
+  const keepsText =
+    candidate.refusal === undefined &&
+    candidate.reasoning === undefined &&
+    servedText(response) === servedText(original);
+  if (keepsText) return response;
+  const withoutCitations = { ...response };
+  delete withoutCitations.citations;
+  return withoutCitations;
 }
 
 /** Complete preparation precedes selection; every candidate sees the original response. */
@@ -1640,10 +1733,14 @@ export function planMisbehavior(input: {
   // A fixture this wire cannot serve (a custom tool call off the OpenAI
   // Responses API, a malformed tool call, invalid JSON arguments that the
   // normal path replaces or rejects, a malformed text block or an unknown
-  // block type) is never faulted and never throws here: the request takes the
-  // normal path exactly as with no misbehavior config, which journals it and
-  // answers the coded fixture tool-call error (aimock_unsupported_tool_call,
-  // aimock_invalid_fixture_tool_call or, under strictToolArguments,
+  // block type, or `citations` / `files` the wire answers a coded 500 for,
+  // checked on the original turn) is never faulted and never throws here. It
+  // is skipped before fault selection, so it spends no `times` budget and no
+  // seed ordinal. The request takes the normal path exactly as with no
+  // misbehavior config, which journals it and answers the coded fixture error
+  // (aimock_unsupported_tool_call, aimock_invalid_fixture_tool_call,
+  // aimock_invalid_fixture_citation, aimock_invalid_fixture_file,
+  // aimock_unsupported_generated_file or, under strictToolArguments,
   // aimock_invalid_tool_arguments), the plain block error, or `{}` arguments.
   if (!servesFixture(wire, input.stream, input.response)) return { kind: "skipped" };
   const config = parsed.config;
@@ -1771,6 +1868,7 @@ export function planMisbehavior(input: {
       return {
         kind: "applied",
         ...candidate,
+        response: citationsForServedText(input.response, candidate),
         summary: {
           ...summaryFor(row),
           ...(candidate.target !== undefined ? { target: candidate.target } : {}),

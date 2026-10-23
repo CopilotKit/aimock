@@ -297,15 +297,7 @@ type FixtureBlock = {
 };
 
 // @public
-interface FixtureCitation {
-    // (undocumented)
-    endIndex?: number;
-    startIndex?: number;
-    // (undocumented)
-    title?: string;
-    // (undocumented)
-    url: string;
-}
+type FixtureCitation = FixtureUrlCitation | FixtureFileCitation;
 
 // @public
 type FixtureFileBlock = {
@@ -318,6 +310,15 @@ type FixtureFileBlock = {
     id?: string;
     namespace?: string;
 };
+
+// @public
+interface FixtureFileCitation {
+    fileId: string;
+    filename: string;
+    index?: number;
+    // (undocumented)
+    type: "file";
+}
 
 // @public (undocumented)
 interface FixtureFileContentWithToolCallsResponse extends ResponseOverrides {
@@ -487,6 +488,18 @@ type FixtureOpts = Omit<Fixture, "match" | "response">;
 
 // @public (undocumented)
 type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | LiveFixtureResponse;
+
+// @public
+interface FixtureUrlCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    type?: "url";
+    // (undocumented)
+    url: string;
+}
 
 // @public (undocumented)
 interface ImageItem {

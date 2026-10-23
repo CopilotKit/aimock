@@ -263,16 +263,70 @@ export interface FixtureMatch {
 
 // Fixture response types
 
-/** A source citation attached to a text response. Served on the OpenAI Responses API as `url_citation` annotations. */
-export interface FixtureCitation {
+/**
+ * A web source citation attached to a text response. Served as `url_citation`
+ * annotations on OpenAI Responses (`output_text.annotations`) and Chat
+ * Completions (`message.annotations` / `delta.annotations`), as
+ * `web_search_result_location` citations on Anthropic text blocks, and as
+ * Gemini `groundingMetadata` (`groundingChunks` + `groundingSupports`).
+ */
+export interface FixtureUrlCitation {
+  /**
+   * Optional discriminator; a citation without `type` is a URL citation. A
+   * citation that also sets file citation fields (`fileId`, `filename`,
+   * `index`) is rejected: set `type: "file"` or remove the stray fields.
+   */
+  type?: "url";
   url: string;
   title?: string;
-  /** Character offsets into the text; default to the whole text. */
+  /**
+   * Offsets of the cited span, as UTF-16 string indices (JavaScript string
+   * positions) into the joined text of all the response's text blocks. Chat
+   * Completions, Anthropic, Gemini and Responses read them the same way;
+   * Gemini converts them to the UTF-8 byte offsets its wire carries. Default
+   * to the whole text.
+   */
   startIndex?: number;
   endIndex?: number;
 }
 
-/** A model-generated file (e.g. an inline image). Served on Gemini as `inlineData` parts. */
+/**
+ * A citation of an uploaded file, served as a `file_citation` annotation on
+ * OpenAI Responses (`output_text.annotations`, streamed through
+ * `response.output_text.annotation.added`). Chat Completions, Anthropic
+ * Messages and Gemini have no file-citation wire shape, so they skip it and
+ * serve only the fixture's URL citations.
+ */
+export interface FixtureFileCitation {
+  type: "file";
+  /** Wire `file_id`, e.g. `file-abc123`. */
+  fileId: string;
+  /** Wire `filename` of the cited file. */
+  filename: string;
+  /**
+   * Character position cited: a UTF-16 string index into the joined text of
+   * all the response's text blocks; defaults to the end of the text. The wire
+   * `index` is not this value: the annotation goes on the `output_text` whose
+   * text holds the position, and its `index` counts from the start of that
+   * `output_text`.
+   */
+  index?: number;
+}
+
+/** A source citation attached to a text response: a web page or an uploaded file. */
+export type FixtureCitation = FixtureUrlCitation | FixtureFileCitation;
+
+/**
+ * A model-generated file (e.g. an inline image). Served on Gemini as
+ * `inlineData` parts and on the OpenAI Responses API as
+ * `image_generation_call` output items (`image/*` files only; another
+ * `mimeType` is rejected). Chat Completions (OpenAI, Azure OpenAI, OpenRouter
+ * and BytePlus ModelArk) and Anthropic Messages cannot carry one and reject
+ * the request. Every rejection is a coded 500,
+ * `aimock_unsupported_generated_file`, sent before any content. Every other
+ * wire (Bedrock, Cohere, Ollama, Gemini Interactions and the rest) drops
+ * `files` without an error.
+ */
 export interface FixtureGeneratedFile {
   mimeType: string;
   /** Base64-encoded file bytes. */
@@ -290,17 +344,30 @@ export interface FixtureGeneratedFile {
  * When total_tokens (or provider equivalent) is omitted, it is auto-computed
  * from the component fields.
  *
- * Provider support: seven fields are common (id, created, model, usage,
- * systemFingerprint, finishReason, role); provider and nativeFinishReason are
- * OpenRouter-only and ignored elsewhere. OpenAI Chat honors the seven common
- * fields; OpenRouter additionally honors provider/nativeFinishReason; Responses
- * API honors five common fields (no role, systemFingerprint) plus optional phase;
- * Claude (5: no created, systemFingerprint); Gemini (2: only finishReason, usage).
+ * Provider support: seven envelope fields are common (id, created, model,
+ * usage, systemFingerprint, finishReason, role); provider and
+ * nativeFinishReason are OpenRouter-only and ignored elsewhere; `citations`
+ * and `files` are content fields (see their docs). OpenAI Chat honors the
+ * seven common fields plus `citations` (it rejects `files`); OpenRouter
+ * additionally honors provider/nativeFinishReason; Responses API honors five
+ * common fields (no role, systemFingerprint) plus optional phase, `citations`
+ * and `files`; Claude honors five (no created, systemFingerprint) plus
+ * `citations` (it rejects `files`); Gemini honors two (only finishReason,
+ * usage) plus `citations` and `files`.
  */
 export interface ResponseOverrides {
-  /** Model-generated files emitted before the response text and tool calls (Gemini only). */
+  /**
+   * Model-generated files emitted before the response text and tool calls.
+   * Served on Gemini and the OpenAI Responses API (`image/*` only); Chat
+   * Completions and Anthropic Messages reject them; every other wire drops
+   * them without an error (see {@link FixtureGeneratedFile}).
+   */
   files?: FixtureGeneratedFile[];
-  /** Source citations for the response text (OpenAI Responses API only). */
+  /**
+   * Source citations for the response text (OpenAI Responses, Chat Completions, Anthropic, Gemini).
+   * File citations are served on OpenAI Responses only; the other three skip them.
+   * Every other wire ignores `citations`.
+   */
   citations?: FixtureCitation[];
   id?: string;
   created?: number;
@@ -1308,6 +1375,17 @@ export interface SSEDelta {
   reasoning_details?: ReasoningTextDetail[];
   reasoning_content?: string;
   tool_calls?: SSEToolCallDelta[];
+  /**
+   * Fixture URL `citations`, sent once on their own chunk just before the
+   * finish chunk: after the content chunks and after any tool-call chunks.
+   */
+  annotations?: ChatCompletionAnnotation[];
+}
+
+/** A Chat Completions `url_citation` annotation (`message.annotations` / `delta.annotations`). */
+export interface ChatCompletionAnnotation {
+  type: "url_citation";
+  url_citation: { url: string; title: string; start_index: number; end_index: number };
 }
 
 export interface SSEToolCallDelta {
@@ -1364,6 +1442,11 @@ export interface ChatCompletionMessage {
    */
   reasoning?: string | null;
   tool_calls?: ToolCallMessage[];
+  /**
+   * Fixture URL `citations`; omitted when the fixture sets none, or only file
+   * citations (Chat Completions has no `file_citation` annotation).
+   */
+  annotations?: ChatCompletionAnnotation[];
 }
 
 // Server options

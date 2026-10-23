@@ -638,6 +638,7 @@ export async function handleBedrock(
       chunkSize: Math.max(1, fixture.chunkSize ?? defaults.chunkSize),
       logger,
       strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: false,
     });
     if (prepared.stream) throw new TypeError("InvokeModel requires non-stream Claude output");
     const entry = journal.add({
@@ -1548,6 +1549,7 @@ export async function handleBedrockStream(
       chunkSize,
       logger,
       strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: false,
     });
     if (!prepared.stream) throw new TypeError("InvokeModel stream requires Claude events");
     const entry = journal.add({

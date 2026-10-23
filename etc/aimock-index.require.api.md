@@ -1379,6 +1379,19 @@ export interface ChatCompletion {
     } & OpenRouterUsageExtras;
 }
 
+// @public
+export interface ChatCompletionAnnotation {
+    // (undocumented)
+    type: "url_citation";
+    // (undocumented)
+    url_citation: {
+        url: string;
+        title: string;
+        start_index: number;
+        end_index: number;
+    };
+}
+
 // @public (undocumented)
 export interface ChatCompletionChoice {
     // (undocumented)
@@ -1394,6 +1407,7 @@ export interface ChatCompletionChoice {
 
 // @public (undocumented)
 export interface ChatCompletionMessage {
+    annotations?: ChatCompletionAnnotation[];
     // (undocumented)
     content: string | null;
     reasoning?: string | null;
@@ -2117,15 +2131,7 @@ export type FixtureBlock = {
 };
 
 // @public
-export interface FixtureCitation {
-    // (undocumented)
-    endIndex?: number;
-    startIndex?: number;
-    // (undocumented)
-    title?: string;
-    // (undocumented)
-    url: string;
-}
+export type FixtureCitation = FixtureUrlCitation | FixtureFileCitation;
 
 // @public (undocumented)
 export interface FixtureFile {
@@ -2144,6 +2150,15 @@ type FixtureFileBlock = {
     id?: string;
     namespace?: string;
 };
+
+// @public
+export interface FixtureFileCitation {
+    fileId: string;
+    filename: string;
+    index?: number;
+    // (undocumented)
+    type: "file";
+}
 
 // @public (undocumented)
 export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrides {
@@ -2375,6 +2390,18 @@ export interface FixturesWithServices {
 export type FixtureToolCall = (ToolCall & {
     type?: undefined;
 }) | CustomToolCall;
+
+// @public
+export interface FixtureUrlCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    type?: "url";
+    // (undocumented)
+    url: string;
+}
 
 // @public
 export function flattenHeaders(headers: http$1.IncomingHttpHeaders): Record<string, string>;
@@ -2884,6 +2911,13 @@ export interface InterruptionControl {
     signal: AbortSignal;
     // (undocumented)
     tick(): void;
+}
+
+// @public
+export class InvalidFixtureOutputError extends Error {
+    constructor(code: "aimock_invalid_fixture_citation" | "aimock_invalid_fixture_file", problem: string);
+    // (undocumented)
+    readonly code: "aimock_invalid_fixture_citation" | "aimock_invalid_fixture_file";
 }
 
 // @public
@@ -4881,6 +4915,7 @@ export interface SSEChunk {
 
 // @public (undocumented)
 export interface SSEDelta {
+    annotations?: ChatCompletionAnnotation[];
     // (undocumented)
     content?: string | null;
     // (undocumented)
@@ -5048,6 +5083,13 @@ export interface TranscriptionResponse {
             end: number;
         }>;
     };
+}
+
+// @public
+export class UnsupportedGeneratedFileError extends Error {
+    constructor(wire: string);
+    // (undocumented)
+    readonly wire: string;
 }
 
 // @public

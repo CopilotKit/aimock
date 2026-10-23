@@ -25,6 +25,7 @@ import {
 import {
   fixtureToolCallErrorCode,
   isFixtureToolCallError,
+  journalFixtureToolCallError,
   isTextResponse,
   isToolCallResponse,
   isCombinedFixtureResponse,
@@ -289,13 +290,9 @@ async function processMessage(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   if (misbehavior.kind === "applied") {
-    const prepared = prepareResponsesMisbehavior(misbehavior);
-    const output = buildResponsesMisbehavior(
-      prepared,
-      completionReq,
-      chunkSize,
-      emitEncryptedReasoning,
-    );
+    // Journal first, as HTTP /v1/responses does, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
     const entry = journal.add({
       method: "WS",
       path: "/v1/responses",
@@ -303,6 +300,10 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const output = journalFixtureToolCallError(entry, () =>
+      buildResponsesMisbehavior(prepared, completionReq, chunkSize, emitEncryptedReasoning),
+    );
     recordMisbehaviorOutcome({
       entry,
       summary: prepared.summary,
@@ -436,20 +437,24 @@ async function processMessage(
     });
     recordOutcome(journalEntry);
 
-    const events = buildTextStreamEvents(
-      response.content,
-      completionReq.model,
-      chunkSize,
-      resolveReasoningForModel(
-        response.reasoning,
+    // A fixture error (malformed citations, a non-image file) marks the entry
+    // a 500 carrying the message before the error event goes out.
+    const events = journalFixtureToolCallError(journalEntry, () =>
+      buildTextStreamEvents(
+        response.content,
         completionReq.model,
-        effectiveStrict,
-        defaults.logger,
+        chunkSize,
+        resolveReasoningForModel(
+          response.reasoning,
+          completionReq.model,
+          effectiveStrict,
+          defaults.logger,
+        ),
+        response.webSearches,
+        extractOverrides(response),
+        emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       ),
-      response.webSearches,
-      extractOverrides(response),
-      emitEncryptedReasoning,
-      synthesizeSummarylessReasoning,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(

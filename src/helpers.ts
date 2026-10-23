@@ -49,6 +49,9 @@ import type {
   FixtureFileResponsesBlock,
   ResponsesFixtureBlock,
   ChatCompletion,
+  ChatCompletionAnnotation,
+  FixtureCitation,
+  FixtureGeneratedFile,
   ResponseOverrides,
   RecordConfig,
   RecordProviderKey,
@@ -317,18 +320,508 @@ export function requireEmittedFunctionToolCalls(
   return requireFunctionToolCalls(response.toolCalls ?? []);
 }
 
-/** A fixture tool-call error that a handler surfaces as a coded 500. */
+/**
+ * A fixture's model-generated `files` reached a wire that has no faithful
+ * projection for them. Gemini (`inlineData` parts) and the OpenAI Responses
+ * API (`image_generation_call` items, `image/*` only) serve generated files.
+ * Chat Completions (OpenAI, Azure OpenAI, OpenRouter and BytePlus ModelArk)
+ * and Anthropic Messages raise this through {@link rejectGeneratedFiles}, and
+ * the Responses API raises a subclass for a non-`image/*` file, before any
+ * content is written. The handler surfaces it as a coded 500
+ * (`aimock_unsupported_generated_file`) like {@link UnsupportedToolCallError}.
+ */
+export class UnsupportedGeneratedFileError extends Error {
+  readonly wire: string;
+
+  constructor(wire: string) {
+    super(
+      `aimock: fixture "files" (model-generated files) are only supported on Gemini and the OpenAI Responses API; ` +
+        `this request arrived on ${wire}`,
+    );
+    this.name = "UnsupportedGeneratedFileError";
+    this.wire = wire;
+  }
+}
+
+/**
+ * Reject a fixture that sets a non-empty `files` on a wire that cannot carry
+ * model-generated files. Throws {@link UnsupportedGeneratedFileError} naming
+ * `wire`. A malformed `files` value (see {@link fixtureFiles}) throws
+ * {@link InvalidFixtureOutputError} (`aimock_invalid_fixture_file`) first.
+ * Chat Completions and Anthropic Messages call this. Gemini and OpenAI
+ * Responses serve `files`; other wires ignore the field.
+ */
+export function rejectGeneratedFiles(response: object, wire: string): void {
+  const files = fixtureFiles((response as { files?: unknown }).files);
+  if (files.length > 0) throw new UnsupportedGeneratedFileError(wire);
+}
+
+/**
+ * A fixture's `citations` or `files` is malformed: not an array, an entry
+ * missing a required field, a non-integer offset, citation offsets outside
+ * `0 <= startIndex <= endIndex <= text.length`, a file citation `index`
+ * outside `0 <= index <= text.length`, an offset or `index` that splits a
+ * UTF-16 surrogate pair, a citation that mixes URL and file citation fields,
+ * or any `citations` but an empty array on a turn with no text (tool calls
+ * only, `blocks` with no text block, or empty content). The wires that read
+ * these keys (Chat Completions, Anthropic Messages, Gemini and OpenAI
+ * Responses) read them
+ * through {@link fixtureFiles} and {@link fixtureCitations}, which throw this
+ * at serve time, before any byte is written; the handler surfaces it as a
+ * coded 500 like {@link UnsupportedGeneratedFileError}. Other wires ignore
+ * `citations` and `files`, so they never throw this. The message names the
+ * offending entry and how to fix the fixture.
+ */
+export class InvalidFixtureOutputError extends Error {
+  readonly code: "aimock_invalid_fixture_citation" | "aimock_invalid_fixture_file";
+
+  constructor(
+    code: "aimock_invalid_fixture_citation" | "aimock_invalid_fixture_file",
+    problem: string,
+  ) {
+    super(
+      `aimock: invalid fixture "${code === "aimock_invalid_fixture_file" ? "files" : "citations"}": ${problem}`,
+    );
+    this.name = "InvalidFixtureOutputError";
+    this.code = code;
+  }
+}
+
+/**
+ * A short description of a fixture value for an error message. Never throws:
+ * a programmatic fixture can hold values JSON cannot carry (BigInt, Symbol,
+ * function, NaN, Infinity), and each gets a readable name.
+ */
+function describeFixtureValue(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "an array";
+  if (value !== null && typeof value === "object") return "an object";
+  if (typeof value === "function") return "a function";
+  if (typeof value === "symbol") return value.toString();
+  if (typeof value === "bigint") return `${value}n`;
+  if (typeof value === "number" && !Number.isFinite(value)) return String(value);
+  const json = JSON.stringify(value);
+  return json.length > 40 ? `${json.slice(0, 37)}...` : json;
+}
+
+/**
+ * The UTF-16 index `at` falls between the two halves of a surrogate pair, so
+ * a span that starts or ends there cuts a character in half.
+ */
+function splitsSurrogatePair(text: string, at: number): boolean {
+  if (at <= 0 || at >= text.length) return false;
+  const before = text.charCodeAt(at - 1);
+  const after = text.charCodeAt(at);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+
+/**
+ * `text` cut into slices of at most `chunkSize` UTF-16 units, never between
+ * the two halves of a surrogate pair: a cut that would land inside a pair
+ * moves back before it, or, when that would leave the slice empty
+ * (`chunkSize` 1), forward past it. The slices rejoin to `text` exactly.
+ */
+export function surrogateSafeChunks(text: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; ) {
+    let end = Math.min(i + chunkSize, text.length);
+    const high = text.charCodeAt(end - 1);
+    const low = text.charCodeAt(end);
+    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) {
+      end = end - 1 > i ? end - 1 : end + 1;
+    }
+    chunks.push(text.slice(i, end));
+    i = end;
+  }
+  return chunks;
+}
+
+/** The message for a citation offset that splits a surrogate pair. */
+function surrogateSplitProblem(where: string, at: number): string {
+  return (
+    `${where} ${at} splits a UTF-16 surrogate pair (one character, e.g. an emoji); ` +
+    `fix the offset to fall before or after the whole character`
+  );
+}
+
+/** Fields only a URL citation has. */
+const URL_CITATION_FIELDS = ["url", "title", "startIndex", "endIndex"] as const;
+/** Fields only a file citation has. */
+const FILE_CITATION_FIELDS = ["fileId", "filename", "index"] as const;
+
+/**
+ * A citation that mixes URL and file citation fields, or a file-shaped one
+ * (`fileId` / `filename` / `index`) with no `type`, which would otherwise be
+ * read as a URL citation and lose its file data. Undefined when the fields
+ * agree.
+ */
+function mixedCitationProblem(citation: Record<string, unknown>, i: number): string | undefined {
+  const present = (names: readonly string[]) => names.filter((n) => citation[n] != null);
+  const fileFields = present(FILE_CITATION_FIELDS);
+  if (fileFields.length === 0) return undefined;
+  const urlFields = present(URL_CITATION_FIELDS);
+  // The fix depends on what the citation says it is: a typed citation keeps
+  // its type and drops the other kind of fields.
+  const fix =
+    citation.type === "file"
+      ? `remove the URL citation fields (${urlFields.join(", ")}) from this file citation`
+      : citation.type === "url"
+        ? `remove the file citation fields (${fileFields.join(", ")}) from this URL citation, ` +
+          `or set type: "file" for a file citation`
+        : `set type: "file" for a file citation, or remove the stray fields`;
+  if (urlFields.length > 0) {
+    return (
+      `citations[${i}] mixes URL citation fields (${urlFields.join(", ")}) with file citation ` +
+      `fields (${fileFields.join(", ")}); ${fix}`
+    );
+  }
+  if (citation.type == null) {
+    return `citations[${i}] has file citation fields (${fileFields.join(", ")}) but no type; ${fix}`;
+  }
+  if (citation.type === "url") {
+    return `citations[${i}] has type "url" but file citation fields (${fileFields.join(", ")}); ${fix}`;
+  }
+  return undefined;
+}
+
+/** "an object", "a string", ... for a value that should have been an array. */
+function describeFixtureKind(value: unknown): string {
+  if (value === null) return "null";
+  if (value !== null && typeof value === "object") return "an object";
+  return typeof value === "string" ? "a string" : `a ${typeof value}`;
+}
+
+/**
+ * What is wrong with a fixture `files` value, or undefined when it is absent
+ * or an array of `{ mimeType, data }` string pairs. Shared by the serve-time
+ * check ({@link fixtureFiles}) and fixture load validation.
+ */
+export function fixtureFilesProblem(files: unknown): string | undefined {
+  // JSON fixtures commonly carry null for an unset key: treat it as absent.
+  if (files === undefined || files === null) return undefined;
+  if (!Array.isArray(files)) {
+    return (
+      `"files" must be an array of { mimeType, data } objects, got ${describeFixtureKind(files)}; ` +
+      `wrap a single file in [ ]`
+    );
+  }
+  for (let i = 0; i < files.length; i++) {
+    const file: unknown = files[i];
+    if (file === null || typeof file !== "object" || Array.isArray(file)) {
+      return `files[${i}] must be a { mimeType, data } object, got ${describeFixtureValue(file)}`;
+    }
+    const { mimeType, data } = file as { mimeType?: unknown; data?: unknown };
+    if (typeof mimeType !== "string" || mimeType.length === 0) {
+      return (
+        `files[${i}].mimeType must be a non-empty string, got ${describeFixtureValue(mimeType)}; ` +
+        `set the file's MIME type, e.g. "image/png"`
+      );
+    }
+    if (typeof data !== "string") {
+      return (
+        `files[${i}].data must be a string, got ${describeFixtureValue(data)}; ` +
+        `set the base64-encoded file bytes`
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * What is wrong with a fixture `citations` value, or undefined when it is
+ * absent or valid: an array of citation objects. A URL citation (no `type`,
+ * or `type: "url"`) has a non-empty string `url`, an optional string `title`
+ * and optional integer offsets. A file citation (`type: "file"`) has a
+ * non-empty string `fileId` and `filename` and an optional integer `index`;
+ * it has no `url`. When `text` is given, the resolved offsets must also
+ * satisfy `0 <= startIndex <= endIndex <= text.length`, and a file citation's
+ * `index` must satisfy `0 <= index <= text.length`, and no offset may split a
+ * UTF-16 surrogate pair. A citation must not mix URL and file citation
+ * fields, and one with file fields needs `type: "file"`. A `null` value, or a
+ * `null` optional field, is treated as absent. An empty `text` is a turn with
+ * no text (tool calls only, `blocks` with no text block, or empty content): a
+ * well-formed non-empty array is then a problem, since there is nothing to
+ * cite; a malformed value is reported by its shape first. Shared by the
+ * serve-time check ({@link fixtureCitations}) and fixture load validation.
+ */
+export function fixtureCitationsProblem(citations: unknown, text?: string): string | undefined {
+  // JSON fixtures commonly carry null for an unset key: treat it as absent.
+  if (citations === undefined || citations === null) return undefined;
+  if (!Array.isArray(citations)) {
+    return (
+      `"citations" must be an array of { url, title?, startIndex?, endIndex? } or ` +
+      `{ type: "file", fileId, filename, index? } objects, ` +
+      `got ${describeFixtureKind(citations)}; wrap a single citation in [ ]`
+    );
+  }
+  // The shape comes first: a malformed entry is named even on a turn with no text.
+  const shape = citationEntriesProblem(citations, undefined);
+  if (shape !== undefined || text === undefined) return shape;
+  if (text === "" && citations.length > 0) {
+    return (
+      `"citations" has nothing to cite: this turn has no text (only tool calls, or empty content); ` +
+      `add text to the response or remove the citations`
+    );
+  }
+  return citationEntriesProblem(citations, text);
+}
+
+/**
+ * What is wrong with the entries of a `citations` array, or undefined when
+ * all are valid. Offsets are checked against `text` only when it is given. A
+ * `null` optional field (`type`, `title`, `startIndex`, `endIndex`, `index`)
+ * is treated as absent, as a `null` top-level key is.
+ */
+function citationEntriesProblem(
+  citations: readonly unknown[],
+  text: string | undefined,
+): string | undefined {
+  for (let i = 0; i < citations.length; i++) {
+    const citation: unknown = citations[i];
+    if (citation === null || typeof citation !== "object" || Array.isArray(citation)) {
+      return (
+        `citations[${i}] must be a { url, title?, startIndex?, endIndex? } or ` +
+        `{ type: "file", fileId, filename, index? } object, ` +
+        `got ${describeFixtureValue(citation)}`
+      );
+    }
+    const fields = citation as Record<string, unknown>;
+    const url = fields.url;
+    const type = fields.type ?? undefined;
+    const title = fields.title ?? undefined;
+    const startIndex = fields.startIndex ?? undefined;
+    const endIndex = fields.endIndex ?? undefined;
+    if (type === undefined || type === "url" || type === "file") {
+      const mixed = mixedCitationProblem(citation as Record<string, unknown>, i);
+      if (mixed !== undefined) return mixed;
+    }
+    if (type === "file") {
+      const problem = fixtureFileCitationProblem(citation as Record<string, unknown>, i, text);
+      if (problem !== undefined) return problem;
+      continue;
+    }
+    if (type !== undefined && type !== "url") {
+      return (
+        `citations[${i}].type must be "url" or "file" when set, got ${describeFixtureValue(type)}; ` +
+        `omit it for a URL citation`
+      );
+    }
+    if (typeof url !== "string" || url.length === 0) {
+      return `citations[${i}].url must be a non-empty string, got ${describeFixtureValue(url)}; set the cited source URL`;
+    }
+    if (title !== undefined && typeof title !== "string") {
+      return `citations[${i}].title must be a string when set, got ${describeFixtureValue(title)}`;
+    }
+    for (const [name, value] of [
+      ["startIndex", startIndex],
+      ["endIndex", endIndex],
+    ] as const) {
+      if (value !== undefined && !Number.isInteger(value)) {
+        return (
+          `citations[${i}].${name} must be an integer when set, got ${describeFixtureValue(value)}; ` +
+          `give a character offset into the text, or omit it`
+        );
+      }
+    }
+    if (text === undefined) continue;
+    const start = (startIndex as number | undefined) ?? 0;
+    const end = (endIndex as number | undefined) ?? text.length;
+    if (start < 0 || start > end || end > text.length) {
+      return (
+        `citations[${i}] offsets must satisfy 0 <= startIndex <= endIndex <= text length (${text.length}), ` +
+        `got startIndex ${start}, endIndex ${end}; fix the offsets, or omit them to cite the whole text`
+      );
+    }
+    if (splitsSurrogatePair(text, start)) {
+      return surrogateSplitProblem(`citations[${i}].startIndex`, start);
+    }
+    if (splitsSurrogatePair(text, end)) {
+      return surrogateSplitProblem(`citations[${i}].endIndex`, end);
+    }
+  }
+  return undefined;
+}
+
+/** What is wrong with the file citation `citations[i]`, or undefined when valid. */
+function fixtureFileCitationProblem(
+  citation: Record<string, unknown>,
+  i: number,
+  text: string | undefined,
+): string | undefined {
+  const { fileId, filename } = citation;
+  const index = citation.index ?? undefined;
+  if (typeof fileId !== "string" || fileId.length === 0) {
+    return (
+      `citations[${i}].fileId must be a non-empty string, got ${describeFixtureValue(fileId)}; ` +
+      `set the cited file's ID, e.g. "file-abc123"`
+    );
+  }
+  if (typeof filename !== "string" || filename.length === 0) {
+    return (
+      `citations[${i}].filename must be a non-empty string, got ${describeFixtureValue(filename)}; ` +
+      `set the cited file's name`
+    );
+  }
+  if (index !== undefined && !Number.isInteger(index)) {
+    return (
+      `citations[${i}].index must be an integer when set, got ${describeFixtureValue(index)}; ` +
+      `give a character position in the text, or omit it`
+    );
+  }
+  if (text === undefined) return undefined;
+  const at = (index as number | undefined) ?? text.length;
+  if (at < 0 || at > text.length) {
+    return (
+      `citations[${i}].index must satisfy 0 <= index <= text length (${text.length}), ` +
+      `got ${at}; fix the index, or omit it to cite the end of the text`
+    );
+  }
+  if (splitsSurrogatePair(text, at)) return surrogateSplitProblem(`citations[${i}].index`, at);
+  return undefined;
+}
+
+/**
+ * Fixture `citations`, checked against the text they cite: the array itself,
+ * or empty when absent. Throws {@link InvalidFixtureOutputError}
+ * (`aimock_invalid_fixture_citation`) for every problem
+ * {@link fixtureCitationsProblem} reports: a malformed value, an offset
+ * outside the text or one that splits a surrogate pair, mixed URL and file
+ * citation fields, or citations on a turn with no text (`content` is empty:
+ * tool calls only, `blocks` with no text block, or empty content). Every
+ * provider that reads `citations` goes through this.
+ */
+export function fixtureCitations(content: string, citations: unknown): FixtureCitation[] {
+  const problem = fixtureCitationsProblem(citations, content);
+  if (problem !== undefined) {
+    throw new InvalidFixtureOutputError("aimock_invalid_fixture_citation", problem);
+  }
+  return (citations as FixtureCitation[] | undefined) ?? [];
+}
+
+/**
+ * Fixture `files`, checked: the array itself, or empty when absent. Throws
+ * {@link InvalidFixtureOutputError} (`aimock_invalid_fixture_file`) for a
+ * malformed value. Every provider that reads `files` goes through this.
+ */
+export function fixtureFiles(files: unknown): FixtureGeneratedFile[] {
+  const problem = fixtureFilesProblem(files);
+  if (problem !== undefined)
+    throw new InvalidFixtureOutputError("aimock_invalid_fixture_file", problem);
+  return (files as FixtureGeneratedFile[] | undefined) ?? [];
+}
+
+/** A fixture citation with its defaults applied. */
+export interface ResolvedCitation {
+  url: string;
+  /** The fixture title, or the URL when the fixture sets none. */
+  title: string;
+  /**
+   * UTF-16 string indices into the joined text of all text blocks, the same
+   * on Chat Completions, Anthropic, Gemini and Responses; default to the
+   * whole text.
+   */
+  startIndex: number;
+  endIndex: number;
+}
+
+/**
+ * Fixture URL `citations` against the text they cite, with defaults applied:
+ * the title falls back to the URL and the offsets to the whole text. Empty
+ * when the fixture sets none. File citations (`type: "file"`) are skipped:
+ * only OpenAI Responses has a wire shape for them (`file_citation`), and it
+ * builds those itself. Chat Completions, Anthropic Messages and Gemini, which
+ * resolve through here, serve URL citations only. This reads `citations`
+ * through {@link fixtureCitations}, so it is the serve-time check for those
+ * three wires: every problem {@link fixtureCitationsProblem} reports against
+ * `content`, including one in a file citation it then skips, throws
+ * {@link InvalidFixtureOutputError} (`aimock_invalid_fixture_citation`).
+ * OpenAI Responses calls {@link fixtureCitations} directly. Other wires
+ * ignore `citations`.
+ */
+export function resolveCitations(
+  content: string,
+  citations?: ResponseOverrides["citations"],
+): ResolvedCitation[] {
+  return fixtureCitations(content, citations)
+    .flatMap((c) => (c.type === "file" ? [] : [c]))
+    .map((c) => ({
+      url: c.url,
+      title: c.title ?? c.url,
+      startIndex: c.startIndex ?? 0,
+      endIndex: c.endIndex ?? content.length,
+    }));
+}
+
+/**
+ * Fixture `citations` as Chat Completions `url_citation` annotations. File
+ * citations are skipped (see {@link resolveCitations}): Chat Completions has no
+ * `file_citation` annotation.
+ */
+function chatCompletionAnnotations(
+  content: string,
+  citations?: ResponseOverrides["citations"],
+): ChatCompletionAnnotation[] {
+  return resolveCitations(content, citations).map((c) => ({
+    type: "url_citation",
+    url_citation: { url: c.url, title: c.title, start_index: c.startIndex, end_index: c.endIndex },
+  }));
+}
+
+/** `{ annotations }` for a Chat Completions message, or nothing when the fixture has no citations. */
+function annotationsField(
+  content: string,
+  overrides?: ResponseOverrides,
+): { annotations?: ChatCompletionAnnotation[] } {
+  const annotations = chatCompletionAnnotations(content, overrides?.citations);
+  return annotations.length > 0 ? { annotations } : {};
+}
+
+/**
+ * The streamed form of {@link chatCompletionAnnotations}: one chunk whose
+ * `delta.annotations` holds every annotation, sent after the content and
+ * before the finish chunk. Nothing when the fixture has no citations.
+ */
+function chatAnnotationChunks(
+  content: string,
+  overrides: ResponseOverrides | undefined,
+  envelope: { id: string; created: number; model: string },
+): SSEChunk[] {
+  const annotations = chatCompletionAnnotations(content, overrides?.citations);
+  if (annotations.length === 0) return [];
+  const fingerprint = overrides?.systemFingerprint;
+  return [
+    {
+      id: envelope.id,
+      object: "chat.completion.chunk",
+      created: envelope.created,
+      model: envelope.model,
+      choices: [{ index: 0, delta: { annotations }, logprobs: null, finish_reason: null }],
+      ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+    },
+  ];
+}
+
+/**
+ * A fixture error that a handler surfaces as a coded 500. Despite the name,
+ * it is not limited to tool calls: it also covers the fixture `files` and
+ * `citations` errors ({@link UnsupportedGeneratedFileError} and
+ * {@link InvalidFixtureOutputError}).
+ */
 export type FixtureToolCallError =
   | InvalidToolArgumentsError
   | UnsupportedToolCallError
-  | InvalidFixtureToolCallError;
+  | InvalidFixtureToolCallError
+  | UnsupportedGeneratedFileError
+  | InvalidFixtureOutputError;
 
-/** True for the fixture tool-call errors a handler surfaces as a coded 500. */
+/** True for the fixture errors a handler surfaces as a coded 500. */
 export function isFixtureToolCallError(error: unknown): error is FixtureToolCallError {
   return (
     error instanceof InvalidToolArgumentsError ||
     error instanceof UnsupportedToolCallError ||
-    error instanceof InvalidFixtureToolCallError
+    error instanceof InvalidFixtureToolCallError ||
+    error instanceof UnsupportedGeneratedFileError ||
+    error instanceof InvalidFixtureOutputError
   );
 }
 
@@ -338,7 +831,12 @@ export function fixtureToolCallErrorCode(
 ):
   | "aimock_unsupported_tool_call"
   | "aimock_invalid_tool_arguments"
-  | "aimock_invalid_fixture_tool_call" {
+  | "aimock_invalid_fixture_tool_call"
+  | "aimock_unsupported_generated_file"
+  | "aimock_invalid_fixture_citation"
+  | "aimock_invalid_fixture_file" {
+  if (error instanceof UnsupportedGeneratedFileError) return "aimock_unsupported_generated_file";
+  if (error instanceof InvalidFixtureOutputError) return error.code;
   if (error instanceof UnsupportedToolCallError) return "aimock_unsupported_tool_call";
   if (error instanceof InvalidFixtureToolCallError) return error.code;
   return "aimock_invalid_tool_arguments";
@@ -361,9 +859,10 @@ export function googleFixtureToolCallErrorDetails(code: string) {
 }
 
 /**
- * Run a WebSocket preflight `check` that may raise a fixture tool-call error
- * ({@link InvalidToolArgumentsError}, {@link UnsupportedToolCallError} or
- * {@link InvalidFixtureToolCallError}).
+ * Run a WebSocket preflight `check` that may raise a fixture error
+ * ({@link InvalidToolArgumentsError}, {@link UnsupportedToolCallError},
+ * {@link InvalidFixtureToolCallError}, {@link UnsupportedGeneratedFileError}
+ * or {@link InvalidFixtureOutputError}).
  * Such an error marks the already-journaled entry as a 500 carrying the
  * message, then propagates to the transport's error handler.
  */
@@ -1638,6 +2137,8 @@ export function buildTextChunks(
     });
   }
 
+  chunks.push(...chatAnnotationChunks(content, overrides, { id, created, model: effectiveModel }));
+
   // Finish chunk
   chunks.push({
     id,
@@ -1663,6 +2164,7 @@ export function buildOpenAIReasoningChunks(
 ): SSEChunk[] {
   return buildTextChunks(exposeReasoning ? reasoning : "", model, chunkSize, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "length",
   }).map((chunk) => ({
@@ -1706,6 +2208,7 @@ export function buildOpenAIReasoningCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "length",
       usage: undefined,
@@ -1745,6 +2248,7 @@ export function buildOpenAIContentFilterChunks(
 ): SSEChunk[] {
   return buildTextChunks("", model, 1, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "content_filter",
   }).map((chunk) => ({
@@ -1768,6 +2272,7 @@ export function buildOpenAIContentFilterCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "content_filter",
       usage: undefined,
@@ -1792,6 +2297,7 @@ export function buildOpenAIRefusalChunks(
 ) {
   return buildTextChunks(refusal, model, chunkSize, undefined, {
     ...overrides,
+    citations: undefined,
     role: "assistant",
     finishReason: "stop",
   }).map((chunk) => ({
@@ -1821,6 +2327,7 @@ export function buildOpenAIRefusalCompletion(
     undefined,
     {
       ...overrides,
+      citations: undefined,
       role: "assistant",
       finishReason: "stop",
       usage: undefined,
@@ -1843,6 +2350,8 @@ export function buildToolCallChunks(
   reasoning?: string,
   overrides?: ResponseOverrides,
 ): SSEChunk[] {
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const id = overrides?.id ?? generateId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
   const effectiveModel = overrides?.model ?? model;
@@ -1991,6 +2500,7 @@ export function buildTextCompletion(
           content,
           refusal: null,
           ...(reasoning ? { reasoning_content: reasoning } : {}),
+          ...annotationsField(content, overrides),
         },
         logprobs: null,
         finish_reason: overrides?.finishReason ?? "stop",
@@ -2010,6 +2520,8 @@ export function buildToolCallCompletion(
   overrides?: ResponseOverrides,
   requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const promptText = requestMessages
     ? requestMessages
         .map((m) =>
@@ -2192,6 +2704,15 @@ export function buildContentWithToolCallsChunks(
       }
     }
 
+    // Cite the block text this path streams, not the `content` argument.
+    chunks.push(
+      ...chatAnnotationChunks(outcome.content, overrides, {
+        id,
+        created,
+        model: effectiveModel,
+      }),
+    );
+
     // Derive the default terminal from the blocks actually emitted.
     chunks.push({
       id,
@@ -2212,7 +2733,8 @@ export function buildContentWithToolCallsChunks(
     return chunks;
   }
 
-  // EXISTING legacy code, byte-for-byte UNCHANGED.
+  // EXISTING legacy code. It is unchanged except for the annotations chunk
+  // (chatAnnotationChunks) emitted before the finish chunk.
   // Reasoning chunks (emitted before content, OpenRouter format)
   if (reasoning) {
     for (let i = 0; i < reasoning.length; i += chunkSize) {
@@ -2323,6 +2845,8 @@ export function buildContentWithToolCallsChunks(
     }
   }
 
+  chunks.push(...chatAnnotationChunks(content, overrides, { id, created, model: effectiveModel }));
+
   // Finish chunk
   chunks.push({
     id,
@@ -2389,6 +2913,7 @@ export function buildContentWithToolCallsCompletion(
             type: "function" as const,
             function: { name: tc.name, arguments: tc.arguments },
           })),
+          ...annotationsField(content, overrides),
         },
         logprobs: null,
         finish_reason: overrides?.finishReason ?? "tool_calls",

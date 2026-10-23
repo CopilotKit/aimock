@@ -32,6 +32,8 @@ import {
   generateToolUseId,
   extractOverrides,
   requireEmittedFunctionToolCalls,
+  rejectGeneratedFiles,
+  resolveCitations,
   isTextResponse,
   isToolCallResponse,
   isCombinedFixtureResponse,
@@ -455,6 +457,71 @@ function pushRedactedThinkingStreamEvents(
   return blockIndex;
 }
 
+/**
+ * Fixture `citations` as Anthropic `web_search_result_location` citations, the
+ * URL-sourced citation type (see `CitationsWebSearchResultLocation` in
+ * `@anthropic-ai/sdk`), grouped per text block. `texts` are the turn's text
+ * blocks in order; citation offsets index their joined text, the same
+ * convention as Chat Completions and Gemini. Each citation goes only to the
+ * last text block whose start offset in the joined text is at or before the
+ * citation's `startIndex`, with `cited_text` sliced from that block's own text
+ * (cut off at the block's end).
+ * `web_search_result_location` carries no offsets, so nothing is rebased.
+ * `encrypted_index` is opaque on the real wire, so aimock fills a stable
+ * base64 placeholder. File citations are skipped (see {@link resolveCitations}):
+ * Anthropic has no citation type for an OpenAI file ID.
+ */
+function claudeBlockCitations(texts: string[], overrides?: ResponseOverrides): object[][] {
+  const starts: number[] = [];
+  let offset = 0;
+  for (const text of texts) {
+    starts.push(offset);
+    offset += text.length;
+  }
+  const perBlock: object[][] = texts.map(() => []);
+  if (texts.length === 0) {
+    // Blocks with no text block: a turn with no text for `citations` to point at.
+    resolveCitations("", overrides?.citations);
+    return perBlock;
+  }
+  resolveCitations(texts.join(""), overrides?.citations).forEach((c, i) => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] <= c.startIndex) owner = k;
+    const start = starts[owner];
+    perBlock[owner].push({
+      type: "web_search_result_location",
+      cited_text: texts[owner].slice(c.startIndex - start, c.endIndex - start),
+      url: c.url,
+      title: c.title,
+      encrypted_index: Buffer.from(`aimock-citation:${i}:${c.url}`).toString("base64"),
+    });
+  });
+  return perBlock;
+}
+
+/** {@link claudeBlockCitations} for a turn with a single text block. */
+function claudeCitations(text: string, overrides?: ResponseOverrides): object[] {
+  return claudeBlockCitations([text], overrides)[0];
+}
+
+/** A text content block; `citations` is added only when it has some. */
+function claudeTextBlock(text: string, citations: object[]): object {
+  return citations.length > 0 ? { type: "text", text, citations } : { type: "text", text };
+}
+
+/**
+ * Streamed form of a text block's citations: one `citations_delta` per
+ * citation, after the block's text deltas and before its `content_block_stop`,
+ * as in the Anthropic citations streaming example. Nothing when it has none.
+ */
+function claudeCitationDeltas(citations: object[], index: number): ClaudeSSEEvent[] {
+  return citations.map((citation) => ({
+    type: "content_block_delta",
+    index,
+    delta: { type: "citations_delta", citation },
+  }));
+}
+
 function buildClaudeTextStreamEvents(
   content: string,
   model: string,
@@ -544,6 +611,8 @@ function buildClaudeTextStreamEvents(
     });
   }
 
+  events.push(...claudeCitationDeltas(claudeCitations(content, overrides), blockIndex));
+
   // content_block_stop
   events.push({
     type: "content_block_stop",
@@ -576,6 +645,8 @@ function buildClaudeToolCallStreamEvents(
   reasoningSignature?: string,
   redactedThinking?: string[],
 ): ClaudeSSEEvent[] {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
   // Prefer a recorded real signature when one was captured; otherwise fall back
@@ -743,7 +814,7 @@ function buildClaudeTextResponse(
     });
   }
 
-  contentBlocks.push({ type: "text", text: content });
+  contentBlocks.push(claudeTextBlock(content, claudeCitations(content, overrides)));
 
   return {
     id: overrides?.id ?? generateMessageId(),
@@ -766,6 +837,8 @@ function buildClaudeToolCallResponse(
   reasoningSignature?: string,
   redactedThinking?: string[],
 ): object {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const contentBlocks: object[] = [];
 
   // Redacted-thinking blocks lead the content array (before thinking / tool_use)
@@ -890,6 +963,13 @@ function buildClaudeContentWithToolCallsStreamEvents(
     // encounter order, continuing from any leading thinking/redacted blocks.
     const outcome = resolveFixtureBlockOutcome(blocks);
     const ordered = outcome.ordered;
+    // Citation offsets index the joined text of every text block; each text
+    // block carries only the citations that start inside it.
+    const textCitations = claudeBlockCitations(
+      ordered.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+      overrides,
+    );
+    let textPos = 0;
 
     for (const block of ordered) {
       if (block.type === "text") {
@@ -907,6 +987,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
             delta: { type: "text_delta", text: slice },
           });
         }
+
+        events.push(...claudeCitationDeltas(textCitations[textPos++] ?? [], blockIndex));
 
         events.push({
           type: "content_block_stop",
@@ -968,10 +1050,11 @@ function buildClaudeContentWithToolCallsStreamEvents(
     return events;
   }
 
-  // LEGACY PATH (byte-for-byte unchanged): text content block, then tool_use
-  // blocks in `toolCalls` order. Reached only when `blocks` is absent; the
-  // leading redacted-thinking/thinking blocks above are shared with the new
-  // path and produce identical wire output here.
+  // LEGACY PATH: text content block, then tool_use blocks in `toolCalls`
+  // order. Reached only when `blocks` is absent; the leading
+  // redacted-thinking/thinking blocks above are shared with the new path and
+  // produce identical wire output here. Unchanged except that the text block
+  // now ends with one `citations_delta` per fixture URL citation, if any.
   // Text content block
   events.push({
     type: "content_block_start",
@@ -987,6 +1070,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
       delta: { type: "text_delta", text: slice },
     });
   }
+
+  events.push(...claudeCitationDeltas(claudeCitations(content, overrides), blockIndex));
 
   events.push({
     type: "content_block_stop",
@@ -1095,10 +1180,17 @@ function buildClaudeContentWithToolCallsResponse(
     // streaming path for the same `blocks` fixture.
     const outcome = resolveFixtureBlockOutcome(blocks);
     const ordered = outcome.ordered;
+    // Citation offsets index the joined text of every text block; each text
+    // block carries only the citations that start inside it.
+    const textCitations = claudeBlockCitations(
+      ordered.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+      overrides,
+    );
+    let textPos = 0;
     blockHasTools = outcome.hasToolCalls;
     for (const block of ordered) {
       if (block.type === "text") {
-        contentBlocks.push({ type: "text", text: block.text });
+        contentBlocks.push(claudeTextBlock(block.text, textCitations[textPos++] ?? []));
       } else {
         contentBlocks.push(
           toolUseBlock({ name: block.name, arguments: block.arguments, id: block.id }),
@@ -1106,8 +1198,10 @@ function buildClaudeContentWithToolCallsResponse(
       }
     }
   } else {
-    // LEGACY PATH (unchanged): text content block, then tool_use blocks.
-    contentBlocks.push({ type: "text", text: content });
+    // LEGACY PATH: text content block, then tool_use blocks. Unchanged except
+    // that the text block now carries `citations` when the fixture has URL
+    // citations.
+    contentBlocks.push(claudeTextBlock(content, claudeCitations(content, overrides)));
     for (const tc of toolCalls) {
       contentBlocks.push(toolUseBlock(tc));
     }
@@ -1147,6 +1241,11 @@ export function prepareClaudeMisbehavior(
     chunkSize: number;
     logger: Logger;
     strict: boolean;
+    /**
+     * Emit fixture `citations`. Only the Anthropic Messages endpoint does;
+     * Bedrock InvokeModel shares these builders but serves no citations.
+     */
+    citations: boolean;
   },
 ): PreparedClaudeMisbehavior {
   const response = plan.response;
@@ -1232,8 +1331,10 @@ export function prepareClaudeMisbehavior(
     ),
   });
   const usage = renderAnthropicUsage(resolvedUsage, "messages-final", "applied-misbehavior");
+  const { citations, ...rest } = extractOverrides(response);
   const overrides = {
-    ...extractOverrides(response),
+    ...rest,
+    ...(context.citations ? { citations } : {}),
     ...(plan.stop === "length" ? { finishReason: "length" } : {}),
     usage,
   };
@@ -1808,19 +1909,27 @@ export async function handleMessages(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   if (misbehavior.kind === "applied") {
-    const prepared = prepareClaudeMisbehavior(misbehavior, {
-      request: completionReq,
-      stream: claudeReq.stream === true,
-      chunkSize,
-      logger,
-      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
-    });
+    // Journal first, as the success branches do, so a fixture error thrown
+    // below leaves a 500 entry that keeps the fixture. Record the fault only
+    // once the reply is built: a thrown error is not a fault that was served.
     const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    // Safety net: the planner already skips a fixture with generated `files`
+    // (they have no Anthropic Messages projection), so it is never faulted.
+    // Reject here anyway, before any byte is written, if one gets through.
+    rejectGeneratedFiles(misbehavior.response, "Anthropic Messages");
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: claudeReq.stream === true,
+      chunkSize,
+      logger,
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: true,
     });
     recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
     if (!prepared.stream) {
@@ -1911,6 +2020,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeContentWithToolCallsResponse(
@@ -1997,6 +2108,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeTextResponse(
         response.content,
@@ -2076,6 +2189,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeToolCallResponse(

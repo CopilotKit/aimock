@@ -25,6 +25,9 @@ import {
   isVideoResponse,
   isJSONResponse,
   fixtureListTarget,
+  fixtureCitationsProblem,
+  fixtureFilesProblem,
+  resolveServedBlockOutcome,
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
@@ -538,6 +541,84 @@ function validateReasoning(
       });
     }
   }
+}
+
+/** The wires that read `files` and `citations`; every other wire ignores them. */
+const CITATIONS_FILES_WIRES =
+  "Chat Completions, Anthropic Messages, Gemini or the OpenAI Responses API";
+
+/**
+ * Generated `files` and source `citations`. A malformed value is not a load
+ * error (registration never throws for it, as in the release that added the
+ * keys); each request the fixture serves on Chat Completions, Anthropic,
+ * Gemini or the Responses API answers a coded 500 instead, so warn here with
+ * the same message. Citations are checked against the text they cite when
+ * served ({@link citedText}). A turn with no text (tool calls only, blocks
+ * with no text block, or empty content) has nothing to cite, so any
+ * non-empty `citations` there is reported exactly as the wires report it.
+ */
+function validateCitationsAndFiles(
+  response: {
+    content?: unknown;
+    files?: unknown;
+    citations?: unknown;
+    toolCalls?: unknown;
+    customToolCalls?: unknown;
+    blocks?: unknown;
+    responsesBlocks?: unknown;
+  },
+  fixtureIndex: number,
+  results: ValidationResult[],
+): void {
+  const filesProblem = fixtureFilesProblem(response.files);
+  if (filesProblem !== undefined) {
+    results.push({
+      severity: "warning",
+      fixtureIndex,
+      message: `${filesProblem} — requests it serves on ${CITATIONS_FILES_WIRES} answer a 500 (aimock_invalid_fixture_file)`,
+    });
+  }
+  const text = citedText(response);
+  if (text === undefined) return;
+  const citationsProblem = fixtureCitationsProblem(response.citations, text);
+  if (citationsProblem !== undefined) {
+    results.push({
+      severity: "warning",
+      fixtureIndex,
+      message: `${citationsProblem} — requests it serves on ${CITATIONS_FILES_WIRES} answer a 500 (aimock_invalid_fixture_citation)`,
+    });
+  }
+}
+
+/**
+ * The text a fixture's citations index when served: the joined text of every
+ * text block when `responsesBlocks` or `blocks` is non-empty (through the
+ * same {@link resolveServedBlockOutcome} the providers use; empty when no
+ * block is text), else a string `content`, else empty for a tool-only turn.
+ * Empty text means a turn with nothing to cite. Undefined for a response
+ * that is neither (validated elsewhere) and for a malformed blocks array,
+ * which `validateBlocks` reports as an error.
+ */
+function citedText(response: {
+  content?: unknown;
+  blocks?: unknown;
+  responsesBlocks?: unknown;
+  toolCalls?: unknown;
+  customToolCalls?: unknown;
+}): string | undefined {
+  const hasBlocks =
+    (Array.isArray(response.blocks) && response.blocks.length > 0) ||
+    (Array.isArray(response.responsesBlocks) && response.responsesBlocks.length > 0);
+  if (hasBlocks) {
+    try {
+      return resolveServedBlockOutcome(response)?.content;
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof response.content === "string") return response.content;
+  if (Array.isArray(response.toolCalls) || Array.isArray(response.customToolCalls)) return "";
+  return undefined;
 }
 
 function validateWebSearches(
@@ -1216,6 +1297,12 @@ export function validateFixtures(
       );
       // OpenAI Responses keys (new): customToolCalls and responsesBlocks.
       validateResponsesToolKeys(response, i, results);
+      // Generated `files` and source `citations`.
+      validateCitationsAndFiles(
+        response as Parameters<typeof validateCitationsAndFiles>[0],
+        i,
+        results,
+      );
 
       // Tool call response checks
       if (isToolCallResponse(response)) {

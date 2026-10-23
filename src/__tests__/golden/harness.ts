@@ -202,6 +202,7 @@ export const ID_PREFIXES = [
   "fc",
   "file",
   "ftjob",
+  "ig",
   "item",
   "modr",
   "msg",
