@@ -1,0 +1,477 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello g\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"olden w\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"orld, t\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"his is \"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"a chara\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"cteriza\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"tion ru\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"n.\"}]},\"index\":0,\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"NYC\"},\"id\":\"call_g1\"}}]},\"finishReason\":\"FUNCTION_CALL\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Checkin\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"g now.\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"},\"id\":\"call_g2\"}}]},\"finishReason\":\"FUNCTION_CALL\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Lead te\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"xt.\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_time\",\"args\":{},\"id\":\"call_g3\"}}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Tail te\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"xt.\"}]},\"finishReason\":\"FUNCTION_CALL\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"index\":0,\"finishReason\":\"MALFORMED_FUNCTION_CALL\",\"finishMessage\":\"Malformed function call: get_weather({\\\"city\\\")\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1,\"totalTokenCount\":4}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello g\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"olden w\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello g\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"olden w\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"orld, t\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"his is \"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"a chara\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"cteriza\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"tion ru\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"n.\"}]},\"index\":0,\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Checkin\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"g now.\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"},\"id\":\"call_g2\"}}]},\"finishReason\":\"FUNCTION_CALL\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello g\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"olden w\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"orld, t\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"his is \"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"a chara\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"cteriza\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"tion ru\"}]},\"index\":0}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"n.\"}]},\"index\":0,\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":0,\"candidatesTokenCount\":0,\"totalTokenCount\":0}}\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

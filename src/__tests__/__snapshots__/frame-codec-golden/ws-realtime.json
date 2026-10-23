@@ -1,0 +1,507 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.session\",\"model\":\"gpt-4o-realtime-preview\",\"expires_at\":1767326645,\"modalities\":[\"text\"],\"instructions\":\"\",\"tools\":[],\"tool_choice\":\"auto\",\"temperature\":0.8,\"max_response_output_tokens\":\"inf\",\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null},\"output\":{\"format\":null,\"voice\":null}},\"type\":\"realtime\",\"reasoning\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"previous_item_id\":null,\"item\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"golden probe\"}],\"id\":\"<masked>\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"in_progress\",\"status_details\":null,\"output\":[],\"usage\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.done\",\"item\":{\"id\":\"<masked>\",\"object\":\"realtime.item\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.done\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"completed\",\"output\":[{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]}],\"usage\":{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0}},\"event_id\":\"<masked>\"}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.session\",\"model\":\"gpt-4o-realtime-preview\",\"expires_at\":1767326645,\"modalities\":[\"text\"],\"instructions\":\"\",\"tools\":[],\"tool_choice\":\"auto\",\"temperature\":0.8,\"max_response_output_tokens\":\"inf\",\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null},\"output\":{\"format\":null,\"voice\":null}},\"type\":\"realtime\",\"reasoning\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"previous_item_id\":null,\"item\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"golden probe\"}],\"id\":\"<masked>\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"in_progress\",\"status_details\":null,\"output\":[],\"usage\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.done\",\"item\":{\"id\":\"<masked>\",\"object\":\"realtime.item\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.done\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"completed\",\"output\":[{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]}],\"usage\":{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0}},\"event_id\":\"<masked>\"}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "profile": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.session\",\"model\":\"gpt-4o-realtime-preview\",\"expires_at\":1767326645,\"modalities\":[\"text\"],\"instructions\":\"\",\"tools\":[],\"tool_choice\":\"auto\",\"temperature\":0.8,\"max_response_output_tokens\":\"inf\",\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null},\"output\":{\"format\":null,\"voice\":null}},\"type\":\"realtime\",\"reasoning\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"previous_item_id\":null,\"item\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"golden probe\"}],\"id\":\"<masked>\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"in_progress\",\"status_details\":null,\"output\":[],\"usage\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.done\",\"item\":{\"id\":\"<masked>\",\"object\":\"realtime.item\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.done\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"completed\",\"output\":[{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\"}]}],\"usage\":{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0}},\"event_id\":\"<masked>\"}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.session\",\"model\":\"gpt-4o-realtime-preview\",\"expires_at\":1767326645,\"modalities\":[\"text\"],\"instructions\":\"\",\"tools\":[],\"tool_choice\":\"auto\",\"temperature\":0.8,\"max_response_output_tokens\":\"inf\",\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null},\"output\":{\"format\":null,\"voice\":null}},\"type\":\"realtime\",\"reasoning\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"previous_item_id\":null,\"item\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"golden probe\"}],\"id\":\"<masked>\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"realtime.response\",\"status\":\"in_progress\",\"status_details\":null,\"output\":[],\"usage\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"response_id\":\"<masked>\",\"output_index\":0,\"item\":{\"id\":\"<masked>\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[],\"phase\":\"final_answer\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"response_id\":\"<masked>\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "transcription profile": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"transcription_session.updated\",\"session\":{\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":{\"model\":\"gpt-live-transcribe-2026-07-01\"},\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"input_audio_buffer.committed\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"role\":\"user\",\"content\":[{\"type\":\"input_audio\",\"transcript\":null}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"Live go\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"lden ca\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"ption f\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"or the \",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"profile\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\" path.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"item_id\":\"<masked>\",\"content_index\":0,\"transcript\":\"Live golden caption for the profile path.\",\"usage\":{\"type\":\"duration\",\"seconds\":0},\"event_id\":\"<masked>\"}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "transcription delay-text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"transcription_session.updated\",\"session\":{\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":{\"model\":\"gpt-live-transcribe-2026-07-01\"},\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"input_audio_buffer.committed\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"role\":\"user\",\"content\":[{\"type\":\"input_audio\",\"transcript\":null}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"Live go\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"lden ca\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"ption f\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"or the \",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"profile\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\" path.\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"item_id\":\"<masked>\",\"content_index\":0,\"transcript\":\"Live golden caption for the profile path.\",\"usage\":{\"type\":\"duration\",\"seconds\":0},\"event_id\":\"<masked>\"}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "transcription truncate2": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"session.created\",\"session\":{\"id\":\"<masked>\",\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":null,\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"transcription_session.updated\",\"session\":{\"object\":\"realtime.transcription_session\",\"type\":\"transcription\",\"expires_at\":1767326645,\"audio\":{\"input\":{\"format\":null,\"noise_reduction\":null,\"transcription\":{\"model\":\"gpt-live-transcribe-2026-07-01\"},\"turn_detection\":null}},\"include\":null},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"input_audio_buffer.committed\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.added\",\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"role\":\"user\",\"content\":[{\"type\":\"input_audio\",\"transcript\":null}]},\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"Live go\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"<masked>\",\"content_index\":0,\"delta\":\"lden ca\",\"event_id\":\"<masked>\"}"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  }
+}

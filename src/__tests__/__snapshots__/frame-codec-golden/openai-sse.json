@@ -1,0 +1,1175 @@
+{
+  "plain text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "plain tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "plain truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "return",
+        "completed": false
+      }
+    ],
+    "journal": null
+  },
+  "plain delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "plain delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "usageChunk text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "usageChunk tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "usageChunk truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "return",
+        "completed": false
+      }
+    ],
+    "journal": null
+  },
+  "usageChunk delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "usageChunk delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "openRouterProcessing text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": ": OPENROUTER PROCESSING\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "openRouterProcessing tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": ": OPENROUTER PROCESSING\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "openRouterProcessing truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": ": OPENROUTER PROCESSING\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "return",
+        "completed": false
+      }
+    ],
+    "journal": null
+  },
+  "openRouterProcessing delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": ": OPENROUTER PROCESSING\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "openRouterProcessing delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": ": OPENROUTER PROCESSING\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      },
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  },
+  "already-ended": {
+    "log": [
+      {
+        "op": "return",
+        "completed": true
+      }
+    ],
+    "journal": null
+  }
+}
