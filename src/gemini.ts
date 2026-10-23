@@ -1427,6 +1427,16 @@ export async function handleGemini(
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
   if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
     const prepared = prepareGeminiMisbehavior(
       misbehavior,
       completionReq,
@@ -1435,13 +1445,6 @@ export async function handleGemini(
       logger,
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
     );
-    const entry = journal.add({
-      method: req.method ?? "POST",
-      path,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
     recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
     if (!streaming) {
       res.writeHead(200, { "Content-Type": "application/json" });

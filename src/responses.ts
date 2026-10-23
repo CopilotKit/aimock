@@ -2215,13 +2215,9 @@ export async function handleResponses(
   const effectiveReplaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
   if (misbehavior.kind === "applied") {
-    const prepared = prepareResponsesMisbehavior(misbehavior);
-    const output = buildResponsesMisbehavior(
-      prepared,
-      completionReq,
-      chunkSize,
-      emitEncryptedReasoning,
-    );
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
     const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -2229,6 +2225,13 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const output = buildResponsesMisbehavior(
+      prepared,
+      completionReq,
+      chunkSize,
+      emitEncryptedReasoning,
+    );
     recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
     if (responsesReq.stream !== true) {
       res.writeHead(200, { "Content-Type": "application/json" });

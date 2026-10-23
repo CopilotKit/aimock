@@ -2359,6 +2359,13 @@ async function handleCompletions(
     evaluation.kind === "applied" ? prepareOpenAIChatMisbehavior(evaluation) : undefined;
   const response = appliedPlan?.response ?? resolvedResponse;
   const summary = appliedPlan?.summary ?? evaluation.summary;
+  // On Chat Completions the success branches journal first (so a coded 500
+  // keeps the fixture), then validate and build, and record the outcome only
+  // once the response is built: a fixture error thrown on the way is not a
+  // fault that was served. A non-stream reply records it before its timing
+  // wait (see commitNonStream). Anthropic Messages, Gemini and the Responses
+  // API do this on their applied-fault path only; their success branches
+  // record the outcome before validating and building.
   const recordOutcome = (entry: JournalEntry): void => {
     recordMisbehaviorOutcome({ entry, summary, defaults, testId });
   };
@@ -2448,6 +2455,22 @@ async function handleCompletions(
         fixture.replaySpeed ?? defaults.replaySpeed,
       ),
     );
+  };
+
+  // A built non-stream reply is committed to be served: record the outcome
+  // before the timing wait, so the journal carries it while the reply waits.
+  // A client that hangs up during the wait got nothing, so the entry records a
+  // torn socket (status 0, interrupted), as routeError does for one that hangs
+  // up before its body arrives. False when there is no one left to answer.
+  const commitNonStream = async (entry: JournalEntry, contentLength: number): Promise<boolean> => {
+    recordOutcome(entry);
+    await awaitNonStreamingTiming(contentLength);
+    const gone = responseGoneReason(res);
+    if (gone === null) return true;
+    entry.response.status = 0;
+    entry.response.interrupted = true;
+    entry.response.interruptReason = gone === "client-gone" ? "client aborted" : gone;
+    return false;
   };
 
   // OpenRouter response shaping (no-op for OpenAI callers). Applied as a
@@ -2550,7 +2573,6 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    recordOutcome(entry);
     // Safety net: the planner already skips a fixture with generated `files`
     // (they have no Chat Completions projection), so it is never faulted.
     // Reject here anyway, before any byte is written, if one gets through.
@@ -2579,7 +2601,7 @@ async function handleCompletions(
           : appliedPlan.stop === "content_filter"
             ? ""
             : (appliedPlan.reasoning ?? "");
-      await awaitNonStreamingTiming(nonStreamedContent.length);
+      if (!(await commitNonStream(entry, nonStreamedContent.length))) return;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2605,6 +2627,7 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
+      recordOutcome(entry);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
@@ -2660,7 +2683,6 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    recordOutcome(journalEntry);
     // Generated `files` have no Chat Completions projection: reject before any byte is written.
     rejectGeneratedFiles(response, wire);
     // A Responses-only custom tool call (customToolCalls / responsesBlocks) is
@@ -2674,7 +2696,6 @@ async function handleCompletions(
       ? blockOutcome.content + blockOutcome.toolCalls.map((tc) => tc.name + tc.arguments).join("")
       : (response.content ?? "") + toolCalls.map((tc) => tc.name + tc.arguments).join("");
     if (!streaming) {
-      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + completionText.length);
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
         blockOutcome?.toolCalls ?? toolCalls,
@@ -2689,6 +2710,8 @@ async function handleCompletions(
           : overrides,
         body.messages,
       );
+      const contentLength = (effReasoning?.length ?? 0) + completionText.length;
+      if (!(await commitNonStream(journalEntry, contentLength))) return;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2712,6 +2735,7 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
+      recordOutcome(journalEntry);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
@@ -2760,11 +2784,9 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    recordOutcome(journalEntry);
     // Generated `files` have no Chat Completions projection: reject before any byte is written.
     rejectGeneratedFiles(response, wire);
     if (body.stream !== true) {
-      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + response.content.length);
       const completion = buildTextCompletion(
         response.content,
         responseModel,
@@ -2772,6 +2794,8 @@ async function handleCompletions(
         overrides,
         body.messages,
       );
+      const contentLength = (effReasoning?.length ?? 0) + response.content.length;
+      if (!(await commitNonStream(journalEntry, contentLength))) return;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2792,6 +2816,7 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
+      recordOutcome(journalEntry);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
@@ -2840,13 +2865,11 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    recordOutcome(journalEntry);
     // Generated `files` have no Chat Completions projection: reject before any byte is written.
     rejectGeneratedFiles(response, wire);
     const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
       const toolCallText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
-      await awaitNonStreamingTiming((effReasoning?.length ?? 0) + toolCallText.length);
       const completion = buildToolCallCompletion(
         toolCalls,
         responseModel,
@@ -2854,6 +2877,8 @@ async function handleCompletions(
         overrides,
         body.messages,
       );
+      const contentLength = (effReasoning?.length ?? 0) + toolCallText.length;
+      if (!(await commitNonStream(journalEntry, contentLength))) return;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
@@ -2875,6 +2900,7 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
+      recordOutcome(journalEntry);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,

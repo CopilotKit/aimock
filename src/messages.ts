@@ -1909,6 +1909,16 @@ export async function handleMessages(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // below leaves a 500 entry that keeps the fixture. Record the fault only
+    // once the reply is built: a thrown error is not a fault that was served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
     // Safety net: the planner already skips a fixture with generated `files`
     // (they have no Anthropic Messages projection), so it is never faulted.
     // Reject here anyway, before any byte is written, if one gets through.
@@ -1920,13 +1930,6 @@ export async function handleMessages(
       logger,
       strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       citations: true,
-    });
-    const entry = journal.add({
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/messages",
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-      response: { status: 200, fixture },
     });
     recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
     if (!prepared.stream) {
