@@ -271,6 +271,7 @@ export interface Fixture {
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
     nonStreamingTiming?: boolean;
+    nonStreamingTimingAllProviders?: boolean;
     openRouterProcessing?: boolean;
     // (undocumented)
     recordedTimings?: RecordedTimings;
@@ -383,6 +384,7 @@ interface FixtureFileEntry {
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
     nonStreamingTiming?: boolean;
+    nonStreamingTimingAllProviders?: boolean;
     openRouterProcessing?: boolean;
     // (undocumented)
     recordedTimings?: RecordedTimings;

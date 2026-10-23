@@ -1049,8 +1049,21 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>
                 Also delay <code>stream: false</code> OpenAI Chat Completions replies by the
                 fixture's <code>streamingProfile</code> or <code>recordedTimings</code> (default
-                <code>false</code>). See
+                <code>false</code>). Other providers ignore it (use
+                <code>nonStreamingTimingAllProviders</code>). See
                 <a href="/streaming-physics#non-streaming">Non-Streaming Responses</a>
+              </td>
+            </tr>
+            <tr>
+              <td>nonStreamingTimingAllProviders</td>
+              <td>boolean</td>
+              <td>
+                Delay <code>stream: false</code> replies the same way on OpenAI Chat Completions,
+                Anthropic Messages, OpenAI Responses, Gemini, Vertex AI, Gemini Interactions,
+                Cohere, Bedrock InvokeModel and Converse, and Ollama (default <code>false</code>).
+                Needs <code>streamingProfile</code> or <code>recordedTimings</code>. Error replies
+                and audio transcription are not delayed. See
+                <a href="/streaming-physics#non-streaming-all-providers">All Providers</a>
               </td>
             </tr>
             <tr>

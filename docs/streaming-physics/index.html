@@ -195,8 +195,64 @@
         <p>
           <code>nonStreamingTiming</code> has an effect only on OpenAI Chat Completions, and only
           when the fixture also sets <code>streamingProfile</code> or <code>recordedTimings</code>.
-          Non-streaming responses from other providers are not delayed.
+          Non-streaming responses from other providers are not delayed by it.
         </p>
+
+        <h3 id="non-streaming-all-providers">All Providers</h3>
+        <p>
+          To delay <code>stream: false</code> replies on other providers too, set
+          <code>nonStreamingTimingAllProviders: true</code> on the fixture. It uses the same formula
+          as <code>nonStreamingTiming: true</code>, and it also needs a
+          <code>streamingProfile</code> or <code>recordedTimings</code>. It applies to these
+          non-streaming endpoints:
+        </p>
+        <ul>
+          <li>OpenAI Chat Completions (the same delay as <code>nonStreamingTiming: true</code>)</li>
+          <li>Anthropic Messages</li>
+          <li>OpenAI Responses</li>
+          <li>Gemini and Vertex AI <code>generateContent</code></li>
+          <li>Gemini Interactions (with <code>stream: false</code>)</li>
+          <li>Cohere v2 chat</li>
+          <li>Bedrock InvokeModel and Converse</li>
+          <li>Ollama <code>/api/chat</code> and <code>/api/generate</code></li>
+        </ul>
+        <p>
+          Audio transcription replies are not delayed. <code>nonStreamingTiming</code> is unchanged:
+          it still applies to OpenAI Chat Completions only. Setting
+          <code>nonStreamingTimingAllProviders: false</code> does not turn off
+          <code>nonStreamingTiming: true</code>.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/slow-non-streaming-all.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"think carefully"</span> },
+      <span class="key">"response"</span>: { <span class="key">"content"</span>: <span class="str">"Let me think about this..."</span> },
+      <span class="key">"streamingProfile"</span>: { <span class="key">"ttft"</span>: <span class="num">800</span>, <span class="key">"tps"</span>: <span class="num">50</span> },
+      <span class="key">"nonStreamingTimingAllProviders"</span>: <span class="kw">true</span>
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h3 id="non-streaming-errors-and-disconnects">Errors and Disconnects</h3>
+        <ul>
+          <li>
+            Error replies (a fixture <code>error</code> response) are never delayed. aimock sends
+            them at once, with the fixture status.
+          </li>
+          <li>
+            If the client disconnects during the wait, aimock writes nothing. The journal entry
+            records <code>response.interrupted: true</code>,
+            <code>response.interruptReason: "client aborted"</code> and
+            <code>response.status: 0</code>. See
+            <a href="/error-injection#client-disconnects">Client Disconnects</a>.
+          </li>
+        </ul>
 
         <h2>Interaction with <code>latency</code></h2>
         <ul>
@@ -216,7 +272,8 @@
             <code>latency</code> and <code>--latency</code> are gaps between SSE chunks only. They
             never delay a non-streaming response, including the fallback case above. To delay
             <code>stream: false</code> replies, set <code>streamingProfile</code> and
-            <code>nonStreamingTiming: true</code> (see
+            <code>nonStreamingTiming: true</code> (OpenAI Chat Completions) or
+            <code>nonStreamingTimingAllProviders: true</code> (see
             <a href="#non-streaming">Non-Streaming Responses</a>).
           </li>
         </ul>

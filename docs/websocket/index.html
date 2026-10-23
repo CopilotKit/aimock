@@ -88,6 +88,13 @@
           </tbody>
         </table>
 
+        <p>
+          On OpenAI Responses, OpenAI Realtime and Gemini Live, if the client closes the connection
+          during a reply, aimock stops sending and journals the turn with
+          <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>).
+        </p>
+
         <h2 id="openai-live">OpenAI GPT-Live</h2>
         <p>
           GPT-Live uses a primary WebSocket upgrade: <code>GET /v1/live/sessions</code>. Connect to
