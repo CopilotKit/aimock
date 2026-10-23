@@ -1116,13 +1116,16 @@ interface MessageBlockResult {
 }
 
 function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
-  return (citations ?? []).map((c) => ({
-    type: "url_citation",
-    url: c.url,
-    title: c.title ?? c.url,
-    start_index: c.startIndex ?? 0,
-    end_index: c.endIndex ?? content.length,
-  }));
+  // Only URL citations have a wire shape here so far; file citations are skipped.
+  return (citations ?? [])
+    .flatMap((c) => (c.type === "file" ? [] : [c]))
+    .map((c) => ({
+      type: "url_citation",
+      url: c.url,
+      title: c.title ?? c.url,
+      start_index: c.startIndex ?? 0,
+      end_index: c.endIndex ?? content.length,
+    }));
 }
 
 function buildMessageOutputEvents(
