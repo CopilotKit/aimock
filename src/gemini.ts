@@ -45,6 +45,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   servedToolArgs,
+  fixtureFiles,
   type ResolvedCitation,
   surrogateSafeChunks,
 } from "./helpers.js";
@@ -466,7 +467,7 @@ function geminiTextChunkSpans(
 // Fixture `files` as Gemini `inlineData` parts. Every text and tool-call builder
 // emits these after any thought parts and before the text / functionCall parts.
 function geminiFileParts(overrides?: ResponseOverrides): GeminiPart[] {
-  return (overrides?.files ?? []).map((f) => ({
+  return fixtureFiles(overrides?.files).map((f) => ({
     inlineData: { mimeType: f.mimeType, data: f.data },
   }));
 }
@@ -1076,7 +1077,18 @@ function prepareGeminiMisbehavior(
     chunks = [{ candidates: [candidate] }];
   } else if (fault === "stop-length-mid-tool") {
     // Object arguments cannot be partial; preserve only text preceding the cut.
-    candidate.content.parts = content ? [{ text: content }] : [];
+    // The fixture's files precede that text, as on the normal path.
+    const parts = geminiFileParts(overrides);
+    const textPartIndex = parts.length;
+    if (content) parts.push({ text: content });
+    candidate.content.parts = parts;
+    // The planner drops `citations` whenever the fault changes the served
+    // text in any way, not only when the cut removes cited text.
+    if (content)
+      Object.assign(
+        candidate,
+        geminiGroundingField(content, overrides, geminiWholeTextPart(content, textPartIndex)),
+      );
     candidate.finishReason = "MAX_TOKENS";
     chunks = [{ candidates: [candidate] }];
   } else if (fault === "empty-response") {

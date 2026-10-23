@@ -2683,4 +2683,130 @@ describe("POST /v1/chat/completions (citations and files)", () => {
       );
     },
   );
+
+  it.each([false, true])("rejects fixture files with a coded 500 (stream: %s)", async (stream) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("aimock_unsupported_generated_file");
+    expect(body.error.message).toContain("OpenAI Chat Completions");
+  });
+
+  const generatedFile = [{ mimeType: "image/png", data: "iVBORw0KGgo=" }];
+
+  it.each<[string, Fixture["response"]]>([
+    ["tool-only", { toolCalls: [{ name: "lookup", arguments: "{}" }], files: generatedFile }],
+    [
+      "content + tool calls",
+      {
+        content: "Checking.",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        files: generatedFile,
+      },
+    ],
+  ])("rejects fixture files on the %s path with a coded 500", async (_label, response) => {
+    instance = await createServer([{ match: { userMessage: "draw" }, response }]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      expect(res.status).toBe(500);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe("aimock_unsupported_generated_file");
+      expect(body.error.message).toContain("OpenAI Chat Completions");
+    }
+  });
+
+  // What a turn looks like on the wire, folded the same way for both modes.
+  const chatTurn = (body: string, stream: boolean) => {
+    if (!stream) {
+      const choice = JSON.parse(body).choices[0];
+      return {
+        content: choice.message.content ?? "",
+        refusal: choice.message.refusal ?? "",
+        finish: choice.finish_reason,
+      };
+    }
+    const chunks = body
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)).choices[0]);
+    return {
+      content: chunks.map((c) => c.delta.content ?? "").join(""),
+      refusal: chunks.map((c) => c.delta.refusal ?? "").join(""),
+      finish: chunks.map((c) => c.finish_reason).filter((f) => f !== null)[0],
+    };
+  };
+
+  it.each([
+    {
+      fault: { fault: "refusal" as const },
+      turn: { content: "", refusal: "I can't help with that.", finish: "stop" },
+    },
+    {
+      fault: { fault: "content-filter" as const },
+      turn: { content: "", refusal: "", finish: "content_filter" },
+    },
+    {
+      fault: { fault: "reasoning-only" as const, reasoning: "Thinking only." },
+      turn: { content: "", refusal: "", finish: "length" },
+    },
+  ])(
+    "rejects fixture files under the $fault.fault misbehavior with a coded 500",
+    async ({ fault, turn }) => {
+      const misbehavior = { faults: [{ ...fault, rate: 1 }] };
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { content: "Here.", files: generatedFile },
+            misbehavior,
+          },
+          // Control: the same fault on a servable fixture is applied on this wire.
+          { match: { userMessage: "plain" }, response: { content: "Here." }, misbehavior },
+        ],
+        { enableMisbehavior: true },
+      );
+      for (const stream of [false, true]) {
+        const control = await post(
+          `${instance.url}/v1/chat/completions`,
+          chatBody("plain", stream),
+        );
+        expect(control.status).toBe(200);
+        expect(chatTurn(control.body, stream)).toEqual(turn);
+
+        const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+        expect(res.status).toBe(500);
+        const body = JSON.parse(res.body);
+        expect(body.error.code).toBe("aimock_unsupported_generated_file");
+        expect(body.error.message).toContain("OpenAI Chat Completions");
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "journals the rejected files fixture as a 500 with the error (stream: %s)",
+    async (stream) => {
+      const fixture: Fixture = {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      };
+      instance = await createServer([fixture]);
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      const wireError = JSON.parse(res.body).error as { message: string; code: string };
+      expect(wireError.code).toBe("aimock_unsupported_generated_file");
+      const entries = instance.journal.getAll();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].path).toBe("/v1/chat/completions");
+      expect(entries[0].response.status).toBe(500);
+      expect(entries[0].response.fixture).toBe(fixture);
+      // The journal keeps the message the client got, which names the error.
+      expect(entries[0].response.error).toBe(wireError.message);
+      expect(entries[0].response.error).toContain('fixture "files" (model-generated files)');
+    },
+  );
 });

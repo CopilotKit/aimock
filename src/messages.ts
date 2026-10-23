@@ -32,6 +32,7 @@ import {
   generateToolUseId,
   extractOverrides,
   requireEmittedFunctionToolCalls,
+  rejectGeneratedFiles,
   resolveCitations,
   isTextResponse,
   isToolCallResponse,
@@ -1908,6 +1909,10 @@ export async function handleMessages(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   if (misbehavior.kind === "applied") {
+    // Safety net: the planner already skips a fixture with generated `files`
+    // (they have no Anthropic Messages projection), so it is never faulted.
+    // Reject here anyway, before any byte is written, if one gets through.
+    rejectGeneratedFiles(misbehavior.response, "Anthropic Messages");
     const prepared = prepareClaudeMisbehavior(misbehavior, {
       request: completionReq,
       stream: claudeReq.stream === true,
@@ -2012,6 +2017,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeContentWithToolCallsResponse(
@@ -2098,6 +2105,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeTextResponse(
         response.content,
@@ -2177,6 +2186,8 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeToolCallResponse(

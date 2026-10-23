@@ -16,6 +16,7 @@ import type {
   CustomToolDefinition,
   Fixture,
   FixtureBlock,
+  FixtureGeneratedFile,
   FixtureToolCall,
   HandlerDefaults,
   ResponseOverrides,
@@ -51,6 +52,8 @@ import {
   servedToolCalls,
   toolCallFixtureBlock,
   withoutLegacyNamespaces,
+  UnsupportedGeneratedFileError,
+  fixtureFiles,
   fixtureCitations,
   surrogateSafeChunks,
 } from "./helpers.js";
@@ -1029,6 +1032,91 @@ function buildWebSearchStreamEvents(
   return events;
 }
 
+/**
+ * A Responses `image_generation_call` output item for one fixture file (see
+ * `ResponseOutputItem.ImageGenerationCall` in the openai SDK): `result` holds
+ * the base64 bytes once completed and is null while in progress.
+ */
+function imageGenerationCallItem(
+  id: string,
+  file: FixtureGeneratedFile,
+  status: "in_progress" | "completed",
+): object {
+  return {
+    type: "image_generation_call",
+    id,
+    status,
+    result: status === "completed" ? file.data : null,
+  };
+}
+
+/**
+ * A fixture file that is not `image/*` reached the Responses API, which
+ * carries generated files only as `image_generation_call` items. Surfaces as
+ * the same coded 500 (`aimock_unsupported_generated_file`), naming `mimeType`.
+ */
+class NonImageGeneratedFileError extends UnsupportedGeneratedFileError {
+  constructor(mimeType: string) {
+    super("the OpenAI Responses API");
+    this.message =
+      `aimock: fixture "files" on the OpenAI Responses API carry only image/* files ` +
+      `(as image_generation_call items); got mimeType "${mimeType}"`;
+  }
+}
+
+/**
+ * Throw {@link NonImageGeneratedFileError} for the first fixture file whose
+ * `mimeType` is not `image/*`. Called before any output item is built, so
+ * nothing reaches the client.
+ */
+function requireImageFiles(files: FixtureGeneratedFile[]): void {
+  const nonImage = files.find((f) => !f.mimeType.toLowerCase().startsWith("image/"));
+  if (nonImage) throw new NonImageGeneratedFileError(nonImage.mimeType);
+}
+
+/** Fixture `files` as completed `image_generation_call` items (non-streaming). */
+function imageGenerationCallItems(files?: FixtureGeneratedFile[]): object[] {
+  const validated = fixtureFiles(files);
+  requireImageFiles(validated);
+  return validated.map((f) => imageGenerationCallItem(generateId("ig"), f, "completed"));
+}
+
+/**
+ * Streamed form of {@link imageGenerationCallItems}: per file, the item's
+ * `output_item.added`, the `image_generation_call` `in_progress`,
+ * `generating` and `completed` events, then `output_item.done` carrying the
+ * completed item.
+ */
+function buildImageGenerationStreamEvents(
+  files: FixtureGeneratedFile[],
+  startOutputIndex: number,
+): ResponsesSSEEvent[] {
+  requireImageFiles(files);
+  const events: ResponsesSSEEvent[] = [];
+  files.forEach((file, i) => {
+    const id = generateId("ig");
+    const outputIndex = startOutputIndex + i;
+    events.push({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "in_progress"),
+    });
+    for (const phase of ["in_progress", "generating", "completed"]) {
+      events.push({
+        type: `response.image_generation_call.${phase}`,
+        output_index: outputIndex,
+        item_id: id,
+      });
+    }
+    events.push({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "completed"),
+    });
+  });
+  return events;
+}
+
 // ─── Shared streaming helpers ────────────────────────────────────────────────
 
 interface PreambleResult {
@@ -1109,6 +1197,16 @@ function buildResponsePreamble(
     );
     for (const de of doneEvents) prefixOutputItems.push(de.item as object);
     nextOutputIndex += webSearches.length;
+  }
+
+  const files = fixtureFiles(overrides?.files);
+  if (files.length > 0) {
+    const fileEvents = buildImageGenerationStreamEvents(files, nextOutputIndex);
+    events.push(...fileEvents);
+    for (const e of fileEvents) {
+      if (e.type === "response.output_item.done") prefixOutputItems.push(e.item as object);
+    }
+    nextOutputIndex += files.length;
   }
 
   return { respId, created, events, prefixOutputItems, nextOutputIndex };
@@ -1407,6 +1505,7 @@ function buildOutputPrefix(
   synthesizeSummarylessReasoning = false,
   phase?: ResponseOverrides["phase"],
   citations?: ResponseOverrides["citations"],
+  files?: ResponseOverrides["files"],
 ): object[] {
   const output: object[] = [];
 
@@ -1432,6 +1531,8 @@ function buildOutputPrefix(
       });
     }
   }
+
+  output.push(...imageGenerationCallItems(files));
 
   output.push({
     type: "message",
@@ -1483,6 +1584,7 @@ export function buildTextResponse(
       synthesizeSummarylessReasoning,
       overrides?.phase,
       overrides?.citations,
+      overrides?.files,
     ),
     overrides,
   );
@@ -1522,6 +1624,7 @@ function buildToolCallResponse(
       });
     }
   }
+  output.push(...imageGenerationCallItems(overrides?.files));
   for (const tc of toolCalls) {
     output.push(buildToolCallOutputItem(tc));
   }
@@ -1735,6 +1838,7 @@ function buildContentWithToolCallsResponse(
         });
       }
     }
+    output.push(...imageGenerationCallItems(overrides?.files));
     const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
     let textPos = 0;
     for (const block of ordered) {
@@ -1761,6 +1865,7 @@ function buildContentWithToolCallsResponse(
     synthesizeSummarylessReasoning,
     overrides?.phase,
     overrides?.citations,
+    overrides?.files,
   );
   for (const tc of toolCalls) {
     output.push(buildToolCallOutputItem(tc));
@@ -2441,12 +2546,20 @@ export function buildResponsesMisbehavior(
   const overrides = extractOverrides(response);
   const reasoning = plan.reasoning ?? ("reasoning" in response ? response.reasoning : undefined);
   const webSearches = "webSearches" in response ? response.webSearches : undefined;
+  // Refusal, empty-response, content-filter and reasoning-only withhold the
+  // turn's normal output. Their candidates already drop text, tool calls and
+  // web searches, so the fixture's generated images are withheld too.
+  const outputWithheld =
+    plan.refusal !== undefined ||
+    plan.summary.fault === "empty-response" ||
+    plan.stop === "content_filter" ||
+    plan.reasoning !== undefined;
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     request.model,
     chunkSize,
     reasoning,
     webSearches,
-    overrides,
+    outputWithheld ? { ...overrides, files: undefined } : overrides,
     emitEncryptedReasoning,
     false,
     plan.reasoning !== undefined,
@@ -2488,11 +2601,7 @@ export function buildResponsesMisbehavior(
       { type: "response.output_item.done", output_index: outputIndex, item },
     );
     output.push(item);
-  } else if (
-    plan.summary.fault !== "empty-response" &&
-    plan.stop !== "content_filter" &&
-    plan.reasoning === undefined
-  ) {
+  } else if (!outputWithheld) {
     const combined = isCombinedFixtureResponse(response);
     // Custom tool calls and namespaces pass through a fault unchanged.
     const outcome = combined ? resolveServedBlockOutcome(response) : undefined;

@@ -1980,6 +1980,110 @@ describe("POST /v1/messages (citations and files)", () => {
     },
   );
 
+  it.each([false, true])("rejects fixture files with a coded 500 (stream: %s)", async (stream) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/messages`, messagesBody("draw", stream));
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("aimock_unsupported_generated_file");
+    expect(body.error.message).toContain("Anthropic Messages");
+  });
+
+  const generatedFile = [{ mimeType: "image/png", data: "iVBORw0KGgo=" }];
+
+  it.each<[string, Fixture["response"]]>([
+    ["tool-only", { toolCalls: [{ name: "lookup", arguments: "{}" }], files: generatedFile }],
+    [
+      "content + tool calls",
+      {
+        content: "Checking.",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        files: generatedFile,
+      },
+    ],
+  ])("rejects fixture files on the %s path with a coded 500", async (_label, response) => {
+    instance = await createServer([{ match: { userMessage: "draw" }, response }]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/messages`, messagesBody("draw", stream));
+      expect(res.status).toBe(500);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe("aimock_unsupported_generated_file");
+      expect(body.error.message).toContain("Anthropic Messages");
+    }
+  });
+
+  type TurnBlock = { type: string; text?: string; thinking?: string };
+  // What a turn looks like on the wire, folded the same way for both modes.
+  const messagesTurn = (body: string, stream: boolean) => {
+    if (!stream) {
+      const msg = JSON.parse(body) as { content: TurnBlock[]; stop_reason: string };
+      return {
+        blocks: msg.content.map((b) => b.type),
+        text: msg.content.map((b) => b.text ?? b.thinking ?? "").join(""),
+        stop: msg.stop_reason,
+      };
+    }
+    const events = body
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)));
+    return {
+      blocks: events
+        .filter((e) => e.type === "content_block_start")
+        .map((e) => e.content_block.type),
+      text: events
+        .filter((e) => e.type === "content_block_delta")
+        .map((e) => e.delta.text ?? e.delta.thinking ?? "")
+        .join(""),
+      stop: events.find((e) => e.type === "message_delta").delta.stop_reason,
+    };
+  };
+
+  it.each([
+    { fault: { fault: "refusal" as const }, turn: { blocks: [], text: "", stop: "refusal" } },
+    {
+      fault: { fault: "empty-response" as const },
+      turn: { blocks: [], text: "", stop: "end_turn" },
+    },
+    {
+      fault: { fault: "reasoning-only" as const, reasoning: "Thinking only." },
+      turn: { blocks: ["thinking"], text: "Thinking only.", stop: "max_tokens" },
+    },
+  ])(
+    "rejects fixture files under the $fault.fault misbehavior with a coded 500",
+    async ({ fault, turn }) => {
+      const misbehavior = { faults: [{ ...fault, rate: 1 }] };
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { content: "Here.", files: generatedFile },
+            misbehavior,
+          },
+          // Control: the same fault on a servable fixture is applied on this wire.
+          { match: { userMessage: "plain" }, response: { content: "Here." }, misbehavior },
+        ],
+        { enableMisbehavior: true },
+      );
+      for (const stream of [false, true]) {
+        const control = await post(`${instance.url}/v1/messages`, messagesBody("plain", stream));
+        expect(control.status).toBe(200);
+        expect(messagesTurn(control.body, stream)).toEqual(turn);
+
+        const res = await post(`${instance.url}/v1/messages`, messagesBody("draw", stream));
+        expect(res.status).toBe(500);
+        const body = JSON.parse(res.body);
+        expect(body.error.code).toBe("aimock_unsupported_generated_file");
+        expect(body.error.message).toContain("Anthropic Messages");
+      }
+    },
+  );
+
   it("skips file citations, which Anthropic has no URL-sourced form for (both modes)", async () => {
     instance = await createServer([
       {

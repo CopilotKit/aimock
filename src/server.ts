@@ -98,6 +98,7 @@ import {
   isFixtureToolCallError,
   requireServedFunctionToolCalls,
   requireEmittedFunctionToolCalls,
+  rejectGeneratedFiles,
   resolveRequestId,
   markMintedRequestId,
   resolveResponse,
@@ -2550,6 +2551,10 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(entry);
+    // Safety net: the planner already skips a fixture with generated `files`
+    // (they have no Chat Completions projection), so it is never faulted.
+    // Reject here anyway, before any byte is written, if one gets through.
+    rejectGeneratedFiles(response, wire);
     if (body.stream !== true) {
       const completion =
         appliedPlan.stop === "refusal"
@@ -2656,6 +2661,8 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
     // A Responses-only custom tool call (customToolCalls / responsesBlocks) is
     // rejected before any byte is written. It runs after journaling so the 500
     // entry keeps the request body and the matched fixture (routeError amends
@@ -2754,6 +2761,8 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
     if (body.stream !== true) {
       await awaitNonStreamingTiming((effReasoning?.length ?? 0) + response.content.length);
       const completion = buildTextCompletion(
@@ -2832,6 +2841,8 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
     const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
       const toolCallText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
@@ -3291,10 +3302,12 @@ async function startServer(
   }
 
   /**
-   * Envelope for a fixture tool-call error (see isFixtureToolCallError: invalid
-   * JSON arguments on an object wire, a custom tool call on a non-Responses
-   * wire, or a malformed fixture tool call). It is the provider envelope aimock
-   * emits for that route, with the aimock `code` in it: Google's
+   * Envelope for a fixture error (see isFixtureToolCallError: invalid JSON
+   * arguments on an object wire, a custom tool call on a non-Responses wire, a
+   * malformed fixture tool call, generated `files` on a wire that cannot carry
+   * them, or a malformed fixture `citations` or `files` value). It is the
+   * provider envelope aimock emits for that route, with the aimock `code` in
+   * it: Google's
    * `google.rpc.ErrorInfo` detail on Gemini and Vertex AI, a string
    * `error.code` on Gemini Interactions and Anthropic Messages, a `reason`
    * member on Bedrock (a `code` member would replace `__type` as the AWS SDK's
@@ -3421,7 +3434,7 @@ async function startServer(
        */
       envelope?: (msg: string, status: number) => string;
       /**
-       * Provider-shaped body for a fixture tool-call error (always a 500),
+       * Provider-shaped body for a fixture error (always a 500),
        * carrying the aimock `code`. Defaults to the envelope the pathname
        * implies ({@link invalidToolArgumentsEnvelope}).
        */

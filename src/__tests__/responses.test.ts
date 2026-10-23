@@ -3126,3 +3126,349 @@ describe("POST /v1/responses (citations)", () => {
     expect(msg.content[0].annotations).toEqual([]);
   });
 });
+
+describe("POST /v1/responses (generated files)", () => {
+  const png = "iVBORw0KGgo=";
+  const fileFixture: Fixture = {
+    match: { userMessage: "draw" },
+    response: { content: "Here is your image.", files: [{ mimeType: "image/png", data: png }] },
+  };
+  const body = (msg: string, stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: msg }],
+    stream,
+  });
+
+  it("non-streaming output leads with a completed image_generation_call item", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, body("draw", false));
+    const output = JSON.parse(res.body).output;
+    expect(output.map((o: { type: string }) => o.type)).toEqual([
+      "image_generation_call",
+      "message",
+    ]);
+    expect(output[0]).toEqual({
+      type: "image_generation_call",
+      id: expect.any(String),
+      status: "completed",
+      result: png,
+    });
+  });
+
+  it("streaming emits the image_generation_call lifecycle before the message", async () => {
+    instance = await createServer([fileFixture]);
+    const res = await post(`${instance.url}/v1/responses`, body("draw", true));
+    const events = parseResponsesSSEEvents(res.body);
+    const types = events.map((e) => e.type);
+    const added = types.indexOf("response.output_item.added");
+    expect(types.slice(added, added + 5)).toEqual([
+      "response.output_item.added",
+      "response.image_generation_call.in_progress",
+      "response.image_generation_call.generating",
+      "response.image_generation_call.completed",
+      "response.output_item.done",
+    ]);
+    expect(events[added].item).toMatchObject({ type: "image_generation_call", result: null });
+    expect(events[added + 4].item).toMatchObject({ status: "completed", result: png });
+    // One item: added, the three phase events and done all name the same id.
+    const igId = (events[added].item as { id: string }).id;
+    expect(igId).toEqual(expect.any(String));
+    expect((events[added + 4].item as { id: string }).id).toBe(igId);
+    for (const phase of events.slice(added + 1, added + 4)) expect(phase.item_id).toBe(igId);
+    const message = events.find(
+      (e) =>
+        e.type === "response.output_item.added" && (e.item as { type: string }).type === "message",
+    );
+    expect(message!.output_index).toBe(1);
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (completed!.response as { output: { type: string; id: string }[] }).output;
+    expect(output.map((o) => o.type)).toEqual(["image_generation_call", "message"]);
+    expect(output[0].id).toBe(igId);
+  });
+
+  it.each([
+    ["tool-only", { toolCalls: [{ name: "save", arguments: "{}" }] }, ["function_call"]],
+    [
+      "content+toolCalls",
+      { content: "Saving.", toolCalls: [{ name: "save", arguments: "{}" }] },
+      ["message", "function_call"],
+    ],
+    [
+      "blocks",
+      {
+        blocks: [
+          { type: "toolCall" as const, name: "save", arguments: "{}" },
+          { type: "text" as const, text: "Saved." },
+        ],
+      },
+      ["function_call", "message"],
+    ],
+  ])("%s turns lead with the image_generation_call item", async (_name, response, rest) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-tools" },
+        response: { ...response, files: [{ mimeType: "image/png", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("draw-tools", stream));
+      const output = stream
+        ? (
+            parseResponsesSSEEvents(res.body).find((e) => e.type === "response.completed")!
+              .response as { output: { type: string }[] }
+          ).output
+        : (JSON.parse(res.body).output as { type: string }[]);
+      expect(output.map((o) => o.type)).toEqual(["image_generation_call", ...rest]);
+    }
+  });
+
+  it.each([
+    ["text", { content: "Here is your file." }],
+    ["tool-only", { toolCalls: [{ name: "save", arguments: "{}" }] }],
+    ["content+toolCalls", { content: "Saving.", toolCalls: [{ name: "save", arguments: "{}" }] }],
+    ["blocks", { blocks: [{ type: "text" as const, text: "Saved." }] }],
+  ])(
+    "%s turns reject a non-image file with a coded 500 naming its mimeType",
+    async (_name, response) => {
+      instance = await createServer([
+        {
+          match: { userMessage: "pdf" },
+          response: {
+            ...response,
+            files: [
+              { mimeType: "image/png", data: png },
+              { mimeType: "application/pdf", data: "JVBERi0=" },
+            ],
+          },
+        },
+      ]);
+      for (const stream of [false, true]) {
+        const res = await post(`${instance.url}/v1/responses`, body("pdf", stream));
+        expect(res.status).toBe(500);
+        expect(res.body).not.toContain('"type":"image_generation_call"');
+        const err = JSON.parse(res.body).error;
+        expect(err.code).toBe("aimock_unsupported_generated_file");
+        expect(err.message).toContain("application/pdf");
+      }
+    },
+  );
+
+  it("still serves image/* files on both paths", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "jpeg" },
+        response: { content: "ok", files: [{ mimeType: "image/jpeg", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("jpeg", stream));
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("image_generation_call");
+    }
+  });
+
+  it("an upper-case IMAGE/* mimeType is still an image on both paths", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "upper" },
+        response: { content: "ok", files: [{ mimeType: "IMAGE/PNG", data: png }] },
+      },
+    ]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/responses`, body("upper", stream));
+      expect(res.status, res.body).toBe(200);
+      expect(res.body).toContain('"type":"image_generation_call"');
+    }
+  });
+
+  it("two files stream as two image_generation_call items, in fixture order, before the message", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-two" },
+        response: {
+          content: "Two images.",
+          files: [
+            { mimeType: "image/png", data: "AAAA" },
+            { mimeType: "image/png", data: "BBBB" },
+          ],
+        },
+      },
+    ]);
+    type Item = { type: string; id: string; result?: string | null };
+    const nonStreamed = JSON.parse(
+      (await post(`${instance.url}/v1/responses`, body("draw-two", false))).body,
+    ).output as Item[];
+    expect(nonStreamed.map((o) => [o.type, o.result])).toEqual([
+      ["image_generation_call", "AAAA"],
+      ["image_generation_call", "BBBB"],
+      ["message", undefined],
+    ]);
+    expect(nonStreamed[0].id).not.toBe(nonStreamed[1].id);
+
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body("draw-two", true))).body,
+    );
+    const done = events.filter((e) => e.type === "response.output_item.done");
+    expect(
+      done.map((e) => [e.output_index, (e.item as Item).type, (e.item as Item).result]),
+    ).toEqual([
+      [0, "image_generation_call", "AAAA"],
+      [1, "image_generation_call", "BBBB"],
+      [2, "message", undefined],
+    ]);
+    const completed = events.find((e) => e.type === "response.completed")!.response as {
+      output: Item[];
+    };
+    expect(completed.output.map((o) => o.id)).toEqual(done.map((e) => (e.item as Item).id));
+  });
+
+  it("files with reasoning order the output reasoning, image_generation_call, message", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw-think" },
+        response: {
+          content: "Here.",
+          reasoning: "Plan the image.",
+          files: [{ mimeType: "image/png", data: png }],
+        },
+      },
+    ]);
+    const want = ["reasoning", "image_generation_call", "message"];
+    const nonStreamed = JSON.parse(
+      (await post(`${instance.url}/v1/responses`, body("draw-think", false))).body,
+    ).output as { type: string }[];
+    expect(nonStreamed.map((o) => o.type)).toEqual(want);
+
+    const events = parseResponsesSSEEvents(
+      (await post(`${instance.url}/v1/responses`, body("draw-think", true))).body,
+    );
+    const done = events.filter((e) => e.type === "response.output_item.done");
+    expect(done.map((e) => [e.output_index, (e.item as { type: string }).type])).toEqual(
+      want.map((type, i) => [i, type]),
+    );
+    const completed = events.find((e) => e.type === "response.completed")!.response as {
+      output: { type: string }[];
+    };
+    expect(completed.output.map((o) => o.type)).toEqual(want);
+  });
+
+  it.each([false, true])(
+    "omitting files leaves the wire byte-identical to the no-files baseline (stream: %s)",
+    async (stream) => {
+      instance = await createServer([
+        { match: { userMessage: "plain" }, response: { content: "hi" } },
+      ]);
+      const res = await post(`${instance.url}/v1/responses`, body("plain", stream));
+      // Ids and timestamps are random; everything else must match byte for byte.
+      const normalized = res.body
+        .replace(/"(id|item_id)":"[^"]*"/g, '"$1":"<id>"')
+        .replace(/"created_at":\d+/g, '"created_at":0');
+      const envelope = '"id":"<id>","object":"response","created_at":0,"model":"gpt-4"';
+      const message =
+        '{"type":"message","id":"<id>","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}';
+      const usage = '"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}';
+      if (!stream) {
+        expect(normalized).toBe(
+          `{${envelope},"status":"completed","output":[${message}],${usage}}`,
+        );
+        return;
+      }
+      const sse = (type: string, data: string) =>
+        `event: ${type}\ndata: {"type":"${type}",${data}}\n\n`;
+      const part = (text: string) =>
+        `"item_id":"<id>","output_index":0,"content_index":0,"part":{"type":"output_text","text":"${text}","annotations":[]}`;
+      const inProgress = `"response":{${envelope},"status":"in_progress","output":[]}`;
+      expect(normalized).toBe(
+        [
+          sse("response.created", inProgress),
+          sse("response.in_progress", inProgress),
+          sse(
+            "response.output_item.added",
+            '"output_index":0,"item":{"type":"message","id":"<id>","status":"in_progress","role":"assistant","content":[]}',
+          ),
+          sse("response.content_part.added", part("")),
+          sse(
+            "response.output_text.delta",
+            '"item_id":"<id>","output_index":0,"content_index":0,"delta":"hi"',
+          ),
+          sse(
+            "response.output_text.done",
+            '"item_id":"<id>","output_index":0,"content_index":0,"text":"hi"',
+          ),
+          sse("response.content_part.done", part("hi")),
+          sse("response.output_item.done", `"output_index":0,"item":${message}`),
+          sse(
+            "response.completed",
+            `"response":{${envelope},"status":"completed","output":[${message}],${usage}}`,
+          ),
+        ].join(""),
+      );
+    },
+  );
+});
+
+describe("POST /v1/responses (generated files under output-withholding faults)", () => {
+  const png = "iVBORw0KGgo=";
+  const files = [{ mimeType: "image/png", data: png }];
+  const body = (stream: boolean) => ({
+    model: "gpt-4",
+    input: [{ role: "user", content: "draw" }],
+    stream,
+  });
+  const outputOf = (res: { body: string }, stream: boolean): { type: string }[] =>
+    stream
+      ? (
+          parseResponsesSSEEvents(res.body).find(
+            (e) => e.type === "response.completed" || e.type === "response.incomplete",
+          )!.response as { output: { type: string }[] }
+        ).output
+      : JSON.parse(res.body).output;
+
+  it.each([
+    ["empty-response", false, []],
+    ["empty-response", true, []],
+    ["refusal", false, ["message"]],
+    ["refusal", true, ["message"]],
+    ["content-filter", false, []],
+    ["content-filter", true, []],
+    ["reasoning-only", false, ["reasoning"]],
+    ["reasoning-only", true, ["reasoning"]],
+  ] as const)("%s emits no image_generation_call, stream=%s", async (fault, stream, types) => {
+    instance = await createServer(
+      [
+        {
+          match: { userMessage: "draw" },
+          response: { content: "Here.", files },
+          misbehavior: fault,
+        },
+      ],
+      { enableMisbehavior: true },
+    );
+    const res = await post(`${instance.url}/v1/responses`, body(stream));
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("image_generation_call");
+    expect(outputOf(res, stream).map((o) => o.type)).toEqual(types);
+  });
+
+  it.each([false, true])(
+    "a fault that keeps the turn's output still serves the images, stream=%s",
+    async (stream) => {
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { toolCalls: [{ name: "save", arguments: '{"a":1}' }], files },
+            misbehavior: "tool-unknown-name",
+          },
+        ],
+        { enableMisbehavior: true },
+      );
+      const res = await post(`${instance.url}/v1/responses`, body(stream));
+      expect(res.status).toBe(200);
+      const output = outputOf(res, stream) as { type: string; name?: string }[];
+      expect(output.map((o) => o.type)).toEqual(["image_generation_call", "function_call"]);
+      // The fault was applied: the call is renamed to an undeclared tool.
+      expect(output[1].name).toBe("save_v2");
+    },
+  );
+});
