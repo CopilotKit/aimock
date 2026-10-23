@@ -45,7 +45,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { markWsTurnStopped, watchWsClose, wsLifecycle } from "./response/lifecycle.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
@@ -349,6 +349,7 @@ export function handleWebSocketGeminiLive(
   },
 ): void {
   const { logger } = defaults;
+  watchWsClose(ws);
   const session: SessionState = {
     setupDone: false,
     model: defaults.model,
@@ -629,14 +630,16 @@ async function processMessage(
       misbehavior.summary.fault === "empty-response")
   ) {
     const journalEntry = addResponseEntry(200);
-    const interruption = createInterruptionSignal(fixture);
-    const markInterrupted = () => {
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
+    const lifecycle = wsLifecycle(ws, fixture);
+    const interruptTurn = () => {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
       ws.destroy();
     };
     try {
-      if (ws.isClosed) return;
+      if (ws.isClosed) {
+        interruptTurn();
+        return;
+      }
       const chunkDelay = calculateDelay(
         0,
         undefined,
@@ -644,12 +647,11 @@ async function processMessage(
         fixture.recordedTimings,
         fixture.replaySpeed ?? defaults.replaySpeed,
       );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
-        markInterrupted();
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted || ws.isClosed) {
+        interruptTurn();
         return;
       }
-      if (ws.isClosed) return;
       const malformed = misbehavior.summary.fault === "tool-args-invalid-json";
       ws.send(
         JSON.stringify({
@@ -658,18 +660,22 @@ async function processMessage(
             : { modelTurn: { parts: [{ text: "" }] } },
         }),
       );
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
-        markInterrupted();
+      lifecycle.tick();
+      if (lifecycle.signal.aborted || ws.isClosed) {
+        interruptTurn();
         return;
       }
       // Like ordinary text streaming, completion follows the counted content chunk.
-      if (!malformed && !ws.isClosed) {
+      if (!malformed) {
         ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+        if (ws.isClosed) {
+          interruptTurn();
+          return;
+        }
         session.conversationHistory.push({ role: "assistant", content: "" });
       }
     } finally {
-      interruption?.cleanup();
+      lifecycle.dispose();
     }
     return;
   }
@@ -748,6 +754,14 @@ async function processMessage(
       resolvedId: tc.id ?? generateToolCallId(),
     }));
 
+    // This branch never waits, so it holds no lifecycle. A closed socket is
+    // journaled by the shared WS rule, and the turn stops there.
+    const stoppedByClose = (): boolean => {
+      if (!ws.isClosed) return false;
+      markWsTurnStopped(journalEntry, ws);
+      return true;
+    };
+    if (stoppedByClose()) return;
     if (resolvedToolCalls.length === 0) {
       ws.send(
         JSON.stringify({
@@ -756,19 +770,16 @@ async function processMessage(
       );
     } else {
       ws.send(JSON.stringify({ serverContent: { modelTurn: { parts } } }));
-
-      if (!ws.isClosed) {
-        const functionCalls = resolvedToolCalls.map((tc) => {
-          const argsObj = liveToolArguments(tc);
-          return { name: tc.name, args: argsObj, id: tc.resolvedId };
-        });
-        ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-      }
-
-      if (!ws.isClosed) {
-        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
-      }
+      if (stoppedByClose()) return;
+      const functionCalls = resolvedToolCalls.map((tc) => {
+        const argsObj = liveToolArguments(tc);
+        return { name: tc.name, args: argsObj, id: tc.resolvedId };
+      });
+      ws.send(JSON.stringify({ toolCall: { functionCalls } }));
+      if (stoppedByClose()) return;
+      ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
     }
+    if (stoppedByClose()) return;
 
     session.conversationHistory.push({
       role: "assistant",
@@ -801,7 +812,7 @@ async function processMessage(
     // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
     if (response.blocks && response.blocks.length > 0) {
       const resolvedBlocks = preflightBlocks(response, journalEntry);
-      const interruption = createInterruptionSignal(fixture);
+      const lifecycle = wsLifecycle(ws, fixture);
       const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
       const { recordedTimings } = fixture;
       let chunkIndex = 0;
@@ -826,8 +837,8 @@ async function processMessage(
             recordedTimings,
             replaySpeed,
           );
-          if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-          if (interruption?.signal.aborted) {
+          if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+          if (lifecycle.signal.aborted) {
             interrupted = true;
             break;
           }
@@ -855,8 +866,8 @@ async function processMessage(
             type: "function" as const,
             function: { name: block.name, arguments: block.arguments },
           });
-          interruption?.tick();
-          if (interruption?.signal.aborted) {
+          lifecycle.tick();
+          if (lifecycle.signal.aborted) {
             interrupted = true;
             break;
           }
@@ -882,8 +893,8 @@ async function processMessage(
               recordedTimings,
               replaySpeed,
             );
-            if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-            if (interruption?.signal.aborted) {
+            if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+            if (lifecycle.signal.aborted) {
               interrupted = true;
               break outer;
             }
@@ -902,8 +913,8 @@ async function processMessage(
               break outer;
             }
             chunkIndex++;
-            interruption?.tick();
-            if (interruption?.signal.aborted) {
+            lifecycle.tick();
+            if (lifecycle.signal.aborted) {
               interrupted = true;
               break outer;
             }
@@ -911,19 +922,19 @@ async function processMessage(
         }
       }
 
-      if (interrupted) {
+      if (interrupted || ws.isClosed) {
         ws.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-        interruption?.cleanup();
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        lifecycle.dispose();
         return;
       }
 
-      interruption?.cleanup();
+      lifecycle.dispose();
 
-      // Send turnComplete
-      if (!ws.isClosed) {
-        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+      ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        return;
       }
 
       session.conversationHistory.push({
@@ -941,7 +952,7 @@ async function processMessage(
       chunkList.push(content.slice(i, i + chunkSize));
     }
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
@@ -961,8 +972,8 @@ async function processMessage(
       for (let i = 0; i < chunkList.length; i++) {
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(i, undefined, latency, recordedTimings, replaySpeed);
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -980,19 +991,18 @@ async function processMessage(
           defaults.logger.debug("[gemini-live] send failed during text streaming, closing", err);
           break;
         }
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
       }
     }
 
-    if (interrupted) {
+    if (interrupted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1011,12 +1021,11 @@ async function processMessage(
         recordedTimings,
         replaySpeed,
       );
-      if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted || ws.isClosed) {
         ws.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-        interruption?.cleanup();
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        lifecycle.dispose();
         return;
       }
 
@@ -1030,26 +1039,27 @@ async function processMessage(
       });
 
       ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-      interruption?.tick();
+      lifecycle.tick();
     }
 
-    if (interruption?.signal.aborted) {
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send turnComplete
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add to conversation history using the same resolved IDs from the wire message
@@ -1075,7 +1085,12 @@ async function processMessage(
     const content = response.content;
 
     if (content.length === 0) {
-      if (ws.isClosed) return;
+      // No wait and no lifecycle here: as in the audio branch, a closed
+      // socket is journaled by the shared WS rule, and the turn stops there.
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws);
+        return;
+      }
       // Empty content: send empty modelTurn, then separate turnComplete
       ws.send(
         JSON.stringify({
@@ -1084,11 +1099,16 @@ async function processMessage(
           },
         }),
       );
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws);
+        return;
+      }
       ws.send(
         JSON.stringify({
           serverContent: { turnComplete: true },
         }),
       );
+      if (ws.isClosed) markWsTurnStopped(journalEntry, ws);
       return;
     }
 
@@ -1098,7 +1118,7 @@ async function processMessage(
       chunks.push(content.slice(i, i + chunkSize));
     }
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
@@ -1107,8 +1127,8 @@ async function processMessage(
     for (let i = 0; i < chunks.length; i++) {
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(i, undefined, latency, recordedTimings, replaySpeed);
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1126,30 +1146,31 @@ async function processMessage(
         defaults.logger.debug("[gemini-live] send failed during text streaming, closing", err);
         break;
       }
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
     }
 
-    if (interrupted) {
+    if (interrupted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send separate turnComplete message
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add assistant response to conversation history
@@ -1163,25 +1184,21 @@ async function processMessage(
 
     const functionToolCalls = preflightToolArguments(response, journalEntry);
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
     const tcDelay = calculateDelay(0, undefined, latency, recordedTimings, replaySpeed);
-    if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-    if (interruption?.signal.aborted) {
+    if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
-      return;
-    }
-    if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1201,25 +1218,26 @@ async function processMessage(
     });
 
     ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-    interruption?.tick();
+    lifecycle.tick();
 
-    if (interruption?.signal.aborted) {
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send turnComplete after tool call
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add assistant tool_calls to conversation history using the same resolved IDs

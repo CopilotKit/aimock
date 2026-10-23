@@ -71,12 +71,17 @@ export class WebSocketConnection extends EventEmitter {
       }
     });
 
-    socket.on("close", () => {
-      if (!this.closed) {
-        this.closed = true;
-        this.release(new Error("WebSocket closed"));
-        this.emit("close", 1006, "Connection lost");
-      }
+    socket.on("close", () => this.lost());
+
+    // A peer FIN without a close frame is a disconnect. HTTP upgrade sockets
+    // allow half-open, so without this the loss surfaces only on a later
+    // failed write. Data events precede "end", so frames that arrive just
+    // before the FIN still parse, but any turn they start is cancelled at once
+    // because the connection is then lost.
+    socket.on("end", () => {
+      if (this.closed) return;
+      this.socket.destroy();
+      this.lost();
     });
 
     socket.on("error", (err: Error) => {
@@ -133,6 +138,14 @@ export class WebSocketConnection extends EventEmitter {
         finish(new Error("WebSocket write failed"));
       }
     });
+  }
+
+  /** Mark an unannounced connection loss and emit close once. */
+  private lost(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.release(new Error("WebSocket closed"));
+    this.emit("close", 1006, "Connection lost");
   }
 
   private release(error: Error): void {

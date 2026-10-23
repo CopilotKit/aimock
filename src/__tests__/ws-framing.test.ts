@@ -993,3 +993,88 @@ describe("received transport activity", () => {
     expect(activities).toBe(1);
   });
 });
+
+describe("client half-close (TCP FIN without a close frame)", () => {
+  async function upgradedPair(): Promise<{
+    socket: net.Socket;
+    ws: WebSocketConnection;
+    serverSocket: Promise<net.Socket>;
+    events: string[];
+    closedAt: Promise<number>;
+  }> {
+    const server = http.createServer();
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocket = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    let resolveWs: (ws: WebSocketConnection) => void = () => {};
+    const wsPromise = new Promise<WebSocketConnection>((resolve) => {
+      resolveWs = resolve;
+    });
+    server.on("connection", (socket) => {
+      socket.on("error", () => {});
+    });
+    server.on("upgrade", (req, socket) => {
+      socket.on("error", () => {});
+      resolveServerSocket(socket as net.Socket);
+      resolveWs(upgradeToWebSocket(req, socket as net.Socket));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { socket, response } = rawConnect((server.address() as net.AddressInfo).port);
+    trackCleanup(server, socket);
+    await response;
+    const ws = await wsPromise;
+    ws.on("error", () => {});
+    const events: string[] = [];
+    ws.on("message", (message: string) => events.push(`message:${message}`));
+    const closedAt = new Promise<number>((resolve) => {
+      ws.on("close", (code: number, reason: string) => {
+        events.push(`close:${code}:${reason}`);
+        resolve(performance.now());
+      });
+    });
+    return { socket, ws, serverSocket, events, closedAt };
+  }
+
+  it("emits close promptly and exactly once when the client sends FIN", async () => {
+    const { socket, ws, serverSocket, events, closedAt } = await upgradedPair();
+    const finAt = performance.now();
+    socket.end();
+
+    const elapsed = (await closedAt) - finAt;
+    expect(elapsed).toBeLessThan(1000);
+    expect(ws.isClosed).toBe(true);
+    expect((await serverSocket).destroyed).toBe(true);
+    // The server socket's own close follows; it must not emit a second close.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toEqual(["close:1006:Connection lost"]);
+  });
+
+  it("delivers a message sent before FIN, then closes once", async () => {
+    const { socket, events, closedAt } = await upgradedPair();
+    socket.end(createMaskedFrame(OP_TEXT, Buffer.from("last words")));
+
+    await closedAt;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toEqual(["message:last words", "close:1006:Connection lost"]);
+  });
+
+  it("keeps the close-frame handshake unchanged when FIN follows the close frame", async () => {
+    const { socket, ws, events, closedAt } = await upgradedPair();
+    const echo = readServerFrame(socket);
+    const serverFin = new Promise<void>((resolve) => socket.once("end", () => resolve()));
+    const closePayload = Buffer.alloc(2 + 3);
+    closePayload.writeUInt16BE(1000, 0);
+    closePayload.write("bye", 2);
+    socket.end(createMaskedFrame(OP_CLOSE, closePayload));
+
+    await closedAt;
+    const frame = await echo;
+    expect(frame.opcode).toBe(OP_CLOSE);
+    expect(frame.payload.equals(closePayload)).toBe(true);
+    await serverFin;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toEqual(["close:1000:bye"]);
+    expect(ws.isClosed).toBe(true);
+  });
+});
