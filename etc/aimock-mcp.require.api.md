@@ -229,14 +229,15 @@ type FixtureBlock = {
 };
 
 // @public
-interface FixtureCitation {
+type FixtureCitation = FixtureUrlCitation | FixtureFileCitation;
+
+// @public
+interface FixtureFileCitation {
+    fileId: string;
+    filename: string;
+    index?: number;
     // (undocumented)
-    endIndex?: number;
-    startIndex?: number;
-    // (undocumented)
-    title?: string;
-    // (undocumented)
-    url: string;
+    type: "file";
 }
 
 // @public
@@ -331,6 +332,18 @@ interface FixtureMatch {
 
 // @public (undocumented)
 type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | LiveFixtureResponse;
+
+// @public
+interface FixtureUrlCitation {
+    // (undocumented)
+    endIndex?: number;
+    startIndex?: number;
+    // (undocumented)
+    title?: string;
+    type?: "url";
+    // (undocumented)
+    url: string;
+}
 
 // @public (undocumented)
 interface ImageItem {

@@ -5,9 +5,16 @@
 ### Added
 
 - Fixture `citations` serve OpenAI Responses `url_citation` annotations; fixture `files` serve Gemini `inlineData` parts (#550 by @abhiaiyer91)
+- Fixture `citations` also serve Chat Completions `url_citation` annotations (`message.annotations`, one streamed `delta.annotations` chunk), Anthropic `web_search_result_location` citations on text blocks (`citations_delta` when streaming), and Gemini `groundingMetadata` (`groundingChunks` + `groundingSupports`, byte offsets). A citation with `type: "file"` (`fileId`, `filename`, optional `index`, which defaults to the end of the text) serves an OpenAI Responses `file_citation` annotation on `output_text`, streamed through `response.output_text.annotation.added`; Chat Completions, Anthropic and Gemini skip it. Closes #547.
+- Fixture `files` serve OpenAI Responses `image_generation_call` output items (`result` holds the base64 bytes), streamed with the `response.image_generation_call.*` events. Chat Completions and Anthropic Messages reject a fixture with `files` with a 500 carrying `aimock_unsupported_generated_file` (new `UnsupportedGeneratedFileError`). Closes #548.
+- Malformed fixture `citations` or `files` (not an array, a missing or mistyped field, a non-integer offset, an offset outside the text, or citations on a turn with no text: tool calls only, `blocks` with no text block, or empty content) answer a 500 before any content is written: `aimock_invalid_fixture_citation` or `aimock_invalid_fixture_file`. A non-`image/*` file on the OpenAI Responses API answers a 500 with `aimock_unsupported_generated_file`. This is the same on every wire that reads these keys, with or without a misbehavior fault: the fixture is checked on its original turn before any fault applies (only an invalid misbehavior config answers its own 400 or 501 first). A valid fixture under a fault that changes the reply text is served without its `citations`. Only Chat Completions, Anthropic Messages, Gemini and OpenAI Responses read these keys; other wires ignore them.
+- Fixture load validation warns about malformed `citations` and `files`, with the same problem description the 500 carries (the 500 message adds an `aimock: invalid fixture` prefix; the warning adds which 500 the requests answer). The fixture still loads.
+- `InvalidFixtureOutputError` (the error behind `aimock_invalid_fixture_citation` and `aimock_invalid_fixture_file`) is exported from `@copilotkit/aimock`.
 
 ### Fixed
 
+- Misbehavior faults on Chat Completions, Anthropic Messages, Gemini and the OpenAI Responses API (HTTP and WebSocket): a fixture the wire rejects (generated `files` on Chat Completions or Anthropic, a non-`image/*` file on Responses, malformed `citations` or `files`) is never faulted. It takes the normal path, is journaled as a 500 that keeps its fixture, and consumes no fault `times` budget or seed ordinal; `aimock_misbehavior_total` does not count it. A non-stream Chat Completions fault is journaled before its timing wait.
+- Journal accuracy: a client that hangs up during the timing wait of any non-stream Chat Completions reply (faulted or not) is journaled as interrupted, not as served.
 - Docker image: the base image is pinned to `node:22.23.4-alpine` by digest. Node 22.23.4 fixes CVE-2026-111497 (Brotli decompression memory bug); the 1.46.0 image shipped Node 22.23.3.
 
 ## [1.46.0] - 2026-10-20
