@@ -286,6 +286,24 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].nonStreamingTiming).toBe(true);
   });
 
+  it("nonStreamingTimingAllProviders passthrough from JSON", () => {
+    const filePath = writeJson(tmpDir, "non-streaming-timing-all.json", {
+      fixtures: [
+        {
+          match: { userMessage: "profile" },
+          response: { content: "Hello!" },
+          streamingProfile: { ttft: 50, tps: 100 },
+          nonStreamingTimingAllProviders: true,
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].nonStreamingTimingAllProviders).toBe(true);
+    expect(fixtures[0].nonStreamingTiming).toBeUndefined();
+  });
+
   it("chaos config passthrough from JSON", () => {
     const filePath = writeJson(tmpDir, "chaos.json", {
       fixtures: [
@@ -2086,6 +2104,46 @@ function functionCall(tc: FixtureToolCall | undefined): ToolCall {
   if (tc.type === "custom") throw new Error(`expected a function call, got custom "${tc.name}"`);
   return tc;
 }
+
+describe("validateFixtures: non-streaming timing flags must be booleans", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  for (const flag of ["nonStreamingTimingAllProviders", "nonStreamingTiming"] as const) {
+    for (const bad of ["true", 1, null] as const) {
+      it(`warns on ${flag}: ${JSON.stringify(bad)} loaded from a file, and keeps the value`, () => {
+        const filePath = writeJson(tmpDir, `${flag}.json`, {
+          fixtures: [{ match: { userMessage: "hi" }, response: { content: "Hello" }, [flag]: bad }],
+        });
+        const fixtures = loadFixtureFile(filePath);
+        expect(fixtures).toHaveLength(1);
+        // The loader passes the value through unchanged (not coerced, not dropped).
+        expect(fixtures[0][flag]).toBe(bad);
+        const results = validateFixtures(fixtures);
+        expect(results).toEqual([
+          {
+            severity: "warning",
+            fixtureIndex: 0,
+            message: `${flag} must be a boolean, got ${typeof bad} — the opt-in is ignored`,
+          },
+        ]);
+      });
+    }
+
+    for (const good of [true, false]) {
+      it(`does not warn on ${flag}: ${good}`, () => {
+        expect(validateFixtures([makeFixture({ [flag]: good })])).toEqual([]);
+      });
+    }
+  }
+});
 
 describe("auto-stringify JSON objects in fixture entries", () => {
   it("stringifies object arguments in toolCalls", () => {

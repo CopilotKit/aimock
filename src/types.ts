@@ -999,9 +999,26 @@ export interface Fixture {
    * non-streaming (`stream: false`) OpenAI chat completion replies (default OFF).
    * When enabled, the single JSON reply waits about as long as the streamed
    * reply would. Without it, non-streaming replies return immediately. Bare
-   * `latency` never delays non-streaming replies. Other providers ignore it.
+   * `latency` never delays non-streaming replies. Other providers ignore it; to
+   * delay them too, use {@link Fixture.nonStreamingTimingAllProviders}.
    */
   nonStreamingTiming?: boolean;
+  /**
+   * Opt into `streamingProfile` / `recordedTimings` timing on this fixture's
+   * non-streaming (`stream: false`) replies on these providers (default OFF):
+   * OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, Gemini and
+   * Vertex AI `generateContent`, Gemini Interactions, Cohere v2 chat, Bedrock
+   * InvokeModel and Converse, Ollama `/api/chat` and `/api/generate`, and
+   * OpenRouter chat completions (`/api/v1/chat/completions`), which is served
+   * as OpenAI Chat Completions, so `nonStreamingTiming` also delays it.
+   * Audio transcription replies are not delayed. The delay is the same as
+   * {@link Fixture.nonStreamingTiming} gives on OpenAI Chat Completions: the
+   * single JSON reply waits about as long as the streamed reply would. It
+   * needs a `streamingProfile` or `recordedTimings`. Bare `latency` never delays
+   * non-streaming replies, and error replies are never delayed. Setting it to
+   * `false` does not turn off `nonStreamingTiming: true`.
+   */
+  nonStreamingTimingAllProviders?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
@@ -1208,6 +1225,8 @@ export interface FixtureFileEntry {
   openRouterProcessing?: boolean;
   /** See {@link Fixture.nonStreamingTiming}. */
   nonStreamingTiming?: boolean;
+  /** See {@link Fixture.nonStreamingTimingAllProviders}. */
+  nonStreamingTimingAllProviders?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
