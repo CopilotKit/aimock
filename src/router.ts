@@ -8,6 +8,8 @@ import type {
   CustomToolDefinition,
   Fixture,
   ToolDefinition,
+  RawWireId,
+  WireId,
 } from "./types.js";
 import {
   describeMatch,
@@ -17,6 +19,7 @@ import {
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
+  isRawResponse,
   isErrorResponse,
   isExtendedResponsesToolsList,
   markExtendedResponsesToolsRequest,
@@ -239,6 +242,12 @@ export interface MatchOptions {
    * own level gate keeps a passing programmatic run (silent default) quiet.
    */
   logger?: { warn(...args: unknown[]): void };
+  /**
+   * @internal The wire of the calling LLM handler. Set by handlers, never
+   * read from the request body. A raw fixture (see `isRawResponse`) matches
+   * only when its `raw.wire` equals this; with no wire, raw never matches.
+   */
+  wire?: WireId | RawWireId;
 }
 
 /**
@@ -345,6 +354,9 @@ export function matchFixtureDiagnostic(
   // Every fixture whose content / shape predicates (and sequenceIndex gate)
   // pass. turnIndex is applied afterwards as a non-fatal disambiguator.
   const contentMatches: Fixture[] = [];
+  // Raw fixtures whose content matched but whose `raw.wire` is not this
+  // request's wire, kept only for the miss warning below.
+  const rawWireMisses: { fixture: Fixture; wire: unknown }[] = [];
 
   for (const fixture of fixtures) {
     const { match } = fixture;
@@ -382,6 +394,17 @@ export function matchFixtureDiagnostic(
     } else if (liveResponse) {
       continue;
     }
+    // A raw fixture is wire-specific: never offer it to another wire's handler.
+    // The wire comes from the calling handler via MatchOptions, never from the
+    // request body: body fields are journaled, and a `requestTransform` copy
+    // may drop them. No wire given (direct matchFixture callers, non-LLM
+    // handlers) means raw never matches. Factories are checked at serve time.
+    // The skip is deferred until every content predicate has run, so a fixture
+    // that failed ONLY on its wire can be named in a miss warning below.
+    const rawWire =
+      typeof response !== "function" && isRawResponse(response)
+        ? { wire: response.raw.wire }
+        : undefined;
     if (match.endpoint !== undefined) {
       if (match.endpoint !== reqEndpoint) continue;
       // A declared endpoint used to END the shape discussion — the router
@@ -631,6 +654,13 @@ export function matchFixtureDiagnostic(
       if (currentTurnHasToolResult(effective.messages) !== match.hasToolResult) continue;
     }
 
+    // A raw fixture for another wire is skipped here, after its content
+    // matched and before the sequence/turn gates (it is not a count skip).
+    if (rawWire !== undefined && rawWire.wire !== options?.wire) {
+      rawWireMisses.push({ fixture, wire: rawWire.wire });
+      continue;
+    }
+
     // At this point every SHAPE / CONTENT predicate above has passed, so this
     // fixture is a genuine CONTENT match for the request. The sequenceIndex and
     // turnIndex constraints below are POSITION state, not request shape.
@@ -674,6 +704,20 @@ export function matchFixtureDiagnostic(
   }
 
   if (contentMatches.length === 0) {
+    // Near-miss: a raw fixture matched this request in every way except its
+    // `raw.wire`. Name both wires so a wrong or missing wire is not a silent 404.
+    if (options?.logger) {
+      for (const miss of rawWireMisses) {
+        const fixtureWire =
+          miss.wire === undefined ? "raw.wire is missing" : `raw.wire=${JSON.stringify(miss.wire)}`;
+        const requestWire =
+          options.wire === undefined ? "request wire is not set" : `request wire "${options.wire}"`;
+        options.logger.warn(
+          `raw fixture not served: ${describeMatch(miss.fixture.match, fixtures.indexOf(miss.fixture))} ` +
+            `matched the request except its wire (${fixtureWire}, ${requestWire})`,
+        );
+      }
+    }
     return { fixture: null, skippedBySequenceOrTurn };
   }
 
