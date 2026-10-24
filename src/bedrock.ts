@@ -19,6 +19,7 @@
 
 import type * as http from "node:http";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type {
   ChatCompletionRequest,
@@ -39,6 +40,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   flattenHeaders,
   isJsonObject,
   getContext,
@@ -487,7 +489,7 @@ export async function handleBedrock(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-invoke" },
   );
 
   if (fixture) {
@@ -672,6 +674,25 @@ export async function handleBedrock(
         !!misbehavior.duplicateId,
       ),
     );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-invoke",
+      stream: false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock",
+    });
     return;
   }
 
@@ -1417,7 +1438,7 @@ export async function handleBedrockStream(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-invoke" },
   );
 
   if (fixture) {
@@ -1591,6 +1612,25 @@ export async function handleBedrockStream(
       payload: event,
     }));
     await deliverStream(res, entry, fixture, bedrockInvokeCodec, events, streamTiming);
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-invoke",
+      stream: true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock",
+    });
     return;
   }
 

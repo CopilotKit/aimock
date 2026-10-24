@@ -5,6 +5,7 @@ import {
   fixtureFiles,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   isTextResponse,
   isToolCallResponse,
   rebuildOrderedBlocks,
@@ -1721,6 +1722,9 @@ export function planMisbehavior(input: {
     source = "server";
     parsed = parseMisbehavior(defaults.misbehavior.baseline);
   } else return { kind: "skipped" };
+  // A raw fixture that sets its own misbehavior is a fixture error, not a
+  // fault to plan: the raw path answers it with its coded 500 (#549).
+  if (source === "fixture" && isRawResponse(input.response)) return { kind: "skipped" };
   if (!parsed.ok)
     return {
       kind: "error",

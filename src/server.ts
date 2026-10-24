@@ -34,7 +34,7 @@ import {
   resolveMisbehaviorShortCircuit,
 } from "./misbehavior.js";
 import { Journal } from "./journal.js";
-import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
+import { matchFixtureDiagnostic, recordMatchOptions, type MatchOptions } from "./router.js";
 import {
   validateFixtures,
   entryToFixture,
@@ -56,6 +56,7 @@ import { writeErrorResponse, sseCodec } from "./sse-writer.js";
 import { deliverJson, deliverStream } from "./response/deliver.js";
 import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
 import { CLIENT_ABORTED } from "./response/lifecycle.js";
+import { serveRawResponse } from "./response/raw.js";
 import { extendRecordedTimings, misbehaviorPayloadLength } from "./response/timing.js";
 import {
   prepareOpenAIChatMisbehavior,
@@ -88,6 +89,7 @@ import {
   isImageResponse,
   isEmbeddingResponse,
   isJSONResponse,
+  isRawResponse,
   flattenHeaders,
   isJsonObject,
   validateToolsField,
@@ -144,13 +146,7 @@ import {
   handleOpenRouterKey,
   handleOpenRouterCredits,
 } from "./openrouter-chat.js";
-import type {
-  FixtureResponse,
-  ErrorResponse,
-  ChatCompletion,
-  SSEChunk,
-  ResponseOverrides,
-} from "./types.js";
+import type { FixtureResponse, ChatCompletion, SSEChunk, ResponseOverrides } from "./types.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
 import { handleCountTokens } from "./count-tokens.js";
@@ -623,6 +619,7 @@ function fixtureResponseKind(response: Fixture["response"]): string {
   if (isCombinedFixtureResponse(response)) return "contentWithToolCalls";
   if (isToolCallResponse(response)) return "toolCalls";
   if (isTextResponse(response)) return "text";
+  if (isRawResponse(response)) return "raw";
   return "unknown";
 }
 
@@ -1831,14 +1828,17 @@ async function handleCompletions(
   // (headers > fixture.chaos > server defaults), so the fixture has to be
   // known before we can roll with the right config.
   const testId = getTestId(req);
-  const matchOptions = recordMatchOptions(
-    // In record mode a miss proxies upstream to capture a fresh turn, so an
-    // earlier-turn capture must not shadow a longer request via the relaxed
-    // turnIndex disambiguator — keep turnIndex a strict gate while recording.
-    // This handler's record gate (below) is `defaults.record && providerKey`.
-    !!(defaults.record && providerKey),
-    defaults.logger,
-  );
+  const matchOptions: MatchOptions = {
+    ...recordMatchOptions(
+      // In record mode a miss proxies upstream to capture a fresh turn, so an
+      // earlier-turn capture must not shadow a longer request via the relaxed
+      // turnIndex disambiguator — keep turnIndex a strict gate while recording.
+      // This handler's record gate (below) is `defaults.record && providerKey`.
+      !!(defaults.record && providerKey),
+      defaults.logger,
+    ),
+    wire: "openai-chat",
+  };
 
   // OpenRouter `models[]` fallback simulation. When the request arrived on the
   // OpenRouter base AND carries a fallback array, attempt the candidate list
@@ -1927,7 +1927,12 @@ async function handleCompletions(
       skippedBySequenceOrTurn = Math.max(skippedBySequenceOrTurn, attempt.skippedBySequenceOrTurn);
       if (!attempt.fixture) return null;
       const response = await resolveResponse(attempt.fixture, probe);
-      return { fixture: attempt.fixture, response, isError: isErrorResponse(response) };
+      // A raw fixture with an error status is a provider failure, like a typed
+      // error fixture with the same status, so it fails over the same way.
+      const isError =
+        isErrorResponse(response) ||
+        (isRawResponse(response) && (response.raw.status ?? 200) >= 400);
+      return { fixture: attempt.fixture, response, isError };
     };
     for (const candidate of candidates) {
       const outcome = await resolveCandidate(candidate);
@@ -1955,7 +1960,9 @@ async function handleCompletions(
         // (openclaw #60191). Absent / `true` keeps the default fall-through.
         // Composes with the request-level `allowFallbacks` gate: fail over only
         // when BOTH allow it (if EITHER says don't, this candidate is terminal).
-        const errorFallsThrough = (outcome.response as ErrorResponse).fallthrough !== false;
+        // A raw fixture has no `fallthrough` field, so it keeps the default.
+        const errorFallsThrough =
+          !isErrorResponse(outcome.response) || outcome.response.fallthrough !== false;
         if (allowFallbacks && errorFallsThrough) {
           // Runtime provider failure — remember it and fail over to the next.
           lastErrorFixture = outcome.fixture;
@@ -2479,6 +2486,27 @@ async function handleCompletions(
   };
   // Opt-in `: OPENROUTER PROCESSING` keepalive comment lines (default off).
   const openRouterProcessing = !!(openRouter && fixture.openRouterProcessing);
+
+  // Raw passthrough (#549): the authored chunks or JSON, framed for this wire.
+  // OpenRouter requests get OpenRouter's error dialect.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "openai-chat",
+      stream: body.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: evaluation.summary,
+      errorWire: "openai",
+      openRouter,
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {

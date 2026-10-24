@@ -1368,3 +1368,84 @@ describe("OpenRouter chat: malformed blocks never leave a spurious 200 (round-3 
     expect(twoHundreds).toHaveLength(0);
   });
 });
+
+describe("OpenRouter chat: raw error fixtures fail over like typed errors (#549)", () => {
+  const typedFallback: Fixture = {
+    match: { model: "b", userMessage: "route" },
+    response: { content: "served by b" },
+  };
+  const rawPrimary = (status: number): Fixture => ({
+    match: { model: "a", userMessage: "route" },
+    response: {
+      raw: { wire: "openai-chat", status, json: { error: { message: `raw ${status}` } } },
+    },
+  });
+  const typedPrimary = (status: number): Fixture => ({
+    match: { model: "a", userMessage: "route" },
+    response: { error: { message: `typed ${status}` }, status },
+  });
+  const chainBody = {
+    model: "a",
+    models: ["a", "b"],
+    messages: [{ role: "user", content: "route" }],
+  };
+
+  for (const status of [429, 503]) {
+    it(`control: a typed ${status} on "a" fails over to "b"`, async () => {
+      instance = await createServer([typedPrimary(status), typedFallback]);
+      const res = await httpPost(`${instance.url}${OR}`, chainBody);
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.body);
+      expect(json.model).toBe("b");
+      expect(json.choices[0].message.content).toBe("served by b");
+    });
+
+    it(`a raw ${status} on "a" fails over to "b"`, async () => {
+      instance = await createServer([rawPrimary(status), typedFallback]);
+      const res = await httpPost(`${instance.url}${OR}`, chainBody);
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.body);
+      expect(json.model).toBe("b");
+      expect(json.choices[0].message.content).toBe("served by b");
+    });
+  }
+
+  it("a raw 429 on every candidate serves the last raw error", async () => {
+    const rawB: Fixture = {
+      match: { model: "b", userMessage: "route" },
+      response: {
+        raw: { wire: "openai-chat", status: 503, json: { error: { message: "b down" } } },
+      },
+    };
+    instance = await createServer([rawPrimary(429), rawB]);
+    const res = await httpPost(`${instance.url}${OR}`, chainBody);
+    expect(res.status).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: { message: "b down" } });
+  });
+
+  it("allow_fallbacks:false serves a raw 429 primary as terminal", async () => {
+    instance = await createServer([rawPrimary(429), typedFallback]);
+    const res = await httpPost(`${instance.url}${OR}`, {
+      ...chainBody,
+      provider: { allow_fallbacks: false },
+    });
+    expect(res.status).toBe(429);
+    expect(JSON.parse(res.body)).toEqual({ error: { message: "raw 429" } });
+  });
+
+  it("a raw 200 on 'a' is still served as success", async () => {
+    const rawOk: Fixture = {
+      match: { model: "a", userMessage: "route" },
+      response: {
+        raw: {
+          wire: "openai-chat",
+          json: { id: "x", object: "chat.completion", model: "a", choices: [] },
+        },
+      },
+    };
+    instance = await createServer([rawOk, typedFallback]);
+    const res = await httpPost(`${instance.url}${OR}`, chainBody);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).id).toBe("x");
+  });
+});

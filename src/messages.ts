@@ -8,6 +8,7 @@
 
 import type * as http from "node:http";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 import { resolvePolicy, resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { missingRequiredHeader } from "./response/profiles.js";
 import type {
@@ -36,6 +37,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   resolveFixtureBlockOutcome,
   flattenHeaders,
   resolveRequestId,
@@ -1691,7 +1693,7 @@ export async function handleMessages(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "anthropic" },
   );
 
   if (fixture) {
@@ -1907,6 +1909,25 @@ export async function handleMessages(
     } else {
       await deliverStream(res, entry, fixture, typedSseCodec(), prepared.events, streamTiming);
     }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "anthropic",
+      stream: claudeReq.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "messages",
+    });
     return;
   }
 

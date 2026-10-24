@@ -30,6 +30,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   isEmbeddingResponse,
   isJSONResponse,
   validateChatMessages,
@@ -69,6 +70,7 @@ import { proxyAndRecord } from "./recorder.js";
 import { render as renderUsage } from "./response/usage/codecs/ollama.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Ollama request types ────────────────────────────────────────────────────
 
@@ -817,7 +819,7 @@ export async function handleOllama(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "ollama" },
   );
 
   if (fixture) {
@@ -950,6 +952,26 @@ export async function handleOllama(
     );
     return;
   }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "ollama",
+      stream: ollamaReq.stream !== false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "ollama",
+    });
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
@@ -1308,7 +1330,7 @@ export async function handleOllamaGenerate(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "ollama-generate" },
   );
 
   if (fixture) {
@@ -1444,6 +1466,26 @@ export async function handleOllamaGenerate(
     );
     return;
   }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "ollama-generate",
+      stream: generateReq.stream !== false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "ollama",
+    });
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
