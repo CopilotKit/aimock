@@ -187,6 +187,9 @@ export function entryToFixture(
     ...(entry.nonStreamingTiming !== undefined && {
       nonStreamingTiming: entry.nonStreamingTiming,
     }),
+    ...(entry.nonStreamingTimingAllProviders !== undefined && {
+      nonStreamingTimingAllProviders: entry.nonStreamingTimingAllProviders,
+    }),
     ...(entry.metadata !== undefined && { metadata: entry.metadata }),
   };
 
@@ -1562,6 +1565,19 @@ export function validateFixtures(
         fixtureIndex: i,
         message: "disconnectAfterMs must be >= 0",
       });
+    }
+    // The non-streaming timing opt-ins are read as `=== true`, so a non-boolean
+    // from JSON (`"true"`, 1) silently does nothing. Warn, but do not reject:
+    // the loader passes the value through and rejecting it would be breaking.
+    for (const flag of ["nonStreamingTiming", "nonStreamingTimingAllProviders"] as const) {
+      const value: unknown = f[flag];
+      if (value !== undefined && typeof value !== "boolean") {
+        results.push({
+          severity: "warning",
+          fixtureIndex: i,
+          message: `${flag} must be a boolean, got ${typeof value} — the opt-in is ignored`,
+        });
+      }
     }
     if (f.streamingProfile !== undefined) {
       const sp = f.streamingProfile;

@@ -44,8 +44,10 @@ import {
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { writeEventStream } from "./aws-event-stream.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { eventStreamCodec } from "./aws-event-stream.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { mapAnthropicFinish } from "./response/finish.js";
@@ -1028,15 +1030,8 @@ export async function handleConverse(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1045,7 +1040,12 @@ export async function handleConverse(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1111,6 +1111,14 @@ export async function handleConverse(
     );
     return;
   }
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize: Math.max(1, fixture.chunkSize ?? defaults.chunkSize),
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
 
   if (misbehavior.kind === "applied") {
     const prepared = prepareConverseMisbehavior(
@@ -1121,16 +1129,29 @@ export async function handleConverse(
       req.headers,
     );
     misbehavior = prepared.plan;
+    // Built before the journal entry, as before: a builder that throws leaves
+    // no entry. The reply carries no timestamp, so building early is safe.
     const body = buildConverseMisbehaviorResponse(prepared);
-    addResponseEntry({
+    const entry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
+    await deliverJson(
+      res,
+      entry,
+      fixture,
+      () => body,
+      jsonOpts(
+        misbehaviorPayloadLength(
+          prepared.plan,
+          prepared.plan.reasoning === undefined ? prepared.reasoning : undefined,
+        ),
+        !!prepared.plan.duplicateId,
+      ),
+    );
     return;
   }
 
@@ -1172,7 +1193,7 @@ export async function handleConverse(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1180,16 +1201,21 @@ export async function handleConverse(
       response: { status: 200, fixture },
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
-    const body = buildConverseContentWithToolCallsResponse(
-      response.content ?? "",
-      functionToolCalls,
-      logger,
-      effReasoning,
-      overrides,
-      response.blocks,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () =>
+        buildConverseContentWithToolCallsResponse(
+          response.content ?? "",
+          functionToolCalls,
+          logger,
+          effReasoning,
+          overrides,
+          response.blocks,
+        ),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
     return;
   }
 
@@ -1207,16 +1233,20 @@ export async function handleConverse(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseTextResponse(response.content, effReasoning, overrides);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () => buildConverseTextResponse(response.content, effReasoning, overrides),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
+    );
     return;
   }
 
@@ -1234,7 +1264,7 @@ export async function handleConverse(
       resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    addResponseEntry({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1242,9 +1272,13 @@ export async function handleConverse(
       response: { status: 200, fixture },
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
-    const body = buildConverseToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () => buildConverseToolCallResponse(functionToolCalls, logger, effReasoning, overrides),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
+    );
     return;
   }
 
@@ -1424,15 +1458,8 @@ export async function handleConverseStream(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1441,7 +1468,12 @@ export async function handleConverseStream(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1507,8 +1539,13 @@ export async function handleConverseStream(
     );
     return;
   }
-  const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const streamTiming = {
+    latency: fixture.latency ?? defaults.latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  };
 
   if (misbehavior.kind === "applied") {
     const prepared = prepareConverseMisbehavior(
@@ -1527,21 +1564,7 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      entry.response.interrupted = true;
-      entry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, entry, fixture, eventStreamCodec(), events, streamTiming);
     return;
   }
 
@@ -1600,21 +1623,7 @@ export async function handleConverseStream(
       overrides,
       response.blocks,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, eventStreamCodec(), events, streamTiming);
     return;
   }
 
@@ -1645,21 +1654,7 @@ export async function handleConverseStream(
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, eventStreamCodec(), events, streamTiming);
     return;
   }
 
@@ -1692,21 +1687,7 @@ export async function handleConverseStream(
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, eventStreamCodec(), events, streamTiming);
     return;
   }
 

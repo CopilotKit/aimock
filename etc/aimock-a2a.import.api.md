@@ -335,6 +335,7 @@ interface Fixture {
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
     nonStreamingTiming?: boolean;
+    nonStreamingTimingAllProviders?: boolean;
     openRouterProcessing?: boolean;
     // (undocumented)
     recordedTimings?: RecordedTimings;

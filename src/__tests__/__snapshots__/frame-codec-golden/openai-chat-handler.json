@@ -1,0 +1,1118 @@
+{
+  "stream text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Checkin\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"g now.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"SF\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Lead te\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"xt.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g3\",\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Tail te\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"xt.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream misbehavior": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_m1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_m2\",\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"{\\\"zone\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\":\\\"UTC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "stream delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream delay-combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Checkin\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"g now.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_g2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"SF\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "stream delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "text/event-stream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello g\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"olden w\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"orld, t\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"his is \"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a chara\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cteriza\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tion ru\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"id\":\"<masked>\",\"object\":\"chat.completion.chunk\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "non-stream text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      {
+        "op": "write",
+        "data": "{\"id\":\"<masked>\",\"object\":\"chat.completion\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Hello golden world, this is a characterization run.\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":13,\"total_tokens\":16}}"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "non-stream tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      {
+        "op": "write",
+        "data": "{\"id\":\"<masked>\",\"object\":\"chat.completion\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"tool_calls\":[{\"id\":\"call_g1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":7,\"total_tokens\":10}}"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "non-stream combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      {
+        "op": "write",
+        "data": "{\"id\":\"<masked>\",\"object\":\"chat.completion\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Checking now.\",\"refusal\":null,\"tool_calls\":[{\"id\":\"call_g2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":10,\"total_tokens\":13}}"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "non-stream blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      {
+        "op": "write",
+        "data": "{\"id\":\"<masked>\",\"object\":\"chat.completion\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Lead text.Tail text.\",\"refusal\":null,\"tool_calls\":[{\"id\":\"call_g3\",\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"arguments\":\"{}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8,\"total_tokens\":11}}"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "non-stream delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "X-Request-Id",
+        "value": "<masked>"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Origin",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Methods",
+        "value": "GET, POST, PUT, DELETE, OPTIONS"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Allow-Headers",
+        "value": "*"
+      },
+      {
+        "op": "setHeader",
+        "name": "Access-Control-Expose-Headers",
+        "value": "X-Total-Count, X-Request-Id"
+      },
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      {
+        "op": "write",
+        "data": "{\"id\":\"<masked>\",\"object\":\"chat.completion\",\"created\":\"<masked>\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Hello golden world, this is a characterization run.\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":13,\"total_tokens\":16}}"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

@@ -1,0 +1,1946 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Hello g\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"olden w\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"orld, t\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"his is \\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"a chara\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"cteriza\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"tion ru\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"n.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 267,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_g1\\\",\\\"name\\\":\\\"get_weather\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{\\\\\\\"city\\\\\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\":\\\\\\\"NYC\\\\\\\"}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Checkin\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"g now.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 267,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":1,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_g2\\\",\\\"name\\\":\\\"get_weather\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{\\\\\\\"city\\\\\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 239,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\":\\\\\\\"SF\\\\\\\"}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":1}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Lead te\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"xt.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 263,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":1,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_g3\\\",\\\"name\\\":\\\"get_time\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 231,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":1}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":2,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":2,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Tail te\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":2,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"xt.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":2}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":3,\\\"output_tokens\\\":10}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 267,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_m1\\\",\\\"name\\\":\\\"get_weather\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 231,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 263,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":1,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_m2\\\",\\\"name\\\":\\\"get_time\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{\\\\\\\"zone\\\\\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\":\\\\\\\"UTC\\\\\\\"}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":1}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 251,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":10}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Hello g\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"olden w\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"orld, t\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"his is \\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"a chara\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"cteriza\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"tion ru\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"n.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 47
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 53
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Checkin\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"g now.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 267,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":1,\\\"content_block\\\":{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"call_g2\\\",\\\"name\\\":\\\"get_weather\\\",\\\"input\\\":{}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 243,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\"{\\\\\\\"city\\\\\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 239,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":1,\\\"delta\\\":{\\\"type\\\":\\\"input_json_delta\\\",\\\"partial_json\\\":\\\":\\\\\\\"SF\\\\\\\"}\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":1}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 439,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_start\\\",\\\"message\\\":{\\\"id\\\":\\\"<masked>\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[],\\\"model\\\":\\\"anthropic.claude-3-5-sonnet-20241022-v2:0\\\",\\\"stop_reason\\\":null,\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":0,\\\"output_tokens\\\":0}}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_start\\\",\\\"index\\\":0,\\\"content_block\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"Hello g\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"olden w\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"orld, t\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"his is \\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"a chara\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"cteriza\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 219,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"tion ru\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 215,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_delta\\\",\\\"index\\\":0,\\\"delta\\\":{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"n.\\\"}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 21.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 155,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"content_block_stop\\\",\\\"index\\\":0}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 247,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_delta\\\",\\\"delta\\\":{\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null},\\\"usage\\\":{\\\"output_tokens\\\":0}}\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 26.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 135,
+            "headersLength": 75,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "chunk",
+              ":message-type": "event"
+            },
+            "payload": "{\"bytes\":\"<base64>{\\\"type\\\":\\\"message_stop\\\"}\"}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

@@ -1,0 +1,258 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        }
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"Hello g\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"olden w\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"orld, t\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"his is \"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"a trans\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"criptio\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"n.\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.done\",\"text\":\"Hello golden world, this is a transcription.\",\"languages\":[{\"code\":\"en\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        }
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"Hello g\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"olden w\"}\n\n"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        }
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"Hello g\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"olden w\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"orld, t\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"his is \"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"a trans\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"criptio\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"n.\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.done\",\"text\":\"Hello golden world, this is a transcription.\",\"languages\":[{\"code\":\"en\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "writeHead",
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        }
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"Hello g\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"olden w\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"orld, t\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"his is \"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"a trans\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"criptio\"}\n\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.delta\",\"delta\":\"n.\"}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: {\"type\":\"transcript.text.done\",\"text\":\"Hello golden world, this is a transcription.\",\"languages\":[{\"code\":\"en\"}]}\n\n"
+      },
+      {
+        "op": "write",
+        "data": "data: [DONE]\n\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

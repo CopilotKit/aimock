@@ -188,8 +188,50 @@
             <code>response.interrupted: true</code> and <code>response.interruptReason</code>
           </li>
           <li>
-            A client that disconnects from a Claude Messages stream is recorded the same way, with
-            <code>response.interruptReason: "client aborted"</code>
+            A client that disconnects is recorded the same way, with
+            <code>response.interruptReason: "client aborted"</code> (see
+            <a href="#client-disconnects">Client Disconnects</a>)
+          </li>
+        </ul>
+
+        <h2 id="client-disconnects">Client Disconnects</h2>
+        <p>
+          When the client hangs up before the reply is complete, aimock stops delivery. It sends no
+          more chunks and skips the remaining waits. This applies to these endpoints, streaming and
+          non-streaming:
+        </p>
+        <ul>
+          <li>OpenAI Chat Completions, Anthropic Messages and OpenAI Responses</li>
+          <li>Gemini and Vertex AI, and Gemini Interactions</li>
+          <li>Cohere v2 chat</li>
+          <li>Bedrock InvokeModel and Converse, and their streaming variants</li>
+          <li>Ollama <code>/api/chat</code> and <code>/api/generate</code></li>
+          <li>Audio transcription streams</li>
+          <li>WebSocket: OpenAI Responses, OpenAI Realtime and Gemini Live</li>
+        </ul>
+        <p>
+          On WebSocket, a client that closes its TCP connection without sending a close frame is
+          also a disconnect. aimock closes the connection at once (code 1006, "Connection lost"),
+          stops the turn and journals it.
+        </p>
+        <p>The journal entry records how the reply ended:</p>
+        <ul>
+          <li>
+            <code>response.interrupted: true</code> and
+            <code>response.interruptReason: "client aborted"</code> when the client left.
+          </li>
+          <li>
+            On HTTP, <code>response.status: 0</code> when no byte of the reply reached the client.
+            Otherwise the status stays the one aimock sent.
+          </li>
+          <li>
+            <code>response.interruptReason: "disconnect"</code> when aimock tore the response down
+            itself, for example with the chaos <code>disconnect</code> action or a server-side
+            destroy. This is not blamed on the client.
+          </li>
+          <li>
+            Fixture interruptions (<code>truncateAfterChunks</code>,
+            <code>disconnectAfterMs</code>) keep their own reasons.
           </li>
         </ul>
 

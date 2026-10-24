@@ -7,7 +7,7 @@
 
 import type * as http from "node:http";
 import type { StreamingProfile, RecordedTimings } from "./types.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
 
 export interface NDJSONStreamOptions {
   latency?: number;
@@ -24,33 +24,35 @@ export async function writeNDJSONStream(
   options?: NDJSONStreamOptions,
 ): Promise<boolean> {
   const opts = options ?? {};
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
+  // Base contract (public API): with no frames, an aborted signal does not
+  // stop the writer; it still finishes the stream (any trailer, then end())
+  // and returns true. The frame loop returns false there, so pass it no
+  // signal when there are no frames (it reads the signal only per frame and
+  // after the loop).
+  return runFrameLoop(
+    httpSink(res),
+    chunks,
+    ndjsonCodec(),
+    {
+      latency: opts.latency,
+      streamingProfile: opts.streamingProfile,
+      recordedTimings: opts.recordedTimings,
+      replaySpeed: opts.replaySpeed,
+    },
+    { signal: chunks.length > 0 ? opts.signal : undefined, onChunkSent: opts.onChunkSent },
+  );
+}
 
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "application/x-ndjson");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) {
-      await delay(chunkDelay, signal);
-    }
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(JSON.stringify(chunk) + "\n");
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
+// Internal (not part of the public API): newline-delimited JSON, one object
+// per line, no trailer (Ollama). Line comments, not JSDoc, so the bundled
+// .d.ts does not attach this comment to a public declaration.
+export function ndjsonCodec<F = object>(): FrameCodec<F> {
+  return {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+    encode: (frame) => JSON.stringify(frame) + "\n",
+  };
 }

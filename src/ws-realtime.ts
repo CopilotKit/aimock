@@ -38,7 +38,12 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
-import { createInterruptionSignal } from "./interruption.js";
+import {
+  markInterrupted,
+  markWsTurnStopped,
+  watchWsClose,
+  wsLifecycle,
+} from "./response/lifecycle.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
@@ -563,6 +568,7 @@ export function handleWebSocketRealtime(
 ): void {
   const { logger } = defaults;
   const sessionId = realtimeId("sess");
+  watchWsClose(ws);
 
   const isBeta = defaults.upgradeHeaders?.["openai-beta"]
     ? String(defaults.upgradeHeaders["openai-beta"]).includes("realtime=v1")
@@ -1091,7 +1097,7 @@ async function emitLiveTranscriptionEvents(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
-  const interruption = createInterruptionSignal(fixture);
+  const lifecycle = wsLifecycle(ws, fixture);
   let chunkIndex = 0;
   for (let index = 0; index < transcript.length; index += chunkSize) {
     const chunkDelay = calculateDelay(
@@ -1101,14 +1107,15 @@ async function emitLiveTranscriptionEvents(
       fixture.recordedTimings,
       replaySpeed,
     );
-    if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-    if (interruption?.signal.aborted || ws.isClosed) {
-      if (interruption?.signal.aborted) {
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption.reason();
+    if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+    if (lifecycle.signal.aborted || ws.isClosed) {
+      if (lifecycle.signal.aborted) {
+        markInterrupted(journalEntry, lifecycle.reason());
         ws.destroy();
+      } else {
+        markWsTurnStopped(journalEntry, ws, lifecycle);
       }
-      interruption?.cleanup();
+      lifecycle.dispose();
       return;
     }
     sendEvent(
@@ -1121,14 +1128,13 @@ async function emitLiveTranscriptionEvents(
       },
       isBeta,
     );
-    interruption?.tick();
+    lifecycle.tick();
     chunkIndex++;
   }
-  if (interruption?.signal.aborted) {
-    journalEntry.response.interrupted = true;
-    journalEntry.response.interruptReason = interruption.reason();
+  if (lifecycle.signal.aborted || ws.isClosed) {
+    markWsTurnStopped(journalEntry, ws, lifecycle);
     ws.destroy();
-    interruption.cleanup();
+    lifecycle.dispose();
     return;
   }
   sendEvent(
@@ -1145,7 +1151,7 @@ async function emitLiveTranscriptionEvents(
     },
     isBeta,
   );
-  interruption?.cleanup();
+  lifecycle.dispose();
 }
 
 function sendLiveTranscriptionFailure(
@@ -1573,7 +1579,7 @@ async function handleResponseCreate(
       isBeta,
     );
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     let interrupted = false;
     const allOutputItems: unknown[] = [];
 
@@ -1641,8 +1647,8 @@ async function handleResponseCreate(
         recordedTimings,
         replaySpeed,
       );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1666,8 +1672,8 @@ async function handleResponseCreate(
         break;
       }
       eventIndex++;
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1675,14 +1681,14 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1701,7 +1707,8 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1720,7 +1727,8 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1754,7 +1762,8 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1809,8 +1818,8 @@ async function handleResponseCreate(
           recordedTimings,
           replaySpeed,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -1837,8 +1846,8 @@ async function handleResponseCreate(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -1901,15 +1910,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.done
     sendEvent(
@@ -2010,7 +2021,7 @@ async function handleResponseCreate(
     const content = response.content ?? "";
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     let interrupted = false;
     let eventIndex = 0;
 
@@ -2023,8 +2034,8 @@ async function handleResponseCreate(
         recordedTimings,
         replaySpeed,
       );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -2048,8 +2059,8 @@ async function handleResponseCreate(
         break;
       }
       eventIndex++;
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -2057,15 +2068,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.output_text.done
     sendEvent(
@@ -2181,7 +2194,7 @@ async function handleResponseCreate(
     );
 
     const outputItems: unknown[] = [];
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
@@ -2233,8 +2246,8 @@ async function handleResponseCreate(
           recordedTimings,
           replaySpeed,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2261,8 +2274,8 @@ async function handleResponseCreate(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2321,15 +2334,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.done
     sendEvent(
@@ -2407,7 +2422,7 @@ async function streamRealtimeBlocks(
     isBeta,
   );
 
-  const interruption = createInterruptionSignal(fixture);
+  const lifecycle = wsLifecycle(ws, fixture);
   let interrupted = false;
   const allOutputItems: unknown[] = [];
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
@@ -2476,8 +2491,8 @@ async function streamRealtimeBlocks(
           recordedTimings,
           replaySpeed,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2504,8 +2519,8 @@ async function streamRealtimeBlocks(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2616,8 +2631,8 @@ async function streamRealtimeBlocks(
           recordedTimings,
           replaySpeed,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2644,8 +2659,8 @@ async function streamRealtimeBlocks(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2703,15 +2718,17 @@ async function streamRealtimeBlocks(
 
   if (interrupted) {
     ws.destroy();
-    journalEntry.response.interrupted = true;
-    journalEntry.response.interruptReason = interruption?.reason();
-    interruption?.cleanup();
+    markInterrupted(journalEntry, lifecycle.reason());
+    lifecycle.dispose();
     return;
   }
 
-  interruption?.cleanup();
+  lifecycle.dispose();
 
-  if (ws.isClosed) return;
+  if (ws.isClosed) {
+    markWsTurnStopped(journalEntry, ws, lifecycle);
+    return;
+  }
 
   // response.done
   sendEvent(

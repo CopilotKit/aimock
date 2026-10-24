@@ -6,7 +6,7 @@
  * handler, but as individual WebSocket text frames.
  */
 
-import type { Fixture, HandlerDefaults } from "./types.js";
+import type { Fixture, HandlerDefaults, JournalEntry, RecordedTimings } from "./types.js";
 import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
@@ -41,12 +41,13 @@ import {
   servedToolCalls,
   withoutLegacyNamespaces,
 } from "./helpers.js";
-import { createInterruptionSignal } from "./interruption.js";
-import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { WebSocketConnection } from "./ws-framing.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { buildOpenAIError } from "./response/errors.js";
+import { markWsTurnStopped, watchWsClose, wsLifecycle } from "./response/lifecycle.js";
+import { runFrameLoop, wsSink, type FrameCodec } from "./response/frame-loop.js";
+import { extendRecordedTimings } from "./response/timing.js";
 
 type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
   replaySpeed?: number;
@@ -96,6 +97,7 @@ export function handleWebSocketResponses(
   defaults: ResponsesWebSocketDefaults,
 ): void {
   const { logger } = defaults;
+  watchWsClose(ws);
   // Serialize message processing to prevent event interleaving
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
@@ -310,35 +312,17 @@ async function processMessage(
       defaults: misbehaviorDefaults,
       testId,
     });
-    const timings = fixture.recordedTimings;
-    const gaps = timings?.interChunkDelaysMs;
     // K4 can add events; extend only its replay using the last recorded gap.
-    const appliedTimings =
-      prepared.duplicateId && timings && gaps
-        ? {
-            ...timings,
-            interChunkDelaysMs: Array.from(
-              { length: Math.max(gaps.length, output.events.length - 1) },
-              (_, index) => gaps[index] ?? gaps.at(-1) ?? 0,
-            ),
-          }
-        : timings;
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await sendEvents(
-      ws,
-      output.events,
-      latency,
-      interruption?.signal,
-      interruption?.tick,
-      appliedTimings,
-      fixture.replaySpeed ?? defaults.replaySpeed,
+    const appliedTimings = extendRecordedTimings(
+      fixture.recordedTimings,
+      output.events.length,
+      !!prepared.duplicateId,
     );
-    if (!completed) {
-      ws.destroy();
-      entry.response.interrupted = true;
-      entry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverTurn(ws, entry, fixture, output.events, {
+      latency,
+      recordedTimings: appliedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+    });
     return;
   }
 
@@ -407,22 +391,11 @@ async function processMessage(
       throw error;
     }
 
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await sendEvents(
-      ws,
-      events,
+    await deliverTurn(ws, journalEntry, fixture, events, {
       latency,
-      interruption?.signal,
-      interruption?.tick,
-      fixture.recordedTimings,
-      fixture.replaySpeed ?? defaults.replaySpeed,
-    );
-    if (!completed) {
-      ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+      recordedTimings: fixture.recordedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+    });
     return;
   }
 
@@ -456,22 +429,11 @@ async function processMessage(
         synthesizeSummarylessReasoning,
       ),
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await sendEvents(
-      ws,
-      events,
+    await deliverTurn(ws, journalEntry, fixture, events, {
       latency,
-      interruption?.signal,
-      interruption?.tick,
-      fixture.recordedTimings,
-      fixture.replaySpeed ?? defaults.replaySpeed,
-    );
-    if (!completed) {
-      ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+      recordedTimings: fixture.recordedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+    });
     return;
   }
 
@@ -511,22 +473,11 @@ async function processMessage(
       if (isFixtureToolCallError(error)) journalEntry.response.error = error.message;
       throw error;
     }
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await sendEvents(
-      ws,
-      events,
+    await deliverTurn(ws, journalEntry, fixture, events, {
       latency,
-      interruption?.signal,
-      interruption?.tick,
-      fixture.recordedTimings,
-      fixture.replaySpeed ?? defaults.replaySpeed,
-    );
-    if (!completed) {
-      ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+      recordedTimings: fixture.recordedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+    });
     return;
   }
 
@@ -546,26 +497,38 @@ async function processMessage(
   );
 }
 
-async function sendEvents(
+/** WS Responses frames: one JSON text message per event, no head, no trailer. */
+const wsEventCodec: FrameCodec<ResponsesSSEEvent> = {
+  headers: {},
+  encode: (event) => JSON.stringify(event),
+  checkGoneBeforeDelay: true,
+};
+
+/**
+ * Send one turn's events under a WS lifecycle. The lifecycle owns the fixture
+ * interruption and also stops the turn when the client closes, so a pending
+ * delay ends at once. A stopped turn marks the entry by the shared WS rule
+ * ({@link markWsTurnStopped}) and destroys the socket.
+ * `streamingProfile` is not applied on this transport, as before.
+ */
+async function deliverTurn(
   ws: WebSocketConnection,
+  entry: JournalEntry,
+  fixture: Fixture,
   events: ResponsesSSEEvent[],
-  latency: number,
-  signal?: AbortSignal,
-  onChunkSent?: () => void,
-  recordedTimings?: import("./types.js").RecordedTimings,
-  replaySpeed?: number,
-): Promise<boolean> {
-  let eventIndex = 0;
-  for (const event of events) {
-    if (ws.isClosed) return false;
-    const chunkDelay = calculateDelay(eventIndex, undefined, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (ws.isClosed) return false;
-    ws.send(JSON.stringify(event));
-    eventIndex++;
-    onChunkSent?.();
-    if (signal?.aborted) return false;
+  timing: { latency: number; recordedTimings?: RecordedTimings; replaySpeed?: number },
+): Promise<void> {
+  const lifecycle = wsLifecycle(ws, fixture);
+  try {
+    const completed = await runFrameLoop(wsSink(ws), events, wsEventCodec, timing, {
+      lifecycle,
+      onChunkSent: lifecycle.tick,
+    });
+    if (!completed) {
+      markWsTurnStopped(entry, ws, lifecycle);
+      ws.destroy();
+    }
+  } finally {
+    lifecycle.dispose();
   }
-  return true;
 }

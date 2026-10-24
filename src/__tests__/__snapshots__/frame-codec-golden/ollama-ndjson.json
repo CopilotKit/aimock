@@ -1,0 +1,517 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello g\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"olden w\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"orld, t\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"his is \"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"a chara\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"cteriza\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"tion ru\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"n.\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}}]},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Checkin\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"g now.\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"SF\"}}}]},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Lead te\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"xt.\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"get_time\",\"arguments\":{}}}]},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Tail te\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"xt.\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"error\":\"error parsing tool call: raw='{\\\"city\\\"', err=Expected ':' after property name in JSON at position 7\"}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello g\"},\"done\":false}\n"
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"olden w\"},\"done\":false}\n"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello g\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"olden w\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"orld, t\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"his is \"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"a chara\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"cteriza\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"tion ru\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"n.\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Checkin\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"g now.\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"SF\"}}}]},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/x-ndjson"
+      },
+      {
+        "op": "setHeader",
+        "name": "Cache-Control",
+        "value": "no-cache"
+      },
+      {
+        "op": "setHeader",
+        "name": "Connection",
+        "value": "keep-alive"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello g\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"olden w\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"orld, t\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"his is \"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"a chara\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"cteriza\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"tion ru\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"n.\"},\"done\":false}\n"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "data": "{\"model\":\"llama3\",\"created_at\":\"<masked>\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":0,\"load_duration\":0,\"prompt_eval_count\":0,\"prompt_eval_duration\":0,\"eval_count\":0,\"eval_duration\":0}\n"
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

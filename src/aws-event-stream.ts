@@ -18,7 +18,7 @@
 import { crc32 } from "node:zlib";
 import type * as http from "node:http";
 import type { StreamingProfile, RecordedTimings } from "./types.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
 
 // ─── Header encoding ────────────────────────────────────────────────────────
 
@@ -128,34 +128,38 @@ export async function writeEventStream(
   },
 ): Promise<boolean> {
   const opts = options ?? {};
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
+  // Base contract (public API): with no frames, an aborted signal does not
+  // stop the writer; it still finishes the stream (any trailer, then end())
+  // and returns true. The frame loop returns false there, so pass it no
+  // signal when there are no frames (it reads the signal only per frame and
+  // after the loop).
+  return runFrameLoop(
+    httpSink(res),
+    events,
+    eventStreamCodec(),
+    {
+      latency: opts.latency,
+      streamingProfile: opts.streamingProfile,
+      recordedTimings: opts.recordedTimings,
+      replaySpeed: opts.replaySpeed,
+    },
+    { signal: events.length > 0 ? opts.signal : undefined, onChunkSent: opts.onChunkSent },
+  );
+}
 
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "application/vnd.amazon.eventstream");
-  res.setHeader("Transfer-Encoding", "chunked");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) {
-      await delay(chunkDelay, signal);
-    }
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-
-    const frame = encodeEventStreamMessage(event.eventType, event.payload);
-    res.write(frame);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
+// Internal (not part of the public API): the AWS binary event-stream codec.
+// Each event becomes one complete frame, encoded by encodeEventStreamMessage
+// unless an `encode` argument replaces it. There is no prelude or trailer.
+// These are line comments, not JSDoc, so the bundled .d.ts does not attach
+// them to a public declaration.
+export function eventStreamCodec<F extends { eventType: string; payload: object }>(
+  encode?: (event: F) => Buffer,
+): FrameCodec<F> {
+  return {
+    headers: {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked",
+    },
+    encode: encode ?? ((event) => encodeEventStreamMessage(event.eventType, event.payload)),
+  };
 }

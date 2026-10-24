@@ -1,0 +1,758 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g1\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"delta\":\"{\\\"city\\\"\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"delta\":\":\\\"NYC\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Checkin\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"g now.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Checking now.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\"{\\\"city\\\"\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\":\\\"SF\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":1,\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}]},{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Lead te\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"xt.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Lead text.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Lead text.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Lead text.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g3\",\"name\":\"get_time\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\"{}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":1,\"arguments\":\"{}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g3\",\"name\":\"get_time\",\"arguments\":\"{}\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":2,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":2,\"content_index\":0,\"delta\":\"Tail te\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":2,\"content_index\":0,\"delta\":\"xt.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":2,\"content_index\":0,\"text\":\"Tail text.\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":2,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Tail text.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Tail text.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Lead text.\",\"annotations\":[]}]},{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g3\",\"name\":\"get_time\",\"arguments\":\"{}\",\"status\":\"completed\"},{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Tail text.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m1\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"delta\":\"{\\\"city\\\"\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"arguments\":\"{\\\"city\\\"\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m2\",\"name\":\"get_time\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\"{\\\"zone\\\"\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\":\\\"UTC\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":1,\"arguments\":\"{\\\"zone\\\":\\\"UTC\\\"}\"}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m2\",\"name\":\"get_time\",\"arguments\":\"{\\\"zone\\\":\\\"UTC\\\"}\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\",\"status\":\"completed\"},{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_m2\",\"name\":\"get_time\",\"arguments\":\"{\\\"zone\\\":\\\"UTC\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":10,\"total_tokens\":13}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \"}"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 47
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 53
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 59
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 61
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 67
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Checkin\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"g now.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Checking now.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"}}"
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\"{\\\"city\\\"\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 47
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"<masked>\",\"output_index\":1,\"delta\":\":\\\"SF\\\"}\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 53
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"<masked>\",\"output_index\":1,\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 59
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}}"
+      },
+      {
+        "op": "timer",
+        "ms": 61
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking now.\",\"annotations\":[]}]},{\"type\":\"function_call\",\"id\":\"<masked>\",\"call_id\":\"call_g2\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"in_progress\",\"output\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.added\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello g\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"olden w\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"orld, t\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"his is \"}"
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"a chara\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"cteriza\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 21.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"tion ru\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 23.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"delta\":\"n.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 26.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello golden world, this is a characterization run.\"}"
+      },
+      {
+        "op": "timer",
+        "ms": 29.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.content_part.done\",\"item_id\":\"<masked>\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 30.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}}"
+      },
+      {
+        "op": "timer",
+        "ms": 33.5
+      },
+      {
+        "op": "send",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"<masked>\",\"object\":\"response\",\"created_at\":\"<masked>\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"<masked>\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello golden world, this is a characterization run.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

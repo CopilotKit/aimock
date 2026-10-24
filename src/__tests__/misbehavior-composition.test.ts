@@ -320,9 +320,9 @@ test("P1d time-disconnected applied stream retains the full prepared usage of it
     chunkSize: 8,
     streamingProfile: { ttft: 0, tps: 50 },
   };
-  // Call-through observation of the real writer's prepared usage argument.
+  // Call-through observation of the real SSE codec's prepared usage argument.
   // This is server-side accounting, not evidence that an interrupted client received usage.
-  const writer = vi.spyOn(sseWriter, "writeSSEStream");
+  const writer = vi.spyOn(sseWriter, "sseCodec");
   try {
     const observations = [];
     for (const disconnectAfterMs of [undefined, 80]) {
@@ -353,10 +353,7 @@ test("P1d time-disconnected applied stream retains the full prepared usage of it
       }
     }
     expect(writer).toHaveBeenCalledTimes(2);
-    const options = writer.mock.calls.map((call) => call[2]);
-    const preparedUsage = options.map((option) =>
-      typeof option === "object" ? option.usageChunk?.usage : undefined,
-    );
+    const preparedUsage = writer.mock.calls.map(([option]) => option.usageChunk?.usage);
     const expectedUsage = {
       prompt_tokens: Math.ceil(prompt.length / 4),
       completion_tokens: Math.ceil(("weather" + faultedArguments).length / 4),

@@ -31,6 +31,7 @@ import {
 import type { FixtureResponse, ChatCompletionRequest } from "../types.js";
 import { withFaultFixture } from "./helpers/misbehavior-server.js";
 import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
+import * as deliver from "../response/deliver.js";
 
 const cases = [
   { cell: "control", fault: undefined },
@@ -2039,6 +2040,51 @@ test("A2 real K4 extra chunks repeat the last recorded gap without mutating timi
       expect(timings).toEqual(snapshot);
     },
   );
+});
+
+test("A2 non-streaming K4 duplicate-id extends the recorded gaps before sizing the wait", async () => {
+  // Hand-computed: two `weather` calls with `{"city":"Paris"}` (7 + 16 chars
+  // each) are 46 chars, 5 chunks at chunkSize 10. The recorded gaps [0, 60]
+  // are extended to 4 gaps by repeating the last one: 0 + 0 + 3 * 60 = 180ms.
+  // Without the extension the 2 extra chunks would average the recorded gaps
+  // (30ms): 0 + 0 + 60 + 2 * 30 = 120ms.
+  const timings = { ttftMs: 0, interChunkDelaysMs: [0, 60], totalDurationMs: 60 };
+  const snapshot = structuredClone(timings);
+  const deliverJson = vi.spyOn(deliver, "deliverJson");
+  try {
+    await withRuntimeServer(
+      [
+        {
+          match: {},
+          misbehavior: "tool-call-id-duplicate",
+          response: { toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }] },
+          recordedTimings: timings,
+          nonStreamingTiming: true,
+          chunkSize: 10,
+        },
+      ],
+      async ({ url }) => {
+        const client = new OpenAI({ apiKey: "local", baseURL: `${url}/v1`, maxRetries: 0 });
+        const started = performance.now();
+        const completion = await client.chat.completions.create(request);
+        const elapsed = performance.now() - started;
+        const calls = completion.choices[0].message.tool_calls ?? [];
+        expect(calls).toHaveLength(2);
+        expect(calls[0].id).toBe(calls[1].id);
+        expect(deliverJson).toHaveBeenCalledOnce();
+        expect(deliverJson.mock.calls[0]?.[4]).toMatchObject({
+          surface: "openai-chat",
+          payloadLength: 2 * (7 + 16),
+          chunkSize: 10,
+          duplicateId: true,
+        });
+        expect(elapsed).toBeGreaterThanOrEqual(175);
+        expect(timings).toEqual(snapshot);
+      },
+    );
+  } finally {
+    deliverJson.mockRestore();
+  }
 });
 
 async function withDirectRuntime(

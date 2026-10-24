@@ -16,9 +16,7 @@ import type {
   Fixture,
   FixtureBlock,
   HandlerDefaults,
-  RecordedTimings,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
@@ -49,8 +47,10 @@ import {
   servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
@@ -819,55 +819,6 @@ function buildCohereContentWithToolCallsStreamEvents(
   return events;
 }
 
-// ─── SSE writer for Cohere typed events ─────────────────────────────────────
-
-interface CohereStreamOptions {
-  terminalSentinel?: boolean;
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeCohereSSEStream(
-  res: http.ServerResponse,
-  events: CohereSSEEvent[],
-  optionsOrLatency?: number | CohereStreamOptions,
-): Promise<boolean> {
-  const opts: CohereStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    if (opts.terminalSentinel && !signal?.aborted) res.write("data: [DONE]\n\n");
-    res.end();
-  }
-  return true;
-}
-
 // ─── Request handler ────────────────────────────────────────────────────────
 
 export async function handleCohere(
@@ -1052,15 +1003,17 @@ export async function handleCohere(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "cohere",
-        req.url ?? "/v2/chat",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "cohere",
+          req.url ?? "/v2/chat",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1069,7 +1022,12 @@ export async function handleCohere(
           path: req.url ?? "/v2/chat",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1160,6 +1118,25 @@ export async function handleCohere(
   const empty = prepared?.summary.fault === "empty-response";
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const codec = typedSseCodec<CohereSSEEvent>({ terminalSentinel: observedK5Stream });
+  // Cohere has no separate misbehavior reply: an applied plan is merged into
+  // `response` above and served by the branches below, so every non-streaming
+  // site sizes its wait from the served payload and carries the K4 flag.
+  const jsonOpts = (payloadLength: number) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!prepared?.duplicateId,
+    replaySpeed,
+  });
 
   // Error response
   if (isErrorResponse(response)) {
@@ -1213,16 +1190,21 @@ export async function handleCohere(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
-      const body = buildCohereContentWithToolCallsResponse(
-        response.content ?? "",
-        functionToolCalls,
-        logger,
-        effReasoning,
-        overrides,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildCohereContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            logger,
+            effReasoning,
+            overrides,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildCohereContentWithToolCallsStreamEvents(
         response.content ?? "",
@@ -1233,22 +1215,7 @@ export async function handleCohere(
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        terminalSentinel: observedK5Stream,
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
@@ -1282,20 +1249,25 @@ export async function handleCohere(
       testId,
     });
     if (cohereReq.stream !== true) {
-      const body = empty
-        ? {
-            ...buildCohereTextResponse("", undefined, overrides),
-            message: {
-              role: "assistant",
-              content: [],
-              tool_calls: [],
-              tool_plan: "",
-              citations: [],
-            },
-          }
-        : buildCohereTextResponse(response.content, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          empty
+            ? {
+                ...buildCohereTextResponse("", undefined, overrides),
+                message: {
+                  role: "assistant",
+                  content: [],
+                  tool_calls: [],
+                  tool_plan: "",
+                  citations: [],
+                },
+              }
+            : buildCohereTextResponse(response.content, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const events = buildCohereTextStreamEvents(
         response.content,
@@ -1303,22 +1275,7 @@ export async function handleCohere(
         effReasoning,
         overrides,
       ).filter((event) => !empty || event.type === "message-start" || event.type === "message-end");
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        terminalSentinel: observedK5Stream,
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
@@ -1353,9 +1310,13 @@ export async function handleCohere(
     });
     const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
-      const body = buildCohereToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildCohereToolCallResponse(functionToolCalls, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const events = buildCohereToolCallStreamEvents(
         functionToolCalls,
@@ -1364,22 +1325,7 @@ export async function handleCohere(
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        terminalSentinel: observedK5Stream,
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
