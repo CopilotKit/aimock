@@ -39,6 +39,7 @@ import type {
   TranscriptionResponse,
   VideoResponse,
   RawJSONResponse,
+  RawResponse,
   SSEChunk,
   ToolCall,
   FixtureToolCall,
@@ -2000,6 +2001,44 @@ export function isVideoResponse(r: FixtureResponse): r is VideoResponse {
 
 export function isJSONResponse(r: FixtureResponse): r is RawJSONResponse {
   return "json" in r && (r as RawJSONResponse).json !== undefined;
+}
+
+/**
+ * Every key some other response guard reads. A response carrying any of them
+ * is that type (with a stray `raw` key the loader has always ignored), never
+ * a raw response — so adding raw support changes nothing for such fixtures.
+ */
+const NON_RAW_RESPONSE_MARKERS = [
+  "content",
+  "toolCalls",
+  "blocks",
+  "responsesBlocks",
+  "customToolCalls",
+  "error",
+  "embedding",
+  "image",
+  "images",
+  "audio",
+  "transcription",
+  "video",
+  "json",
+  "live",
+] as const;
+
+/**
+ * @internal Whether `r` is a raw passthrough response: `raw` is a non-null,
+ * non-array object and no other response type's marker key is present. The
+ * shape of `raw` itself is checked by the loader and again at serve time.
+ * Exported for in-repo use only; not part of the public API.
+ *
+ * A fixture added in code can hold a response that is not an object (null, a
+ * string). `in` throws on such a value, so it is simply not raw.
+ */
+export function isRawResponse(r: FixtureResponse): r is RawResponse {
+  if (typeof r !== "object" || r === null || !("raw" in r)) return false;
+  const raw: unknown = r.raw;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  return !NON_RAW_RESPONSE_MARKERS.some((marker) => marker in r);
 }
 
 export function extractOverrides(
