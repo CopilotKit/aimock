@@ -1044,7 +1044,7 @@ interface FixtureMatch {
 }
 
 // @public (undocumented)
-type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | LiveFixtureResponse;
+type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | RawResponse | LiveFixtureResponse;
 
 // @public
 interface FixtureUrlCitation {
@@ -1476,6 +1476,21 @@ interface RawJSONResponse extends ResponseOverrides {
     // (undocumented)
     status?: number;
 }
+
+// @public
+interface RawResponse {
+    raw: {
+        wire: RawWireId;
+        events?: Record<string, unknown>[];
+        json?: unknown;
+        status?: number;
+        headers?: Record<string, string>;
+        done?: boolean;
+    };
+}
+
+// @public
+type RawWireId = Exclude<WireId, "openai-realtime" | "gemini-live"> | "ollama-generate";
 
 // @public
 interface RecordedTimings {

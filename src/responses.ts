@@ -36,6 +36,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   serializeErrorResponse,
   flattenHeaders,
   isJsonObject,
@@ -78,6 +79,7 @@ import { render as renderResponsesUsage } from "./response/usage/codecs/response
 import { mapResponsesFinish } from "./response/finish.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
@@ -2015,7 +2017,7 @@ export async function handleResponses(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "openai-responses" },
   );
 
   if (fixture) {
@@ -2257,6 +2259,25 @@ export async function handleResponses(
         ),
       });
     }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "openai-responses",
+      stream: responsesReq.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "openai",
+    });
     return;
   }
 

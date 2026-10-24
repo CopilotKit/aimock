@@ -198,6 +198,38 @@ Video uses async polling — `POST /v1/videos` creates, `GET /v1/videos/{id}` ch
 { error: { message: "Rate limited", type: "rate_limit_error" }, status: 429 }
 ```
 
+### Raw passthrough (provider events as written)
+
+Prefer the typed responses above: they work on every provider and are drift-checked. Use `raw` only for an event, field or error shape aimock does not model yet (for example a new Responses event type). aimock sends `events` (streaming) or `json` (non-streaming) exactly as written and adds only the named wire's framing.
+
+```typescript
+{
+  raw: {
+    wire: "openai-responses", // required; the fixture matches only this wire
+    events: [
+      {
+        type: "response.output_text.annotation.added",
+        annotation: { type: "url_citation", url: "https://example.com" },
+      },
+    ],
+    json: { id: "resp_1", object: "response", status: "completed", output: [] },
+    status: 200, // optional, 200-599, not 204/304
+    headers: { "x-request-id": "req_1" }, // optional; no content-length/transfer-encoding/connection/content-encoding
+  },
+}
+```
+
+- `wire` is one of `openai-responses`, `openai-chat`, `anthropic`, `gemini`, `gemini-interactions`, `cohere`, `ollama` (`/api/chat`), `ollama-generate` (`/api/generate`), `bedrock-invoke`, `bedrock-converse`. The router skips a raw fixture on every other wire and keeps matching; only a factory that returns a raw fixture for another wire gets a 500.
+- Events on `openai-responses`, `anthropic` and `cohere` need a string `type`; a `bedrock-converse` event is `{ "<eventType>": { …payload } }`.
+- `done: false` (openai-chat only, a boolean) omits `data: [DONE]`.
+- Unless `headers` sets `Content-Type`, a stream gets the typed stream's default headers for its wire (`text/event-stream`, `application/x-ndjson` on Ollama, `application/vnd.amazon.eventstream` on Bedrock) and a non-streaming reply gets `application/json` on every wire. An authored header replaces the default of the same name in any letter case.
+- An error reply (`status` >= 400) is never delayed, streaming or not. With `json`, it answers JSON even to a streaming request.
+- A request whose mode has no body (`events` for streaming, `json` for non-streaming) gets the wire's 500 with `aimock_raw_mode_unavailable`. An invalid raw fixture registered with `on()` or a factory is not checked when added; it gets the same 500 with `aimock_raw_fixture_invalid`, as does a factory result for another wire. Every raw fixture is checked again when it is served. `--validate-on-load` reports invalid fixtures at load. Also invalid: events that are not plain JSON (holes, `undefined`, non-finite numbers, Dates, cycles), a CR or LF in a `type`, `customToolCalls` or `responsesBlocks` next to `raw`, and a raw fixture with its own `misbehavior`. Unknown keys inside `raw` are a warning.
+- `chunkSize` does not apply (each event is one frame). Misbehavior faults skip raw fixtures: a server-level fault is journaled as skipped, an `X-AIMock-Misbehavior` header returns 501 `aimock_misbehavior_not_applicable`, and a fixture's own `misbehavior` makes it invalid (load error, 500 `aimock_raw_fixture_invalid`). Streaming timing, `truncateAfterChunks`, `disconnectAfterMs` and chaos apply.
+- Non-streaming timing: `nonStreamingTiming: true` delays a raw `stream: false` reply on `openai-chat` only; `nonStreamingTimingAllProviders: true` on every raw wire. Either needs `streamingProfile` or `recordedTimings`; the wait is sized from the served JSON.
+- OpenRouter `models` fallback: an `openai-chat` raw fixture with `status` >= 400 fails over like a typed error fixture.
+- Not served over WebSocket Responses yet (error event with code `aimock_raw_mode_unavailable`). Docs: `/raw-passthrough`.
+
 ### Chaos (Failure Injection)
 
 The optional `chaos` field on a fixture enables probabilistic failure injection:

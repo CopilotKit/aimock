@@ -7,6 +7,7 @@
  */
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 import type * as http from "node:http";
 import type {
@@ -26,6 +27,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   isAudioResponse,
   extractOverrides,
   requireServedFunctionToolCalls,
@@ -1263,7 +1265,7 @@ export async function handleGemini(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "gemini" },
   );
   const path = req.url ?? `/v1beta/models/${model}:generateContent`;
 
@@ -1466,6 +1468,26 @@ export async function handleGemini(
     } else {
       await deliverStream(res, entry, fixture, GEMINI_SSE, prepared.chunks, streamTiming);
     }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored chunks or JSON, framed for this wire.
+  // Covers the Vertex AI route, which shares this handler.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "gemini",
+      stream: streaming,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "gemini",
+    });
     return;
   }
 

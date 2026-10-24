@@ -30,6 +30,7 @@ import {
   isCombinedFixtureResponse,
   resolveFixtureBlockOutcome,
   isErrorResponse,
+  isRawResponse,
   flattenHeaders,
   isJsonObject,
   getContext,
@@ -54,6 +55,7 @@ import { mapAnthropicFinish } from "./response/finish.js";
 import { render as renderConverseUsage } from "./response/usage/codecs/converse.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
@@ -968,7 +970,7 @@ export async function handleConverse(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-converse" },
   );
 
   if (fixture) {
@@ -1152,6 +1154,25 @@ export async function handleConverse(
         !!prepared.plan.duplicateId,
       ),
     );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-converse",
+      stream: false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock-converse",
+    });
     return;
   }
 
@@ -1396,7 +1417,7 @@ export async function handleConverseStream(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-converse" },
   );
 
   if (fixture) {
@@ -1565,6 +1586,25 @@ export async function handleConverseStream(
       response: { status: 200, fixture },
     });
     await deliverStream(res, entry, fixture, eventStreamCodec(), events, streamTiming);
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-converse",
+      stream: true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock-converse",
+    });
     return;
   }
 

@@ -14,6 +14,10 @@
  * validator gives for a representative set of usage shapes, and that every
  * usage the recorder sanitizer writes passes that validator.
  */
+import { execFile } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   entryToFixture,
@@ -674,4 +678,138 @@ describe("recorder sanitizer output always passes the validator", () => {
     expect(sanitizeRecordedUsage([1])).toBeUndefined();
     expect(sanitizeRecordedUsage(null)).toBeUndefined();
   });
+});
+
+/**
+ * #549 — raw passthrough fixtures get the same findings on every validating
+ * entry path: the CLI's `--validate-on-load` file load, `addFixturesFromJSON`
+ * and `POST /__aimock/fixtures`. `on()` is deliberately not in the triple: it
+ * has never validated and must not start throwing (raw-no-regression.test.ts).
+ */
+describe("raw fixtures: validation parity across entry paths", () => {
+  const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
+  const SOURCES = ["../fixture-loader.ts", "../raw-validation.ts", "../helpers.ts"].map((s) =>
+    resolve(__dirname, s),
+  );
+
+  /** The built CLI is a different program when older than the sources it bundles. */
+  function assertBuiltCliIsCurrent(): void {
+    const builtAt = statSync(CLI_PATH).mtimeMs;
+    for (const source of SOURCES) {
+      if (builtAt < statSync(source).mtimeMs) {
+        throw new Error(`dist/cli.js is older than ${source}: run \`pnpm build\` first`);
+      }
+    }
+  }
+
+  const VALID: [string, Record<string, unknown>][] = [
+    ["openai-chat json", { wire: "openai-chat", json: { ok: true } }],
+    [
+      "anthropic events + headers",
+      { wire: "anthropic", events: [{ type: "message_stop" }], headers: { "request-id": "r1" } },
+    ],
+    [
+      "bedrock-converse events + status",
+      { wire: "bedrock-converse", events: [{ messageStop: {} }], json: {}, status: 429 },
+    ],
+  ];
+  const INVALID: [string, Record<string, unknown>, string][] = [
+    [
+      "forbidden content-length header",
+      { wire: "openai-chat", json: {}, headers: { "content-length": "5" } },
+      'raw.headers["content-length"] is not allowed: aimock frames the body and sets this header itself',
+    ],
+    [
+      "status 99",
+      { wire: "openai-chat", json: {}, status: 99 },
+      "raw.status must be an integer from 200 to 599; got 99",
+    ],
+    [
+      "done on cohere",
+      { wire: "cohere", events: [{ type: "message-end" }], done: true },
+      "raw.done applies only to openai-chat (the only wire with a [DONE] terminal), not cohere",
+    ],
+  ];
+
+  function entries(raw: Record<string, unknown>): FixtureFileEntry[] {
+    return JSON.parse(JSON.stringify([{ match: { userMessage: "parity" }, response: { raw } }]));
+  }
+
+  /** Error messages from the CLI's --validate-on-load (exit 1 + `Fixture N: msg` lines). */
+  async function cliErrors(raw: Record<string, unknown>): Promise<string[]> {
+    assertBuiltCliIsCurrent();
+    const dir = mkdtempSync(join(tmpdir(), "aimock-raw-parity-"));
+    try {
+      const file = join(dir, "fixtures.json");
+      writeFileSync(file, JSON.stringify({ fixtures: entries(raw) }));
+      const { stderr, code } = await new Promise<{ stderr: string; code: number | null }>(
+        (done) => {
+          // A valid file starts a server: stop it once it is listening.
+          const cp = execFile("node", [CLI_PATH, "-f", file, "-p", "0", "--validate-on-load"]);
+          let err = "";
+          let out = "";
+          cp.stderr?.on("data", (d) => (err += d));
+          cp.stdout?.on("data", (d) => {
+            out += d;
+            if (/listening on/i.test(out)) cp.kill("SIGTERM");
+          });
+          cp.on("close", (code) => done({ stderr: err, code }));
+        },
+      );
+      const errors = [...stderr.matchAll(/Fixture 0: (.+)/g)].map((m) => m[1]);
+      expect(code !== 1 || /Validation failed/.test(stderr)).toBe(true);
+      return code === 1 ? errors : [];
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function addFromJSONErrors(raw: Record<string, unknown>): string[] {
+    try {
+      new LLMock({ logLevel: "silent" }).addFixturesFromJSON(entries(raw));
+      return [];
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      const details: { message: string }[] = JSON.parse(
+        text.replace(/^Fixture validation failed: /, ""),
+      );
+      return details.map((d) => d.message);
+    }
+  }
+
+  async function controlApiErrors(raw: Record<string, unknown>): Promise<string[]> {
+    const mock = new LLMock({ port: 0, host: "127.0.0.1", logLevel: "silent" });
+    await mock.start();
+    try {
+      const res = await fetch(`${mock.url}/__aimock/fixtures`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fixtures: entries(raw) }),
+      });
+      if (res.status === 200) return [];
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { details: { message: string }[] };
+      return body.details.map((d) => d.message);
+    } finally {
+      await mock.stop();
+    }
+  }
+
+  it.skipIf(!existsSync(CLI_PATH)).each(VALID)(
+    "%s: accepted on all three paths",
+    async (_label, raw) => {
+      expect(await cliErrors(raw)).toEqual([]);
+      expect(addFromJSONErrors(raw)).toEqual([]);
+      expect(await controlApiErrors(raw)).toEqual([]);
+    },
+  );
+
+  it.skipIf(!existsSync(CLI_PATH)).each(INVALID)(
+    "%s: the same error on all three paths",
+    async (_label, raw, message) => {
+      expect(await cliErrors(raw)).toEqual([message]);
+      expect(addFromJSONErrors(raw)).toEqual([message]);
+      expect(await controlApiErrors(raw)).toEqual([message]);
+    },
+  );
 });

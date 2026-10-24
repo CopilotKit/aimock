@@ -742,6 +742,49 @@ export interface RawJSONResponse extends ResponseOverrides {
   billableUnits?: number;
 }
 
+/**
+ * Pass-through LLM response. aimock sends `events` (streaming) or `json`
+ * (non-streaming) as written, adding only the named wire's framing. No
+ * overrides, reasoning gating, provider shaping or drift checks apply.
+ */
+export interface RawResponse {
+  /**
+   * The passthrough body for one wire: `events` for a streaming request,
+   * `json` for a non-streaming one, plus optional `status`, `headers` and
+   * (`openai-chat` only) `done`. The router offers the fixture only to the
+   * handler for `wire`. Checked at load (`validateFixtures`) and again when
+   * served; a fixture that fails when served gets a 500 with the code
+   * `aimock_raw_fixture_invalid`.
+   */
+  raw: {
+    /**
+     * The wire these events belong to. The router skips the fixture on every
+     * other wire; a factory that returns it for another wire gets a 500.
+     */
+    wire: RawWireId;
+    /** Streamed body: one entry per frame, each framed per `wire`. */
+    events?: Record<string, unknown>[];
+    /** Non-streaming body, sent as `JSON.stringify(json)`. */
+    json?: unknown;
+    /** HTTP status. Default 200. */
+    status?: number;
+    /**
+     * Extra response headers. Without a Content-Type here, a stream gets the
+     * wire's own type and a non-streaming reply gets `application/json`.
+     */
+    headers?: Record<string, string>;
+    /** `openai-chat` only: send the terminal `data: [DONE]`. Default true. */
+    done?: boolean;
+  };
+}
+
+/**
+ * The wires a {@link RawResponse} can target: every HTTP LLM wire. Ollama has
+ * two: `ollama` is `/api/chat` and `ollama-generate` is `/api/generate`, whose
+ * frames have a different shape.
+ */
+export type RawWireId = Exclude<WireId, "openai-realtime" | "gemini-live"> | "ollama-generate";
+
 export type FixtureResponse =
   | TextResponse
   | ToolCallResponse
@@ -753,6 +796,7 @@ export type FixtureResponse =
   | TranscriptionResponse
   | VideoResponse
   | RawJSONResponse
+  | RawResponse
   | LiveFixtureResponse;
 
 // GA Realtime session types
@@ -1149,6 +1193,7 @@ export type FixtureFileResponse =
   | TranscriptionResponse
   | VideoResponse
   | RawJSONResponse
+  | RawResponse
   | LiveFixtureResponse;
 
 export interface FixtureFile {

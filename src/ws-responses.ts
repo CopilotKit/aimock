@@ -30,6 +30,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   extractOverrides,
   resolveResponse,
   resolveReasoningForModel,
@@ -48,6 +49,7 @@ import { buildOpenAIError } from "./response/errors.js";
 import { markWsTurnStopped, watchWsClose, wsLifecycle } from "./response/lifecycle.js";
 import { runFrameLoop, wsSink, type FrameCodec } from "./response/frame-loop.js";
 import { extendRecordedTimings } from "./response/timing.js";
+import { RAW_MODE_UNAVAILABLE } from "./response/raw.js";
 
 type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
   replaySpeed?: number;
@@ -196,6 +198,9 @@ async function processMessage(
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
     defaults.requestTransform,
+    // Wire only: recordMatchOptions here would turn on strict turnIndex and the
+    // relaxed-turnIndex warning, which this transport has never had.
+    { wire: "openai-responses" },
   );
 
   if (fixture) {
@@ -333,6 +338,24 @@ async function processMessage(
     defaults.strict,
     defaults.upgradeHeaders,
   ).reasoningSuppression;
+
+  // Raw passthrough fixtures are served over HTTP only for now. Fail loudly
+  // instead of the generic unknown-type error so the author sees why.
+  if (isRawResponse(response)) {
+    const message = "raw fixtures are not yet supported on the WebSocket transport";
+    const entry = journal.add({
+      method: "WS",
+      path: "/v1/responses",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: completionReq,
+      response: { status: 500, fixture },
+    });
+    entry.response.error = message;
+    recordOutcome(entry);
+    defaults.logger.error(`WebSocket responses error: ${RAW_MODE_UNAVAILABLE}: ${message}`);
+    ws.send(JSON.stringify(buildErrorEvent(message, "server_error", RAW_MODE_UNAVAILABLE)));
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {

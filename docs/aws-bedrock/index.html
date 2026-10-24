@@ -55,6 +55,11 @@
           against the Bedrock-format requests, returning responses in the authentic Bedrock format
           including AWS Event Stream binary framing for streaming.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "bedrock-invoke"</code> or <code>wire: "bedrock-converse"</code>.
+        </p>
 
         <h2>How It Works</h2>
         <p>

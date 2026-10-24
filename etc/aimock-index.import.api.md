@@ -2239,7 +2239,7 @@ export interface FixtureFileEntry {
 }
 
 // @public (undocumented)
-export type FixtureFileResponse = FixtureFileTextResponse | FixtureFileToolCallResponse | FixtureFileContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | LiveFixtureResponse;
+export type FixtureFileResponse = FixtureFileTextResponse | FixtureFileToolCallResponse | FixtureFileContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | RawResponse | LiveFixtureResponse;
 
 // @public
 export type FixtureFileResponsesBlock = FixtureFileBlock | {
@@ -2378,7 +2378,7 @@ export interface FixtureMatch {
 export type FixtureOpts = Omit<Fixture, "match" | "response">;
 
 // @public (undocumented)
-export type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | LiveFixtureResponse;
+export type FixtureResponse = TextResponse | ToolCallResponse | ContentWithToolCallsResponse | ErrorResponse | EmbeddingResponse | ImageResponse | AudioResponse | TranscriptionResponse | VideoResponse | RawJSONResponse | RawResponse | LiveFixtureResponse;
 
 // @public
 export interface FixturesWithServices {
@@ -3351,6 +3351,8 @@ interface MatchOptions {
     };
     // (undocumented)
     strictTurnIndex?: boolean;
+    // @internal
+    wire?: WireId | RawWireId;
 }
 
 // @public
@@ -4596,6 +4598,21 @@ export interface RawJSONResponse extends ResponseOverrides {
 }
 
 // @public
+export interface RawResponse {
+    raw: {
+        wire: RawWireId;
+        events?: Record<string, unknown>[];
+        json?: unknown;
+        status?: number;
+        headers?: Record<string, string>;
+        done?: boolean;
+    };
+}
+
+// @public
+export type RawWireId = Exclude<WireId, "openai-realtime" | "gemini-live"> | "ollama-generate";
+
+// @public
 interface ReasoningTextDetail {
     // (undocumented)
     format: "unknown";
@@ -5549,7 +5566,7 @@ export interface WebSocketLimits {
 }
 
 // @public
-type WireId = "openai-chat" | "openai-responses" | "openai-realtime" | "anthropic" | "bedrock-invoke" | "bedrock-converse" | "gemini" | "gemini-live" | "gemini-interactions" | "cohere" | "ollama";
+export type WireId = "openai-chat" | "openai-responses" | "openai-realtime" | "anthropic" | "bedrock-invoke" | "bedrock-converse" | "gemini" | "gemini-live" | "gemini-interactions" | "cohere" | "ollama";
 
 // @public
 export function writeAGUIEventStream(res: http$1.ServerResponse, events: AGUIEvent[], opts?: {

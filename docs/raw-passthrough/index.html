@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Raw Passthrough Fixtures — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Raw Passthrough Fixtures</h1>
+        <p class="lead">
+          Send provider events exactly as you write them. A raw fixture lists the events (streaming)
+          or the JSON body (non-streaming) of one provider wire, and aimock adds only that wire's
+          framing. Use it to test an SDK against a new event type, field or error shape before
+          aimock models it.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>Prefer typed fixtures.</strong> <code>content</code>, <code>toolCalls</code>,
+            <code>blocks</code> and the other typed responses work on every provider, get usage,
+            reasoning and override handling, and are checked for drift against the real APIs. Raw
+            fixtures are wire-specific and are <strong>not checked for drift</strong>: when the
+            provider changes, your raw events do not. Use raw only for what typed fixtures cannot
+            express yet.
+          </p>
+        </div>
+
+        <h2 id="shape">Shape</h2>
+        <div class="code-block">
+          <div class="code-block-header">raw.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"cite paris"</span> },
+      <span class="key">"response"</span>: {
+        <span class="key">"raw"</span>: {
+          <span class="key">"wire"</span>: <span class="str">"openai-responses"</span>,
+          <span class="key">"events"</span>: [
+            { <span class="key">"type"</span>: <span class="str">"response.created"</span>, <span class="key">"response"</span>: { <span class="key">"id"</span>: <span class="str">"resp_1"</span>, <span class="key">"status"</span>: <span class="str">"in_progress"</span>, <span class="key">"output"</span>: [] } },
+            { <span class="key">"type"</span>: <span class="str">"response.output_text.delta"</span>, <span class="key">"delta"</span>: <span class="str">"Paris."</span>, <span class="key">"output_index"</span>: <span class="num">0</span>, <span class="key">"content_index"</span>: <span class="num">0</span> },
+            { <span class="key">"type"</span>: <span class="str">"response.output_text.annotation.added"</span>, <span class="key">"annotation"</span>: { <span class="key">"type"</span>: <span class="str">"url_citation"</span>, <span class="key">"url"</span>: <span class="str">"https://example.com"</span> } },
+            { <span class="key">"type"</span>: <span class="str">"response.completed"</span>, <span class="key">"response"</span>: { <span class="key">"id"</span>: <span class="str">"resp_1"</span>, <span class="key">"status"</span>: <span class="str">"completed"</span>, <span class="key">"output"</span>: [] } }
+          ],
+          <span class="key">"json"</span>: { <span class="key">"id"</span>: <span class="str">"resp_1"</span>, <span class="key">"object"</span>: <span class="str">"response"</span>, <span class="key">"status"</span>: <span class="str">"completed"</span>, <span class="key">"output"</span>: [] },
+          <span class="key">"headers"</span>: { <span class="key">"x-request-id"</span>: <span class="str">"req_123"</span> }
+        }
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <div style="overflow-x: auto">
+          <table class="endpoint-table">
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Type</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>wire</code></td>
+                <td>string, required</td>
+                <td>
+                  The wire the events belong to (see the framing table). A raw fixture matches only
+                  requests on that wire; every other handler skips it and keeps looking. A factory
+                  is the exception: its result is checked when it runs, and a raw result for another
+                  wire gets a 500 (see below).
+                </td>
+              </tr>
+              <tr>
+                <td><code>events</code></td>
+                <td>object[]</td>
+                <td>
+                  Streamed body. Each entry is sent as one frame, framed per <code>wire</code>.
+                </td>
+              </tr>
+              <tr>
+                <td><code>json</code></td>
+                <td>any</td>
+                <td>Non-streaming body, sent as <code>JSON.stringify(json)</code>.</td>
+              </tr>
+              <tr>
+                <td><code>status</code></td>
+                <td>integer 200-599</td>
+                <td>
+                  HTTP status for both streaming and non-streaming replies. Default 200; 204 and 304
+                  are rejected (they cannot carry a body). A reply with status 400 or above is never
+                  delayed. A 4xx/5xx with <code>json</code> sends that JSON error body as written,
+                  even to a streaming request.
+                </td>
+              </tr>
+              <tr>
+                <td><code>headers</code></td>
+                <td>object of strings</td>
+                <td>
+                  Extra response headers, for example <code>x-request-id</code> or
+                  <code>anthropic-ratelimit-*</code>. Unless you set <code>Content-Type</code> here,
+                  a stream gets the same default headers as a typed stream on its wire
+                  (<code>text/event-stream</code>, <code>application/x-ndjson</code> on Ollama,
+                  <code>application/vnd.amazon.eventstream</code> on Bedrock) and a non-streaming
+                  reply gets <code>application/json</code> on every wire. A header you set replaces
+                  the default of the same name in any letter case, so it is sent once.
+                  <code>content-length</code>, <code>transfer-encoding</code>,
+                  <code>connection</code> and <code>content-encoding</code> are rejected.
+                </td>
+              </tr>
+              <tr>
+                <td><code>done</code></td>
+                <td>boolean</td>
+                <td>
+                  <code>openai-chat</code> only: send the terminal <code>data: [DONE]</code>.
+                  Default <code>true</code>. It must be a boolean; any other wire rejects it.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <code>raw</code> is recognized only when the response has no other type's key. A fixture
+          such as <code>{ "content": "hi", "raw": { … } }</code> stays a text fixture, as before.
+          The exceptions are <code>customToolCalls</code> and <code>responsesBlocks</code>: a
+          fixture that writes either next to <code>raw</code> is rejected. A key inside
+          <code>raw</code> that is not one of the fields above is ignored with a warning.
+        </p>
+
+        <h2 id="framing">Framing per wire</h2>
+        <div style="overflow-x: auto">
+          <table class="endpoint-table">
+            <thead>
+              <tr>
+                <th><code>wire</code></th>
+                <th>Endpoints</th>
+                <th>Each event is sent as</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>openai-responses</code></td>
+                <td><code>POST /v1/responses</code></td>
+                <td><code>event: &lt;type&gt;\ndata: &lt;json&gt;\n\n</code> (no terminal)</td>
+              </tr>
+              <tr>
+                <td><code>openai-chat</code></td>
+                <td><code>POST /v1/chat/completions</code> (also Azure and OpenRouter routes)</td>
+                <td><code>data: &lt;json&gt;\n\n</code>, then <code>data: [DONE]\n\n</code></td>
+              </tr>
+              <tr>
+                <td><code>anthropic</code></td>
+                <td><code>POST /v1/messages</code></td>
+                <td><code>event: &lt;type&gt;\ndata: &lt;json&gt;\n\n</code></td>
+              </tr>
+              <tr>
+                <td><code>gemini</code></td>
+                <td>
+                  <code>generateContent</code>, <code>streamGenerateContent</code> (also Vertex AI)
+                </td>
+                <td><code>data: &lt;json&gt;\n\n</code></td>
+              </tr>
+              <tr>
+                <td><code>gemini-interactions</code></td>
+                <td><code>POST /v1beta/interactions</code></td>
+                <td><code>data: &lt;json&gt;\n\n</code></td>
+              </tr>
+              <tr>
+                <td><code>cohere</code></td>
+                <td><code>POST /v2/chat</code></td>
+                <td><code>event: &lt;type&gt;\ndata: &lt;json&gt;\n\n</code> (no terminal)</td>
+              </tr>
+              <tr>
+                <td><code>ollama</code></td>
+                <td><code>POST /api/chat</code></td>
+                <td><code>&lt;json&gt;\n</code> (NDJSON)</td>
+              </tr>
+              <tr>
+                <td><code>ollama-generate</code></td>
+                <td><code>POST /api/generate</code></td>
+                <td><code>&lt;json&gt;\n</code> (NDJSON)</td>
+              </tr>
+              <tr>
+                <td><code>bedrock-invoke</code></td>
+                <td><code>/invoke</code>, <code>/invoke-with-response-stream</code></td>
+                <td>An AWS event-stream <code>chunk</code> frame with base64 <code>bytes</code></td>
+              </tr>
+              <tr>
+                <td><code>bedrock-converse</code></td>
+                <td><code>/converse</code>, <code>/converse-stream</code></td>
+                <td>
+                  An AWS event-stream frame: the event's single key is the event type, its value the
+                  payload (<code>{ "contentBlockDelta": { … } }</code>)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          On <code>openai-responses</code>, <code>anthropic</code> and <code>cohere</code> every
+          event needs a string <code>type</code>; it names the SSE event. Each raw event is one
+          frame on every wire, including Gemini Interactions (where typed fixtures split text by
+          <code>chunkSize</code>).
+        </p>
+
+        <h2 id="stream-vs-non-stream">Streaming and non-streaming requests</h2>
+        <p>
+          A streaming request gets <code>events</code>; a non-streaming request gets
+          <code>json</code>. The exception is an error reply: with a <code>status</code> of 400 or
+          above and a <code>json</code>, a streaming request also gets the JSON, as provider APIs
+          answer errors. If the one the request needs is missing, aimock answers with that wire's
+          native 500 error and the code <code>aimock_raw_mode_unavailable</code>. An invalid raw
+          fixture (for example a factory that returns <code>status: 99</code>) gets the same 500
+          with the code <code>aimock_raw_fixture_invalid</code>, and so does a factory that returns
+          a raw fixture for another wire. A raw fixture added as an object for another wire is never
+          served there: the router skips it, and when no other fixture matches, the server log warns
+          that a raw fixture matched everything except its wire. The error body uses each provider's
+          own error shape (on Gemini, Ollama and OpenRouter the code is prefixed to the message).
+        </p>
+        <p>
+          In an OpenRouter <code>models</code> fallback chain, an <code>openai-chat</code> raw
+          fixture with a <code>status</code> of 400 or above fails over to the next model, as a
+          typed error fixture with the same status does.
+        </p>
+
+        <h2 id="timing">Timing</h2>
+        <p>
+          <code>latency</code>, <code>streamingProfile</code>, <code>recordedTimings</code> and
+          <code>replaySpeed</code> pace streamed raw events exactly as they pace typed frames (see
+          <a href="/streaming-physics">Streaming Physics</a>).
+        </p>
+        <p>
+          A non-streaming raw reply follows <code>nonStreamingTiming</code> like a typed fixture:
+          <code>nonStreamingTiming: true</code> delays a raw <code>stream: false</code> reply on
+          OpenAI Chat Completions only, and <code>nonStreamingTimingAllProviders: true</code>
+          delays it on every raw wire (including OpenAI Chat Completions). Either flag needs a
+          <code>streamingProfile</code> or <code>recordedTimings</code>; a bare
+          <code>latency</code> never delays a non-streaming reply. The wait is sized from the served
+          JSON, as a typed reply's is sized from its content. A raw reply with
+          <code>status</code> 400 or above is never delayed, streaming or not.
+        </p>
+
+        <h2 id="features">Which features apply</h2>
+        <div style="overflow-x: auto">
+          <table class="endpoint-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Raw fixtures</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  Matching (all match keys, <code>sequenceIndex</code>, <code>turnIndex</code>,
+                  <code>predicate</code>, factories)
+                </td>
+                <td>Yes. Plus the wire filter above.</td>
+              </tr>
+              <tr>
+                <td><code>truncateAfterChunks</code>, <code>disconnectAfterMs</code>, chaos</td>
+                <td>Yes. Every raw event counts as one chunk.</td>
+              </tr>
+              <tr>
+                <td>Streaming timing</td>
+                <td>Yes (see Timing).</td>
+              </tr>
+              <tr>
+                <td><code>chunkSize</code></td>
+                <td>No. Each event is one frame. Setting it warns at load.</td>
+              </tr>
+              <tr>
+                <td>Model misbehavior</td>
+                <td>
+                  No: faults skip raw fixtures. A server-level fault is skipped, the raw reply is
+                  served, and the journal records the fault as skipped. An
+                  <code>X-AIMock-Misbehavior</code> header returns 501
+                  <code>aimock_misbehavior_not_applicable</code>. A raw fixture that sets its own
+                  <code>misbehavior</code> is an invalid fixture: load validation reports it (with
+                  <code>--misbehavior</code>, its file fails to load), and when served it gets the
+                  wire's 500 with <code>aimock_raw_fixture_invalid</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>Overrides, reasoning gating, usage synthesis, drift checks</td>
+                <td>No. The events are sent as written.</td>
+              </tr>
+              <tr>
+                <td>Record mode</td>
+                <td>A matched raw fixture never proxies. Recording raw fixtures is a follow-up.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="validation">Validation</h2>
+        <p>
+          <code>--validate-on-load</code>, <code>addFixturesFromJSON</code> and
+          <code>POST /__aimock/fixtures</code> check raw fixtures the same way: a known
+          <code>wire</code>, <code>events</code> or <code>json</code> present, events that are plain
+          JSON objects (no sparse-array holes, <code>undefined</code>, non-finite numbers,
+          functions, Dates or cycles), the per-wire <code>type</code> / single-key rules (no CR or
+          LF in a <code>type</code>; a <code>bedrock-converse</code> key of at most 65535 bytes),
+          <code>status</code> 200-599 except 204 and 304, valid header names and values, a boolean
+          <code>done</code> only on <code>openai-chat</code>, no <code>customToolCalls</code> or
+          <code>responsesBlocks</code> next to <code>raw</code>, and no fixture
+          <code>misbehavior</code>. Unknown keys inside <code>raw</code> and an empty
+          <code>events</code> are warnings. <code>on()</code>, <code>addFixture()</code> and
+          factories are not validated when added; an invalid raw fixture registered that way returns
+          the wire's 500 at request time. The same check runs again on every raw fixture when it is
+          served.
+        </p>
+
+        <h2 id="programmatic">Programmatic use</h2>
+        <div class="code-block">
+          <div class="code-block-header">raw.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
+<span class="op">mock</span>.<span class="fn">on</span>({ <span class="prop">userMessage</span>: <span class="str">"weather"</span> }, {
+  <span class="prop">raw</span>: {
+    <span class="prop">wire</span>: <span class="str">"anthropic"</span>,
+    <span class="prop">events</span>: [
+      { <span class="prop">type</span>: <span class="str">"message_start"</span>, <span class="prop">message</span>: { <span class="cm">/* … */</span> } },
+      { <span class="prop">type</span>: <span class="str">"content_block_delta"</span>, <span class="prop">index</span>: <span class="num">0</span>, <span class="prop">delta</span>: { <span class="prop">type</span>: <span class="str">"text_delta"</span>, <span class="prop">text</span>: <span class="str">"Sunny."</span> } },
+      { <span class="prop">type</span>: <span class="str">"message_stop"</span> },
+    ],
+  },
+});</code></pre>
+        </div>
+
+        <h2 id="limits">Limits</h2>
+        <ul>
+          <li>
+            WebSocket Responses (<code>/v1/responses</code> over WebSocket) answers a raw fixture
+            with an error event with the code <code>aimock_raw_mode_unavailable</code>: "raw
+            fixtures are not yet supported on the WebSocket transport". Serving raw over WebSocket
+            is a follow-up.
+          </li>
+          <li>
+            Realtime, Gemini Live and non-LLM endpoints (embeddings, images, audio, video) never
+            match raw fixtures. For a transport aimock does not cover, use
+            <a href="/mount">mount()</a>.
+          </li>
+        </ul>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

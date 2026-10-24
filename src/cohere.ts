@@ -33,6 +33,7 @@ import {
   isCombinedFixtureResponse,
   isEmbeddingResponse,
   isErrorResponse,
+  isRawResponse,
   validateChatMessages,
   validateToolsField,
   flattenHeaders,
@@ -64,6 +65,7 @@ import { mapCohereFinish } from "./response/finish.js";
 import { render as renderCohereUsage } from "./response/usage/codecs/cohere.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Cohere v2 Chat request types ───────────────────────────────────────────
 
@@ -942,7 +944,7 @@ export async function handleCohere(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "cohere" },
   );
 
   if (fixture) {
@@ -1086,6 +1088,26 @@ export async function handleCohere(
     );
     return;
   }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(resolvedResponse)) {
+    await serveRawResponse({
+      wire: "cohere",
+      stream: cohereReq.stream === true,
+      req,
+      res,
+      fixture,
+      response: resolvedResponse,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "cohere",
+    });
+    return;
+  }
+
   // Cohere carries the same raw argument strings and call identities as Chat.
   // Reuse the accepted preparation so generated/duplicate IDs match metadata.
   const prepared =

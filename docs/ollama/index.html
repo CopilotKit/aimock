@@ -54,6 +54,12 @@
           <code>/api/tags</code> endpoints with NDJSON streaming, matching Ollama's wire format
           including its key differences from OpenAI.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "ollama"</code> for <code>/api/chat</code> or
+          <code>wire: "ollama-generate"</code> for <code>/api/generate</code>.
+        </p>
 
         <h2>Endpoints</h2>
         <table class="endpoint-table">

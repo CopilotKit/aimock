@@ -585,7 +585,7 @@ describe("default responsesTools: validating doors treat the new keys as 1.44.0 
       findings: [
         [
           "error",
-          "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, json, or live)",
+          "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, json, live, or raw)",
         ],
       ],
     },

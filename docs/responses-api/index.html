@@ -53,6 +53,11 @@
           The Responses API uses <code>event:</code> + <code>data:</code> SSE format over HTTP, and
           is also available over WebSocket. aimock supports both transports with the same fixtures.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "openai-responses"</code>.
+        </p>
 
         <h2>Endpoints</h2>
         <table class="endpoint-table">

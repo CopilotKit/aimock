@@ -62,6 +62,7 @@
         { label: "Chaos Testing", href: "/chaos-testing" },
         { label: "Model Misbehavior", href: "/model-misbehavior" },
         { label: "Streaming Physics", href: "/streaming-physics" },
+        { label: "Raw Passthrough", href: "/raw-passthrough" },
         { label: "WebSocket APIs", href: "/websocket" },
         { label: "Prometheus Metrics", href: "/metrics" },
         { label: "Mount & Composition", href: "/mount" },

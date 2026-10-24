@@ -56,6 +56,11 @@
           <code>outputs[]</code> instead of nested <code>candidates[].content.parts[]</code>, and
           typed SSE events with an <code>event_type</code> field inside each JSON payload.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "gemini-interactions"</code>.
+        </p>
 
         <h2>Endpoint</h2>
         <table class="endpoint-table">

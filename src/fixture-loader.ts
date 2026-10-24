@@ -10,6 +10,7 @@ import type {
   FixtureFileResponse,
   FixtureMatch,
   FixtureResponse,
+  RawResponse,
   ResponseOverrides,
 } from "./types.js";
 import {
@@ -24,11 +25,13 @@ import {
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
+  isRawResponse,
   fixtureListTarget,
   fixtureCitationsProblem,
   fixtureFilesProblem,
   resolveServedBlockOutcome,
 } from "./helpers.js";
+import { checkRawResponse, type RawCheckContext } from "./raw-validation.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
@@ -1203,14 +1206,39 @@ export function validateFixtures(
         !isTranscriptionResponse(response) &&
         !isVideoResponse(response) &&
         !isJSONResponse(response) &&
-        !isLiveResponse(response)
+        !isLiveResponse(response) &&
+        !isRawResponse(response)
       ) {
         results.push({
           severity: "error",
           fixtureIndex: i,
           message:
-            "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, json, or live)",
+            "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, json, live, or raw)",
         });
+      }
+
+      // Raw passthrough checks. isRawResponse is false whenever another type's
+      // marker is present, so a typed fixture with a stray `raw` key gets no
+      // finding here, exactly as before raw fixtures existed.
+      if (isRawResponse(response)) {
+        const context = rawFixtureContext(original, response);
+        for (const finding of checkRawResponse(response.raw, context)) {
+          results.push({ severity: finding.severity, fixtureIndex: i, message: finding.message });
+        }
+        if (f.chunkSize !== undefined) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "chunkSize is ignored for raw fixtures: each event is one frame",
+          });
+        }
+        if (f.openRouterProcessing !== undefined) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "openRouterProcessing is ignored for raw fixtures",
+          });
+        }
       }
 
       // When a non-empty ordered `blocks` array is present, the builders stream
@@ -2259,6 +2287,15 @@ const misbehaviorEnabledFixtures = new WeakSet<Fixture>();
 export function enableHeldFixtureMisbehavior(fixture: Fixture): void {
   const held = heldFixtureMisbehavior.get(fixture);
   if (held === undefined) return;
+  // A raw fixture's own misbehavior is a fixture error, named as such
+  // (checkRawResponse reports the same at load and at serve time).
+  if (typeof fixture.response !== "function" && isRawResponse(fixture.response)) {
+    throw new MisbehaviorConfigError({
+      rule: "misbehavior/not-applicable",
+      file: held.file,
+      detail: `${held.path}: misbehavior does not apply to raw fixtures`,
+    });
+  }
   const parsed = parseMisbehavior(held.value, held.path);
   if (parsed.ok) fixture.misbehavior = parsed.config;
   const issue = parsed.ok ? validateFixtureMisbehavior(fixture, held.path) : parsed.issue;
@@ -2267,6 +2304,28 @@ export function enableHeldFixtureMisbehavior(fixture: Fixture): void {
   }
   heldFixtureMisbehavior.delete(fixture);
   misbehaviorEnabledFixtures.add(fixture);
+}
+
+/**
+ * @internal The facts about a raw fixture that {@link checkRawResponse} checks
+ * beyond `raw` itself, for `served`, the response as this server reads it.
+ * Load validation and serve time both use it, so they agree:
+ *
+ * - `otherResponseKeys`: top-level keys of the fixture's response as written
+ *   that `served` lacks. Only `customToolCalls` / `responsesBlocks` are ever
+ *   dropped (on a legacy server), and a fixture that writes either next to
+ *   `raw` is not a raw fixture to the router.
+ * - `fixtureMisbehavior`: the fixture sets its own `misbehavior`, recognized
+ *   or still held.
+ */
+export function rawFixtureContext(fixture: Fixture, served: RawResponse): RawCheckContext {
+  const source = responsesToolsViewSource(fixture);
+  const written = fixture.response;
+  return {
+    otherResponseKeys:
+      typeof written === "function" ? [] : Object.keys(written).filter((key) => !(key in served)),
+    fixtureMisbehavior: fixture.misbehavior !== undefined || heldFixtureMisbehavior.has(source),
+  };
 }
 
 /**

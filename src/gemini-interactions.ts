@@ -8,6 +8,7 @@
  */
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 import type * as http from "node:http";
 import type {
@@ -28,6 +29,7 @@ import {
   isToolCallResponse,
   isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   extractOverrides,
   generateToolCallId,
   flattenHeaders,
@@ -958,6 +960,7 @@ export async function handleGeminiInteractions(
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
     defaults.requestTransform,
+    { wire: "gemini-interactions" },
   );
 
   if (fixture) {
@@ -1132,6 +1135,26 @@ export async function handleGeminiInteractions(
   });
   const markIncomplete = <T extends object>(body: T): T | (T & { status: "incomplete" }) =>
     applied?.summary.fault === "stop-length-mid-tool" ? { ...body, status: "incomplete" } : body;
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  // `streaming` is the handler's own rule: a stream unless `stream` is false.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "gemini-interactions",
+      stream: streaming,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "interactions",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
