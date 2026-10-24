@@ -59,6 +59,11 @@
           <code>cost</code>. Callers on the plain OpenAI base (<code>/v1/&hellip;</code>) are left
           byte-for-byte unchanged.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "openai-chat"</code>.
+        </p>
 
         <div class="info-box">
           <p>
