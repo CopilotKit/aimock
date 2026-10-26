@@ -62,8 +62,11 @@ jobs:
       # the adopter state lives on the orphan `adoption-data` branch of this
       # repo precisely so it never has to.
       #
-      # These permissions still cover every push EXCEPT the auto-land onto the
-      # default branch. That one cannot use the workflow token at all: ruleset
+      # The workflow token pushes only the orphan state branch. Both PR paths
+      # (auto-land and review) push and open their PR with the App token, so
+      # that CI runs on the PR; the workflow token needs no pull-requests
+      # scope. The auto-land onto the default branch cannot use the workflow
+      # token at all: ruleset
       # `blorpathupap` requires an approved pull request on the default branch,
       # and the GitHub Actions app (id 15368) CANNOT be added as a bypass actor
       # -- the API rejects it with "Actor GitHub Actions integration must be
@@ -71,7 +74,6 @@ jobs:
       # org installation. The "Mint app token" step below is the ONLY path; see
       # the note there for how its exposure is bounded.
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -452,8 +454,11 @@ jobs:
       #   - resolving ~180 repos and probing every avatar can run long, and an
       #     app token only lives an hour -- minting at job start could hand the
       #     push an already-expired token;
-      #   - a run that is not auto-landing (needs-review, unconfined, no change)
-      #     never mints a token at all.
+      #   - a run with nothing to push (no change, no state branch, or a status
+      #     that is neither safe nor needs-review) never mints a token at all.
+      # Its condition is exactly the union of the two steps it serves: the
+      # auto-land below and the review PR after it. The review PR needs it too:
+      # a PR opened, or a branch pushed, with the workflow token triggers no CI.
       # Only `contents` (push the branch) and `pull-requests` (open and merge
       # the PR) are requested. The token is scoped to this repo, is never
       # echoed and is never written to a file -- it reaches git and gh through
@@ -463,9 +468,9 @@ jobs:
         id: app-token
         if: >-
           steps.state_branch.outputs.exists == 'true' &&
-          steps.wall.outputs.status == 'safe' &&
           steps.changes.outputs.changed == 'true' &&
-          steps.confine.outputs.confined == 'true'
+          (steps.wall.outputs.status == 'safe' ||
+          steps.wall.outputs.status == 'needs-review')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "1108748"
@@ -489,9 +494,9 @@ jobs:
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"
           # Overrides the github-actions[bot] identity set by "Configure git
           # identity" above, for THIS commit only. That step still serves the
-          # review-PR path, which still pushes as the workflow token. The author
-          # of a commit should be whoever actually put it on the branch, and on
-          # the default branch that is copilotkit-bot.
+          # review-PR path. The author of a commit should be whoever actually
+          # put it on the branch, and on the default branch that is
+          # copilotkit-bot.
           git config user.name "copilotkit-bot[bot]"
           git config user.email "194550712+copilotkit-bot[bot]@users.noreply.github.com"
           # Run id + attempt for the same reason as the review-PR branch below:
@@ -522,8 +527,9 @@ jobs:
       # off, a dead logo — goes through a PR instead. A SAFE run whose diff
       # reaches outside the generated region comes here too: it is a real
       # change, it just does not get to land unreviewed.
-      # Needs the org's "Allow GitHub Actions to create and approve pull
-      # requests" setting; without it gh pr create 403s on the workflow token.
+      # Pushed and opened with the App token, like the auto-land PR, so that CI
+      # runs on it (the workflow token triggers no workflow). It is NEVER merged
+      # here: it waits for a human.
       - name: Open review PR
         id: pr
         if: >-
@@ -532,7 +538,7 @@ jobs:
           (steps.wall.outputs.status == 'needs-review' ||
           (steps.wall.outputs.status == 'safe' && steps.confine.outputs.confined != 'true'))
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.wall.outputs.status }}
         run: |
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
