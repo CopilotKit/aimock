@@ -38,10 +38,12 @@ export interface DriftProbeModel {
 }
 
 /**
- * The OpenAI model the live K9 exhaustion probes (HTTP and WS) request.
- * `o4-mini` hit its `/v1/models` `shutdown_date` of 2026-10-23.
+ * The OpenAI model the live K9 exhaustion probes (HTTP and WS) request, via
+ * helpers.ts. Change only this line when OpenAI retires it: `o4-mini` hit its
+ * `/v1/models` `shutdown_date` of 2026-10-23 and has answered
+ * `404 model_not_found` since.
  */
-export const OPENAI_K9_PROBE_MODEL = "o4-mini";
+export const OPENAI_K9_PROBE_MODEL = "gpt-5.4-mini";
 
 export const DRIFT_PROBE_MODELS: readonly DriftProbeModel[] = [
   // OpenAI
