@@ -2,7 +2,7 @@
 
 Provider: openai
 Detected: 2026-10-26
-Status: NEEDS HUMAN REVIEW
+Status: RESOLVED — decision recorded below and applied to the registry
 
 This model family appeared in a live /models listing but matches no classification rule (include, exclude, -preview, gemma). drift-sync never silently classifies a new family.
 
@@ -27,4 +27,19 @@ This model family appeared in a live /models listing but matches no classificati
      revert, nightly, forever. drift-sync therefore does NOT auto-apply it:
      it drops a `-voice-seed-set.md` note and a human makes both edits in
      one reviewed commit. -->
-Decision: pending
+Decision: INCLUDE (applied 2026-10-26 — includeFamilies.openai in
+`src/__tests__/drift/model-registry.ts`, with the `includeFamilies.openai`
+re-pin in `src/__tests__/drift/logic-pin.test.ts`, plus the static OpenAI
+/models wave in `src/__tests__/drift/models.drift.ts`).
+
+Rationale: gpt-6.1 point release of the included `gpt-5.6-terra` line and
+sibling of the included `gpt-6.1-sol`. The normalizer keeps the `.1` version
+token, so it is its own family and must be enumerated.
+
+Evidence (live, 2026-10-26): `GET /v1/models/gpt-6.1-terra` returned 200 with
+`id`, `object`, `created: 1791908780`, `owned_by: "system"`,
+`shutdown_date: null` — no capability field, the same shape as `gpt-6.1-sol`.
+A minimal `POST /v1/chat/completions` with `model: "gpt-6.1-terra"` returned
+200, `object: "chat.completion"`, `finish_reason: "stop"`, and a real assistant
+text turn. It is text chat on the surface aimock mocks. Not a voice/audio
+family, so no `knownVoiceModelFamilies` edit is needed.

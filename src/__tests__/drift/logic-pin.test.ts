@@ -456,7 +456,7 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
 const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "includeFamilies.openai": {
     members: () => [...includeFamilies.openai].sort(),
-    pin: "7c28e670d7ce3a5903b47aa605f3af391ba816529eaefbb4f81ac4f60c30ec0a",
+    pin: "d62f65955c9b867171e8889381bb818c724a3b5f9c3a60fcdf51716f82ee05ca",
   },
   "includeFamilies.anthropic": {
     members: () => [...includeFamilies.anthropic].sort(),

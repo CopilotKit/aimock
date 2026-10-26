@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { isClassifiedFamily, excludeFamilies } from "./model-registry.js";
+import { isClassifiedFamily, excludeFamilies, includeFamilies } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
 import { unclassifiedFamilies } from "./text-drift.js";
 
@@ -560,5 +560,29 @@ describe("the 2026-10-14..18 model-family waves are classified", () => {
     expect(unclassifiedFamilies(["aurora-violet-alpha"], "openai")).toEqual([
       "aurora-violet-alpha",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 2026-10-26 wave — BEHAVIOURAL coverage of `gpt-6.1-terra` (INCLUDE), in
+// the same shape as the blocks above. Evidence sits beside the entry in
+// model-registry.ts and in drift-proposals/.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-10-26 model-family wave is classified", () => {
+  it("gpt-6.1-terra is INCLUDED in a /models-shaped payload", () => {
+    expect(includeFamilies.openai.has("gpt-6.1-terra")).toBe(true);
+    expect(isClassifiedFamily("gpt-6.1-terra", "openai")).toBe(true);
+    expect(excludeFamilies.openai.has("gpt-6.1-terra")).toBe(false);
+    expect(unclassifiedFamilies(["gpt-6.1-sol", "gpt-6.1-terra"], "openai")).toEqual([]);
+  });
+
+  it("the new key does not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("gpt-6.1-terra", "openai")).toBe("gpt-6.1-terra");
+    expect(unclassifiedFamilies(["gpt-6.1-luna"], "openai")).toEqual(["gpt-6.1-luna"]);
+    expect(unclassifiedFamilies(["gpt-6.2-terra"], "openai")).toEqual(["gpt-6.2-terra"]);
+    expect(unclassifiedFamilies(["gpt-6.1-terra-tts"], "openai")).toEqual(["gpt-6.1-terra-tts"]);
   });
 });

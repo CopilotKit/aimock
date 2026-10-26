@@ -1040,6 +1040,8 @@ describe("recorded /models family waves are classified", () => {
       // gpt-6.1 point release (2026-09-24..30 wave, first listed 09-30; its own
       // normalized family)
       "gpt-6.1-sol",
+      // gpt-6.1-terra (2026-10-26 wave, drift run 40422235776; probe-verified text chat)
+      "gpt-6.1-terra",
       // o-series reasoning
       "o1",
       "o1-pro",
