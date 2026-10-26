@@ -10,14 +10,14 @@
   },
   "mastra-core-npm": {
     "url": "https://registry.npmjs.org/@mastra%2Fcore/latest",
-    "hash": "sha256:a361164ff386819edb5a198587a2e15c41267f83ca6eafeaa8e614b6c665e962",
+    "hash": "sha256:0811fd07fcb0c406c899be71f419afa7a5fa4e18d9cbcf5e350b2ea5f3e1b6df",
     "checks": {},
-    "version": "1.78.0",
-    "lastChanged": "2026-10-19"
+    "version": "1.79.0",
+    "lastChanged": "2026-10-26"
   },
   "mastra-docs-tool-mocks": {
     "url": "https://mastra.ai/docs/evals/experiments",
-    "hash": "sha256:ed304198740e1e3f4af21643b0e6b678aec201b43dc27854e5b254f5695f9bb6",
+    "hash": "sha256:832689db3a32974e2ff9f4c01d6680e8c21d3c960413d242b1d84ca50805634f",
     "checks": {
       "live-capture": false,
       "mcp": false,
@@ -26,7 +26,7 @@
       "new-match-mode": false,
       "tool-mock-report": true
     },
-    "lastChanged": "2026-10-12"
+    "lastChanged": "2026-10-26"
   },
   "mastra-docs-workflow-target": {
     "url": "https://mastra.ai/docs/evals/experiments",
