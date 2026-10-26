@@ -56,6 +56,7 @@ interface SlackEnv {
   DOCS_CHANGED: string;
   PR_URL: string;
   JOB_STATUS: string;
+  LANDED?: string;
 }
 
 /** Runs the real Notify Slack step on `summary`; returns the posted `text`. */
@@ -219,5 +220,34 @@ describe("Notify Slack digest (workflow jq/awk contract)", () => {
       "❌ *Competitive matrix update failed*. " +
         "<https://github.com/CopilotKit/aimock/actions/runs/42|View run>",
     );
+  });
+
+  it("says the bot merged the report, with the digest, when the state auto-landed", () => {
+    const text = runNotifySlack(formatSummary([], [], [], [], [], HOSTILE), {
+      CHANGED: "true",
+      DOCS_CHANGED: "false",
+      PR_URL,
+      JOB_STATUS: "success",
+      LANDED: "true",
+    });
+    const [first, second, , heading] = text.split("\n");
+    expect(first).toBe(
+      "🔎 *Competitor feature-watch report* — state merged into main via a bot PR; check the changes below. " +
+        "<https://github.com/CopilotKit/aimock/actions/runs/42|View run>",
+    );
+    expect(second).toBe(PR_URL);
+    expect(heading).toBe("*Feature watch*");
+    expect(text).toContain("• *hostile_src* (AT&amp;T &lt;Mock&gt;; C-S1, C-S2): changed");
+  });
+
+  it("reports an unmerged bot PR as a PR to review, not as merged", () => {
+    const text = runNotifySlack(formatSummary([], [], [], [], [], HOSTILE), {
+      CHANGED: "true",
+      DOCS_CHANGED: "false",
+      PR_URL,
+      JOB_STATUS: "failure",
+      LANDED: "",
+    });
+    expect(text.split("\n")[0]).toBe(REPORT_MSG);
   });
 });
