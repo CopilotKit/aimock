@@ -85,6 +85,11 @@ jobs:
       # job can classify an exit-5 quarantine distinctly instead of folding it
       # into the generic "job failed → HTTP drift" fallback (M5 backstop).
       exit_code: ${{ steps.drift.outputs.exit_code }}
+      # Probe-model retirement preflight results, for the `notify` job: Slack
+      # lines for retired / soon-retiring probe models, and whether any is
+      # already retired (which stopped the run before drift was graded).
+      model_alert: ${{ steps.model_preflight.outputs.retirement_alert }}
+      model_retired: ${{ steps.model_preflight.outputs.retired }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -179,6 +184,23 @@ jobs:
           console.log("preflight: all provider keys fresh");
           PREFLIGHT
           npx tsx "$PREFLIGHT_FILE"
+
+      # Probe-model RETIREMENT preflight. Asks each provider whether every model
+      # the drift probes pin (src/__tests__/drift/probe-models.ts) is still
+      # served. A retired one fails here with "probe model X retired on DATE —
+      # update <constant>" instead of as a confusing drift failure three nights
+      # running (o4-mini, 2026-10-23). A shutdown date inside 30 days is a
+      # warning in the job summary and in Slack via the `notify` job. No key, no
+      # retirement API, or a transient error is an informational skip.
+      - name: Preflight — probe model retirement
+        id: model_preflight
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: npx tsx scripts/drift-model-preflight.ts
 
       # Provision a local Ollama daemon so the OLLAMA_HOST-gated live drift leg
       # (src/__tests__/drift/ollama.drift.ts) actually runs. Ollama needs NO API
@@ -453,6 +475,8 @@ jobs:
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
           DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
+          MODEL_ALERT: ${{ needs.drift.outputs.model_alert }}
+          MODEL_RETIRED: ${{ needs.drift.outputs.model_retired }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -463,6 +487,7 @@ jobs:
           INFRA_ERROR=false
           QUARANTINE=false
           LIVE_TIMEOUT=false
+          PROBE_RETIRED=false
 
           # Determine what happened in each job. An exit_code of 5 means the
           # collector QUARANTINED unparseable output — the drift job concludes
@@ -478,7 +503,13 @@ jobs:
           # would fall through to the good→good "stay quiet" path and nobody would
           # learn that a surface stopped being checked. Classified before the
           # generic fallbacks so it is never reported as real drift.
-          if [ "$DRIFT_EXIT_CODE" = "5" ]; then
+          #
+          # A retired probe model stops the drift job at its preflight, before
+          # anything is graded. The job concludes `failure`, so without this
+          # branch it would be reported as "providers changed response formats".
+          if [ "$MODEL_RETIRED" = "true" ]; then
+            PROBE_RETIRED=true
+          elif [ "$DRIFT_EXIT_CODE" = "5" ]; then
             QUARANTINE=true
           elif [ "$DRIFT_EXIT_CODE" = "6" ]; then
             LIVE_TIMEOUT=true
@@ -522,7 +553,15 @@ jobs:
           # and needs manual triage. Classified distinctly — NOT real HTTP API
           # drift — so nobody chases a phantom provider format change. The
           # DRIFT_SUMMARY already carries the quarantine detail block (C5.2).
-          if [ "$QUARANTINE" = "true" ]; then
+          ALERT_SHOWN=false
+          if [ "$PROBE_RETIRED" = "true" ]; then
+            EMOJI="🛑"
+            MSG="*Drift probe model retired* in aimock — the preflight stopped the run before any drift was graded (not API drift). Update the probe model:${NL}${MODEL_ALERT}${NL}${RUN_URL}"
+            ALERT_SHOWN=true
+            if [ "$AGUI_DRIFT" = "true" ]; then
+              MSG="${MSG}${NL}AG-UI schema drift was also detected — canonical ag-ui types changed."
+            fi
+          elif [ "$QUARANTINE" = "true" ]; then
             EMOJI="🔬"
             MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
           # Live surface silent (collector exit 6): a live leg observed nothing at
@@ -552,9 +591,20 @@ jobs:
           elif [ "$PREV" = "failure" ]; then
             EMOJI="✅"
             MSG="Drift tests passing again — required checks pass.${DETAIL}"
+          # Good → good, but a probe model retires soon — warn every day until
+          # it is updated (a shutdown date inside the preflight's window).
+          elif [ -n "$MODEL_ALERT" ]; then
+            EMOJI="⚠️"
+            MSG="*Drift probe model retiring soon* in aimock — update it before its shutdown date:${NL}${MODEL_ALERT}${NL}${RUN_URL}"
+            ALERT_SHOWN=true
           # Good → good — stay quiet
           else
             exit 0
+          fi
+
+          # Any other alert still carries a pending probe-model retirement.
+          if [ -n "$MODEL_ALERT" ] && [ "$ALERT_SHOWN" = "false" ]; then
+            MSG="${MSG}${NL}${MODEL_ALERT}"
           fi
 
           PAYLOAD=$(jq -n --arg text "${EMOJI} ${MSG}" '{text: $text}')
