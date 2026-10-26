@@ -7,10 +7,21 @@ on:
 
 concurrency:
   group: competitive-matrix
-  cancel-in-progress: true
+  # NOT cancel-in-progress, same as update-adoption-wall.yml: this job pushes a
+  # branch, opens a PR and (for a state-only report) merges it. Cancelling it
+  # between `git push` and `gh pr merge` leaves a pushed branch or an open PR
+  # that nobody is looking at. A re-run queues behind the running one instead.
+  cancel-in-progress: false
 
 permissions:
   contents: read
+
+env:
+  # `pnpm install` runs `prepare` -> husky, which would make the unattended
+  # `git commit` below run lint-staged. HUSKY=0 asks husky not to install the
+  # hooks; the `--no-verify` on the bot commit is the part that does not depend
+  # on husky honouring it. Same as update-adoption-wall.yml.
+  HUSKY: "0"
 
 jobs:
   update-matrix:
@@ -51,15 +62,126 @@ jobs:
             echo "docs_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The run's report, where a human can read it without a PR: the job
+      # summary page. Reports only; it must never fail the job.
+      - name: Publish run summary
+        if: always()
+        run: |
+          SUMMARY=/tmp/matrix-summary.md
+          # $GITHUB_STEP_SUMMARY is capped at 1 MiB and an oversized file is
+          # discarded, not truncated. Leave headroom for the notice.
+          LIMIT=$((1024 * 1024 - 4096))
+          if [ -s "$SUMMARY" ]; then
+            head -c "$LIMIT" "$SUMMARY" >> "$GITHUB_STEP_SUMMARY" || true
+            if [ "$(wc -c < "$SUMMARY")" -gt "$LIMIT" ]; then
+              {
+                echo
+                echo "_Truncated at ${LIMIT} bytes for the job-summary cap._"
+              } >> "$GITHUB_STEP_SUMMARY" || true
+            fi
+          else
+            echo "## Competitive matrix: no summary was produced; see the \`Update competitive matrix\` step log." >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      # A run whose ONLY change is the feature-watch state file is a report, not
+      # a page edit: it lands itself through a bot PR (below), and its content
+      # stays visible in the PR body, the job summary and the Slack digest.
+      # Anything that touches docs/ (a homepage or migration page edit) still
+      # goes to a review PR for a human. This step decides which path applies,
+      # on the exact set of paths the commit stages.
+      - name: Verify the auto-land diff is confined to the state file
+        id: confine
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.changes.outputs.docs_changed == 'false'
+        run: |
+          STATUS=$(git status --porcelain -- docs/ scripts/competitive-watch-state.json)
+          if [ "$STATUS" = " M scripts/competitive-watch-state.json" ]; then
+            echo "confined=true" >> "$GITHUB_OUTPUT"
+            echo "Only scripts/competitive-watch-state.json changed; it may auto-land."
+          else
+            echo "confined=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The change is not exactly a modified scripts/competitive-watch-state.json; it goes to a review PR instead:"
+            echo "$STATUS"
+          fi
+
+      # The workflow token cannot land this: a PR it opens triggers no CI, and
+      # ruleset `blorpathupap` requires an approved PR on the default branch.
+      # copilotkit-bot (app 1108748) is a PULL-REQUEST-ONLY bypass actor on that
+      # ruleset. This is the same app, the same pinned action, the same secret
+      # and the same scopes that update-adoption-wall.yml and fix-drift.yml use.
+      # Minted behind the SAME condition as the push it serves, so a run that is
+      # not auto-landing never mints a token. The token reaches git and gh
+      # through the environment only.
+      - name: Mint app token
+        id: app-token
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.changes.outputs.docs_changed == 'false' &&
+          steps.confine.outputs.confined == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "1108748"
+          private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Auto-land via bot PR
+        id: land
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.changes.outputs.docs_changed == 'false' &&
+          steps.confine.outputs.confined == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${AUTH}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"
+          git config user.name "copilotkit-bot[bot]"
+          git config user.email "194550712+copilotkit-bot[bot]@users.noreply.github.com"
+          # Run id + attempt: a same-day re-run must not collide with the first
+          # run's branch.
+          BRANCH="bot/competitive-watch-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git checkout -b "$BRANCH"
+          # ONE NAMED FILE: the bot merges the state file and nothing else.
+          git add -- scripts/competitive-watch-state.json
+          # --no-verify: see the HUSKY note in the workflow env block.
+          git commit --no-verify -m "chore: update competitor feature-watch state"
+          git push -u origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --title "chore: competitor feature-watch report" \
+            --body-file /tmp/matrix-summary.md \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH")
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          # --admin merges now, through the bot's pull-request bypass (--auto
+          # would wait forever for the approval the ruleset requires). --merge
+          # because the ruleset allows merge commits only. A real conflict
+          # fails here and leaves the PR open for a human.
+          if ! gh pr merge "$BRANCH" --merge --admin; then
+            echo "::error::Opened the feature-watch PR for ${BRANCH} but could not merge it into ${GITHUB_REF_NAME}; it is left open for a human."
+            exit 1
+          fi
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      # A docs/ change, or a state change that is not confined, goes to a
+      # review PR on the workflow token, as before.
       - name: Configure git credentials
-        if: steps.changes.outputs.changed == 'true'
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.confine.outputs.confined != 'true'
         run: |
           git config --local --unset-all http.https://github.com/.extraheader || true
           git config --local url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Create PR
         id: pr
-        if: steps.changes.outputs.changed == 'true'
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.confine.outputs.confined != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -91,14 +213,20 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           CHANGED: ${{ steps.changes.outputs.changed }}
           DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
-          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_URL: ${{ steps.land.outputs.url || steps.pr.outputs.url }}
+          LANDED: ${{ steps.land.outputs.merged }}
           JOB_STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
           # "PR created" only when the PR step really produced a URL; a failed
-          # Create PR falls through to the failure message.
-          if [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ] && [ "$DOCS_CHANGED" = "true" ]; then
+          # Create PR falls through to the failure message. "Merged" only when
+          # the bot PR's merge really succeeded; an unmerged bot PR is left open
+          # and reported as a PR to review.
+          if [ "$LANDED" = "true" ] && [ -n "$PR_URL" ]; then
+            EMOJI="🔎"
+            MSG="*Competitor feature-watch report* — state merged into main via a bot PR; check the changes below. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
+          elif [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ] && [ "$DOCS_CHANGED" = "true" ]; then
             EMOJI="📊"
             MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           elif [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ]; then
