@@ -27,8 +27,9 @@ jobs:
   update-matrix:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      # Read only: the workflow token only reads the GitHub API here. Every
+      # push and every PR goes through the App token ("Mint app token").
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,20 +106,19 @@ jobs:
             echo "$STATUS"
           fi
 
-      # The workflow token cannot land this: a PR it opens triggers no CI, and
-      # ruleset `blorpathupap` requires an approved PR on the default branch.
-      # copilotkit-bot (app 1108748) is a PULL-REQUEST-ONLY bypass actor on that
-      # ruleset. This is the same app, the same pinned action, the same secret
-      # and the same scopes that update-adoption-wall.yml and fix-drift.yml use.
-      # Minted behind the SAME condition as the push it serves, so a run that is
-      # not auto-landing never mints a token. The token reaches git and gh
-      # through the environment only.
+      # The workflow token cannot serve either PR path: a PR it opens or a
+      # branch it pushes triggers no CI, and ruleset `blorpathupap` requires an
+      # approved PR on the default branch. copilotkit-bot (app 1108748) is a
+      # PULL-REQUEST-ONLY bypass actor on that ruleset. This is the same app,
+      # the same pinned action, the same secret and the same scopes that
+      # update-adoption-wall.yml and fix-drift.yml use. Minted for any changed
+      # run, which is exactly the union of the two steps it serves: the
+      # auto-land below and the review PR after it. A run with no change never
+      # mints a token. The token reaches git and gh through the environment
+      # only.
       - name: Mint app token
         id: app-token
-        if: >-
-          steps.changes.outputs.changed == 'true' &&
-          steps.changes.outputs.docs_changed == 'false' &&
-          steps.confine.outputs.confined == 'true'
+        if: steps.changes.outputs.changed == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "1108748"
@@ -168,25 +168,23 @@ jobs:
           echo "merged=true" >> "$GITHUB_OUTPUT"
 
       # A docs/ change, or a state change that is not confined, goes to a
-      # review PR on the workflow token, as before.
-      - name: Configure git credentials
-        if: >-
-          steps.changes.outputs.changed == 'true' &&
-          steps.confine.outputs.confined != 'true'
-        run: |
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git config --local url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
+      # review PR for a human. It is pushed and opened with the App token so
+      # that CI runs on it, and it is NEVER merged here: it waits for a human.
       - name: Create PR
         id: pr
         if: >-
           steps.changes.outputs.changed == 'true' &&
           steps.confine.outputs.confined != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RUN_ID: ${{ github.run_id }}
           DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
         run: |
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${AUTH}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # The run id keeps two runs on the same day on separate branches.

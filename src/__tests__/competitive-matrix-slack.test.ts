@@ -251,3 +251,72 @@ describe("Notify Slack digest (workflow jq/awk contract)", () => {
     expect(text.split("\n")[0]).toBe(REPORT_MSG);
   });
 });
+
+/** The whole named step, from its `- name:` line to the next step. */
+function stepBlock(yaml: string, name: string): string {
+  const lines = yaml.split("\n");
+  const start = lines.findIndex((l) => l.trim() === `- name: ${name}`);
+  if (start === -1) throw new Error(`no step "${name}" in the workflow`);
+  const stepIndent = lines[start].indexOf("-");
+  const body = [lines[start]];
+  for (const line of lines.slice(start + 1)) {
+    const indent = line.length - line.trimStart().length;
+    if (line.trim() !== "" && indent <= stepIndent) break;
+    body.push(line);
+  }
+  return body.join("\n");
+}
+
+/** The step's `if:` condition (inline or folded `>-`), as one line. */
+function stepIf(block: string): string {
+  const lines = block.split("\n");
+  const inline = lines.find((l) => /^\s*if: (?!>-\s*$)/.test(l));
+  if (inline) return inline.trim().slice("if: ".length);
+  const at = lines.findIndex((l) => l.trim() === "if: >-");
+  if (at === -1) throw new Error("step has no `if:` condition");
+  const keyIndent = lines[at].indexOf("if:");
+  const cond: string[] = [];
+  for (const line of lines.slice(at + 1)) {
+    const indent = line.length - line.trimStart().length;
+    if (line.trim() === "" || indent <= keyIndent) break;
+    cond.push(line.trim());
+  }
+  return cond.join(" ");
+}
+
+// A PR opened, or a branch pushed, with the workflow token (GITHUB_TOKEN)
+// triggers no workflow, so CI never runs on it. The human review PR has to be
+// opened with the copilotkit-bot App token, like the auto-land PR, but it must
+// never be merged by the workflow.
+describe("review PRs are opened with the App token", () => {
+  const cases = [
+    { file: "update-competitive-matrix.yml", review: "Create PR" },
+    { file: "update-adoption-wall.yml", review: "Open review PR" },
+  ];
+  for (const { file, review } of cases) {
+    const yaml = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../.github/workflows", file),
+      "utf8",
+    );
+
+    it(`${file}: "${review}" pushes and opens the PR on the App token`, () => {
+      const block = stepBlock(yaml, review);
+      expect(block).toContain("GH_TOKEN: ${{ steps.app-token.outputs.token }}");
+      expect(block).not.toContain("secrets.GITHUB_TOKEN");
+      expect(block).not.toContain("github.token");
+      expect(block).toContain('GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"');
+      // No git credential for the workflow token is left in .git/config.
+      expect(yaml).not.toContain("${{ secrets.GITHUB_TOKEN }}@github.com");
+    });
+
+    it(`${file}: "${review}" never merges its PR`, () => {
+      expect(stepBlock(yaml, review)).not.toMatch(/gh pr merge|gh api .*\/merge/);
+    });
+
+    it(`${file}: the App token is minted for the review path too`, () => {
+      const mint = stepIf(stepBlock(yaml, "Mint app token"));
+      expect(mint).not.toContain("confined == 'true'");
+      expect(mint).toContain("steps.changes.outputs.changed == 'true'");
+    });
+  }
+});
