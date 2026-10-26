@@ -48,6 +48,8 @@ import {
   startDriftServer,
   stopDriftServer,
   OPENAI_K9_SUMMARY_SHAPES,
+  OPENAI_K9_PROBE_MODEL,
+  OPENAI_K9_REPLAY_MODEL,
   matchOpenAIK9SummaryShape,
   isOpenAIModelSnapshot,
 } from "./helpers.js";
@@ -87,18 +89,22 @@ const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
 
 // Credential presence enables two bounded paid exhaustion probes in daily
 // drift. An explicit capture directory instead replays the hash-pinned real
-// transcripts, with their exact requests/status metadata checked below.
+// transcripts, with their exact requests/status metadata checked below. Each
+// capture was taken against `capturedModel`, which can trail the live probe
+// model after a retirement.
 const EXHAUSTION_CAPTURE_DIR = process.env.OPENAI_RESPONSES_EXHAUSTION_CAPTURE_DIR;
 const exhaustionCases: {
   kind: "K5" | "K9";
   prefix: string;
   sha256: string;
+  capturedModel: string;
   request: ResponseCreateParamsStreaming;
 }[] = [
   {
     kind: "K5",
     prefix: "k5-20261008T170311Z",
     sha256: "8095336aeb8908dd4647bbecd49a5a06959f1e5dac06b7a9a17416a30c3e7152",
+    capturedModel: "gpt-4.1-mini",
     request: {
       model: "gpt-4.1-mini",
       input:
@@ -126,8 +132,9 @@ const exhaustionCases: {
     kind: "K9",
     prefix: "k9-20261008T170312Z",
     sha256: "f96bf0db1dae1cab1956af15d589d26cace087a5893604bd6c727b6347c0d0ae",
+    capturedModel: OPENAI_K9_REPLAY_MODEL,
     request: {
-      model: "o4-mini",
+      model: OPENAI_K9_PROBE_MODEL,
       input:
         "Find all positive integers n below 100000 for which n squared plus n plus 41 is prime. Explain a rigorous strategy before computing.",
       reasoning: { effort: "high", summary: "auto" },
@@ -138,7 +145,12 @@ const exhaustionCases: {
   },
 ];
 
-function inspectExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "localhost") {
+function inspectExhaustion(
+  raw: string,
+  kind: "K5" | "K9",
+  side: "provider" | "localhost",
+  requested: string,
+) {
   const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
   expect(blocks.pop(), "Responses terminal SSE event must be terminated").toBe("");
   const events: ResponseStreamEvent[] = blocks.filter(Boolean).map((block) => {
@@ -257,10 +269,14 @@ function inspectExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "l
     }
     expect(done[0].item.summary).toEqual(item.summary);
     if (side === "provider") {
-      // Every accepted live shape spent no output tokens on the requested model.
-      expect(terminal.response.usage?.output_tokens).toBe(0);
-      const requested = exhaustionCases.find((scenario) => scenario.kind === kind)!.request.model;
-      expect(isOpenAIModelSnapshot(terminal.response.model, String(requested))).toBe(true);
+      // The cap went to reasoning alone: no visible output item, and every
+      // output token is a reasoning token (0 on o4-mini, the full cap on
+      // gpt-5.4-mini).
+      expect(terminal.response.output.every((output) => output.type === "reasoning")).toBe(true);
+      const usage = terminal.response.usage;
+      if (!usage) throw new Error("Missing terminal usage");
+      expect(usage.output_tokens).toBe(usage.output_tokens_details.reasoning_tokens);
+      expect(isOpenAIModelSnapshot(terminal.response.model, requested)).toBe(true);
       for (const event of events) {
         if (event.type === "response.created" || event.type === "response.in_progress") {
           expect(event.response.model).toBe(terminal.response.model);
@@ -279,9 +295,14 @@ function inspectExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "l
   };
 }
 
-function gradeExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "localhost") {
+function gradeExhaustion(
+  raw: string,
+  kind: "K5" | "K9",
+  side: "provider" | "localhost",
+  requested: string,
+) {
   try {
-    return inspectExhaustion(raw, kind, side);
+    return inspectExhaustion(raw, kind, side, requested);
   } catch (error) {
     throw new Error(
       formatDriftReport(
@@ -302,7 +323,10 @@ function gradeExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "loc
   }
 }
 
-async function exhaustionProviderWire(scenario: (typeof exhaustionCases)[number]) {
+/** The provider stream plus the model it was requested from. */
+async function exhaustionProviderWire(
+  scenario: (typeof exhaustionCases)[number],
+): Promise<{ raw: string; requested: string }> {
   if (EXHAUSTION_CAPTURE_DIR) {
     const raw = await readFile(
       join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-response.sse`),
@@ -315,7 +339,7 @@ async function exhaustionProviderWire(scenario: (typeof exhaustionCases)[number]
     const status: { status: string; content_type: string } = JSON.parse(
       await readFile(join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-status.json`), "utf8"),
     );
-    expect(request.body).toEqual(scenario.request);
+    expect(request.body).toEqual({ ...scenario.request, model: scenario.capturedModel });
     expect(status.status).toBe("200");
     expect(status.content_type).toContain("text/event-stream");
     console.log(
@@ -326,7 +350,7 @@ async function exhaustionProviderWire(scenario: (typeof exhaustionCases)[number]
         request: request.body,
       }),
     );
-    return raw;
+    return { raw, requested: scenario.capturedModel };
   }
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), 45_000);
@@ -354,7 +378,7 @@ async function exhaustionProviderWire(scenario: (typeof exhaustionCases)[number]
     }
     raw += decoder.decode();
     completed = true;
-    return raw;
+    return { raw, requested: String(scenario.request.model) };
   } finally {
     clearTimeout(deadline);
     controller.abort();
@@ -376,14 +400,15 @@ describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
     it.each(exhaustionCases)(
       "$kind provider terminal agrees with actual localhost",
       async (scenario) => {
-        await compareExhaustion(scenario, await exhaustionProviderWire(scenario));
+        const wire = await exhaustionProviderWire(scenario);
+        await compareExhaustion(scenario, wire.raw, wire.requested);
       },
     );
   },
 );
 
-// Retained live o4-mini K9 provider streams captured 2026-10-10 from the exact
-// K9 request above, one per accepted provider summary shape. They replay
+// Retained live o4-mini K9 provider streams captured 2026-10-10 from the K9
+// request above (then on OPENAI_K9_REPLAY_MODEL), one per accepted provider summary shape. They replay
 // without a credential so the variant grading and its rejections stay checked.
 const K9_PROVIDER_REPLAYS = ["full-summary", "no-summary", "unclosed-summary"] as const;
 const k9Case = exhaustionCases.find((scenario) => scenario.kind === "K9")!;
@@ -414,12 +439,12 @@ describe("Responses K9 provider variant replay", () => {
   it.each(K9_PROVIDER_REPLAYS)(
     "retained %s provider stream agrees with actual localhost",
     async (shape) => {
-      await compareExhaustion(k9Case, await readK9ProviderReplay(shape));
+      await compareExhaustion(k9Case, await readK9ProviderReplay(shape), OPENAI_K9_REPLAY_MODEL);
     },
   );
 
   it.each(K9_PROVIDER_REPLAYS)(
-    "retained %s provider stream rejects a wrong terminal status, nonzero output tokens or another model",
+    "retained %s provider stream rejects a wrong terminal status, non-reasoning output tokens or another model",
     async (shape) => {
       const raw = await readK9ProviderReplay(shape);
       expect(raw).toContain('"status":"incomplete"');
@@ -428,6 +453,7 @@ describe("Responses K9 provider variant replay", () => {
           raw.replaceAll('"status":"incomplete"', '"status":"completed"'),
           "K9",
           "provider",
+          OPENAI_K9_REPLAY_MODEL,
         ),
       ).toThrow();
       // Only the terminal usage changes; created/in_progress keep their
@@ -439,13 +465,16 @@ describe("Responses K9 provider variant replay", () => {
       expect(spentTokens.slice(0, spentTokens.indexOf("event: response.incomplete"))).toBe(
         raw.slice(0, raw.indexOf("event: response.incomplete")),
       );
-      expect(() => inspectExhaustion(spentTokens, "K9", "provider")).toThrow();
+      expect(() =>
+        inspectExhaustion(spentTokens, "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
       expect(raw).toContain('"model":"o4-mini-2025-04-16"');
       expect(() =>
         inspectExhaustion(
           raw.replaceAll('"model":"o4-mini-2025-04-16"', '"model":"gpt-4.1-mini-2025-04-14"'),
           "K9",
           "provider",
+          OPENAI_K9_REPLAY_MODEL,
         ),
       ).toThrow();
       // A valid-looking snapshot on the terminal alone must still disagree
@@ -453,7 +482,9 @@ describe("Responses K9 provider variant replay", () => {
       const terminalModel = withTerminalEvent(raw, (terminal) => {
         terminal.response.model = "o4-mini-2099-01-01";
       });
-      expect(() => inspectExhaustion(terminalModel, "K9", "provider")).toThrow();
+      expect(() =>
+        inspectExhaustion(terminalModel, "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
     },
   );
 
@@ -472,22 +503,28 @@ describe("Responses K9 provider variant replay", () => {
       );
     expect(textDone).toHaveLength(1);
     expect(blocks.length - reordered.length).toBe(1);
-    expect(() => inspectExhaustion(reordered.join("\n\n"), "K9", "provider")).toThrow(
-      /matches none of the accepted summary shapes/,
-    );
+    expect(() =>
+      inspectExhaustion(reordered.join("\n\n"), "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+    ).toThrow(/matches none of the accepted summary shapes/);
   });
 
   it.each(["no-summary", "unclosed-summary"] as const)(
     "localhost grading still rejects the %s provider shape",
     async (shape) => {
       const raw = await readK9ProviderReplay(shape);
-      expect(() => inspectExhaustion(raw, "K9", "localhost")).toThrow(/deeply equal/);
+      expect(() => inspectExhaustion(raw, "K9", "localhost", OPENAI_K9_REPLAY_MODEL)).toThrow(
+        /deeply equal/,
+      );
     },
   );
 });
 
-async function compareExhaustion(scenario: (typeof exhaustionCases)[number], provider: string) {
-  const expected = gradeExhaustion(provider, scenario.kind, "provider");
+async function compareExhaustion(
+  scenario: (typeof exhaustionCases)[number],
+  provider: string,
+  requested: string,
+) {
+  const expected = gradeExhaustion(provider, scenario.kind, "provider", requested);
   // Deliberate mutation of authentic provider bytes tests this reader's
   // sensitivity, not a new product regression or a fabricated SDK response.
   expect(() =>
@@ -495,6 +532,7 @@ async function compareExhaustion(scenario: (typeof exhaustionCases)[number], pro
       provider.replaceAll("response.incomplete", "response.completed"),
       scenario.kind,
       "provider",
+      requested,
     ),
   ).toThrow();
   console.log(
@@ -543,7 +581,7 @@ async function compareExhaustion(scenario: (typeof exhaustionCases)[number], pro
         raw: local.body,
       }),
     );
-    const actual = gradeExhaustion(local.body, scenario.kind, "localhost");
+    const actual = gradeExhaustion(local.body, scenario.kind, "localhost", requested);
     expect(actual.frame).toEqual(expected.frame);
     expect(actual.status).toBe(expected.status);
     expect(actual.reason).toBe(expected.reason);

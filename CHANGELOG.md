@@ -20,6 +20,7 @@
 - Client disconnects stop delivery (no more chunks or waits) on OpenAI chat, Anthropic, Responses, Gemini/Vertex, Gemini Interactions, Cohere, Bedrock, Ollama, transcription streams and the Responses, Realtime and Gemini Live WebSockets
 - Client disconnects on those surfaces are journaled as `interrupted` with `interruptReason: "client aborted"` (HTTP `status: 0` when nothing was sent); aimock-caused teardowns record `"disconnect"`. Journal snapshots of hung-up requests now carry these fields
 - WebSocket: a client TCP FIN without a close frame now closes the connection at once (1006) and ends the turn
+- Daily drift: the OpenAI Responses K9 reasoning-exhaustion probes (HTTP and WebSocket) request `gpt-5.4-mini`. OpenAI retired `o4-mini` on 2026-10-23 (its `/v1/models` `shutdown_date`), and it has answered `404 model_not_found` since. The probe model is one constant, `OPENAI_K9_PROBE_MODEL`. The usage check accepts `output_tokens` equal to `output_tokens_details.reasoning_tokens` (gpt-5.4-mini spends the 32-token cap on reasoning; o4-mini reported 0). The event-order check is unchanged, and the retained o4-mini replay fixtures are still graded against o4-mini. Drift harness only; aimock behavior is unchanged (#584).
 - Docker image: the base image is pinned to `node:22.23.4-alpine` by digest. Node 22.23.4 fixes CVE-2026-111497 (Brotli decompression memory bug); the 1.46.0 image shipped Node 22.23.3.
 
 ## [1.46.0] - 2026-10-20

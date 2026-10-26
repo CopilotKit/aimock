@@ -319,15 +319,33 @@ export async function collectMockWSMessages(
 // ---------------------------------------------------------------------------
 
 /**
+ * The OpenAI model the live K9 exhaustion probes (HTTP and WS) request. Change
+ * only this line when OpenAI retires it: `o4-mini` hit its `/v1/models`
+ * `shutdown_date` of 2026-10-23 and has answered `404 model_not_found` since.
+ */
+export const OPENAI_K9_PROBE_MODEL = "gpt-5.4-mini";
+
+/**
+ * The model the retained K9 replay fixtures were captured from (2026-10-10).
+ * The fixtures are frozen evidence, so they stay graded against this model.
+ */
+export const OPENAI_K9_REPLAY_MODEL = "o4-mini";
+
+/**
  * The reasoning-summary event runs that live OpenAI streams for the K9
- * exhaustion request (o4-mini, effort high, summary auto, max_output_tokens 32)
- * between `response.output_item.added` and `response.output_item.done`.
+ * exhaustion request (OPENAI_K9_PROBE_MODEL, effort high, summary auto,
+ * max_output_tokens 32) between `response.output_item.added` and
+ * `response.output_item.done`.
  *
- * The same request picks one at random. Measured 2026-10-10, every run ended
- * `response.incomplete`/`max_output_tokens` with `output_tokens: 0` on
- * o4-mini-2025-04-16:
+ * The same request picks one at random. Measured 2026-10-10 on
+ * o4-mini-2025-04-16 (OPENAI_K9_REPLAY_MODEL), every run ended
+ * `response.incomplete`/`max_output_tokens`:
  * - HTTP, 22 runs: full-summary 16, no-summary 4, unclosed-summary 2.
  * - WS, 10 runs: full-summary 5, no-summary 3, unclosed-summary 2.
+ * o4-mini reported `output_tokens: 0`; gpt-5.4-mini-2026-03-17 reports
+ * `output_tokens: 32`, all of them `reasoning_tokens`. Either way the cap is
+ * spent on reasoning only, so grading requires
+ * `output_tokens === output_tokens_details.reasoning_tokens`.
  *
  * Live/native grading accepts exactly these three. aimock's localhost stream
  * must still emit `full-summary`.

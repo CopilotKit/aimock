@@ -30,6 +30,8 @@ import {
   stopDriftServer,
   collectMockWSMessages,
   OPENAI_K9_SUMMARY_SHAPES,
+  OPENAI_K9_PROBE_MODEL,
+  OPENAI_K9_REPLAY_MODEL,
   matchOpenAIK9SummaryShape,
   isOpenAIModelSnapshot,
 } from "./helpers.js";
@@ -277,7 +279,7 @@ const exhaustionCases: {
   },
   {
     kind: "K9",
-    model: "o4-mini",
+    model: OPENAI_K9_PROBE_MODEL,
     input: [
       {
         role: "user",
@@ -350,6 +352,7 @@ function inspectWSExhaustion(
   events: ResponseStreamEvent[],
   kind: "K5" | "K9",
   side: "native" | "localhost",
+  requested: string,
 ) {
   const order = events
     .map((event) => event.type)
@@ -467,9 +470,13 @@ function inspectWSExhaustion(
     }
     expect(done[0].item.summary).toEqual(item.summary);
     if (side === "native") {
-      // Every accepted live shape spent no output tokens on the requested model.
-      expect(terminal.response.usage?.output_tokens).toBe(0);
-      const requested = exhaustionCases.find((scenario) => scenario.kind === kind)!.model;
+      // The cap went to reasoning alone: no visible output item, and every
+      // output token is a reasoning token (0 on o4-mini, the full cap on
+      // gpt-5.4-mini).
+      expect(terminal.response.output.every((output) => output.type === "reasoning")).toBe(true);
+      const usage = terminal.response.usage;
+      if (!usage) throw new Error("Missing terminal usage");
+      expect(usage.output_tokens).toBe(usage.output_tokens_details.reasoning_tokens);
       expect(isOpenAIModelSnapshot(terminal.response.model, requested)).toBe(true);
       for (const event of events) {
         if (event.type === "response.created" || event.type === "response.in_progress") {
@@ -491,9 +498,10 @@ function gradeWSExhaustion(
   events: ResponseStreamEvent[],
   kind: "K5" | "K9",
   side: "native" | "localhost",
+  requested: string,
 ) {
   try {
-    return inspectWSExhaustion(events, kind, side);
+    return inspectWSExhaustion(events, kind, side, requested);
   } catch (error) {
     throw new Error(
       formatDriftReport(
@@ -520,15 +528,19 @@ describe("Responses WS exhaustion local contract", () => {
     it(`WS ${scenario.kind} actual localhost preserves incomplete contract`, async () => {
       const events = await localWSExhaustion(scenario);
       console.log(JSON.stringify({ kind: scenario.kind, mode: "actual localhost WS", events }));
-      gradeWSExhaustion(events, scenario.kind, "localhost");
+      gradeWSExhaustion(events, scenario.kind, "localhost", scenario.model);
     });
   }
 });
 
-async function compareWSExhaustion(scenario: ExhaustionCase, nativeEvents: ResponseStreamEvent[]) {
-  const native = gradeWSExhaustion(nativeEvents, scenario.kind, "native");
+async function compareWSExhaustion(
+  scenario: ExhaustionCase,
+  nativeEvents: ResponseStreamEvent[],
+  requested: string,
+) {
+  const native = gradeWSExhaustion(nativeEvents, scenario.kind, "native", requested);
   const localEvents = await localWSExhaustion(scenario);
-  expect(gradeWSExhaustion(localEvents, scenario.kind, "localhost")).toEqual(native);
+  expect(gradeWSExhaustion(localEvents, scenario.kind, "localhost", requested)).toEqual(native);
   const sdk = [
     ...openaiResponsesTextEventShapes().filter(
       (event) => event.type === "response.created" || event.type === "response.in_progress",
@@ -551,8 +563,8 @@ async function compareWSExhaustion(scenario: ExhaustionCase, nativeEvents: Respo
   ).toEqual([]);
 }
 
-// Retained live o4-mini K9 WS native events captured 2026-10-10 from the exact
-// K9 request above, one per accepted native summary shape. They replay without
+// Retained live o4-mini K9 WS native events captured 2026-10-10 from the K9
+// request above (then on OPENAI_K9_REPLAY_MODEL), one per accepted native summary shape. They replay without
 // a credential so the variant grading and its rejections stay checked.
 const K9_NATIVE_REPLAYS = ["full-summary", "no-summary", "unclosed-summary"] as const;
 const k9Case = exhaustionCases.find((scenario) => scenario.kind === "K9")!;
@@ -569,12 +581,12 @@ describe("Responses WS K9 native variant replay", () => {
   it.each(K9_NATIVE_REPLAYS)(
     "retained %s native events agree with actual localhost",
     async (shape) => {
-      await compareWSExhaustion(k9Case, await readK9NativeReplay(shape));
+      await compareWSExhaustion(k9Case, await readK9NativeReplay(shape), OPENAI_K9_REPLAY_MODEL);
     },
   );
 
   it.each(K9_NATIVE_REPLAYS)(
-    "retained %s native events reject a wrong terminal status, nonzero output tokens or another model",
+    "retained %s native events reject a wrong terminal status, non-reasoning output tokens or another model",
     async (shape) => {
       const events = await readK9NativeReplay(shape);
       const terminal = events.at(-1);
@@ -585,13 +597,17 @@ describe("Responses WS K9 native variant replay", () => {
       const statusTerminal = wrongStatus.at(-1);
       if (statusTerminal?.type !== "response.incomplete") throw new Error("Missing terminal");
       statusTerminal.response.status = "completed";
-      expect(() => inspectWSExhaustion(wrongStatus, "K9", "native")).toThrow();
+      expect(() =>
+        inspectWSExhaustion(wrongStatus, "K9", "native", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
       const spentTokens = structuredClone(events);
       const tokenTerminal = spentTokens.at(-1);
       if (tokenTerminal?.type !== "response.incomplete" || !tokenTerminal.response.usage)
         throw new Error("Missing terminal usage");
       tokenTerminal.response.usage.output_tokens = 7;
-      expect(() => inspectWSExhaustion(spentTokens, "K9", "native")).toThrow();
+      expect(() =>
+        inspectWSExhaustion(spentTokens, "K9", "native", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
       expect(terminal.response.model).toBe("o4-mini-2025-04-16");
       const otherModel = structuredClone(events);
       for (const event of otherModel) {
@@ -602,14 +618,18 @@ describe("Responses WS K9 native variant replay", () => {
         )
           event.response.model = "gpt-4.1-mini-2025-04-14";
       }
-      expect(() => inspectWSExhaustion(otherModel, "K9", "native")).toThrow();
+      expect(() =>
+        inspectWSExhaustion(otherModel, "K9", "native", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
       // A valid-looking snapshot on the terminal alone must still disagree
       // with created/in_progress.
       const terminalModel = structuredClone(events);
       const modelTerminal = terminalModel.at(-1);
       if (modelTerminal?.type !== "response.incomplete") throw new Error("Missing terminal");
       modelTerminal.response.model = "o4-mini-2099-01-01";
-      expect(() => inspectWSExhaustion(terminalModel, "K9", "native")).toThrow();
+      expect(() =>
+        inspectWSExhaustion(terminalModel, "K9", "native", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
     },
   );
 
@@ -629,7 +649,7 @@ describe("Responses WS K9 native variant replay", () => {
       );
     expect(textDone).toHaveLength(1);
     expect(events.length - reordered.length).toBe(1);
-    expect(() => inspectWSExhaustion(reordered, "K9", "native")).toThrow(
+    expect(() => inspectWSExhaustion(reordered, "K9", "native", OPENAI_K9_REPLAY_MODEL)).toThrow(
       /matches none of the accepted summary shapes/,
     );
   });
@@ -638,7 +658,9 @@ describe("Responses WS K9 native variant replay", () => {
     "localhost grading still rejects the %s native shape",
     async (shape) => {
       const events = await readK9NativeReplay(shape);
-      expect(() => inspectWSExhaustion(events, "K9", "localhost")).toThrow(/deeply equal/);
+      expect(() => inspectWSExhaustion(events, "K9", "localhost", OPENAI_K9_REPLAY_MODEL)).toThrow(
+        /deeply equal/,
+      );
     },
   );
 });
@@ -677,7 +699,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS exhaustion live drift", ()
         );
         // The SDK union supplies event discriminators; semantic validation below
         // still grades the untrusted native response, including error terminals.
-        await compareWSExhaustion(scenario, result.rawMessages as ResponseStreamEvent[]);
+        await compareWSExhaustion(
+          scenario,
+          result.rawMessages as ResponseStreamEvent[],
+          scenario.model,
+        );
       } catch (error) {
         exhaustionStopped = true;
         if (error instanceof WSHandshakeError && isInfraSkip(error.status)) {
