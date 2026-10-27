@@ -318,12 +318,10 @@ export async function collectMockWSMessages(
 // OpenAI Responses K9 (reasoning-only max_output_tokens exhaustion)
 // ---------------------------------------------------------------------------
 
-/**
- * The OpenAI model the live K9 exhaustion probes (HTTP and WS) request. Change
- * only this line when OpenAI retires it: `o4-mini` hit its `/v1/models`
- * `shutdown_date` of 2026-10-23 and has answered `404 model_not_found` since.
- */
-export const OPENAI_K9_PROBE_MODEL = "gpt-5.4-mini";
+// The K9 probe model lives with every other pinned drift probe model in
+// probe-models.ts, which the retirement preflight reads without loading this
+// module (it starts servers).
+export { OPENAI_K9_PROBE_MODEL } from "./probe-models.js";
 
 /**
  * The model the retained K9 replay fixtures were captured from (2026-10-10).

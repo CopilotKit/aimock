@@ -105,6 +105,8 @@ When a `critical` drift is detected:
 
 **A deprecation needs nothing from you.** The daily sync records it in `deprecatedFamilies` and aimock keeps mocking the family, so clients pinned to a retired model id keep working. The only thing worth doing by hand is the cheap live test model: if `src/__tests__/drift/providers.ts` names a model that no longer exists, the live drift legs cannot run at all, so point them at a current one and re-run `pnpm test:drift`.
 
+**A retired probe model is caught before the run.** Every model a live drift probe pins is listed in `src/__tests__/drift/probe-models.ts`. Before the daily `drift` job runs the suite, `scripts/drift-model-preflight.ts` asks each provider about each one: OpenAI `GET /v1/models/{id}` (`shutdown_date`), Anthropic `GET /v1/models/{id}` (`lifecycle`, `retires_at`), Gemini `GET /v1beta/models/{id}` (404 when gone; no date published), Cohere `GET /v1/models/{id}` (`is_deprecated`) and the OpenRouter listing (`expiration_date`). A model that is gone or past its shutdown date fails the step with `probe model X retired on DATE — update <constant>`, and Slack says "probe model retired", not "API drift". A shutdown date within 30 days (`DRIFT_PREFLIGHT_WARN_DAYS`) is a warning in the job summary and in Slack. Bedrock, Vertex, Ollama and fal models are listed but skipped: the step has no retirement API it can ask for them. Legs that pick their model from the live listing (`resolveLiveModel`) are not listed; they move on their own.
+
 ## Adding a New Provider
 
 1. Add the provider's SDK as a devDependency in `package.json`

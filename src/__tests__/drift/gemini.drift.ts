@@ -755,7 +755,7 @@ describe("Gemini thinking token shapes", () => {
 describe.skipIf(!GOOGLE_API_KEY)("Gemini Embeddings canary", () => {
   it("canary: verify embeddings endpoint exists and response shape", async () => {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${GOOGLE_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${GOOGLE_API_KEY}`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
