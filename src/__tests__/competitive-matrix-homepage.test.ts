@@ -921,6 +921,9 @@ describe("hand-reviewed homepage rows with no scan rule", () => {
     "Native model catalogs (Anthropic, Gemini)",
     "Token-count endpoints",
     "Native 401 auth errors",
+    "Provider-native source citations",
+    "Model-generated images in replies",
+    "Client disconnect stops the reply on every provider",
   ];
   const MIGRATION_HAND_ROWS = [
     "Native model catalogs",

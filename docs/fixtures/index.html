@@ -980,6 +980,23 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               </td>
             </tr>
             <tr>
+              <td>citations</td>
+              <td>array</td>
+              <td>
+                Source citations for the reply text, served on OpenAI Responses, Chat Completions,
+                Claude and Gemini (see
+                <a href="#citations-and-files">Citations and generated files</a>)
+              </td>
+            </tr>
+            <tr>
+              <td>files</td>
+              <td>array</td>
+              <td>
+                Model-generated files <code>{ mimeType, data }</code>, served on Gemini and OpenAI
+                Responses (see <a href="#citations-and-files">Citations and generated files</a>)
+              </td>
+            </tr>
+            <tr>
               <td>systemFingerprint</td>
               <td>string</td>
               <td>Add system_fingerprint to response</td>
@@ -1011,6 +1028,113 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             </tr>
           </tbody>
         </table>
+
+        <h2 id="citations-and-files">Citations and generated files</h2>
+        <p>
+          A text reply can carry source citations, and a reply can carry model-generated files such
+          as images. Add <code>citations</code> or <code>files</code> next to <code>content</code>,
+          and aimock serves them in each provider's own wire shape, streaming and non-streaming. Use
+          them to test how your app shows sources and renders generated images.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">citations.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"capital of France"</span> },
+  <span class="prop">"response"</span>: {
+    <span class="prop">"content"</span>: <span class="str">"Paris is the capital of France."</span>,
+    <span class="prop">"citations"</span>: [
+      { <span class="prop">"url"</span>: <span class="str">"https://en.wikipedia.org/wiki/Paris"</span>, <span class="prop">"title"</span>: <span class="str">"Paris"</span>, <span class="prop">"startIndex"</span>: <span class="num">0</span>, <span class="prop">"endIndex"</span>: <span class="num">5</span> },
+      { <span class="prop">"type"</span>: <span class="str">"file"</span>, <span class="prop">"fileId"</span>: <span class="str">"file-abc123"</span>, <span class="prop">"filename"</span>: <span class="str">"notes.pdf"</span> }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          A URL citation needs <code>url</code>; <code>title</code>, <code>startIndex</code> and
+          <code>endIndex</code> are optional, and the span defaults to the whole text. Offsets are
+          JavaScript string positions in the reply text. A file citation (<code>type: "file"</code>)
+          needs <code>fileId</code> and <code>filename</code>; its optional
+          <code>index</code> defaults to the end of the text.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            generated-image.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"draw a cat"</span> },
+  <span class="prop">"response"</span>: {
+    <span class="prop">"content"</span>: <span class="str">"Here is a cat."</span>,
+    <span class="prop">"files"</span>: [{ <span class="prop">"mimeType"</span>: <span class="str">"image/png"</span>, <span class="prop">"data"</span>: <span class="str">"iVBORw0KGgo..."</span> }]
+  }
+}</code></pre>
+        </div>
+        <p>
+          <code>data</code> holds the base64 file bytes. Files are sent before the reply text and
+          tool calls.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Wire</th>
+              <th><code>citations</code></th>
+              <th><code>files</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI Responses (HTTP and WebSocket)</td>
+              <td>
+                <code>url_citation</code> and <code>file_citation</code> annotations on
+                <code>output_text</code>, streamed with
+                <code>response.output_text.annotation.added</code>
+              </td>
+              <td>
+                <code>image_generation_call</code> output items (<code>image/*</code> only),
+                streamed with the <code>response.image_generation_call.*</code> events
+              </td>
+            </tr>
+            <tr>
+              <td>Chat Completions (OpenAI, Azure, OpenRouter)</td>
+              <td>
+                <code>url_citation</code> in <code>message.annotations</code>; one
+                <code>delta.annotations</code> chunk when streaming. File citations are skipped
+              </td>
+              <td>500 <code>aimock_unsupported_generated_file</code></td>
+            </tr>
+            <tr>
+              <td>Claude Messages</td>
+              <td>
+                <code>web_search_result_location</code> citations on text blocks;
+                <code>citations_delta</code> when streaming. File citations are skipped
+              </td>
+              <td>500 <code>aimock_unsupported_generated_file</code></td>
+            </tr>
+            <tr>
+              <td>Gemini and Vertex AI</td>
+              <td>
+                <code>groundingMetadata</code> (<code>groundingChunks</code> and
+                <code>groundingSupports</code>, byte offsets). File citations are skipped
+              </td>
+              <td><code>inlineData</code> parts</td>
+            </tr>
+            <tr>
+              <td>Every other wire</td>
+              <td>Ignored</td>
+              <td>Ignored</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="info-box">
+          <p>
+            <strong>Errors:</strong> a malformed <code>citations</code> or <code>files</code> value
+            (wrong type, missing field, an offset outside the text, or citations on a reply with no
+            text) answers a 500 with <code>aimock_invalid_fixture_citation</code> or
+            <code>aimock_invalid_fixture_file</code> before any content is sent. A non-image file on
+            the Responses API answers <code>aimock_unsupported_generated_file</code>. On the
+            Responses WebSocket these come as an error event. Fixture loading warns about the same
+            problems, and the fixture still loads.
+          </p>
+        </div>
 
         <h2>Fixture Options</h2>
 
@@ -1468,6 +1592,34 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>&mdash;</td>
               <td>&mdash;</td>
               <td>Yes</td>
+            </tr>
+            <tr>
+              <td><a href="#citations-and-files">Citations</a></td>
+              <td>URL</td>
+              <td>URL + file</td>
+              <td>URL</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+            </tr>
+            <tr>
+              <td><a href="#citations-and-files">Generated files</a></td>
+              <td>Error</td>
+              <td>Images</td>
+              <td>Error</td>
+              <td>Yes</td>
+              <td>&mdash;</td>
+              <td>Yes</td>
+              <td>&mdash;</td>
+              <td>Error</td>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td>Error</td>
             </tr>
             <tr>
               <td>Custom Tool Calls<sup>&Dagger;</sup></td>

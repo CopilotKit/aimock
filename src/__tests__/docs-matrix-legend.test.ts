@@ -85,7 +85,7 @@ describe("docs Not documented cells", () => {
   it("renders the homepage's Not documented cells as ND abbreviations", () => {
     const src = readFileSync(join(DOCS, "index.html"), "utf-8");
     const tablesOnly = [...src.matchAll(/<table\b[\s\S]*?<\/table>/g)].map((m) => m[0]).join("");
-    expect(tablesOnly.split(ND).length - 1).toBe(47);
+    expect(tablesOnly.split(ND).length - 1).toBe(56);
   });
 
   it("styles the legend with one shared class on each stylesheet", () => {
