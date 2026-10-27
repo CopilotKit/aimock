@@ -1,5 +1,12 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Changed
+
+- `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
+  files, raw passthrough and client disconnect handling.
+
 ## [1.47.0] - 2026-10-26
 
 ### Added
