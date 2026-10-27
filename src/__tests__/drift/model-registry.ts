@@ -144,6 +144,23 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/openai-gpt-6.1-sol-new-family.md.
     "gpt-6.1-sol",
+    // gpt-6.1 point release of the included `gpt-5.6-terra` line, sibling of
+    // `gpt-6.1-sol` above. First listed by drift run 40422235776 (2026-10-26;
+    // `created: 1791908780`). The normalizer keeps the `.1` version token, so
+    // it is its own family and must be enumerated.
+    //
+    // Classified on a LIVE PROBE (2026-10-26), not on lineage alone.
+    // `GET /v1/models/gpt-6.1-terra` returns only `id` / `object` / `created` /
+    // `owned_by: "system"` / `shutdown_date: null`, the same shape as
+    // `gpt-6.1-sol`. A minimal /v1/chat/completions call returned 200,
+    // `object: "chat.completion"`, `finish_reason: "stop"` and a real assistant
+    // text turn, the same shape `gpt-6.1-sol` returned. No name token places it
+    // in an excluded cluster, and it is not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6.1-terra-new-family.md.
+    "gpt-6.1-terra",
     // Codex line (coding chat; text output)
     "gpt-5-codex",
     "gpt-5.1-codex",
