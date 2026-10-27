@@ -3572,6 +3572,54 @@
                 </td>
               </tr>
               <tr>
+                <th scope="row">Provider-native source citations</th>
+                <td class="col-aimock">
+                  <a href="/fixtures#citations-and-files"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: no competitor emits url_citation, web_search_result_location or groundingMetadata; mokksy has citation model classes but its builders send empty annotations; VidaiMock, mock-llm, MockServer and WireMock need a hand-written body -->
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Model-generated images in replies</th>
+                <td class="col-aimock">
+                  <a href="/fixtures#citations-and-files"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: no competitor emits image_generation_call or Gemini inlineData replies; MockServer recognises inline_data on requests only -->
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Client disconnect stops the reply on every provider</th>
+                <td class="col-aimock">
+                  <a href="/error-injection#client-disconnects"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: piyook stops only its Claude stream on disconnect; mokksy handles cancellation in its Anthropic builder; no others document it -->
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
                 <th scope="row">Streaming physics</th>
                 <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>

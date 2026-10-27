@@ -262,26 +262,47 @@
 
         <div class="highlight-grid">
           <div class="highlight-card">
-            <span class="highlight-card-title">Model Catalogs &amp; Token Counts</span>
-            <span class="version-note">New in 1.46.0</span>
+            <span class="highlight-card-title">Citations &amp; Generated Images</span>
+            <span class="version-note">New in 1.47.0</span>
             <p class="highlight-card-desc">
-              List and look up Gemini and Anthropic models in their native formats (the Anthropic
-              list is opt-in), and estimate prompt size with <code>count_tokens</code> /
-              <code>countTokens</code>
+              Script source citations on OpenAI, Claude and Gemini replies, and generated images on
+              the Responses API and Gemini, in each provider's own format
             </p>
-            <a href="/claude-messages#model-catalog" class="highlight-card-cta"
+            <a href="/fixtures#citations-and-files" class="highlight-card-cta"
               >Docs <span>&rarr;</span></a
             >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Native Auth Errors</span>
+            <span class="highlight-card-title">Raw Passthrough</span>
+            <span class="version-note">New in 1.47.0</span>
+            <p class="highlight-card-desc">
+              Send provider events or JSON exactly as written, for fields aimock does not model yet,
+              with timing, chaos and disconnects still applied
+            </p>
+            <a href="/raw-passthrough" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">Stream Realism</span>
+            <span class="version-note">New in 1.47.0</span>
+            <p class="highlight-card-desc">
+              Every LLM provider stops sending and journals the request when the client hangs up,
+              and non-streaming replies on every provider can opt in to realistic timing
+            </p>
+            <a href="/error-injection#client-disconnects" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">Native Catalogs &amp; Auth Errors</span>
             <span class="version-note">New in 1.46.0</span>
             <p class="highlight-card-desc">
-              Opt in to provider-native 401 bodies and required-header checks, so you can test how
-              your app handles a bad key or a missing <code>anthropic-version</code>
+              Gemini and Anthropic model lists, token counts, and opt-in provider-native 401s, so
+              you can test model pickers and bad-key handling
             </p>
-            <a href="/claude-messages#authentication-errors" class="highlight-card-cta"
+            <a href="/claude-messages#model-catalog" class="highlight-card-cta"
               >Docs <span>&rarr;</span></a
             >
           </div>
@@ -307,18 +328,6 @@
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Stream Realism</span>
-            <span class="version-note">New in 1.46.0</span>
-            <p class="highlight-card-desc">
-              Anthropic streams stop and journal when the client disconnects, and non-streaming
-              OpenAI replies can opt in to streaming-profile timing
-            </p>
-            <a href="/streaming-physics#non-streaming" class="highlight-card-cta"
-              >Docs <span>&rarr;</span></a
-            >
-          </div>
-
-          <div class="highlight-card">
             <span class="highlight-card-title">Responses API Tools</span>
             <p class="highlight-card-desc">
               Opt-in namespaced functions and custom tool calls, plus <code>commentary</code> /
@@ -335,15 +344,6 @@
               Files, Batches, Fine-tuning jobs, and Vector Stores with deterministic search
             </p>
             <a href="/vector-stores" class="highlight-card-cta">Docs <span>&rarr;</span></a>
-          </div>
-
-          <div class="highlight-card">
-            <span class="highlight-card-title">GPT-Live Sessions</span>
-            <p class="highlight-card-desc">
-              Mock, record, and replay OpenAI GPT-Live sessions, with message, audio, and lifetime
-              limits
-            </p>
-            <a href="/websocket#openai-live" class="highlight-card-cta">Docs <span>&rarr;</span></a>
           </div>
         </div>
 
