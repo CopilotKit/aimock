@@ -1340,3 +1340,16 @@ describe("legacy behavior when conversations do not own the task", () => {
     expect(envelopes(raw).at(-1)!.result!.task!.status.state).toBe(DONE);
   });
 });
+
+describe("conversation request validation and isolation", () => {
+  it("journals mounted conversation streams with the request URL", async () => {
+    const mock = new A2AMock().registerAgent({ name: "agent" });
+    mock.onConversation("agent", script());
+    const llm = new LLMock();
+    llm.mount("/nested/a2a", mock);
+    await llm.start();
+    stops.push(() => llm.stop());
+    await send(`${llm.url}/nested/a2a?testId=probe`, "start", {}, true);
+    expect(llm.getRequests().map((entry) => entry.path)).toEqual(["/nested/a2a?testId=probe"]);
+  });
+});

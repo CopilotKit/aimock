@@ -302,14 +302,7 @@ export class A2AMock implements Mountable {
         "A2A-Version": "1.0",
       });
       res.end(response.error ? JSON.stringify(response) : `data: ${JSON.stringify(response)}\n\n`);
-      this.journal?.add({
-        method: req.method ?? "POST",
-        path: "/",
-        headers: flattenHeaders(req.headers),
-        body: null,
-        service: "a2a",
-        response: { status: res.statusCode, fixture: null },
-      });
+      this.journalRequest(req, "/", res.statusCode);
       return;
     }
 
