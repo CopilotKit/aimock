@@ -410,7 +410,7 @@ describe("A2AMock", () => {
       expect(body.result.status.state).toBe("TASK_STATE_COMPLETED");
     });
 
-    it("returns the Task itself as result for GetTask and CancelTask (A2A spec shape)", async () => {
+    it("returns the Task itself as result (A2A spec shape)", async () => {
       a2a = new A2AMock();
       a2a.registerAgent({ name: "ta" });
       a2a.onTask("ta", "spec-shape", [{ name: "out", parts: [{ text: "done" }] }]);
@@ -432,25 +432,6 @@ describe("A2AMock", () => {
         contextId: created.contextId,
         status: { state: "TASK_STATE_COMPLETED" },
         artifacts: [{ name: "out", parts: [{ text: "done" }] }],
-        history: [{ role: "ROLE_USER", parts: [{ text: "spec-shape" }] }],
-      });
-
-      // CancelTask needs a non-terminal task
-      const tasksMap = (
-        a2a as unknown as { tasks: Map<string, { status: { state: string; timestamp: string } }> }
-      ).tasks;
-      tasksMap.get(created.id)!.status = {
-        state: "TASK_STATE_WORKING",
-        timestamp: new Date().toISOString(),
-      };
-
-      const cancelRes = await post(url, "/", jsonRpc("CancelTask", { id: created.id }, 3));
-      const cancelResult = JSON.parse(cancelRes.data).result;
-      expect(cancelResult).not.toHaveProperty("task");
-      expect(cancelResult).toMatchObject({
-        id: created.id,
-        contextId: created.contextId,
-        status: { state: "TASK_STATE_CANCELED" },
         history: [{ role: "ROLE_USER", parts: [{ text: "spec-shape" }] }],
       });
     });
@@ -561,6 +542,41 @@ describe("A2AMock", () => {
       const getRes = await post(url, "/", jsonRpc("GetTask", { id: taskId }, 3));
       const getBody = JSON.parse(getRes.data);
       expect(getBody.result.status.state).toBe("TASK_STATE_CANCELED");
+    });
+
+    it("returns the Task itself as result (A2A spec shape)", async () => {
+      a2a = new A2AMock();
+      a2a.registerAgent({ name: "ta" });
+      a2a.onTask("ta", "spec-shape", [{ name: "out", parts: [{ text: "done" }] }]);
+      const url = await a2a.start();
+
+      const createRes = await post(
+        url,
+        "/",
+        jsonRpc("SendMessage", { message: { parts: [{ text: "spec-shape" }] } }, 1),
+      );
+      const created = JSON.parse(createRes.data).result.task;
+
+      // CancelTask needs a non-terminal task
+      const tasksMap = (
+        a2a as unknown as { tasks: Map<string, { status: { state: string; timestamp: string } }> }
+      ).tasks;
+      tasksMap.get(created.id)!.status = {
+        state: "TASK_STATE_WORKING",
+        timestamp: new Date().toISOString(),
+      };
+
+      // CancelTask: result is the Task, not { task: Task }
+      const cancelRes = await post(url, "/", jsonRpc("CancelTask", { id: created.id }, 2));
+      const cancelResult = JSON.parse(cancelRes.data).result;
+      expect(cancelResult).not.toHaveProperty("task");
+      expect(cancelResult).toMatchObject({
+        id: created.id,
+        contextId: created.contextId,
+        status: { state: "TASK_STATE_CANCELED" },
+        artifacts: [{ name: "out", parts: [{ text: "done" }] }],
+        history: [{ role: "ROLE_USER", parts: [{ text: "spec-shape" }] }],
+      });
     });
   });
 

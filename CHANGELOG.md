@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- A2A GetTask and CancelTask return the task in `result`, as the spec and SDK expect (#595)
+- A2A GetTask/CancelTask return the task as `result` (was `result.task`), matching the spec and SDK (#595)
 
 ## [1.47.0] - 2026-10-26
 
