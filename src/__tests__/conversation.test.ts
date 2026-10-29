@@ -128,10 +128,15 @@ async function send(
   expect(last.result?.task, raw.data).toBeDefined();
   return last.result!.task!;
 }
+// GetTask and CancelTask return the task itself as the JSON-RPC result.
+function taskResult(wire: Wire): A2ATask {
+  const result: unknown = wire.result;
+  return result as A2ATask;
+}
 async function getTask(url: string, id: string): Promise<A2ATask> {
   const result = await rpc(url, "GetTask", { id });
   expect(result.error).toBeUndefined();
-  return result.result!.task!;
+  return taskResult(result);
 }
 async function list(url: string, params: Record<string, unknown> = {}): Promise<A2ATask[]> {
   const result = await rpc(url, "ListTasks", params);
@@ -356,7 +361,7 @@ describe("bounded conversation retries", () => {
       const first = await send(url, "start", { messageId: "first" });
       let terminal: A2ATask;
       if (state === "TASK_STATE_CANCELED") {
-        terminal = (await rpc(url, "CancelTask", { id: first.id })).result!.task!;
+        terminal = taskResult(await rpc(url, "CancelTask", { id: first.id }));
       } else {
         terminal = await send(url, "end", { taskId: first.id, messageId: "last" });
         expect(await send(url, "end", { taskId: first.id, messageId: "last" }, true)).toEqual(
@@ -1040,7 +1045,7 @@ describe("task-bound conversation fixtures", () => {
     const { url } = await fixture();
     const one = await send(url, "start", {}, true);
     const two = await send(url, "start");
-    const canceled = (await rpc(url, "CancelTask", { id: one.id })).result!.task!;
+    const canceled = taskResult(await rpc(url, "CancelTask", { id: one.id }));
     expect(canceled.status.state).toBe("TASK_STATE_CANCELED");
     expect(canceled.history).toEqual(one.history);
     expect(canceled.artifacts).toEqual(one.artifacts);
@@ -1269,8 +1274,8 @@ describe("task-bound conversation fixtures", () => {
     const batch = JSON.parse(raw.data) as Wire[];
     expect(batch).toHaveLength(1);
     expect(batch[0].id).toBe("read");
-    expect(batch[0].result!.task!.status.state).toBe(DONE);
-    expect(batch[0].result!.task!.history).toHaveLength(4);
+    expect(taskResult(batch[0]).status.state).toBe(DONE);
+    expect(taskResult(batch[0]).history).toHaveLength(4);
   });
 });
 
