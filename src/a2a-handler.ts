@@ -225,13 +225,13 @@ export function createA2AMethods(
       };
     },
 
-    // SendStreamingMessage is handled specially in A2AMock (SSE response),
-    // but we register a placeholder so the dispatcher doesn't return "method not found".
+    // Single SendStreamingMessage requests are served as SSE by A2AMock.handleStreamingMessage.
+    // Batched ones arrive here: conversations are handled in full, and other matches return
+    // a null result.
     SendStreamingMessage: async (
       params: unknown,
       id: string | number,
     ): Promise<JsonRpcResponse | null> => {
-      // Batched SendStreamingMessage calls use the dispatcher instead of the SSE transport.
       const text = extractText(params, true);
       const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
       if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);

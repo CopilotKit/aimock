@@ -82,17 +82,22 @@
           Conversations must be nonempty, with input-required intermediate turns and a completed or
           failed final turn. Invalid definitions throw without being registered. A send without
           <code>message.taskId</code> selects a first turn in the existing registration order.
+          <code>SendMessage</code> considers every fixture kind, so an earlier message or task
+          fixture that matches the same text is used instead.
+          <code>SendStreamingMessage</code> considers only streaming tasks and conversations.
           Subsequent sends include that task ID and must match its next turn. A supplied
-          <code>message.contextId</code> must agree with the task; an omitted context is inferred.
-          New sends without a task ID create independent tasks even in a shared context.
+          <code>message.contextId</code> must agree with the task. An omitted or empty context is
+          taken from the task on continuation, or generated for a new task. New sends without a task
+          ID create independent tasks even in a shared context.
         </p>
         <p>
-          Use either <code>SendMessage</code> or <code>SendStreamingMessage</code> on any turn.
-          Conversation streams end with the accumulated <code>result.task</code> snapshot. Each
-          accepted turn records the user message and agent reply in order, preserving user message
-          IDs and appending artifacts. Rejected sends leave task state unchanged.
-          <code>GetTask</code> and <code>ListTasks</code> expose current state;
-          <code>CancelTask</code> preserves accepted output but prevents continuation.
+          Continue with either <code>SendMessage</code> or <code>SendStreamingMessage</code>; the
+          task ID selects the conversation. A conversation stream sends one event that contains the
+          accumulated <code>result.task</code> snapshot. A rejected streaming send returns a plain
+          JSON-RPC error body, not an event stream. Each accepted turn records the user message and
+          agent reply in order, preserving user message IDs and appending artifacts. Rejected sends
+          leave task state unchanged. <code>GetTask</code> and <code>ListTasks</code> expose current
+          state; <code>CancelTask</code> preserves accepted output but prevents continuation.
           <code>reset()</code> removes all registrations and tasks.
         </p>
         <p>
@@ -117,8 +122,9 @@
         <p>
           New keyed acceptances evict the oldest retained ID when the limit is exceeded. Replays do
           not refresh retention order. Errors and sends with omitted or empty IDs do not consume
-          retention. An evicted ID is subject to normal continuation rules. Concurrent identical
-          retries accept just one turn, and reset clears retained responses.
+          retention. An evicted ID is subject to normal continuation rules. When retention is
+          enabled, concurrent identical keyed retries accept just one turn. Reset clears retained
+          responses.
         </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
