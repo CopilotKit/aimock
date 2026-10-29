@@ -19,7 +19,13 @@ import type {
 } from "./types.js";
 import { parseMisbehavior } from "./misbehavior.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
-import type { A2AAgentDefinition, A2APart, A2AArtifact, A2AStreamEvent } from "./a2a-types.js";
+import type {
+  A2AAgentDefinition,
+  A2APart,
+  A2AArtifact,
+  A2AStreamEvent,
+  A2AConversationTurn,
+} from "./a2a-types.js";
 import type { AGUIEvent } from "./agui-types.js";
 import { buildTextResponse } from "./agui-handler.js";
 import { VectorMock } from "./vector-mock.js";
@@ -64,6 +70,10 @@ export interface A2AConfigPattern {
 }
 
 export interface A2AConfigAgent extends A2AAgentDefinition {
+  conversations?: Array<{
+    turns: Array<Omit<A2AConversationTurn, "pattern"> & { pattern: string }>;
+    replayLimit?: number;
+  }>;
   messages?: A2AConfigPattern[];
   tasks?: A2AConfigPattern[];
   streamingTasks?: A2AConfigPattern[];
@@ -386,7 +396,7 @@ export async function startFromConfig(
 
     if (a2aConfig.agents) {
       for (const agentConfig of a2aConfig.agents) {
-        const { messages, tasks, streamingTasks, ...def } = agentConfig;
+        const { messages, tasks, streamingTasks, conversations, ...def } = agentConfig;
         a2a.registerAgent(def);
 
         if (messages) {
@@ -405,6 +415,11 @@ export async function startFromConfig(
           for (const s of streamingTasks) {
             a2a.onStreamingTask(def.name, s.pattern, s.events ?? [], s.delayMs);
           }
+        }
+        for (const conversation of conversations ?? []) {
+          a2a.onConversation(def.name, conversation.turns, {
+            replayLimit: conversation.replayLimit,
+          });
         }
       }
     }

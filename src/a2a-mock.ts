@@ -5,6 +5,8 @@ import type { MetricsRegistry } from "./metrics.js";
 import type {
   A2AAgentDefinition,
   A2AArtifact,
+  A2AConversationOptions,
+  A2AConversationTurn,
   A2AMockOptions,
   A2APart,
   A2AStreamEvent,
@@ -20,10 +22,12 @@ import {
 } from "./a2a-handler.js";
 import { createJsonRpcDispatcher } from "./jsonrpc.js";
 import { generateId, flattenHeaders, readBody } from "./helpers.js";
+import { ConversationStore, conversationPattern } from "./a2a-conversation.js";
 
 export class A2AMock implements Mountable {
   private agents: Map<string, { def: A2AAgentDefinition; patterns: PatternEntry[] }> = new Map();
   private tasks: Map<string, A2ATask> = new Map();
+  private conversations = new ConversationStore(this.tasks);
   private server: http.Server | null = null;
   private journal: Journal | null = null;
   private registry: MetricsRegistry | null = null;
@@ -37,7 +41,7 @@ export class A2AMock implements Mountable {
   }
 
   private buildDispatcher() {
-    const methods = createA2AMethods(this.agents, this.tasks);
+    const methods = createA2AMethods(this.agents, this.tasks, this.conversations);
     return createJsonRpcDispatcher({ methods });
   }
 
@@ -79,6 +83,17 @@ export class A2AMock implements Mountable {
       throw new Error(`Agent "${agentName}" not registered`);
     }
     agent.patterns.push({ kind: "streamingTask", pattern, agentName, events, delayMs });
+    return this;
+  }
+
+  onConversation(
+    agentName: string,
+    turns: A2AConversationTurn[],
+    options?: A2AConversationOptions,
+  ): this {
+    const agent = this.agents.get(agentName);
+    if (!agent) throw new Error(`Agent "${agentName}" not registered`);
+    agent.patterns.push(conversationPattern(agentName, turns, options));
     return this;
   }
 
@@ -250,6 +265,7 @@ export class A2AMock implements Mountable {
   reset(): this {
     this.agents.clear();
     this.tasks.clear();
+    this.conversations.clear();
     return this;
   }
 
@@ -268,8 +284,28 @@ export class A2AMock implements Mountable {
   ): Promise<void> {
     const params = parsed.params as Record<string, unknown> | undefined;
     const id = parsed.id as string | number;
-    const text = extractText(params);
-    const entry = findStreamingMatch(text, this.agents);
+    const text = extractText(params, true);
+    const message = params?.message as { taskId?: unknown } | undefined;
+    const owned = this.conversations.owns(message?.taskId);
+    const entry = owned ? null : findStreamingMatch(text, this.agents);
+
+    if (owned || entry?.kind === "conversation") {
+      const response = this.conversations.send(
+        params,
+        id,
+        text,
+        entry?.kind === "conversation" ? entry : undefined,
+      );
+      res.writeHead(200, {
+        "Content-Type": response.error ? "application/json" : "text/event-stream",
+        "Cache-Control": "no-cache",
+        "A2A-Version": "1.0",
+      });
+      res.end(response.error ? JSON.stringify(response) : `data: ${JSON.stringify(response)}\n\n`);
+      this.journalRequest(req, "/", res.statusCode);
+      return;
+    }
+    extractText(params); // Non-conversation fixtures keep the legacy throw on null parts.
 
     if (!entry) {
       res.writeHead(200, {
