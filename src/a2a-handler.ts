@@ -144,8 +144,8 @@ export function createA2AMethods(
   const methods: Record<string, MethodHandler> = {
     SendMessage: async (params: unknown, id: string | number): Promise<JsonRpcResponse> => {
       const text = extractText(params);
-      const message = (params as { message?: { taskId?: string } } | undefined)?.message;
-      if (message?.taskId !== undefined) return conversations.send(params, id, text);
+      const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
+      if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);
       const entry = findMatch(text);
 
       if (entry?.kind === "conversation") return conversations.send(params, id, text, entry);
@@ -230,10 +230,13 @@ export function createA2AMethods(
     ): Promise<JsonRpcResponse | null> => {
       // Batches and notifications use the dispatcher instead of the SSE transport.
       const text = extractText(params);
-      const message = (params as { message?: { taskId?: string } } | undefined)?.message;
-      if (message?.taskId !== undefined) return conversations.send(params, id, text);
-      const entry = findStreamingMatch(text, agents);
-      if (entry?.kind === "conversation") return conversations.send(params, id, text, entry);
+      const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
+      if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);
+      const streaming = findStreamingMatch(text, agents);
+      if (streaming?.kind === "conversation") {
+        return conversations.send(params, id, text, streaming);
+      }
+      const entry = findMatch(text);
       if (!entry) {
         return {
           jsonrpc: "2.0",

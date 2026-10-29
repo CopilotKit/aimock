@@ -1277,3 +1277,56 @@ it("compares every JSON data field before replay and preserves state on conflict
   const final = await send(url, "step", { taskId: first.id, messageId: "new" });
   expect(final.history).toHaveLength(4);
 });
+
+describe("legacy behavior when conversations do not own the task", () => {
+  async function legacyMock(withConversation = false) {
+    const mock = new A2AMock().registerAgent({ name: "agent" });
+    mock.onMessage("agent", "ping", [{ text: "pong" }]);
+    mock.onTask("agent", "hello", [{ parts: [{ text: "hello artifact" }] }]);
+    mock.onStreamingTask("agent", "stream", [
+      { type: "artifact", parts: [{ text: "streamed" }] },
+      { type: "status", state: DONE },
+    ]);
+    if (withConversation) register(mock, [turn("start", INPUT), turn("end", DONE)]);
+    const url = await mock.start();
+    stops.push(() => mock.stop());
+    return url;
+  }
+
+  it.each([false, true])(
+    "serves legacy fixtures for task IDs a conversation did not create (conversation=%s)",
+    async (withConversation) => {
+      const url = await legacyMock(withConversation);
+      const legacy = (await rpc(url, "SendMessage", { message: message("hello") })).result!.task!;
+      const again = await rpc(url, "SendMessage", {
+        message: message("hello", { taskId: legacy.id }),
+      });
+      expect(again.error).toBeUndefined();
+      expect(again.result!.task!.artifacts).toEqual([{ parts: [{ text: "hello artifact" }] }]);
+      for (const taskId of ["client-task", null]) {
+        const pong = await rpc(url, "SendMessage", { message: message("ping", { taskId }) });
+        expect(pong.error).toBeUndefined();
+        expect(pong.result!.message!.parts).toEqual([{ text: "pong" }]);
+      }
+      const raw = await post(url, {
+        jsonrpc: "2.0",
+        id: "stream",
+        method: "SendStreamingMessage",
+        params: { message: message("stream", { taskId: legacy.id }) },
+      });
+      expect(raw.type).toMatch(/^text\/event-stream/);
+      expect(envelopes(raw).at(-1)!.result!.task!.status.state).toBe(DONE);
+      for (const text of ["ping", "stream"]) {
+        const batch = await post(url, [
+          {
+            jsonrpc: "2.0",
+            id: "batch",
+            method: "SendStreamingMessage",
+            params: { message: message(text, { taskId: legacy.id }) },
+          },
+        ]);
+        expect(JSON.parse(batch.data)).toEqual([{ jsonrpc: "2.0", id: "batch", result: null }]);
+      }
+    },
+  );
+});

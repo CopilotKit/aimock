@@ -100,11 +100,19 @@ interface Progress {
 
 export class ConversationStore {
   private progress = new Map<string, Progress>();
+  // Tasks created by a conversation. Only these are continued by task ID;
+  // every other task ID keeps the legacy fixture behavior.
+  private owned = new Set<string>();
 
   constructor(private tasks: Map<string, A2ATask>) {}
 
   clear(): void {
     this.progress.clear();
+    this.owned.clear();
+  }
+
+  owns(taskId: unknown): boolean {
+    return typeof taskId === "string" && this.owned.has(taskId);
   }
 
   send(
@@ -173,6 +181,7 @@ export class ConversationStore {
       artifacts: [...(task?.artifacts ?? []), ...structuredClone(turn.response.artifacts ?? [])],
     };
     this.tasks.set(nextTask.id, nextTask);
+    this.owned.add(nextTask.id);
     // Only successful keyed sends consume retention. Replaying never changes insertion order.
     if (
       cursor.replayLimit > 0 &&

@@ -285,10 +285,11 @@ export class A2AMock implements Mountable {
     const params = parsed.params as Record<string, unknown> | undefined;
     const id = parsed.id as string | number;
     const text = extractText(params);
-    const message = params?.message as { taskId?: string } | undefined;
-    const entry = message?.taskId !== undefined ? null : findStreamingMatch(text, this.agents);
+    const message = params?.message as { taskId?: unknown } | undefined;
+    const owned = this.conversations.owns(message?.taskId);
+    const entry = owned ? null : findStreamingMatch(text, this.agents);
 
-    if (message?.taskId !== undefined || entry?.kind === "conversation") {
+    if (owned || entry?.kind === "conversation") {
       const response = this.conversations.send(
         params,
         id,
