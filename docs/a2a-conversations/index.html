@@ -88,9 +88,10 @@
           task fixture that matches the same text is used instead.
           <code>SendStreamingMessage</code> considers only streaming tasks and conversations.
           Subsequent sends include that task ID and must match its next turn. A supplied
-          <code>message.contextId</code> must agree with the task. An omitted or empty context is
-          taken from the task on continuation, or generated for a new task. New sends without a task
-          ID create independent tasks even in a shared context.
+          <code>message.contextId</code> must agree with the task. An omitted, null, or empty
+          context is taken from the task on continuation, or generated for a new task. New sends
+          without a task ID create independent tasks even in a shared context. A null or empty task
+          ID or message ID counts as omitted, and an omitted message ID is generated.
         </p>
         <p>
           Continue with either <code>SendMessage</code> or <code>SendStreamingMessage</code>; the
@@ -123,9 +124,9 @@
         </p>
         <p>
           New keyed acceptances evict the oldest retained ID when the limit is exceeded. Replays do
-          not refresh retention order. Errors and sends with omitted or empty IDs do not consume
-          retention. An evicted ID is subject to normal continuation rules. When retention is
-          enabled, concurrent identical keyed retries accept just one turn. Reset clears retained
+          not refresh retention order. Errors and sends with omitted, null, or empty IDs do not
+          consume retention. An evicted ID is subject to normal continuation rules. When retention
+          is enabled, concurrent identical keyed retries accept just one turn. Reset clears retained
           responses.
         </p>
       </main>

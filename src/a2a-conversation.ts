@@ -62,6 +62,10 @@ function validArtifacts(value: unknown): boolean {
   );
 }
 
+function optionalId(value: unknown): unknown {
+  return value === null || value === "" ? undefined : value;
+}
+
 export function conversationPattern(
   agentName: string,
   turns: A2AConversationTurn[],
@@ -138,28 +142,30 @@ export class ConversationStore {
     if (!validParts(message.parts, MESSAGE_CONTENT)) {
       return fail(-32602, "Invalid message parts");
     }
-    if (message.messageId !== undefined && typeof message.messageId !== "string") {
+    // JSON null and "" count as absent for these IDs, as an empty context does for ListTasks.
+    const messageId = optionalId(message.messageId);
+    if (messageId !== undefined && typeof messageId !== "string") {
       return fail(-32602, "Invalid message ID");
     }
-    // An empty context ID counts as absent, as it does for ListTasks.
-    const contextId = message.contextId === "" ? undefined : message.contextId;
+    const contextId = optionalId(message.contextId);
     if (contextId !== undefined && typeof contextId !== "string") {
       return fail(-32602, "Invalid context ID");
     }
-    if (message.taskId !== undefined && typeof message.taskId !== "string") {
+    const taskId = optionalId(message.taskId);
+    if (taskId !== undefined && typeof taskId !== "string") {
       return fail(-32602, "Invalid task ID");
     }
 
     let task: A2ATask | undefined;
     let cursor: Progress;
-    if (message.taskId !== undefined) {
-      task = this.tasks.get(message.taskId);
+    if (taskId !== undefined) {
+      task = this.tasks.get(taskId);
       if (!task) return fail(-32001, "Task not found");
       const existing = this.progress.get(task.id);
       if (contextId !== undefined && contextId !== task.contextId) {
         return fail(-32602, "Context does not belong to task");
       }
-      const accepted = existing?.accepted.get(message.messageId);
+      const accepted = messageId === undefined ? undefined : existing?.accepted.get(messageId);
       if (accepted) {
         if (!isDeepStrictEqual(message.parts, accepted.parts)) {
           return fail(-32602, "Message ID was already accepted with different parts");
@@ -181,7 +187,7 @@ export class ConversationStore {
     }
     const user: A2AMessage = {
       ...structuredClone(message),
-      messageId: message.messageId ?? generateId("msg"),
+      messageId: messageId ?? generateId("msg"),
       role: "ROLE_USER",
     };
     const reply: A2AMessage = {
@@ -199,12 +205,8 @@ export class ConversationStore {
     this.tasks.set(nextTask.id, nextTask);
     this.owned.add(nextTask.id);
     // Only successful keyed sends consume retention. Replaying never changes insertion order.
-    if (
-      cursor.replayLimit > 0 &&
-      typeof message.messageId === "string" &&
-      message.messageId !== ""
-    ) {
-      cursor.accepted.set(message.messageId, {
+    if (cursor.replayLimit > 0 && messageId !== undefined) {
+      cursor.accepted.set(messageId, {
         parts: structuredClone(message.parts),
         task: structuredClone(nextTask),
       });

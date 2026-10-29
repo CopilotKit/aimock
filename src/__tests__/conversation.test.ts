@@ -803,7 +803,7 @@ describe("task-bound conversation fixtures", () => {
     async (stream) => {
       const { url } = await fixture();
       const live = await send(url, "start", { contextId: "shared" }, stream);
-      for (const taskId of ["unknown", ""]) {
+      for (const taskId of ["unknown"]) {
         await rejected(url, -32001, "start", { taskId, contextId: "shared" }, stream);
         expect(await list(url)).toEqual([live]);
         expect(await getTask(url, live.id)).toEqual(live);
@@ -910,11 +910,8 @@ describe("task-bound conversation fixtures", () => {
         ["ROLE_AGENT", [{ text }]],
       ]),
     ]);
-    expect(task.history.filter((m) => m.role === "ROLE_USER").map((m) => m.messageId)).toEqual([
-      "",
-      "same-id",
-      "same-id",
-    ]);
+    const userIds = task.history.filter((m) => m.role === "ROLE_USER").map((m) => m.messageId);
+    expect(userIds).toEqual([expect.stringMatching(/^msg-/), "same-id", "same-id"]);
     expect(
       task.history
         .filter((m) => m.role === "ROLE_AGENT")
@@ -1404,12 +1401,9 @@ describe("conversation request validation and isolation", () => {
     async (stream) => {
       const { url } = await fixture();
       for (const extra of [
-        { taskId: null },
         { taskId: 123 },
-        { contextId: null },
         { contextId: 7 },
         { messageId: 5 },
-        { messageId: null },
         { parts: [null, { text: "start" }] },
         { parts: [42, { text: "start" }] },
       ]) {
@@ -1520,6 +1514,59 @@ describe("conversation part validation", () => {
       ];
       const task = await send(url, "start", { parts }, stream);
       expect(task.history[0].parts).toEqual(parts);
+    },
+  );
+});
+
+describe("absent conversation IDs", () => {
+  it.each(
+    [
+      { taskId: null },
+      { taskId: "" },
+      { contextId: null },
+      { messageId: null },
+      { messageId: "" },
+    ].flatMap((extra) => [false, true].map((stream) => ({ extra, stream }))),
+  )("treats $extra as absent (stream=$stream)", async ({ extra, stream }) => {
+    const { url } = await fixture();
+    const first = await send(url, "start", extra, stream);
+    expect(first.status.state).toBe(INPUT);
+    expect(first.history).toHaveLength(2);
+    expect(first.contextId).toMatch(/^ctx-/);
+    expect(first.history[0].messageId).toMatch("messageId" in extra ? /^msg-/ : /^user:start$/);
+    const next = await send(url, "answer", { ...extra, taskId: first.id }, stream);
+    expect(next.id).toBe(first.id);
+    expect(next.history).toHaveLength(4);
+    expect(await list(url)).toEqual([next]);
+  });
+
+  it("does not retain replies for an absent message ID", async () => {
+    const { url } = await fixture(script(), false, { replayLimit: 2 });
+    const first = await send(url, "start", { messageId: null });
+    await send(url, "answer", { taskId: first.id, messageId: null });
+    const third = await send(url, "finish", { taskId: first.id, messageId: "" });
+    expect(third.status.state).toBe(DONE);
+    expect(third.history).toHaveLength(6);
+  });
+
+  it.each([false, true])(
+    "keeps legacy responses for empty task IDs that match no conversation (stream=%s)",
+    async (stream) => {
+      const mock = new A2AMock().registerAgent({ name: "agent" });
+      mock.onMessage("agent", "ping", [{ text: "pong" }]);
+      register(mock);
+      const url = await mock.start();
+      stops.push(() => mock.stop());
+      const method = stream ? "SendStreamingMessage" : "SendMessage";
+      const pong = await rpc(url, method, { message: message("ping", { taskId: "" }) });
+      if (stream) {
+        expect(pong.error).toEqual({ code: -32000, message: "No matching pattern for message" });
+      } else {
+        expect(pong.result!.message!.parts).toEqual([{ text: "pong" }]);
+      }
+      const none = await rpc(url, method, { message: message("zzz", { taskId: "" }) });
+      expect(none.error).toEqual({ code: -32000, message: "No matching pattern for message" });
+      expect(await list(url)).toEqual([]);
     },
   );
 });
