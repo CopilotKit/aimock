@@ -155,6 +155,7 @@ export interface A2ATask {
     // (undocumented)
     status: {
         state: A2ATaskState;
+        message?: A2AMessage;
         timestamp: string;
     };
 }

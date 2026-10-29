@@ -48,7 +48,7 @@ export type A2AStreamEvent =
 export interface A2ATask {
   id: string;
   contextId: string;
-  status: { state: A2ATaskState; timestamp: string };
+  status: { state: A2ATaskState; message?: A2AMessage; timestamp: string };
   artifacts: A2AArtifact[];
   history: A2AMessage[];
 }

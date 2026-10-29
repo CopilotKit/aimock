@@ -202,10 +202,15 @@ export class ConversationStore {
       parts: structuredClone(turn.response.parts ?? []),
       ...ids,
     };
+    const state = turn.response.state;
     const nextTask: A2ATask = {
       id: ids.taskId,
       contextId: ids.contextId,
-      status: { state: turn.response.state, timestamp: new Date().toISOString() },
+      // A task that waits for input carries the agent's question in its status, per A2A.
+      status:
+        state === "TASK_STATE_INPUT_REQUIRED"
+          ? { state, message: structuredClone(reply), timestamp: new Date().toISOString() }
+          : { state, timestamp: new Date().toISOString() },
       history: [...(task?.history ?? []), user, reply],
       artifacts: [...(task?.artifacts ?? []), ...structuredClone(turn.response.artifacts ?? [])],
     };
@@ -221,7 +226,7 @@ export class ConversationStore {
         cursor.accepted.delete(cursor.accepted.keys().next().value!);
       }
     }
-    if (turn.response.state === "TASK_STATE_INPUT_REQUIRED" || cursor.replayLimit > 0) {
+    if (state === "TASK_STATE_INPUT_REQUIRED" || cursor.replayLimit > 0) {
       // Terminal/canceled tasks still expose retained historical responses.
       this.progress.set(nextTask.id, { ...cursor, next: cursor.next + 1 });
     } else {

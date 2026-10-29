@@ -1595,3 +1595,27 @@ describe("conversation message IDs", () => {
     },
   );
 });
+
+describe("conversation input-required status", () => {
+  it.each([false, true])(
+    "puts the agent question in the status while input is required (stream=%s)",
+    async (stream) => {
+      const { url } = await fixture();
+      const first = await send(url, "start", {}, stream);
+      expect(first.status.state).toBe(INPUT);
+      expect(first.status.message).toEqual(first.history[1]);
+      expect(first.status.message).toMatchObject({
+        role: "ROLE_AGENT",
+        parts: [{ text: "question" }],
+        taskId: first.id,
+        contextId: first.contextId,
+      });
+      expect((await getTask(url, first.id)).status.message).toEqual(first.history[1]);
+      const next = await send(url, "answer", { taskId: first.id }, stream);
+      expect(next.status.message).toEqual(next.history[3]);
+      const done = await send(url, "finish", { taskId: first.id }, stream);
+      expect(done.status.state).toBe(DONE);
+      expect(done.status).not.toHaveProperty("message");
+    },
+  );
+});
