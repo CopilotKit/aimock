@@ -263,6 +263,20 @@ export class CitationRecording {
     for (const [index, block] of this.customs)
       entries.push({ position: [index, -1], block: { ...block } });
     entries.sort((a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1]);
+    // A Responses message item can hold several output_text parts; later parts
+    // of one item are marked so replay rebuilds a single multi-part message.
+    if (this.provider === "responses") {
+      entries.forEach((entry, i) => {
+        const previous = entries[i - 1];
+        if (
+          entry.block.type === "text" &&
+          previous?.block.type === "text" &&
+          previous.position[0] === entry.position[0]
+        ) {
+          entry.block.continuesMessage = true;
+        }
+      });
+    }
     const blocks = entries.map((entry) => entry.block);
     const content = blocks
       .filter((block): block is TextBlock => block.type === "text")

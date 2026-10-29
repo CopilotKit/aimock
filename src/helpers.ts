@@ -1569,6 +1569,7 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
         text: b.text,
         ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
         ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
+        ...(b.continuesMessage === true ? { continuesMessage: true } : {}),
       };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
@@ -1653,6 +1654,7 @@ export function resolveResponsesBlocks(
         text: b.text,
         ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
         ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
+        ...(b.continuesMessage === true ? { continuesMessage: true } : {}),
       };
     }
     if (b.type === "toolCall") {

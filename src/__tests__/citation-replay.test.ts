@@ -1136,6 +1136,51 @@ describe("native citations with current Responses tool modes", () => {
 });
 
 describe("recording shape regressions", () => {
+  // A message item with two output_text parts must replay as that one item.
+  const parts = [
+    { type: "output_text", text: "Fact one. ", annotations: [urlCitation] },
+    {
+      type: "output_text",
+      text: "Fact two.",
+      annotations: [{ ...urlCitation, url: "https://example.test/second" }],
+    },
+  ];
+  const multiPart = {
+    output: [{ type: "message", role: "assistant", content: parts }],
+    usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+  };
+  for (const captureStream of [false, true])
+    for (const replayStream of [false, true])
+      it(`Responses replays a cited multi-part message as one item (${captureStream ? "SSE" : "JSON"} capture, ${replayStream ? "SSE" : "JSON"} replay)`, async () => {
+        const server = await recorded(
+          "responses",
+          captureStream
+            ? [{ type: "response.completed", response: structuredClone(multiPart) }]
+            : structuredClone(multiPart),
+          captureStream,
+        );
+        const { body } = await request(server, "responses", replayStream);
+        const messages = body.output.filter((item: Json) => item.type === "message");
+        expect(messages).toHaveLength(1);
+        expect(
+          messages[0].content.map(({ type, text, annotations }: Json) => ({
+            type,
+            text,
+            annotations,
+          })),
+        ).toEqual(parts);
+      });
+
+  it("Responses JSON replay keeps separately recorded text blocks as separate messages", async () => {
+    const server = await mock({
+      content: "One. Two.",
+      toolCalls: [],
+      blocks: [text("responses", "One. "), text("responses", "Two.")],
+    });
+    const { body } = await request(server, "responses", false);
+    expect(body.output.map((item: Json) => item.content.length)).toEqual([1, 1]);
+  });
+
   it("an uncited interleaved extended Responses stream records the pre-citation fixture shape", async () => {
     const message = (output_index: number, value: string): Json[] => [
       {

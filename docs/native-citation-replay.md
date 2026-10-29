@@ -27,6 +27,6 @@ Use text blocks with `annotations` for OpenAI Responses or `citations` for Anthr
 }
 ```
 
-This complements the existing portable response-level `citations` option. Native metadata on a text block takes precedence for that provider; the other provider's native field is ignored. Empty cited text blocks are allowed. Responses emits indexed annotation events, and Messages emits citation deltas, with the same metadata in completed JSON responses.
+This complements the existing portable response-level `citations` option. Native metadata on a text block takes precedence for that provider; the other provider's native field is ignored. Empty cited text blocks are allowed. Responses emits indexed annotation events, and Messages emits citation deltas, with the same metadata in completed JSON responses. A Responses text block with `"continuesMessage": true` is served as the next `output_text` part of the message item opened by the preceding text block; the recorder sets it when an upstream message has several text parts.
 
 Recording JSON or SSE captures the metadata with its owning text block, including indexed annotation events and completed snapshots. Uncited recordings retain their existing representation. Reasoning and usage remain available, and Responses namespaces/custom calls still require `responsesTools: "extended"`.

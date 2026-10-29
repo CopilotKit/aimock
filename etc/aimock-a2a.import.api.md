@@ -355,6 +355,7 @@ type FixtureBlock = {
     text: string;
     annotations?: Record<string, unknown>[];
     citations?: Record<string, unknown>[];
+    continuesMessage?: boolean;
 } | {
     type: "toolCall";
     name: string;
