@@ -39,10 +39,6 @@ export function hasNativeCitations(block: ResponsesFixtureBlock): boolean {
 export class CitationRecording {
   private readonly texts = new Map<string, TextState>();
   private recordedUsage?: ResponseOverrides["usage"];
-  /** Anthropic: the index an index-less event belongs to (the last block opened). */
-  private lastIndex?: number;
-  /** Anthropic: keys for index-less blocks, above any real index (as the collapser keys them). */
-  private nextSyntheticIndex = 1_000_000;
 
   constructor(private readonly provider: "responses" | "anthropic") {}
 
@@ -141,19 +137,22 @@ export class CitationRecording {
     }
   }
 
+  /**
+   * Anthropic events arrive keyed: collapseAnthropicSSE gives an index-less
+   * block its own key (the same key its tool calls use) before passing the
+   * event on, so an event without a numeric `index` is ignored here.
+   */
   private anthropicEvent(event: ObjectValue): void {
-    let index = typeof event.index === "number" ? event.index : undefined;
+    if (typeof event.index !== "number") return;
+    const index = event.index;
     if (event.type === "content_block_start") {
-      index ??= this.nextSyntheticIndex++;
-      this.lastIndex = index;
       const block = object(event.content_block);
       if (block?.type === "text") this.snapshotText(index, 0, block);
       return;
     }
     if (event.type !== "content_block_delta") return;
-    index ??= this.lastIndex;
     const delta = object(event.delta);
-    if (index === undefined || !delta) return;
+    if (!delta) return;
     if (delta.type === "text_delta" && typeof delta.text === "string") {
       this.text(index, 0).text += delta.text;
     } else if (delta.type === "citations_delta") {

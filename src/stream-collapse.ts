@@ -1138,6 +1138,9 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   // below it.
   let nextSyntheticIndex = 1_000_000;
   let lastSyntheticIndex: number | undefined;
+  // The block an index-less delta belongs to for the citation recording: the
+  // last block of ANY type that opened (the citation recording owns text).
+  let lastBlockIndex: number | undefined;
   // Cross-channel order atoms (#274), in stream arrival order.
   const orderAtoms: OrderAtom[] = [];
 
@@ -1171,7 +1174,24 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       previous: usage,
       observation: parsed,
     });
-    citations.captureEvent({ ...parsed, type: eventType || parsed.type });
+    // Every content block start is keyed here, from one counter: its streamed
+    // `index`, or a fresh synthetic key when the stream omits it. The citation
+    // recording gets the same key, so cited text and tool calls share one key
+    // space and keep stream order. An index-less delta belongs to the last
+    // block opened.
+    const citationEventType = eventType || parsed.type;
+    let blockIndex = typeof parsed.index === "number" ? parsed.index : undefined;
+    if (citationEventType === "content_block_start") {
+      blockIndex ??= nextSyntheticIndex++;
+      lastBlockIndex = blockIndex;
+    } else if (citationEventType === "content_block_delta") {
+      blockIndex ??= lastBlockIndex;
+    }
+    citations.captureEvent({
+      ...parsed,
+      type: citationEventType,
+      ...(blockIndex !== undefined ? { index: blockIndex } : {}),
+    });
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
@@ -1184,14 +1204,9 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         redactedThinking.push(redactedData);
       }
       if (contentBlock?.type === "tool_use") {
-        // Prefer the streamed `index`; when absent, mint a fresh synthetic key
-        // so distinct index-less tool_use blocks never merge.
-        let index: number;
-        if (typeof parsed.index === "number") {
-          index = parsed.index;
-        } else {
-          index = nextSyntheticIndex++;
-        }
+        // The streamed `index`, or the synthetic key minted above, so distinct
+        // index-less tool_use blocks never merge.
+        const index = blockIndex ?? nextSyntheticIndex++;
         lastSyntheticIndex = index;
         const created = {
           id: (contentBlock.id as string) ?? "",
