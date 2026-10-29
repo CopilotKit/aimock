@@ -137,7 +137,9 @@ export class ConversationStore {
     if (message.messageId !== undefined && typeof message.messageId !== "string") {
       return fail(-32602, "Invalid message ID");
     }
-    if (message.contextId !== undefined && typeof message.contextId !== "string") {
+    // An empty context ID counts as absent, as it does for ListTasks.
+    const contextId = message.contextId === "" ? undefined : message.contextId;
+    if (contextId !== undefined && typeof contextId !== "string") {
       return fail(-32602, "Invalid context ID");
     }
     if (message.taskId !== undefined && typeof message.taskId !== "string") {
@@ -150,7 +152,7 @@ export class ConversationStore {
       task = this.tasks.get(message.taskId);
       if (!task) return fail(-32001, "Task not found");
       const existing = this.progress.get(task.id);
-      if (message.contextId !== undefined && message.contextId !== task.contextId) {
+      if (contextId !== undefined && contextId !== task.contextId) {
         return fail(-32602, "Context does not belong to task");
       }
       const accepted = existing?.accepted.get(message.messageId);
@@ -185,7 +187,7 @@ export class ConversationStore {
     };
     const nextTask: A2ATask = {
       id: task?.id ?? generateId("task"),
-      contextId: task?.contextId ?? message.contextId ?? generateId("ctx"),
+      contextId: task?.contextId ?? contextId ?? generateId("ctx"),
       status: { state: turn.response.state, timestamp: new Date().toISOString() },
       history: [...(task?.history ?? []), user, reply],
       artifacts: [...(task?.artifacts ?? []), ...structuredClone(turn.response.artifacts ?? [])],

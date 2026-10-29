@@ -719,26 +719,45 @@ describe("task-bound conversation fixtures", () => {
     expect((await list(url)).map((t) => t.id).sort()).toEqual([first.id, second.id].sort());
   });
 
-  it.each(["shared", ""])(
-    "keeps concurrent tasks independent with shared context %j",
-    async (contextId) => {
+  it("keeps concurrent tasks independent with a shared context", async () => {
+    const contextId = "shared";
+    const { url } = await fixture();
+    const [first, second, other] = await Promise.all([
+      send(url, "start one", { contextId }),
+      send(url, "start two", { contextId }),
+      send(url, "start other", { contextId: "other" }),
+    ]);
+    expect(first.contextId).toBe(contextId);
+    expect(second.contextId).toBe(contextId);
+    expect(first.id).not.toBe(second.id);
+    const next = await send(url, "answer", { taskId: first.id });
+    expect(next.contextId).toBe(contextId);
+    expect(next.history).toHaveLength(4);
+    expect(await getTask(url, second.id)).toEqual(second);
+    const secondNext = await send(url, "answer", { taskId: second.id });
+    expect(secondNext.history).toHaveLength(4);
+    const listed = (await list(url, { contextId })).map((t) => t.id);
+    expect(listed.sort()).toEqual([first.id, second.id].sort());
+    expect(listed).not.toContain(other.id);
+  });
+
+  it.each([false, true])(
+    "treats an empty context ID as absent, as ListTasks does (stream=%s)",
+    async (stream) => {
       const { url } = await fixture();
-      const [first, second] = await Promise.all([
-        send(url, "start one", { contextId }),
-        send(url, "start two", { contextId }),
-      ]);
-      expect(first.contextId).toBe(contextId);
-      expect(second.contextId).toBe(contextId);
-      expect(first.id).not.toBe(second.id);
-      const next = await send(url, "answer", { taskId: first.id });
-      expect(next.contextId).toBe(contextId);
-      expect(next.history).toHaveLength(4);
-      expect(await getTask(url, second.id)).toEqual(second);
-      const secondNext = await send(url, "answer", { taskId: second.id });
-      expect(secondNext.history).toHaveLength(4);
-      expect((await list(url, { contextId })).map((t) => t.id).sort()).toEqual(
+      const first = await send(url, "start one", { contextId: "" }, stream);
+      const second = await send(url, "start two", { contextId: "" }, stream);
+      expect(first.contextId).toMatch(/^ctx-/);
+      expect(second.contextId).toMatch(/^ctx-/);
+      expect(first.contextId).not.toBe(second.contextId);
+      const next = await send(url, "answer", { taskId: first.id, contextId: "" }, stream);
+      expect(next.contextId).toBe(first.contextId);
+      expect((await list(url, { contextId: "" })).map((t) => t.id).sort()).toEqual(
         [first.id, second.id].sort(),
       );
+      expect((await list(url, { contextId: first.contextId })).map((t) => t.id)).toEqual([
+        first.id,
+      ]);
     },
   );
 
