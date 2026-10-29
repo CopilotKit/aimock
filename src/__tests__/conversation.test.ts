@@ -1440,3 +1440,27 @@ describe("conversation request validation and isolation", () => {
     expect(nullPart.error!.code).toBe(-32603);
   });
 });
+
+describe("conversation turn copies", () => {
+  it("validates the stored copy, so accessors cannot pass validation and store other values", async () => {
+    let stateReads = 0;
+    const stateResponse = { parts: [{ text: "state" }] } as A2AConversationTurn["response"];
+    Object.defineProperty(stateResponse, "state", {
+      enumerable: true,
+      get: () => (stateReads++ === 0 ? DONE : "TASK_STATE_WORKING"),
+    });
+    let partReads = 0;
+    const partResponse = { state: DONE } as A2AConversationTurn["response"];
+    Object.defineProperty(partResponse, "parts", {
+      enumerable: true,
+      get: () => (partReads++ < 2 ? [{ text: "parts" }] : [{ text: 17 }]),
+    });
+    const mock = new A2AMock().registerAgent({ name: "agent" });
+    mock.onConversation("agent", [{ pattern: "state", response: stateResponse }]);
+    mock.onConversation("agent", [{ pattern: "parts", response: partResponse }]);
+    const url = await mock.start();
+    stops.push(() => mock.stop());
+    expect((await send(url, "state")).status.state).toBe(DONE);
+    expect((await send(url, "parts")).history[1].parts).toEqual([{ text: "parts" }]);
+  });
+});

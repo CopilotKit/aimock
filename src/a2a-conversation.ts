@@ -68,11 +68,14 @@ export function conversationPattern(
   if (!Number.isSafeInteger(replayLimit) || replayLimit < 0) {
     throw new Error("A conversation replay limit must be a nonnegative safe integer");
   }
-  if (!Array.isArray(turns) || turns.length === 0) {
+  // Validate a private copy, so accessors on the caller's objects and later changes to
+  // them cannot bypass validation.
+  const copy = structuredClone(turns);
+  if (!Array.isArray(copy) || copy.length === 0) {
     throw new Error("A conversation needs at least one turn");
   }
-  for (let index = 0; index < turns.length; index++) {
-    const turn = turns[index];
+  for (let index = 0; index < copy.length; index++) {
+    const turn = copy[index];
     if (
       !turn ||
       (typeof turn.pattern !== "string" && !(turn.pattern instanceof RegExp)) ||
@@ -84,13 +87,11 @@ export function conversationPattern(
     }
     const state = turn.response.state;
     const valid =
-      index < turns.length - 1
+      index < copy.length - 1
         ? state === "TASK_STATE_INPUT_REQUIRED"
         : state === "TASK_STATE_COMPLETED" || state === "TASK_STATE_FAILED";
     if (!valid) throw new Error(`Invalid conversation state at index ${index}`);
   }
-  // Keep a private copy so later changes to the caller's turns cannot bypass validation.
-  const copy = structuredClone(turns);
   return { kind: "conversation", agentName, pattern: copy[0].pattern, turns: copy, replayLimit };
 }
 
