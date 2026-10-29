@@ -371,6 +371,8 @@ export type {
   A2AAgentDefinition,
   A2APart,
   A2AArtifact,
+  A2AConversationTurn,
+  A2AConversationOptions,
   A2ATaskResponse,
   A2AStreamEvent,
   A2ATask,
