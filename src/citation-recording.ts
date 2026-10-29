@@ -38,6 +38,12 @@ export function hasNativeCitations(block: ResponsesFixtureBlock): boolean {
  */
 export class CitationRecording {
   private readonly texts = new Map<string, TextState>();
+  /**
+   * Output indexes (Responses) or block indexes (Anthropic) known to hold
+   * something other than text: a tool call, reasoning, a server tool. Citation
+   * events addressed to one of them are not text, so they make no text block.
+   */
+  private readonly nonText = new Set<number>();
   private recordedUsage?: ResponseOverrides["usage"];
 
   constructor(private readonly provider: "responses" | "anthropic") {}
@@ -71,7 +77,9 @@ export class CitationRecording {
   }
 
   private responseItem(index: number, item: ObjectValue): void {
-    if (item.type === "message" && Array.isArray(item.content)) {
+    if (typeof item.type === "string" && item.type !== "message") {
+      this.nonText.add(index);
+    } else if (item.type === "message" && Array.isArray(item.content)) {
       item.content.forEach((raw, contentIndex) => {
         const part = object(raw);
         if (part?.type === "output_text") this.snapshotText(index, contentIndex, part);
@@ -148,6 +156,7 @@ export class CitationRecording {
     if (event.type === "content_block_start") {
       const block = object(event.content_block);
       if (block?.type === "text") this.snapshotText(index, 0, block);
+      else if (typeof block?.type === "string") this.nonText.add(index);
       return;
     }
     if (event.type !== "content_block_delta") return;
@@ -169,7 +178,8 @@ export class CitationRecording {
    * `undefined` when no text block carries citations. `tools` returns the
    * caller's own finalized tool-call blocks, keyed by the same index, so each
    * tool block is exactly the call the uncited recording holds. Empty text
-   * without citations is left out, as the uncited recording leaves it out.
+   * without citations is left out, as the uncited recording leaves it out,
+   * and so is text metadata addressed to a non-text index.
    */
   ordered(
     tools: () => ReadonlyMap<number, ResponsesFixtureBlock>,
@@ -177,6 +187,7 @@ export class CitationRecording {
     const key = this.provider === "responses" ? "annotations" : "citations";
     const entries: { position: [number, number]; block: ResponsesFixtureBlock }[] = [];
     for (const state of this.texts.values()) {
+      if (this.nonText.has(state.position[0])) continue;
       const block: TextBlock = { type: "text", text: state.text };
       if (state.metadata.size > 0) {
         block[key] = [...state.metadata.entries()]
