@@ -15,6 +15,8 @@ import {
 import { Logger } from "../logger.js";
 import type { FixtureFileEntry, FixtureResponse } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
+import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Inspect open-ended provider event unions at the wire boundary.
 type Json = Record<string, any>;
@@ -567,7 +569,7 @@ describe("native citation fixtures", () => {
           server.addFixturesFromJSON(
             JSON.stringify([{ match: { userMessage: "invalid" }, response: { blocks: [block] } }]),
           ),
-        ).toThrow();
+        ).toThrow(/blocks\[0\]\.text is empty string/);
         expect(server.getFixtures()).toHaveLength(0);
       }
       const blocks = [text(provider, "")];
@@ -809,13 +811,23 @@ describe("native citation fixtures", () => {
           );
         });
       }
-    it(`${provider} persists a citation-only empty text turn`, async () => {
-      const blocks = [text(provider, "")];
-      const server = await recorded(provider, nativeEvents(provider, blocks), true);
-      expect(visible((await request(server, provider, true)).body, provider)).toEqual(
-        expected(blocks, provider),
-      );
-    });
+    for (const captureStream of [false, true])
+      it(`${provider} ${captureStream ? "SSE" : "JSON"} capture persists a citation-only empty text turn`, async () => {
+        const blocks = [text(provider, "")];
+        const server = await recorded(
+          provider,
+          captureStream ? nativeEvents(provider, blocks) : nativeJSON(provider, blocks),
+          captureStream,
+        );
+        const fixture = server.getFixtures()[0].response as Json;
+        expect(fixture.error).toBeUndefined();
+        expect(fixture.content).toBe("");
+        expect(fixture.blocks).toEqual(blocks);
+        for (const replayStream of [false, true])
+          expect(visible((await request(server, provider, replayStream)).body, provider)).toEqual(
+            expected(blocks, provider),
+          );
+      });
   }
 
   it("Responses annotation events identify the same final item, content and annotation", async () => {
@@ -1288,6 +1300,23 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     })),
     { type: "content_block_stop", index },
   ];
+  const anthropicTool = (index: number, id: string, args: string, extra: Json[] = []): Json[] => [
+    {
+      type: "content_block_start",
+      index,
+      content_block: { type: "tool_use", id, name: "lookup", input: {} },
+    },
+    { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: args } },
+    ...extra,
+    { type: "content_block_stop", index },
+  ];
+  /** The same events with every `index` removed, as an index-less stream sends them. */
+  const withoutIndex = (events: Json[]): Json[] =>
+    events.map((event) => {
+      const copy = { ...event };
+      delete copy.index;
+      return copy;
+    });
   const responsesMessage = (output_index: number, parts: Json[]): Json[] => [
     {
       type: "response.output_item.added",
@@ -1360,6 +1389,21 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     const copy = { ...result };
     delete copy.blocks;
     return copy;
+  };
+  /**
+   * The blocks a cited collapse must hold: the uncited collapse's own ordered
+   * blocks, or (when it has none) its text then its tool calls, with each
+   * text block given its citations back.
+   */
+  const citedBlocks = (plain: Json, provider: Provider, citations: Json[][]): Json[] => {
+    const base: Json[] = plain.blocks ?? [
+      ...(plain.content ? [{ type: "text", text: plain.content }] : []),
+      ...(plain.toolCalls ?? []).map((call: Json) => ({ type: "toolCall", ...call })),
+    ];
+    let next = 0;
+    return base.map((block) =>
+      block.type === "text" ? { ...block, [key(provider)]: citations[next++] } : block,
+    );
   };
 
   it("Anthropic web search records no tool call for its server_tool_use input", async () => {
@@ -1611,31 +1655,45 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         const cited = collapse(sse(wire));
         const plain = collapse(sse(uncited(wire)));
         expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
-        expect(cited.blocks?.some((block) => block.type === "text" && block.annotations)).toBe(
-          true,
-        );
+        expect(cited.blocks).toEqual(citedBlocks(plain, "responses", [[urlCitation]]));
       }
     }
-    const anthropic = [
-      [...anthropicText(0, "", []), ...anthropicText(1, "fact", [documentCitation])],
+    const anthropic: [Json[], Json[][]][] = [
       [
-        {
-          type: "content_block_start",
-          index: 0,
-          content_block: { type: "server_tool_use", id: "s", name: "web_search", input: {} },
-        },
-        {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "input_json_delta", partial_json: "{}" },
-        },
-        ...anthropicText(1, "fact", [webCitation]),
+        [...anthropicText(0, "", []), ...anthropicText(1, "fact", [documentCitation])],
+        [[documentCitation]],
+      ],
+      [
+        [
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "server_tool_use", id: "s", name: "web_search", input: {} },
+          },
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: "{}" },
+          },
+          ...anthropicText(1, "fact", [webCitation]),
+        ],
+        [[webCitation]],
+      ],
+      [
+        [
+          ...anthropicTool(0, "toolu_0", '{"q":0}'),
+          ...anthropicText(1, "fact", [documentCitation]),
+          ...anthropicTool(2, "toolu_2", '{"q":2}'),
+          ...anthropicText(3, "more", [webCitation]),
+        ],
+        [[documentCitation], [webCitation]],
       ],
     ];
-    for (const wire of anthropic) {
+    for (const [wire, citations] of anthropic) {
       const cited = collapseAnthropicSSE(sse(wire));
-      expect(withoutBlocks(cited)).toEqual(collapseAnthropicSSE(sse(uncited(wire))));
-      expect(cited.blocks?.length).toBeGreaterThan(0);
+      const plain = collapseAnthropicSSE(sse(uncited(wire)));
+      expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
+      expect(cited.blocks).toEqual(citedBlocks(plain, "anthropic", citations));
     }
   });
 
@@ -1677,6 +1735,147 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       expect(served).not.toContain("citations");
     });
 
+  it("Anthropic keys an index-less block once, so cited text keeps its place before a tool call", async () => {
+    const blocks = [
+      text("anthropic", "fact", [documentCitation]),
+      { type: "toolCall", name: "lookup", arguments: '{"q":1}', id: "toolu_1" },
+    ];
+    const thinking = [
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } },
+      { type: "content_block_stop", index: 0 },
+    ];
+    for (const wire of [
+      withoutIndex([
+        ...anthropicText(0, "fact", [documentCitation]),
+        ...anthropicTool(1, "toolu_1", '{"q":1}'),
+      ]),
+      withoutIndex([
+        ...thinking,
+        ...anthropicText(1, "fact", [documentCitation]),
+        ...anthropicTool(2, "toolu_1", '{"q":1}'),
+      ]),
+    ]) {
+      expect(collapseAnthropicSSE(sse(wire)).blocks).toEqual(blocks);
+      const server = await recorded("anthropic", wire, true);
+      expect(saved(server).blocks).toEqual(blocks);
+      expect(visible((await request(server, "anthropic", true)).body, "anthropic")).toEqual(
+        expected(blocks, "anthropic"),
+      );
+    }
+  });
+
+  it("citation events addressed to a tool call make no text block", async () => {
+    const wires: [Provider, Json[], Json[]][] = [
+      [
+        "responses",
+        withCompleted([
+          ...responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }]),
+          ...functionCall(1, '{"q":1}'),
+          {
+            type: "response.output_text.annotation.added",
+            output_index: 1,
+            content_index: 0,
+            annotation_index: 0,
+            annotation: urlCitation,
+          },
+        ]),
+        [
+          text("responses", "fact", [urlCitation]),
+          { type: "toolCall", name: "lookup", arguments: '{"q":1}', id: "call_1" },
+        ],
+      ],
+      [
+        "anthropic",
+        [
+          ...anthropicText(0, "fact", [documentCitation]),
+          ...anthropicTool(1, "toolu_1", '{"q":1}', [
+            {
+              type: "content_block_delta",
+              index: 1,
+              delta: { type: "citations_delta", citation: webCitation },
+            },
+          ]),
+        ],
+        [
+          text("anthropic", "fact", [documentCitation]),
+          { type: "toolCall", name: "lookup", arguments: '{"q":1}', id: "toolu_1" },
+        ],
+      ],
+    ];
+    for (const [provider, wire, blocks] of wires) {
+      const server = await recorded(provider, wire, true);
+      expect(saved(server).blocks).toEqual(blocks);
+      for (const replayStream of [false, true])
+        expect(visible((await request(server, provider, replayStream)).body, provider)).toEqual(
+          expected(blocks, provider),
+        );
+    }
+  });
+
+  it("a null annotations or citations field reads as absent at load and at serve time", async () => {
+    for (const provider of ["responses", "anthropic"] as const) {
+      const absent = [
+        { type: "text", text: "A" },
+        { type: "text", text: "B" },
+      ];
+      const blocks = [{ ...absent[0], [key(provider)]: null }, absent[1]];
+      const dir = directory();
+      writeFileSync(
+        join(dir, "null.json"),
+        JSON.stringify({
+          fixtures: [{ match: { userMessage: "cited answer" }, response: { blocks } }],
+        }),
+      );
+      const loaded = loadFixtureFile(join(dir, "null.json"));
+      expect(validateFixtures(loaded).filter((issue) => issue.severity === "error")).toEqual([]);
+      const fromFile = await mock();
+      fromFile.addFixtures(loaded);
+      const built = await mock({ blocks });
+      const plain = await mock({ blocks: absent });
+      for (const stream of [false, true]) {
+        const want = visible((await request(plain, provider, stream)).body, provider);
+        expect(visible((await request(fromFile, provider, stream)).body, provider)).toEqual(want);
+        expect(visible((await request(built, provider, stream)).body, provider)).toEqual(want);
+      }
+    }
+  });
+
+  it("an empty annotations or citations array leaves the response-level citations in force", async () => {
+    const portable = [{ type: "url", url: "https://p.test", title: "P", start: 0, end: 1 }];
+    for (const provider of ["responses", "anthropic"] as const) {
+      const absent = [
+        { type: "text", text: "A" },
+        { type: "text", text: "B" },
+      ];
+      const empty = [{ ...absent[0], [key(provider)]: [] }, absent[1]];
+      for (const stream of [false, true]) {
+        const want = visible(
+          (
+            await request(
+              await mock({ content: "AB", citations: portable, blocks: absent }),
+              provider,
+              stream,
+            )
+          ).body,
+          provider,
+        );
+        expect(want[0][key(provider)]).toHaveLength(1);
+        const got = visible(
+          (
+            await request(
+              await mock({ content: "AB", citations: portable, blocks: empty }),
+              provider,
+              stream,
+            )
+          ).body,
+          provider,
+        );
+        expect(got).toEqual(want);
+      }
+    }
+  });
+
   it("rejects malformed native citation fields at load and at serve time", async () => {
     const dir = directory();
     const invalid: Json[] = [
@@ -1703,10 +1902,27 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         JSON.stringify(errors),
       ).toBe(true);
     }
+    // Holes in a code-built array are not citation objects either.
+    const sparse: Json[] = [
+      { type: "text", text: "fact", annotations: new Array(2) },
+      { type: "text", text: "fact", citations: Object.assign([], { 1: documentCitation }) },
+    ];
+    for (const block of sparse) {
+      const errors = validateFixtures([
+        { match: { userMessage: "x" }, response: { blocks: [block] } as FixtureResponse },
+      ])
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => issue.message);
+      expect(errors).toEqual([
+        expect.stringMatching(/^blocks\[0\]\.(annotations|citations) must be an array of objects$/),
+      ]);
+    }
     for (const block of [
       { type: "text", text: "fact", annotations: [{ type: "url_citation", read: () => 1 }] },
       { type: "text", text: "fact", annotations: { type: "url_citation" } },
+      { type: "text", text: "fact", annotations: [null, "x", 3] },
       { type: "text", text: "fact", continuesMessage: "true" },
+      ...sparse,
     ]) {
       const server = await mock({ blocks: [block] });
       const response = await fetch(`${server.url}/v1/responses`, {
@@ -1718,4 +1934,46 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       expect((await response.json()).error.message).toMatch(/^Invalid fixture block at index 0: /);
     }
   });
+});
+
+describe("cited recordings read through the provider SDK clients", () => {
+  for (const provider of ["responses", "anthropic"] as const)
+    for (const captureStream of [false, true])
+      it(`${provider} ${captureStream ? "SSE" : "JSON"} capture replays its citations to the ${provider === "responses" ? "openai" : "@anthropic-ai/sdk"} client`, async () => {
+        const blocks = [
+          text(provider, "fact", [cite(provider)]),
+          tool,
+          text(provider, " and more", [cite(provider), ...searchAndPathCitations(provider)]),
+        ];
+        const server = await recorded(
+          provider,
+          captureStream ? nativeEvents(provider, blocks) : nativeJSON(provider, blocks),
+          captureStream,
+        );
+        for (const replayStream of [false, true]) {
+          let body: Json;
+          if (provider === "responses") {
+            const client = new OpenAI({
+              apiKey: "local",
+              baseURL: `${server.url}/v1`,
+              maxRetries: 0,
+            });
+            const request = { model: "gpt-4o", input: "cited answer" };
+            body = replayStream
+              ? await client.responses.stream(request).finalResponse()
+              : await client.responses.create(request);
+          } else {
+            const client = new Anthropic({ apiKey: "local", baseURL: server.url, maxRetries: 0 });
+            const request = {
+              model: "claude-sonnet-4-6",
+              max_tokens: 1024,
+              messages: [{ role: "user" as const, content: "cited answer" }],
+            };
+            body = replayStream
+              ? await client.messages.stream(request).finalMessage()
+              : await client.messages.create(request);
+          }
+          expect(visible(body, provider)).toEqual(expected(blocks, provider));
+        }
+      });
 });
