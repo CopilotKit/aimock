@@ -24,6 +24,7 @@ import {
   capturedRedactedData,
   collapseResponsesJSON,
   withoutResponsesToolFields,
+  type CollapseResult,
 } from "./stream-collapse.js";
 import { CitationRecording, hasNativeCitations } from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -762,22 +763,11 @@ export async function proxyAndRecord(
   } else if (collapsed) {
     // Streaming response — use collapsed result
     defaults.logger.warn(`Streaming response detected (${ctString}) — collapsing to fixture`);
-    if (collapsed.truncated) {
-      defaults.logger.warn("Bedrock EventStream: CRC mismatch — response may be truncated");
-    }
-    if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
-      defaults.logger.warn(
-        `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
-      );
-    }
-    if (collapsed.harmonyUnparsed) {
-      defaults.logger.warn(
-        `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
-      );
-    }
-    if (collapsed.citationNote) {
-      defaults.logger.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
-    }
+    logCollapseWarnings(
+      defaults.logger,
+      collapsed,
+      "Bedrock EventStream: CRC mismatch — response may be truncated",
+    );
     // Provider-reported usage captured from the stream's final usage frame
     // (#368). Persisted on the text / toolCall fixture shapes so replay serves
     // the REAL token counts instead of the `ceil(len/4)` estimate, and so
@@ -1668,6 +1658,34 @@ function logDroppedReasoningSignature(
   }
 }
 
+/**
+ * Warn about what a collapse could not keep: a truncated input (with
+ * `truncatedWarning`), dropped chunks, unparseable harmony tokens and native
+ * citation metadata that was not recorded.
+ */
+function logCollapseWarnings(
+  logger: Logger | undefined,
+  collapsed: CollapseResult,
+  truncatedWarning: string,
+): void {
+  if (collapsed.truncated) {
+    logger?.warn(truncatedWarning);
+  }
+  if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
+    logger?.warn(
+      `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
+    );
+  }
+  if (collapsed.harmonyUnparsed) {
+    logger?.warn(
+      `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
+    );
+  }
+  if (collapsed.citationNote) {
+    logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+  }
+}
+
 /** Sanitize a collapsed function call before it is persisted: string `name` and `arguments`. */
 function sanitizeRecordedToolCall(tc: ToolCall): ToolCall {
   return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
@@ -2035,13 +2053,19 @@ function buildFixtureResponse(
   // records native citation metadata; an uncited body, including one whose
   // citation entries were all dropped, keeps the error fallback below, as
   // before citations. It is collapsed as the stream of the same turn, so both
-  // recordings of one turn are made by one collapse.
+  // recordings of one turn are made by one collapse, with the same warnings.
   if (Array.isArray(obj.output)) {
     const collapsed = collapseResponsesJSON(obj);
-    if (collapsed.citationNote) {
-      logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
-    }
-    if (collapsed.blocks?.some(hasNativeCitations)) {
+    if (!collapsed.blocks?.some(hasNativeCitations)) {
+      if (collapsed.citationNote) {
+        logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+      }
+    } else {
+      logCollapseWarnings(
+        logger,
+        collapsed,
+        "Responses JSON body exceeded the collapse limit — response may be truncated",
+      );
       // Shape it as the stream recorder shapes the same turn.
       const shaped =
         responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);

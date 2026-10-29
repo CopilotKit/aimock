@@ -2750,6 +2750,52 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     expect(result.citationNote).toBe("1 native citation entry that is not an object dropped");
   });
 
+  it("a cited Responses JSON body logs the collapse warnings the stream recording logs", async () => {
+    const logger = new Logger("silent");
+    const warn = vi.spyOn(logger, "warn");
+    const body = {
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: "<|channel|>bogus<|message|>fact",
+              annotations: [urlCitation],
+            },
+          ],
+        },
+      ],
+    };
+    await recorded("responses", body, false, false, logger);
+    expect(warn.mock.calls.flat().join("\n")).toContain("Harmony tokens present but unparseable");
+    warn.mockClear();
+    // A cited message, then one too large for the limit: the citation is read
+    // before the cut.
+    const large = {
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "fact", annotations: [urlCitation] }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "x".repeat(2000) }],
+        },
+      ],
+    };
+    setCollapseStringLimitForTests(1000);
+    try {
+      await recorded("responses", large, false, false, logger);
+    } finally {
+      setCollapseStringLimitForTests(undefined);
+    }
+    expect(warn.mock.calls.flat().join("\n")).toContain("may be truncated");
+  });
+
   it("a complete Responses JSON body under the collapse limit is not marked truncated", () => {
     const body = {
       output: [
