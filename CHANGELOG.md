@@ -7,6 +7,10 @@
 - `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
   files, raw passthrough and client disconnect handling.
 
+### Fixed
+
+- A2A GetTask and CancelTask return the task in `result`, as the spec and SDK expect
+
 ## [1.47.0] - 2026-10-26
 
 ### Added

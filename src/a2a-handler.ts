@@ -242,7 +242,7 @@ export function createA2AMethods(
       return {
         jsonrpc: "2.0",
         id,
-        result: { task: tasks.get(taskId) },
+        result: tasks.get(taskId),
       };
     },
 
@@ -297,7 +297,7 @@ export function createA2AMethods(
       return {
         jsonrpc: "2.0",
         id,
-        result: { task },
+        result: task,
       };
     },
   };
