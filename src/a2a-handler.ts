@@ -43,15 +43,17 @@ export type PatternEntry =
 
 // ---- Helpers ----
 
-function extractText(params: unknown): string {
+// A null or undefined part throws unless skipNullParts is set. Conversations skip
+// those parts and then reject the request with -32602; other fixtures keep the throw.
+function extractText(params: unknown, skipNullParts = false): string {
   const p = params as Record<string, unknown> | undefined;
   if (!p?.message) return "";
   const msg = p.message as Record<string, unknown>;
-  const parts = msg.parts as Array<Record<string, unknown>> | undefined;
+  const parts = msg.parts as Array<Record<string, unknown> | null | undefined> | undefined;
   if (!Array.isArray(parts)) return "";
   return parts
-    .filter((part) => typeof part.text === "string")
-    .map((part) => part.text as string)
+    .filter((part) => typeof (skipNullParts ? part?.text : part!.text) === "string")
+    .map((part) => part!.text as string)
     .join(" ");
 }
 
@@ -143,12 +145,13 @@ export function createA2AMethods(
 
   const methods: Record<string, MethodHandler> = {
     SendMessage: async (params: unknown, id: string | number): Promise<JsonRpcResponse> => {
-      const text = extractText(params);
+      const text = extractText(params, true);
       const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
       if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);
       const entry = findMatch(text);
 
       if (entry?.kind === "conversation") return conversations.send(params, id, text, entry);
+      extractText(params); // Non-conversation fixtures keep the legacy throw on null parts.
 
       if (!entry) {
         return {
@@ -229,13 +232,14 @@ export function createA2AMethods(
       id: string | number,
     ): Promise<JsonRpcResponse | null> => {
       // Batched SendStreamingMessage calls use the dispatcher instead of the SSE transport.
-      const text = extractText(params);
+      const text = extractText(params, true);
       const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
       if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);
       const streaming = findStreamingMatch(text, agents);
       if (streaming?.kind === "conversation") {
         return conversations.send(params, id, text, streaming);
       }
+      extractText(params); // Non-conversation fixtures keep the legacy throw on null parts.
       const entry = findMatch(text);
       if (!entry) {
         return {

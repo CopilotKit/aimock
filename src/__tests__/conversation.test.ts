@@ -1367,4 +1367,45 @@ describe("conversation request validation and isolation", () => {
     expect(again.status.state).toBe(INPUT);
     expect(again.history[1].parts).toEqual([{ text: "question" }]);
   });
+
+  it.each([false, true])(
+    "rejects malformed IDs and parts with invalid params (stream=%s)",
+    async (stream) => {
+      const { url } = await fixture();
+      for (const extra of [
+        { taskId: null },
+        { taskId: 123 },
+        { contextId: null },
+        { contextId: 7 },
+        { messageId: 5 },
+        { messageId: null },
+        { parts: [null, { text: "start" }] },
+        { parts: [42, { text: "start" }] },
+      ]) {
+        const raw = await post(url, {
+          jsonrpc: "2.0",
+          id: "bad",
+          method: stream ? "SendStreamingMessage" : "SendMessage",
+          params: { message: message("start", extra) },
+        });
+        const [response] = envelopes(raw);
+        expect(response.error, JSON.stringify(extra)).toMatchObject({ code: -32602 });
+      }
+      expect(await list(url)).toEqual([]);
+    },
+  );
+
+  it("keeps legacy responses for malformed requests that match no conversation", async () => {
+    const mock = new A2AMock().registerAgent({ name: "agent" });
+    mock.onMessage("agent", "ping", [{ text: "pong" }]);
+    register(mock);
+    const url = await mock.start();
+    stops.push(() => mock.stop());
+    const pong = await rpc(url, "SendMessage", { message: message("ping", { taskId: null }) });
+    expect(pong.result!.message!.parts).toEqual([{ text: "pong" }]);
+    const nullPart = await rpc(url, "SendMessage", {
+      message: message("ping", { parts: [null, { text: "ping" }] }),
+    });
+    expect(nullPart.error!.code).toBe(-32603);
+  });
 });

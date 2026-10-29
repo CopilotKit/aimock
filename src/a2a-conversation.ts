@@ -103,8 +103,9 @@ interface Progress {
 
 export class ConversationStore {
   private progress = new Map<string, Progress>();
-  // Tasks created by a conversation. Only these are continued by task ID;
-  // every other task ID keeps the legacy fixture behavior.
+  // Tasks created by a conversation. Only these are continued by task ID. A send
+  // with any other task ID goes through fixture matching: legacy fixtures handle it
+  // as before, and a conversation that matches rejects it (-32602 or -32001/-32004).
   private owned = new Set<string>();
 
   constructor(private tasks: Map<string, A2ATask>) {}
@@ -130,8 +131,17 @@ export class ConversationStore {
     if (!message || !Array.isArray(message.parts)) {
       return fail(-32602, "A conversation send requires message parts");
     }
+    if (!message.parts.every(isObject)) {
+      return fail(-32602, "Invalid message parts");
+    }
+    if (message.messageId !== undefined && typeof message.messageId !== "string") {
+      return fail(-32602, "Invalid message ID");
+    }
     if (message.contextId !== undefined && typeof message.contextId !== "string") {
       return fail(-32602, "Invalid context ID");
+    }
+    if (message.taskId !== undefined && typeof message.taskId !== "string") {
+      return fail(-32602, "Invalid task ID");
     }
 
     let task: A2ATask | undefined;

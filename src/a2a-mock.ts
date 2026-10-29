@@ -284,7 +284,7 @@ export class A2AMock implements Mountable {
   ): Promise<void> {
     const params = parsed.params as Record<string, unknown> | undefined;
     const id = parsed.id as string | number;
-    const text = extractText(params);
+    const text = extractText(params, true);
     const message = params?.message as { taskId?: unknown } | undefined;
     const owned = this.conversations.owns(message?.taskId);
     const entry = owned ? null : findStreamingMatch(text, this.agents);
@@ -305,6 +305,7 @@ export class A2AMock implements Mountable {
       this.journalRequest(req, "/", res.statusCode);
       return;
     }
+    extractText(params); // Non-conversation fixtures keep the legacy throw on null parts.
 
     if (!entry) {
       res.writeHead(200, {
