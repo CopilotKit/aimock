@@ -1243,9 +1243,9 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 /**
  * The optional native-citation fields of fixture text block `i`, validated
  * and copied: `annotations` / `citations` must be arrays of plain objects
- * (`null` reads as absent) and `continuesMessage` a boolean. Throws the
- * module's "Invalid fixture block" error otherwise, the same as the other
- * text-block checks.
+ * (`null` or an empty array reads as absent) and `continuesMessage` a
+ * boolean. Throws the module's "Invalid fixture block" error otherwise, the
+ * same as the other text-block checks.
  */
 function textBlockMetadata(
   b: Record<string, unknown>,
@@ -1257,12 +1257,15 @@ function textBlockMetadata(
   const result: Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> = {};
   for (const key of ["annotations", "citations"] as const) {
     const value = b[key];
-    // `null` is the provider SDKs' own "no citations" value: it reads as absent.
+    // `null` is the provider SDKs' own "no citations" value, and an empty
+    // array carries none either: both read as absent, so the response-level
+    // `citations` still apply to this block.
     if (value === undefined || value === null) continue;
     // Array.from turns holes into `undefined`, so a sparse array fails too.
     if (!Array.isArray(value) || !Array.from(value).every(isPlainObject)) {
       fail(`"${key}" must be an array of objects`);
     }
+    if ((value as unknown[]).length === 0) continue;
     try {
       result[key] = structuredClone(value as Record<string, unknown>[]);
     } catch (err) {
