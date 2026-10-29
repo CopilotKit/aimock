@@ -27,6 +27,20 @@ export interface A2ATaskResponse {
   artifacts?: A2AArtifact[];
 }
 
+export interface A2AConversationOptions {
+  /** Maximum accepted message IDs retained per task for exact response replay. */
+  replayLimit?: number;
+}
+
+export interface A2AConversationTurn {
+  pattern: string | RegExp;
+  response: {
+    state: "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED";
+    parts?: A2APart[];
+    artifacts?: A2AArtifact[];
+  };
+}
+
 export type A2AStreamEvent =
   | { type: "status"; state: A2ATaskState }
   | { type: "artifact"; parts: A2APart[]; append?: boolean; lastChunk?: boolean; name?: string };
@@ -45,6 +59,8 @@ export interface A2AMessage {
   messageId: string;
   role: A2ARole;
   parts: A2APart[];
+  taskId?: string;
+  contextId?: string;
 }
 
 export type A2ATaskState =

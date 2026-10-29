@@ -53,6 +53,13 @@ interface A2AConfig {
 // @public (undocumented)
 interface A2AConfigAgent extends A2AAgentDefinition {
     // (undocumented)
+    conversations?: Array<{
+        turns: Array<Omit<A2AConversationTurn, "pattern"> & {
+            pattern: string;
+        }>;
+        replayLimit?: number;
+    }>;
+    // (undocumented)
     messages?: A2AConfigPattern[];
     // (undocumented)
     streamingTasks?: A2AConfigPattern[];
@@ -75,13 +82,34 @@ interface A2AConfigPattern {
 }
 
 // @public (undocumented)
+export interface A2AConversationOptions {
+    replayLimit?: number;
+}
+
+// @public (undocumented)
+export interface A2AConversationTurn {
+    // (undocumented)
+    pattern: string | RegExp;
+    // (undocumented)
+    response: {
+        state: "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED";
+        parts?: A2APart[];
+        artifacts?: A2AArtifact[];
+    };
+}
+
+// @public (undocumented)
 export interface A2AMessage {
+    // (undocumented)
+    contextId?: string;
     // (undocumented)
     messageId: string;
     // (undocumented)
     parts: A2APart[];
     // (undocumented)
     role: A2ARole;
+    // (undocumented)
+    taskId?: string;
 }
 
 // @public (undocumented)
@@ -95,6 +123,8 @@ export class A2AMock implements Mountable {
         agents: number;
         tasks: number;
     };
+    // (undocumented)
+    onConversation(agentName: string, turns: A2AConversationTurn[], options?: A2AConversationOptions): this;
     // (undocumented)
     onMessage(agentName: string, pattern: string | RegExp, parts: A2APart[]): this;
     // (undocumented)

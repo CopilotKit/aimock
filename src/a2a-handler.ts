@@ -8,6 +8,8 @@ import type {
   A2ATaskState,
 } from "./a2a-types.js";
 import { generateId } from "./helpers.js";
+import { ConversationStore, matchesConversation } from "./a2a-conversation.js";
+import type { ConversationPatternEntry } from "./a2a-conversation.js";
 
 // ---- Pattern types ----
 
@@ -33,7 +35,11 @@ export interface StreamingTaskPatternEntry {
   delayMs?: number;
 }
 
-export type PatternEntry = MessagePatternEntry | TaskPatternEntry | StreamingTaskPatternEntry;
+export type PatternEntry =
+  | MessagePatternEntry
+  | TaskPatternEntry
+  | StreamingTaskPatternEntry
+  | ConversationPatternEntry;
 
 // ---- Helpers ----
 
@@ -93,11 +99,16 @@ export function buildAgentCard(
 export function createA2AMethods(
   agents: Map<string, { def: A2AAgentDefinition; patterns: PatternEntry[] }>,
   tasks: Map<string, A2ATask>,
+  conversations = new ConversationStore(tasks),
 ): Record<string, MethodHandler> {
   function findMatch(text: string): PatternEntry | null {
     for (const agent of agents.values()) {
       for (const entry of agent.patterns) {
-        if (matchPattern(text, entry.pattern)) {
+        if (
+          entry.kind === "conversation"
+            ? matchesConversation(text, entry.pattern)
+            : matchPattern(text, entry.pattern)
+        ) {
           return entry;
         }
       }
@@ -133,7 +144,11 @@ export function createA2AMethods(
   const methods: Record<string, MethodHandler> = {
     SendMessage: async (params: unknown, id: string | number): Promise<JsonRpcResponse> => {
       const text = extractText(params);
+      const message = (params as { message?: { taskId?: string } } | undefined)?.message;
+      if (message?.taskId !== undefined) return conversations.send(params, id, text);
       const entry = findMatch(text);
+
+      if (entry?.kind === "conversation") return conversations.send(params, id, text, entry);
 
       if (!entry) {
         return {
@@ -213,10 +228,12 @@ export function createA2AMethods(
       params: unknown,
       id: string | number,
     ): Promise<JsonRpcResponse | null> => {
-      // This is intercepted before reaching the dispatcher in a2a-mock.ts
-      // If it reaches here, return an error
+      // Batches and notifications use the dispatcher instead of the SSE transport.
       const text = extractText(params);
-      const entry = findMatch(text);
+      const message = (params as { message?: { taskId?: string } } | undefined)?.message;
+      if (message?.taskId !== undefined) return conversations.send(params, id, text);
+      const entry = findStreamingMatch(text, agents);
+      if (entry?.kind === "conversation") return conversations.send(params, id, text, entry);
       if (!entry) {
         return {
           jsonrpc: "2.0",
@@ -310,9 +327,10 @@ export function createA2AMethods(
 export function findStreamingMatch(
   text: string,
   agents: Map<string, { def: A2AAgentDefinition; patterns: PatternEntry[] }>,
-): StreamingTaskPatternEntry | null {
+): StreamingTaskPatternEntry | ConversationPatternEntry | null {
   for (const agent of agents.values()) {
     for (const entry of agent.patterns) {
+      if (entry.kind === "conversation" && matchesConversation(text, entry.pattern)) return entry;
       if (entry.kind === "streamingTask" && matchPattern(text, entry.pattern)) {
         return entry;
       }
