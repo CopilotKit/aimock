@@ -431,7 +431,7 @@ export class A2AMock implements Mountable {
 function isStreamingRequest(parsed: unknown): boolean {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
   const obj = parsed as Record<string, unknown>;
-  return obj.method === "SendStreamingMessage" && obj.jsonrpc === "2.0" && "id" in obj;
+  return obj.method === "SendStreamingMessage";
 }
 
 function delay(ms: number): Promise<void> {

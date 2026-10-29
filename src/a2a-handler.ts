@@ -228,7 +228,7 @@ export function createA2AMethods(
       params: unknown,
       id: string | number,
     ): Promise<JsonRpcResponse | null> => {
-      // Batches and notifications use the dispatcher instead of the SSE transport.
+      // Batched SendStreamingMessage calls use the dispatcher instead of the SSE transport.
       const text = extractText(params);
       const message = (params as { message?: { taskId?: unknown } } | undefined)?.message;
       if (conversations.owns(message?.taskId)) return conversations.send(params, id, text);

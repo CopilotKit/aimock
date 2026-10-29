@@ -1329,4 +1329,14 @@ describe("legacy behavior when conversations do not own the task", () => {
       }
     },
   );
+
+  it.each([
+    { label: "without jsonrpc", body: { id: "loose", method: "SendStreamingMessage" } },
+    { label: "without id", body: { jsonrpc: "2.0", method: "SendStreamingMessage" } },
+  ])("streams SendStreamingMessage $label over SSE", async ({ body }) => {
+    const url = await legacyMock();
+    const raw = await post(url, { ...body, params: { message: message("stream") } });
+    expect(raw.type).toMatch(/^text\/event-stream/);
+    expect(envelopes(raw).at(-1)!.result!.task!.status.state).toBe(DONE);
+  });
 });
