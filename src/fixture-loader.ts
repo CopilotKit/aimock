@@ -759,6 +759,7 @@ function validateResponsesToolKeys(
     const block = entry as Record<string, unknown>;
     if (block.type === "text") {
       if (typeof block.text !== "string") error(`${path}.text must be a string`);
+      textMetadataProblems(block).forEach((problem) => error(`${path}.${problem}`));
       return;
     }
     if (block.type === "customToolCall") {
@@ -796,6 +797,33 @@ function validateResponsesToolKeys(
     } else if (args === null || typeof args !== "object") {
       error(`${path}.arguments must be a string or an object`);
     }
+  });
+}
+
+/** Problems with a text block's optional `annotations`, `citations` and `continuesMessage`. */
+function textMetadataProblems(block: Record<string, unknown>): string[] {
+  const problems: string[] = [];
+  for (const key of ["annotations", "citations"] as const) {
+    const value = block[key];
+    if (value !== undefined && (!Array.isArray(value) || !value.every(isCitationObject))) {
+      problems.push(`${key} must be an array of objects`);
+    }
+  }
+  if (block.continuesMessage !== undefined && typeof block.continuesMessage !== "boolean") {
+    problems.push(`continuesMessage must be a boolean, got ${typeof block.continuesMessage}`);
+  }
+  return problems;
+}
+
+function isCitationObject(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** True when a text block carries valid, non-empty `annotations` or `citations`. */
+function carriesCitationData(block: Record<string, unknown>): boolean {
+  return (["annotations", "citations"] as const).some((key) => {
+    const value = block[key];
+    return Array.isArray(value) && value.length > 0 && value.every(isCitationObject);
   });
 }
 
@@ -844,18 +872,18 @@ function validateBlocks(
           fixtureIndex,
           message: `blocks[${j}].text must be a string, got ${typeof block.text}`,
         });
-      } else if (
-        block.text === "" &&
-        !(Array.isArray(block.annotations) && block.annotations.length > 0) &&
-        !(Array.isArray(block.citations) && block.citations.length > 0)
-      ) {
+      } else if (block.text === "" && !carriesCitationData(block)) {
         // Mirror the content/toolCalls "empty string" rejection: an empty-text
-        // block produces a meaningless/spurious wire chunk on replay.
+        // block produces a meaningless/spurious wire chunk on replay. A block
+        // whose citations point at an empty span is the one exception.
         results.push({
           severity: "error",
           fixtureIndex,
           message: `blocks[${j}].text is empty string`,
         });
+      }
+      for (const problem of textMetadataProblems(block)) {
+        results.push({ severity: "error", fixtureIndex, message: `blocks[${j}].${problem}` });
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.

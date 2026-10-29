@@ -1240,6 +1240,41 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The optional native-citation fields of fixture text block `i`, validated
+ * and copied: `annotations` / `citations` must be arrays of plain objects and
+ * `continuesMessage` a boolean. Throws the module's "Invalid fixture block"
+ * error otherwise, the same as the other text-block checks.
+ */
+function textBlockMetadata(
+  b: Record<string, unknown>,
+  i: number,
+): Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> {
+  const fail = (problem: string): never => {
+    throw new Error(`Invalid fixture block at index ${i}: "text" block ${problem}`);
+  };
+  const result: Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> = {};
+  for (const key of ["annotations", "citations"] as const) {
+    const value = b[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.every(isPlainObject)) {
+      fail(`"${key}" must be an array of objects`);
+    }
+    try {
+      result[key] = structuredClone(value as Record<string, unknown>[]);
+    } catch (err) {
+      fail(
+        `"${key}" must hold only data values (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
+  if (b.continuesMessage !== undefined && typeof b.continuesMessage !== "boolean") {
+    fail(`"continuesMessage" must be a boolean`);
+  }
+  if (b.continuesMessage === true) result.continuesMessage = true;
+  return result;
+}
+
 /** A non-empty string, the only valid value of a tool call's `namespace`. */
 function isValidNamespace(value: unknown): value is string {
   return typeof value === "string" && value !== "";
@@ -1564,13 +1599,7 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return {
-        type: "text",
-        text: b.text,
-        ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
-        ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
-        ...(b.continuesMessage === true ? { continuesMessage: true } : {}),
-      };
+      return { type: "text", text: b.text, ...textBlockMetadata(b, i) };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
         throw new Error(
@@ -1649,13 +1678,7 @@ export function resolveResponsesBlocks(
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return {
-        type: "text",
-        text: b.text,
-        ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
-        ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
-        ...(b.continuesMessage === true ? { continuesMessage: true } : {}),
-      };
+      return { type: "text", text: b.text, ...textBlockMetadata(b, i) };
     }
     if (b.type === "toolCall") {
       if (b.input !== undefined) failToolCall('"input" is only valid on a "customToolCall" block');
