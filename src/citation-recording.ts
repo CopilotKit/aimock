@@ -40,6 +40,10 @@ function number(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+function count(n: number, one: string, many: string): string {
+  return `${n} native citation ${n === 1 ? one : many}`;
+}
+
 /**
  * Whether a Responses `output` item is a message: its `type` is `"message"`,
  * or it names no type at all, as some OpenAI-compatible servers send it. The
@@ -88,8 +92,12 @@ export class CitationRecording {
    * to one of them is not text metadata, so it makes no text block.
    */
   private readonly nonText = new Set<string>();
-  /** Non-object metadata entries, by `key#index`, dropped once each. */
-  private readonly dropped = new Set<string>();
+  /**
+   * Non-object metadata entries, by part key: the indexes they arrived at, and
+   * how many came with no index. A later snapshot of the part, or an object
+   * at the same index, takes their place, so they are no longer dropped.
+   */
+  private readonly dropped = new Map<string, { at: Set<number>; unindexed: number }>();
   /** Responses: the open message item, and each item's open content part. */
   private openOutput?: number;
   private readonly openContent = new Map<number, number>();
@@ -124,10 +132,13 @@ export class CitationRecording {
     return part;
   }
 
-  private keep(key: string, index: number, entry: unknown): ObjectValue | undefined {
-    const value = object(entry);
-    if (!value) this.dropped.add(`${key}#${index}`);
-    return value;
+  private drops(key: string): { at: Set<number>; unindexed: number } {
+    let drops = this.dropped.get(key);
+    if (!drops) {
+      drops = { at: new Set(), unindexed: 0 };
+      this.dropped.set(key, drops);
+    }
+    return drops;
   }
 
   /** A part's whole metadata array (a snapshot): it replaces what came before. */
@@ -135,18 +146,27 @@ export class CitationRecording {
     if (!Array.isArray(metadata)) return;
     const part = this.part(key);
     part.clear();
+    this.dropped.delete(key);
     metadata.forEach((entry, index) => {
-      const value = this.keep(key, index, entry);
+      const value = object(entry);
       if (value) part.set(index, value);
+      else this.drops(key).at.add(index);
     });
   }
 
   /** One more metadata entry, at `index` or after the last one. */
   private add(key: string, index: number | undefined, entry: unknown): void {
     const part = this.part(key);
-    const at = index ?? Math.max(-1, ...part.keys()) + 1;
-    const value = this.keep(key, at, entry);
-    if (value) part.set(at, value);
+    const value = object(entry);
+    if (index === undefined) {
+      if (value) part.set(Math.max(-1, ...part.keys()) + 1, value);
+      else this.drops(key).unindexed++;
+    } else if (value) {
+      part.set(index, value);
+      this.dropped.get(key)?.at.delete(index);
+    } else {
+      this.drops(key).at.add(index);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -271,6 +291,15 @@ export class CitationRecording {
     return this.nonText.has(this.provider === "responses" ? key.split(":")[0] : key);
   }
 
+  /** How many non-object entries addressed to a text part are still dropped. */
+  private droppedCount(): number {
+    let dropped = 0;
+    for (const [key, drops] of this.dropped) {
+      if (!this.isNonText(key)) dropped += drops.at.size + drops.unindexed;
+    }
+    return dropped;
+  }
+
   /** Each cited part's metadata, as a sorted copy, by key. */
   private cited(): Map<string, ObjectValue[]> {
     const cited = new Map<string, ObjectValue[]>();
@@ -296,9 +325,10 @@ export class CitationRecording {
    */
   attach(base: CollapseResult, harmonyRaw?: string): CollapseResult {
     const notes: string[] = [];
-    if (this.dropped.size > 0) {
+    const dropped = this.droppedCount();
+    if (dropped > 0) {
       notes.push(
-        `${this.dropped.size} native citation ${this.dropped.size === 1 ? "entry" : "entries"} that are not objects dropped`,
+        `${count(dropped, "entry that is not an object", "entries that are not objects")} dropped`,
       );
     }
     const cited = this.cited();

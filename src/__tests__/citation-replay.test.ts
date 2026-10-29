@@ -2550,6 +2550,53 @@ describe("a cited recording is the uncited recording plus its citations", () => 
   // Round 5
   // -------------------------------------------------------------------------
 
+  it("a non-object entry that a later snapshot replaces is not reported as dropped", () => {
+    const replaced = collapseOpenAISSE(
+      sse([
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "fact" },
+        annotationAdded(0, 0, null as unknown as Json),
+        {
+          type: "response.content_part.done",
+          output_index: 0,
+          content_index: 0,
+          part: { type: "output_text", text: "fact", annotations: [urlCitation] },
+        },
+      ]),
+    );
+    expect(replaced.blocks).toEqual([text("responses", "fact", [urlCitation])]);
+    expect(replaced.citationNote).toBeUndefined();
+  });
+
+  it("a non-object entry addressed to a tool call is not counted as a dropped citation", () => {
+    const result = collapseAnthropicSSE(
+      sse([
+        ...anthropicText(0, "fact", [documentCitation]),
+        ...anthropicTool(1, "toolu_1", "{}", [
+          {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "citations_delta", citation: "junk" },
+          },
+        ]),
+      ]),
+    );
+    expect(result.citationNote).toBeUndefined();
+  });
+
+  it("one dropped non-object entry is reported in the singular", () => {
+    const result = collapseOpenAISSE(
+      sse([
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "fact" },
+        annotationAdded(0, 0, urlCitation),
+        { ...annotationAdded(0, 0, {}), annotation_index: 1, annotation: "opaque" },
+      ]),
+    );
+    expect(result.blocks).toEqual([text("responses", "fact", [urlCitation])]);
+    expect(result.citationNote).toBe("1 native citation entry that is not an object dropped");
+  });
+
   it("a complete Responses JSON body under the collapse limit is not marked truncated", () => {
     const body = {
       output: [
