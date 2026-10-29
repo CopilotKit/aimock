@@ -167,7 +167,7 @@ describe("bounded conversation retries", () => {
         mock.onConversation("agent", [turn("new", DONE, "discarded")], {
           replayLimit: replayLimit as number,
         }),
-      ).toThrow();
+      ).toThrow("A conversation replay limit must be a nonnegative safe integer");
       mock.onConversation("agent", [turn("new", DONE, "replacement")], { replayLimit: 1 });
       const url = await mock.start();
       stops.push(() => mock.stop());
@@ -468,6 +468,9 @@ describe("bounded conversation retries", () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "A conversation replay limit must be a nonnegative safe integer",
+    );
   });
 
   it("forgets retained responses on reset and permits fresh reuse of an ID", async () => {
@@ -561,6 +564,9 @@ describe("task-bound conversation fixtures", () => {
         label: "artifact-part-url",
         output: { artifacts: [{ parts: [{ text: "ok", url: 17 }] }] },
       },
+      { label: "artifact-description", output: { artifacts: [{ description: 17, parts: [] }] } },
+      { label: "artifact-name", output: { artifacts: [{ name: 17, parts: [] }] } },
+      { label: "artifact-id", output: { artifacts: [{ artifactId: 17, parts: [] }] } },
       {
         label: "artifact-part-media-type",
         output: { artifacts: [{ parts: [{ text: "ok", mediaType: 17 }] }] },
@@ -575,7 +581,7 @@ describe("task-bound conversation fixtures", () => {
           ...(later ? [turn("bad-output", INPUT)] : []),
           { pattern: later ? "bad-end" : "bad-output", response: { state: DONE, ...output } },
         ] as A2AConversationTurn[]),
-      ).toThrow();
+      ).toThrow(`Invalid conversation turn at index ${later ? 1 : 0}`);
       await rejected(url, -32000, "bad-output", {});
       expect(await list(url)).toEqual([]);
       expect((await send(url, "start")).history[1].parts).toEqual([{ text: "question" }]);
@@ -584,7 +590,9 @@ describe("task-bound conversation fixtures", () => {
 
   it("requires an explicitly registered agent and permits registration after rejection", async () => {
     const mock = new A2AMock();
-    expect(() => mock.onConversation("agent", [turn("start", DONE, "discarded")])).toThrow();
+    expect(() => mock.onConversation("agent", [turn("start", DONE, "discarded")])).toThrow(
+      'Agent "agent" not registered',
+    );
     mock.registerAgent({ name: "agent" });
     register(mock, [turn("start", DONE, "registered")]);
     const url = await mock.start();
@@ -602,7 +610,13 @@ describe("task-bound conversation fixtures", () => {
       if (bad === "missing-response") delete malformed.response;
       if (bad === "missing-state") malformed.response = {};
       const invalid = bad === "empty" ? [] : [turn("repair", INPUT, "bad-first"), malformed];
-      expect(() => mock.onConversation("agent", invalid as A2AConversationTurn[])).toThrow();
+      const reason =
+        bad === "empty"
+          ? "A conversation needs at least one turn"
+          : bad === "missing-state"
+            ? "Invalid conversation state at index 1"
+            : "Invalid conversation turn at index 1";
+      expect(() => mock.onConversation("agent", invalid as A2AConversationTurn[])).toThrow(reason);
       register(mock, [turn("repair", DONE, "repaired")]);
       const fixed = await send(url, "repair");
       expect(fixed.status.state).toBe(DONE);
@@ -616,7 +630,7 @@ describe("task-bound conversation fixtures", () => {
       const { mock, url } = await fixture();
       expect(() =>
         mock.onConversation("agent", [turn("invalid", state), turn("end", DONE)]),
-      ).toThrow();
+      ).toThrow("Invalid conversation state at index 0");
       await rejected(url, -32000, "invalid", {});
       expect(await list(url)).toEqual([]);
     },
@@ -630,7 +644,9 @@ describe("task-bound conversation fixtures", () => {
     "not-a-state",
   ])("rejects final state %s and supports a later valid registration", async (state) => {
     const { mock, url } = await fixture();
-    expect(() => mock.onConversation("agent", [turn("invalid", state)])).toThrow();
+    expect(() => mock.onConversation("agent", [turn("invalid", state)])).toThrow(
+      "Invalid conversation state at index 0",
+    );
     register(mock, [turn("invalid", FAILED)]);
     expect((await send(url, "invalid")).status.state).toBe(FAILED);
   });
@@ -1147,6 +1163,7 @@ describe("task-bound conversation fixtures", () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Invalid conversation state at index 0");
   });
 
   it("preserves legacy precedence while preventing continuation fallback to a legacy fixture", async () => {
@@ -1616,6 +1633,86 @@ describe("conversation input-required status", () => {
       const done = await send(url, "finish", { taskId: first.id }, stream);
       expect(done.status.state).toBe(DONE);
       expect(done.status).not.toHaveProperty("message");
+    },
+  );
+});
+
+describe("conversation transport and routing coverage", () => {
+  it("runs a conversation through batched SendStreamingMessage requests", async () => {
+    const { url } = await fixture();
+    const batch = async (params: unknown): Promise<A2ATask> => {
+      const raw = await post(url, [
+        { jsonrpc: "2.0", id: "batched", method: "SendStreamingMessage", params },
+      ]);
+      expect(raw.type).toMatch(/^application\/json/);
+      const [response] = JSON.parse(raw.data) as Wire[];
+      expect(response.error, raw.data).toBeUndefined();
+      return response.result!.task!;
+    };
+    const first = await batch({ message: message("start") });
+    expect(first.status.state).toBe(INPUT);
+    expect(first.history).toHaveLength(2);
+    const next = await batch({ message: message("answer", { taskId: first.id }) });
+    expect(next.id).toBe(first.id);
+    expect(next.status.state).toBe(INPUT);
+    expect(next.history).toHaveLength(4);
+    expect(next.history[3].parts).toEqual([{ text: "confirmation" }]);
+    expect(await getTask(url, first.id)).toEqual(next);
+  });
+
+  it.each([false, true])(
+    "requires message parts for a matched conversation (stream=%s)",
+    async (stream) => {
+      const { url } = await fixture([turn("", DONE, "catch-all")]);
+      for (const params of [
+        null,
+        {},
+        { message: { role: "ROLE_USER", messageId: "none" } },
+        { message: { role: "ROLE_USER", messageId: "text", parts: "start" } },
+      ]) {
+        const raw = await post(url, {
+          jsonrpc: "2.0",
+          id: "parts",
+          method: stream ? "SendStreamingMessage" : "SendMessage",
+          params,
+        });
+        expect(raw.type).toMatch(/^application\/json/);
+        expect(JSON.parse(raw.data), JSON.stringify(params)).toEqual({
+          jsonrpc: "2.0",
+          id: "parts",
+          error: { code: -32602, message: "A conversation send requires message parts" },
+        });
+      }
+      expect(await list(url)).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "refuses to continue a legacy task with conversation text (stream=%s)",
+    async (stream) => {
+      const mock = new A2AMock().registerAgent({ name: "agent" });
+      mock.onTask("agent", "legacy", [{ parts: [{ text: "legacy artifact" }] }]);
+      register(mock);
+      const url = await mock.start();
+      stops.push(() => mock.stop());
+      const legacy = await getTask(
+        url,
+        (await rpc(url, "SendMessage", { message: message("legacy") })).result!.task!.id,
+      );
+      const raw = await post(url, {
+        jsonrpc: "2.0",
+        id: "legacy",
+        method: stream ? "SendStreamingMessage" : "SendMessage",
+        params: { message: message("start", { taskId: legacy.id }) },
+      });
+      expect(raw.type).toMatch(/^application\/json/);
+      expect(JSON.parse(raw.data)).toEqual({
+        jsonrpc: "2.0",
+        id: "legacy",
+        error: { code: -32004, message: "Task cannot be continued" },
+      });
+      expect(await getTask(url, legacy.id)).toEqual(legacy);
+      expect(await list(url)).toEqual([legacy]);
     },
   );
 });
