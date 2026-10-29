@@ -1861,6 +1861,67 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     ]);
   });
 
+  it("a cited turn's flat toolCalls follow its blocks when arrival and index order differ", async () => {
+    const named = (events: Json[], name: string): Json[] =>
+      events.map((event) =>
+        event.content_block ? { ...event, content_block: { ...event.content_block, name } } : event,
+      );
+    // Tool calls at index 2, then cited text at 0, then a tool call at 1.
+    const responsesEvents = [
+      ...functionCall(2, '{"a":1}', { name: "alpha", call_id: "call_a" }),
+      ...responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }]),
+      ...functionCall(1, '{"b":2}', { name: "beta", call_id: "call_b" }),
+    ];
+    const done = responsesEvents
+      .filter((event) => event.type === "response.output_item.done")
+      .sort((a, b) => a.output_index - b.output_index);
+    const wires: [Provider, Json[]][] = [
+      [
+        "responses",
+        [
+          ...responsesEvents,
+          {
+            type: "response.completed",
+            response: {
+              output: done.map((event) => event.item),
+              usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+            },
+          },
+        ],
+      ],
+      [
+        "anthropic",
+        [
+          ...named(anthropicTool(2, "toolu_a", '{"a":1}'), "alpha"),
+          ...anthropicText(0, "fact", [documentCitation]),
+          ...named(anthropicTool(1, "toolu_b", '{"b":2}'), "beta"),
+        ],
+      ],
+    ];
+    for (const [provider, wire] of wires) {
+      const collapse = provider === "responses" ? collapseOpenAISSE : collapseAnthropicSSE;
+      const plain = collapse(sse(uncited(wire)));
+      const cited = collapse(sse(wire));
+      const blockCalls = (cited.blocks ?? []).flatMap((block) => {
+        if (block.type !== "toolCall") return [];
+        const call: Json = { ...block };
+        delete call.type;
+        return [call];
+      });
+      expect(blockCalls.map((call) => call.name)).toEqual(["beta", "alpha"]);
+      expect(cited.toolCalls).toEqual(blockCalls);
+      expect(new Set(cited.toolCalls)).toEqual(new Set(plain.toolCalls));
+      expect(cited.content).toBe(plain.content);
+      const server = await recorded(provider, wire, true);
+      const fixture = server.getFixtures()[0];
+      expect((fixture.response as Json).toolCalls.map((call: Json) => call.name)).toEqual([
+        "beta",
+        "alpha",
+      ]);
+      expect(validateFixtures([fixture])).toEqual([]);
+    }
+  });
+
   it("an Anthropic frame whose data is null is ignored, cited or not", () => {
     for (const citations of [[], [documentCitation]]) {
       const wire = sse(anthropicText(0, "hi", citations));

@@ -1,6 +1,6 @@
 import { captureUsage } from "./response/usage/recording.js";
 import type { CollapseResult } from "./stream-collapse.js";
-import type { FixtureBlock, ResponseOverrides, ResponsesFixtureBlock } from "./types.js";
+import type { FixtureBlock, ResponseOverrides, ResponsesFixtureBlock, ToolCall } from "./types.js";
 
 type ObjectValue = Record<string, unknown>;
 type TextBlock = Extract<FixtureBlock, { type: "text" }>;
@@ -222,7 +222,9 @@ export class CitationRecording {
  * A collapse result for a cited turn: `base` (the uncited result) plus the
  * ordered blocks that carry the citations. `blocks` holds the text and
  * function calls; `responsesBlocks` is added only when custom tool calls need
- * it. `content` follows the cited text. Every other field is `base`'s own.
+ * it. `content` follows the cited text, and the flat `toolCalls` follow the
+ * order of the `toolCall` blocks, so the two lists never disagree (#274), as
+ * for an uncited interleaved turn. Every other field is `base`'s own.
  */
 export function withNativeCitations(
   base: CollapseResult,
@@ -234,9 +236,22 @@ export function withNativeCitations(
     .filter((block): block is TextBlock => block.type === "text")
     .map((block) => block.text)
     .join("");
+  const toolCalls = blocks.flatMap((block): ToolCall[] =>
+    block.type === "toolCall"
+      ? [
+          {
+            name: block.name,
+            arguments: block.arguments,
+            ...(block.id !== undefined ? { id: block.id } : {}),
+            ...(block.namespace !== undefined ? { namespace: block.namespace } : {}),
+          },
+        ]
+      : [],
+  );
   return {
     ...base,
     ...(base.content !== undefined || content !== "" ? { content } : {}),
+    ...(base.toolCalls !== undefined ? { toolCalls } : {}),
     blocks,
     ...(blocks.length < ordered.length ? { responsesBlocks: ordered } : {}),
   };
