@@ -2532,20 +2532,22 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     );
   });
 
-  it("a Responses JSON turn whose annotations are all not objects records its text and warns", async () => {
+  it("a Responses JSON turn whose annotations are all not objects records as the uncited turn and warns", async () => {
     const logger = new Logger("silent");
     const warn = vi.spyOn(logger, "warn");
-    const body = {
+    const message = (annotations: unknown[]) => ({
       output: [
         {
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: "fact", annotations: ["opaque", 7, null] }],
+          content: [{ type: "output_text", text: "fact", annotations }],
         },
       ],
-    };
-    const server = await recorded("responses", body, false, false, logger);
-    expect(saved(server)).toEqual({ content: "fact" });
+    });
+    const plain = saved(await recorded("responses", message([]), false));
+    expect(plain.error).toMatchObject({ type: "proxy_error" });
+    const server = await recorded("responses", message(["opaque", 7, null]), false, false, logger);
+    expect(saved(server)).toEqual(plain);
     expect(warn.mock.calls.flat().join("\n")).toContain(
       "3 native citation entries that are not objects dropped",
     );

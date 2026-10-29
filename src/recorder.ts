@@ -2032,16 +2032,16 @@ function buildFixtureResponse(
   }
 
   // OpenAI Responses: { output: [...] }. Recognized only for a turn that
-  // carries native citation metadata; an uncited body keeps the error fallback
-  // below, as before citations. It is collapsed as the stream of the same
-  // turn, so both recordings of one turn are made by one collapse.
+  // records native citation metadata; an uncited body, including one whose
+  // citation entries were all dropped, keeps the error fallback below, as
+  // before citations. It is collapsed as the stream of the same turn, so both
+  // recordings of one turn are made by one collapse.
   if (Array.isArray(obj.output)) {
     const collapsed = collapseResponsesJSON(obj);
-    const cited = !!collapsed.blocks?.some(hasNativeCitations);
-    if (cited || collapsed.citationNote) {
-      if (collapsed.citationNote) {
-        logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
-      }
+    if (collapsed.citationNote) {
+      logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+    }
+    if (collapsed.blocks?.some(hasNativeCitations)) {
       // Shape it as the stream recorder shapes the same turn.
       const shaped =
         responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
