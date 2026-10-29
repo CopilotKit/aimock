@@ -2227,8 +2227,9 @@ function buildFixtureResponse(
     // emptiness for the same logical turn. (Per the persistence contract, a bare
     // signature with empty reasoning is still dropped via
     // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
-    // redactedThinking field.)
-    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0) {
+    // redactedThinking field.) A cited turn whose only text is empty (its
+    // citations are the payload) is complete too, as on the streaming path.
+    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0 || cited) {
       return {
         ...usageSpread,
         content: "",
