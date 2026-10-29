@@ -8,7 +8,9 @@ import type {
   ChatCompletionRequest,
   Fixture,
   FixtureMatch,
+  FixtureBlock,
   FixtureResponse,
+  CustomToolCall,
   ResponsesToolsMode,
   RecordConfig,
   RecordedTimings,
@@ -22,9 +24,14 @@ import type { Logger } from "./logger.js";
 import {
   collapseStreamingResponseWithResponsesTools,
   capturedRedactedData,
+  responsesOutputToolBlocks,
   withoutResponsesToolFields,
 } from "./stream-collapse.js";
-import { CitationRecording, carriesNativeCitations } from "./citation-recording.js";
+import {
+  CitationRecording,
+  hasNativeCitations,
+  withNativeCitations,
+} from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
@@ -828,7 +835,10 @@ export async function proxyAndRecord(
       (!collapsed.toolCalls || collapsed.toolCalls.length === 0) &&
       !collapsed.customToolCalls?.length
     ) {
-      defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      // A cited empty-text turn is complete: its citations ride on `blocks`.
+      if (!collapsed.blocks?.some(hasNativeCitations)) {
+        defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      }
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       // Carry the real Anthropic thinking-block signature only when reasoning is
       // also present (a bare signature has nothing to attach to on replay), so a
@@ -955,21 +965,15 @@ export async function proxyAndRecord(
         };
       }
     }
-    // Native citation metadata lives on ordered text blocks, so a cited turn
-    // keeps its `blocks` even where the shape above would drop them (text-only
-    // or empty-text turns). Uncited turns never enter here and keep the shape
-    // above byte-identically, and a turn already ordered by `responsesBlocks`
-    // keeps that representation.
+    // A cited turn is the shape above plus its citations, which ride on the
+    // ordered `blocks` (or on `responsesBlocks`, which the custom-tool branch
+    // above already took). Uncited turns never enter here.
     if (
-      collapsed.blocks?.some(carriesNativeCitations) &&
-      !(fixtureResponse as { responsesBlocks?: unknown }).responsesBlocks
+      collapsed.blocks?.some(hasNativeCitations) &&
+      !("responsesBlocks" in fixtureResponse) &&
+      ("content" in fixtureResponse || "toolCalls" in fixtureResponse)
     ) {
-      fixtureResponse = {
-        ...fixtureResponse,
-        content: collapsed.content ?? "",
-        toolCalls: (collapsed.toolCalls ?? []).map(sanitizeRecordedToolCall),
-        blocks: collapsed.blocks,
-      };
+      fixtureResponse = { ...fixtureResponse, blocks: collapsed.blocks };
     }
   } else {
     // Non-streaming — try to parse as JSON
@@ -1025,29 +1029,8 @@ export async function proxyAndRecord(
         defaults.logger,
         request,
         { provider: providerKey, contentType: ctString, operation: request._endpointType },
+        defaults.responsesTools,
       );
-      if (parsedResponse && typeof parsedResponse === "object" && !("error" in fixtureResponse)) {
-        const obj = parsedResponse as Record<string, unknown>;
-        const provider = Array.isArray(obj.output)
-          ? "responses"
-          : Array.isArray(obj.content)
-            ? "anthropic"
-            : undefined;
-        if (provider) {
-          const citations = new CitationRecording(provider);
-          citations.captureJSON(obj);
-          const cited = citations.result();
-          if (cited) {
-            const compatible =
-              defaults.responsesTools === "extended" ? cited : withoutResponsesToolFields(cited);
-            if (defaults.responsesTools !== "extended") {
-              delete (fixtureResponse as { responsesBlocks?: unknown }).responsesBlocks;
-              delete (fixtureResponse as { customToolCalls?: unknown }).customToolCalls;
-            }
-            fixtureResponse = { ...fixtureResponse, ...compatible };
-          }
-        }
-      }
     }
   }
 
@@ -1743,6 +1726,7 @@ function buildFixtureResponse(
   logger?: Logger,
   request?: ChatCompletionRequest,
   captureContext: { provider?: RecordProviderKey; contentType?: string; operation?: string } = {},
+  responsesTools?: ResponsesToolsMode,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -2050,29 +2034,71 @@ function buildFixtureResponse(
     }
   }
 
+  // OpenAI Responses: { output: [...] }. Recognized only for a cited turn; an
+  // uncited body keeps the error fallback below, as before citations.
   if (Array.isArray(obj.output)) {
+    const output = obj.output as unknown[];
     const citations = new CitationRecording("responses");
     citations.captureJSON(obj);
-    const cited = citations.result();
-    if (cited) {
-      const output = obj.output as Array<Record<string, unknown>>;
-      const reasoning = output
-        .filter((item) => item.type === "reasoning")
-        .flatMap((item) => (Array.isArray(item.summary) ? item.summary : []))
-        .filter((part) => part.type === "summary_text")
-        .map((part) => part.text)
+    const tools = responsesOutputToolBlocks(output);
+    const ordered = citations.ordered(() => tools);
+    if (ordered) {
+      const items = output.filter(
+        (item): item is Record<string, unknown> =>
+          item !== null && typeof item === "object" && !Array.isArray(item),
+      );
+      const reasoning = items
+        .filter((item) => item.type === "reasoning" && Array.isArray(item.summary))
+        .flatMap((item) => item.summary as unknown[])
+        .flatMap((part) =>
+          part !== null &&
+          typeof part === "object" &&
+          (part as Record<string, unknown>).type === "summary_text" &&
+          typeof (part as Record<string, unknown>).text === "string"
+            ? [(part as Record<string, unknown>).text as string]
+            : [],
+        )
         .join("");
-      const webSearches = output
+      const webSearches = items
         .filter((item) => item.type === "web_search_call")
-        .map((item) => (item.action as Record<string, unknown> | undefined)?.query)
+        .map((item) => {
+          const action = item.action;
+          return action !== null && typeof action === "object"
+            ? (action as Record<string, unknown>).query
+            : undefined;
+        })
         .filter((query): query is string => typeof query === "string");
-      // The citation reader captured the envelope usage raw; sanitize it like
-      // every other recorded usage so it never reaches the fixture unsanitized.
-      const citedFields = { ...cited };
-      delete citedFields.usage;
-      const usage = sanitizeRecordedUsage(cited.usage);
+      const toolCalls: ToolCall[] = [];
+      const customToolCalls: CustomToolCall[] = [];
+      for (const block of tools.values()) {
+        if (block.type === "text") continue;
+        const { name, id, namespace } = block;
+        const ids = { ...(id ? { id } : {}), ...(namespace ? { namespace } : {}) };
+        if (block.type === "customToolCall") {
+          customToolCalls.push({ type: "custom", name, input: block.input, ...ids });
+        } else {
+          toolCalls.push({ name, arguments: block.arguments, ...ids });
+        }
+      }
+      const cited = withNativeCitations(
+        {
+          content: "",
+          ...(toolCalls.length ? { toolCalls } : {}),
+          ...(customToolCalls.length ? { customToolCalls } : {}),
+        },
+        ordered,
+      );
+      // Shape it as the stream recorder shapes the same turn.
+      const shaped = responsesTools === "extended" ? cited : withoutResponsesToolFields(cited);
+      const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
+      const usage = citations.usage;
       return {
-        ...citedFields,
+        ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
+        ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
+        ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
+        ...(shaped.responsesBlocks
+          ? { responsesBlocks: shaped.responsesBlocks }
+          : { blocks: shaped.blocks }),
         ...(reasoning ? { reasoning } : {}),
         ...(webSearches.length ? { webSearches } : {}),
         ...(usage ? { usage } : {}),
@@ -2138,13 +2164,28 @@ function buildFixtureResponse(
         : {};
     logDroppedReasoningSignature(logger, anthropicReasoning, anthropicReasoningSignature);
     const redactedThinkingSpread = redactedThinking.length > 0 ? { redactedThinking } : {};
+    const toToolCall = (b: Record<string, unknown>): ToolCall => ({
+      name: String(b.name),
+      arguments: toToolCallArguments(b.input),
+      ...(b.id ? { id: String(b.id) } : {}),
+    });
+    // A cited turn adds its ordered blocks, whose tool calls are `toolCalls`.
+    const citations = new CitationRecording("anthropic");
+    citations.captureJSON(obj);
+    const cited = citations.ordered(
+      () =>
+        new Map(
+          blocks.flatMap((b, index) =>
+            b.type === "tool_use" ? [[index, { type: "toolCall" as const, ...toToolCall(b) }]] : [],
+          ),
+        ),
+    );
+    const citedSpread = cited
+      ? { blocks: cited.filter((b): b is FixtureBlock => b.type !== "customToolCall") }
+      : {};
 
     if (hasToolCalls) {
-      const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
-        name: String(b.name),
-        arguments: toToolCallArguments(b.input),
-        ...(b.id ? { id: String(b.id) } : {}),
-      }));
+      const toolCalls: ToolCall[] = toolUseBlocks.map(toToolCall);
       if (hasContent) {
         return {
           ...usageSpread,
@@ -2153,6 +2194,7 @@ function buildFixtureResponse(
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
           ...reasoningSignatureSpread,
           ...redactedThinkingSpread,
+          ...citedSpread,
         };
       }
       return {
@@ -2161,6 +2203,7 @@ function buildFixtureResponse(
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
     if (hasContent) {
@@ -2170,6 +2213,7 @@ function buildFixtureResponse(
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
     // Thinking-only / redacted-only response (no text, no tool calls). A turn can
@@ -2191,6 +2235,7 @@ function buildFixtureResponse(
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
   }

@@ -1,4 +1,3 @@
-import { CitationRecording } from "./citation-recording.js";
 /**
  * Stream collapsing functions for record-and-replay.
  *
@@ -19,6 +18,7 @@ import type {
 } from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
+import { CitationRecording, withNativeCitations } from "./citation-recording.js";
 
 // ---------------------------------------------------------------------------
 // Accumulated-string cap (RangeError: Invalid string length guard)
@@ -179,7 +179,9 @@ export interface CollapseResult {
    * positional instrumentation the recorder consults to decide whether to
    * persist the ordered shape. Absent (undefined) for text-first, text-only,
    * and tool-only streams — i.e. anything NOT interleaved — so the recorder
-   * keeps the legacy `{ content, toolCalls }` shape byte-identical.
+   * keeps the legacy `{ content, toolCalls }` shape byte-identical. A cited
+   * OpenAI Responses or Anthropic turn always has `blocks`, ordered by output
+   * or content index, so its text blocks can carry `annotations` / `citations`.
    *
    * Each text block coalesces all contiguous content deltas between tool
    * atoms. Each tool block sits in the position where its FIRST delta arrived:
@@ -295,6 +297,30 @@ function toFunctionToolCall(ref: FunctionCallAcc): ToolCall {
     ...(ref.id ? { id: ref.id } : {}),
     ...(ref.namespace ? { namespace: ref.namespace } : {}),
   };
+}
+
+/**
+ * @internal The tool-call blocks of an OpenAI Responses JSON `output` array,
+ * keyed by output index: each `function_call` and `custom_tool_call` item
+ * finalized by the same rules as a streamed one.
+ */
+export function responsesOutputToolBlocks(output: unknown[]): Map<number, ResponsesFixtureBlock> {
+  const tools = new Map<number, ResponsesFixtureBlock>();
+  output.forEach((raw, index) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
+    const item = raw as Record<string, unknown>;
+    const name = typeof item.name === "string" ? item.name : "";
+    const id = typeof item.call_id === "string" ? item.call_id : "";
+    const namespace = responsesNamespace(item);
+    if (item.type === "function_call") {
+      const args = typeof item.arguments === "string" ? item.arguments : "";
+      tools.set(index, toToolCallBlock({ name, arguments: args, id, namespace }));
+    } else if (item.type === "custom_tool_call") {
+      const input = typeof item.input === "string" ? item.input : "";
+      tools.set(index, toCustomToolCallBlock({ name, input, id, namespace }));
+    }
+  });
+  return tools;
 }
 
 /** Project a custom-call accumulator to a flat fixture custom tool call. */
@@ -510,12 +536,6 @@ export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseR
     return collapsed;
   }
   const result: CollapseResult = { ...collapsed };
-  // Preserve native text metadata even when extended tool calls are disabled.
-  if (result.responsesBlocks?.some((block) => block.type === "text" && block.annotations?.length)) {
-    result.blocks = result.responsesBlocks.filter(
-      (block): block is FixtureBlock => block.type !== "customToolCall",
-    );
-  }
   delete result.customToolCalls;
   delete result.responsesBlocks;
   if (result.toolCalls) {
@@ -975,6 +995,14 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
   const sortedEntries = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
   const customEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "custom" ? [tc] : []));
   const functionEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "function" ? [tc] : []));
+  // Tool blocks for a cited turn, keyed by output_index like the citations.
+  const citedTools = () =>
+    new Map(
+      sortedEntries.map(([key, tc]) => [
+        key,
+        tc.kind === "custom" ? toCustomToolCallBlock(tc) : toToolCallBlock(tc),
+      ]),
+    );
   let customFields: Pick<CollapseResult, "customToolCalls" | "responsesBlocks"> = {};
   if (customEntries.length > 0) {
     const firstCustomAtom = orderAtoms.findIndex((a) => a.kind === "customToolCall");
@@ -1003,7 +1031,43 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       a.kind === "toolCall" ? [toFunctionToolCall(a.ref)] : [],
     );
     const indexSortedToolCalls = functionEntries.map(toFunctionToolCall);
-    return {
+    return withNativeCitations(
+      {
+        ...(transcriptSeen
+          ? {
+              transcription: {
+                text: transcript,
+                ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
+                ...(transcriptUsage ? { usage: transcriptUsage } : {}),
+              },
+            }
+          : {}),
+        ...(blocks ? { blocks } : {}),
+        ...(content ? { content } : {}),
+        // Fallback-only: harmonyToolCalls are populated ONLY in the
+        // no-structured-calls branch, so this is never a merge of both sources.
+        toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+        ...customFields,
+        // Reasoning is preserved alongside tool calls for ALL structured streams
+        // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
+        // parity with every other collapser and the non-streaming path.
+        ...(reasoning ? { reasoning } : {}),
+        // webSearches parity with the text-only return branch.
+        ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
+        // Provider-reported usage parity with the text-only return branch (#368).
+        ...(usage ? { usage } : {}),
+        ...(droppedChunks > 0 ? { droppedChunks } : {}),
+        ...(firstDroppedSample ? { firstDroppedSample } : {}),
+        ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+        ...(harmonyNote ? { harmonyNote } : {}),
+        ...(inputTruncated ? { truncated: true } : {}),
+      },
+      citations.ordered(citedTools),
+    );
+  }
+
+  return withNativeCitations(
+    {
       ...(transcriptSeen
         ? {
             transcription: {
@@ -1013,51 +1077,19 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
             },
           }
         : {}),
-      ...(blocks ? { blocks } : {}),
-      ...(content ? { content } : {}),
-      // Fallback-only: harmonyToolCalls are populated ONLY in the
-      // no-structured-calls branch, so this is never a merge of both sources.
-      toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+      content,
       ...customFields,
-      // Reasoning is preserved alongside tool calls for ALL structured streams
-      // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
-      // parity with every other collapser and the non-streaming path.
       ...(reasoning ? { reasoning } : {}),
-      // webSearches parity with the text-only return branch.
       ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-      // Provider-reported usage parity with the text-only return branch (#368).
       ...(usage ? { usage } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-      ...citations.result(),
-    };
-  }
-
-  return {
-    ...(transcriptSeen
-      ? {
-          transcription: {
-            text: transcript,
-            ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
-            ...(transcriptUsage ? { usage: transcriptUsage } : {}),
-          },
-        }
-      : {}),
-    content,
-    ...customFields,
-    ...(reasoning ? { reasoning } : {}),
-    ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-    ...(usage ? { usage } : {}),
-    ...(droppedChunks > 0 ? { droppedChunks } : {}),
-    ...(firstDroppedSample ? { firstDroppedSample } : {}),
-    ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
-    ...(harmonyNote ? { harmonyNote } : {}),
-    ...(inputTruncated ? { truncated: true } : {}),
-    ...citations.result(),
-  };
+    },
+    citations.ordered(citedTools),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1254,10 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     }
   }
 
+  // Tool blocks for a cited turn, keyed by content index like the citations.
+  const citedTools = () =>
+    new Map(Array.from(toolCallMap, ([key, tc]) => [key, toToolCallBlock(tc)]));
+
   if (toolCallMap.size > 0) {
     const orderedBlocks = buildOrderedBlocks(orderAtoms);
     // When interleaved (`blocks` present) the flat `toolCalls` MUST match the
@@ -1246,32 +1282,36 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         arguments: normalizeToolArguments(tc.arguments),
         ...(tc.id ? { id: tc.id } : {}),
       }));
-    return {
+    return withNativeCitations(
+      {
+        ...(usage ? { usage } : {}),
+        ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
+        ...(content ? { content } : {}),
+        toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
+        ...(reasoning ? { reasoning } : {}),
+        ...(reasoningSignature ? { reasoningSignature } : {}),
+        ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
+        ...(droppedChunks > 0 ? { droppedChunks } : {}),
+        ...(firstDroppedSample ? { firstDroppedSample } : {}),
+        ...(inputTruncated ? { truncated: true } : {}),
+      },
+      citations.ordered(citedTools),
+    );
+  }
+
+  return withNativeCitations(
+    {
       ...(usage ? { usage } : {}),
-      ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
-      ...(content ? { content } : {}),
-      toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
+      content,
       ...(reasoning ? { reasoning } : {}),
       ...(reasoningSignature ? { reasoningSignature } : {}),
       ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-      ...citations.result(),
-    };
-  }
-
-  return {
-    ...(usage ? { usage } : {}),
-    content,
-    ...(reasoning ? { reasoning } : {}),
-    ...(reasoningSignature ? { reasoningSignature } : {}),
-    ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
-    ...(droppedChunks > 0 ? { droppedChunks } : {}),
-    ...(firstDroppedSample ? { firstDroppedSample } : {}),
-    ...(inputTruncated ? { truncated: true } : {}),
-    ...citations.result(),
-  };
+    },
+    citations.ordered(citedTools),
+  );
 }
 
 // ---------------------------------------------------------------------------
