@@ -1683,14 +1683,16 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     });
 
   it("public collapse functions return the uncited result plus blocks for cited input", () => {
+    // Offsets inside the cited text: "Hi" is 2 characters long.
+    const hi = { ...urlCitation, end_index: 2 };
     const responses = [
-      withCompleted(responsesMessage(0, [{ text: "Hi", annotations: [urlCitation] }])),
+      withCompleted(responsesMessage(0, [{ text: "Hi", annotations: [hi] }])),
       withCompleted([
         ...functionCall(0, '{"q":1}', { namespace: "ns" }),
         ...responsesMessage(1, [{ text: "after", annotations: [urlCitation] }]),
       ]),
       withCompleted([
-        ...responsesMessage(0, [{ text: "Hi", annotations: [urlCitation] }, { text: "" }]),
+        ...responsesMessage(0, [{ text: "Hi", annotations: [hi] }, { text: "" }]),
         ...functionCall(1, " ", { namespace: "" }),
       ]),
     ];
@@ -1702,7 +1704,9 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         const cited = collapse(sse(wire));
         const plain = collapse(sse(uncited(wire)));
         expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
-        expect(cited.blocks).toEqual(citedBlocks(plain, "responses", [[urlCitation]]));
+        expect(cited.blocks).toEqual(
+          citedBlocks(plain, "responses", [[cited.content === "Hi" ? hi : urlCitation]]),
+        );
       }
     }
     const anthropic: [Json[], Json[][]][] = [
@@ -2626,6 +2630,63 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     expect(stripCitations(result, collapseResponsesJSON(uncitedWire([body])[0]) as Json)).toEqual(
       collapseResponsesJSON(uncitedWire([body])[0]),
     );
+  });
+
+  it("a point annotation at the end of a split piece stays on that piece", () => {
+    const fileCitation = { type: "file_citation", file_id: "file_1", filename: "a.txt", index: 4 };
+    const result = collapseOpenAISSE(
+      sse([
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "abcd" },
+        { type: "response.output_text.delta", output_index: 1, content_index: 0, delta: "zz" },
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "efgh" },
+        annotationAdded(0, 0, fileCitation),
+      ]),
+    );
+    expect(result.blocks).toEqual([
+      text("responses", "abcd", [fileCitation]),
+      { type: "text", text: "zz" },
+      { type: "text", text: "efgh" },
+    ]);
+  });
+
+  it("an offset past its text is dropped and reported whether or not the part is split", () => {
+    const inRange = { ...urlCitation, start_index: 0, end_index: 1 };
+    const pastEnd = { ...urlCitation, start_index: 5, end_index: 8 };
+    const snapshot = (output_index: number): Json => ({
+      type: "response.content_part.done",
+      output_index,
+      content_index: 0,
+      part: { type: "output_text", text: "abcdefgh", annotations: [inRange, pastEnd] },
+    });
+    const whole = collapseOpenAISSE(
+      sse([
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "ab" },
+        snapshot(0),
+      ]),
+    );
+    const split = collapseOpenAISSE(
+      sse([
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "a" },
+        { type: "response.output_text.delta", output_index: 1, content_index: 0, delta: "zz" },
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "b" },
+        snapshot(0),
+      ]),
+    );
+    expect(whole.blocks).toEqual([text("responses", "ab", [inRange])]);
+    expect(split.blocks).toEqual([
+      text("responses", "a", [inRange]),
+      { type: "text", text: "zz" },
+      { type: "text", text: "b" },
+    ]);
+    for (const result of [whole, split]) {
+      expect(JSON.stringify(result.blocks)).not.toContain('"start_index":5');
+      expect(result.citationNote).toBe(
+        "1 native citation annotation pointing outside its text dropped",
+      );
+    }
   });
 });
 

@@ -44,6 +44,20 @@ function count(n: number, one: string, many: string): string {
   return `${n} native citation ${n === 1 ? one : many}`;
 }
 
+function splitNote(n: number): string {
+  return `${count(n, "annotation", "annotations")} spanning text that the stream split dropped`;
+}
+
+function inRange(value: number, length: number): boolean {
+  return value >= 0 && value <= length;
+}
+
+/** The last item that passes `test`. */
+function lastOf<T>(items: T[], test: (item: T) => boolean): T | undefined {
+  for (let i = items.length - 1; i >= 0; i--) if (test(items[i])) return items[i];
+  return undefined;
+}
+
 /**
  * Whether a Responses `output` item is a message: its `type` is `"message"`,
  * or it names no type at all, as some OpenAI-compatible servers send it. The
@@ -51,6 +65,23 @@ function count(n: number, one: string, many: string): string {
  */
 export function isResponsesMessage(item: ObjectValue): boolean {
   return typeof item.type !== "string" || item.type === "message";
+}
+
+/**
+ * The piece, of the pieces of one text, that holds an entry: a point (an
+ * `index` only, as a file citation) goes to the last piece that starts before
+ * it, so an `index` at a piece's end stays at the end of that piece (the rule
+ * replay follows, see `blockAnnotations` in responses.ts); a range goes to the
+ * piece its start falls in, or to the last piece when it starts at the end.
+ */
+function owner<T>(pieces: T[], start: (piece: T) => number, entry: ObjectValue): T {
+  const offsets = OFFSET_FIELDS.filter((name) => typeof entry[name] === "number");
+  if (offsets.length === 0) return pieces[0];
+  const at = Math.min(...offsets.map((name) => entry[name] as number));
+  if (offsets.length === 1 && offsets[0] === "index") {
+    return lastOf(pieces, (piece) => start(piece) < at) ?? pieces[0];
+  }
+  return lastOf(pieces, (piece) => start(piece) <= at) ?? pieces[0];
 }
 
 /**
@@ -414,18 +445,22 @@ export class CitationRecording {
       }
     }
     this.placeEmptyParts(pieces, cited);
-    let lost = 0;
+    let outside = 0;
+    let split = 0;
     for (const [key, metadata] of cited) {
-      lost += this.placeMetadata(
+      const lost = this.placeMetadata(
         pieces.filter((piece) => piece.key === key),
         metadata,
       );
+      outside += lost.outside;
+      split += lost.split;
     }
-    if (lost > 0) {
+    if (outside > 0) {
       notes.push(
-        `${lost} native citation ${lost === 1 ? "annotation" : "annotations"} spanning text that the stream split dropped`,
+        `${count(outside, "annotation pointing outside its text", "annotations pointing outside their text")} dropped`,
       );
     }
+    if (split > 0) notes.push(splitNote(split));
     if (this.provider === "responses") {
       // A later part of one Responses message item serves as a further part
       // of that message.
@@ -473,44 +508,48 @@ export class CitationRecording {
   }
 
   /**
-   * Puts one part's metadata on its pieces. When the stream split the part,
-   * an entry with offsets goes on the piece its start falls in, with the offsets made relative to that piece;
-   * one that ends past that piece is dropped. Any other entry goes on the
-   * first piece. Returns the number dropped.
+   * Puts one part's metadata on its pieces, and returns how many entries it
+   * dropped. An entry with an offset outside the part's text is dropped
+   * (`outside`); a part that streamed no text keeps every entry as the
+   * provider sent it. When the stream split the part, an entry with offsets
+   * goes on the piece that holds it (see {@link owner}), with its offsets made
+   * relative to that piece, and one that ends past that piece is dropped
+   * (`split`). An entry without offsets goes on the first piece.
    */
-  private placeMetadata(pieces: Piece[], metadata: ObjectValue[]): number {
+  private placeMetadata(
+    pieces: Piece[],
+    metadata: ObjectValue[],
+  ): { outside: number; split: number } {
     const field = this.provider === "responses" ? "annotations" : "citations";
-    // A part in one piece keeps its metadata as the provider sent it.
-    if (pieces.length === 1) {
+    const textOf = (piece: Piece) => (piece.block as TextBlock).text;
+    const total = pieces.reduce((sum, piece) => sum + textOf(piece).length, 0);
+    if (total === 0) {
       (pieces[0].block as TextBlock)[field] = metadata;
-      return 0;
+      return { outside: 0, split: 0 };
     }
     const into = new Map<Piece, ObjectValue[]>();
-    let lost = 0;
+    let outside = 0;
+    let split = 0;
     for (const entry of metadata) {
       const offsets = OFFSET_FIELDS.filter((name) => typeof entry[name] === "number");
-      const start =
-        offsets.length > 0 ? Math.min(...offsets.map((name) => entry[name] as number)) : 0;
-      const piece =
-        offsets.length === 0
-          ? pieces[0]
-          : (pieces.find(
-              (p) => start >= p.offset && start < p.offset + (p.block as TextBlock).text.length,
-            ) ?? pieces[pieces.length - 1]);
+      if (offsets.some((name) => !inRange(entry[name] as number, total))) {
+        outside++;
+        continue;
+      }
+      const piece = owner(pieces, (p) => p.offset, entry);
       const moved = { ...entry };
-      const text = (piece.block as TextBlock).text.length;
       const fits = offsets.every((name) => {
         moved[name] = (entry[name] as number) - piece.offset;
-        return (moved[name] as number) >= 0 && (moved[name] as number) <= text;
+        return inRange(moved[name] as number, textOf(piece).length);
       });
       if (!fits) {
-        lost++;
+        split++;
         continue;
       }
       into.set(piece, [...(into.get(piece) ?? []), moved]);
     }
     for (const [piece, entries] of into) (piece.block as TextBlock)[field] = entries;
-    return lost;
+    return { outside, split };
   }
 
   /**
