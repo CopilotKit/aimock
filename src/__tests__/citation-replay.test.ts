@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { LLMock } from "../llmock.js";
 import { LLMock as MisbehaviorLLMock } from "./helpers/misbehavior-enabled.js";
 import { proxyAndRecord } from "../recorder.js";
@@ -10,6 +11,7 @@ import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "../fixtu
 import {
   collapseOpenAISSE,
   collapseAnthropicSSE,
+  collapseResponsesJSON,
   collapseStreamingResponse,
 } from "../stream-collapse.js";
 import { Logger } from "../logger.js";
@@ -2119,6 +2121,428 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         }
       }
     }
+  });
+  // -------------------------------------------------------------------------
+  // One source of truth: a cited collapse is the uncited collapse of the same
+  // turn plus its citation data, for any stream.
+  // -------------------------------------------------------------------------
+
+  /** The same stream with every native citation removed. */
+  const uncitedWire = (events: Json[]): Json[] => {
+    const strip = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(strip);
+      if (value === null || typeof value !== "object") return value;
+      const copy: Json = {};
+      for (const [name, field] of Object.entries(value)) {
+        copy[name] = name === "annotations" || name === "citations" ? [] : strip(field);
+      }
+      return copy;
+    };
+    return events
+      .filter(
+        (e) =>
+          e.type !== "response.output_text.annotation.added" &&
+          e.type !== "response.output_text_annotation.added" &&
+          e.delta?.type !== "citations_delta",
+      )
+      .map((e) => strip(e) as Json);
+  };
+  /** The order a result's flat fields imply: its text, function calls, custom calls. */
+  const impliedBlocks = (result: Json, withCustom: boolean): Json[] => [
+    ...(result.content ? [{ type: "text", text: result.content }] : []),
+    ...(result.toolCalls ?? []).map((call: Json) => ({ type: "toolCall", ...call })),
+    ...(withCustom ? (result.customToolCalls ?? []) : []).map((call: Json) => ({
+      ...call,
+      type: "customToolCall",
+    })),
+  ];
+  /**
+   * A cited result with its citation data taken away: no citation fields or
+   * note, text pieces joined back, and `blocks` / `responsesBlocks` dropped
+   * when the uncited result had none and they hold only the order its flat
+   * fields imply.
+   */
+  const stripCitations = (cited: Json, base: Json): Json => {
+    const result: Json = { ...cited };
+    delete result.citationNote;
+    for (const field of ["blocks", "responsesBlocks"]) {
+      if (!result[field]) continue;
+      const joined: Json[] = [];
+      for (const block of result[field] as Json[]) {
+        const copy: Json = { ...block };
+        delete copy.annotations;
+        delete copy.citations;
+        delete copy.continuesMessage;
+        const last = joined[joined.length - 1];
+        if (copy.type === "text" && last?.type === "text") last.text += copy.text;
+        else joined.push(copy);
+      }
+      const blocks = joined.filter((block) => block.type !== "text" || block.text !== "");
+      if (
+        !base[field] &&
+        isDeepStrictEqual(blocks, impliedBlocks(base, field === "responsesBlocks"))
+      ) {
+        delete result[field];
+      } else {
+        result[field] = blocks;
+      }
+    }
+    return result;
+  };
+  const dataOnly = (events: Json[]): string =>
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  const harmonyAnswer =
+    "<|channel|>analysis<|message|>Let me check.<|end|><|start|>assistant<|channel|>final<|message|>Answer here<|return|>";
+  const answerAt = harmonyAnswer.lastIndexOf("Answer here");
+  const messageAdded = (output_index: number): Json => ({
+    type: "response.output_item.added",
+    output_index,
+    item: { type: "message", role: "assistant", content: [] },
+  });
+  const annotationAdded = (
+    output_index: number,
+    content_index: number,
+    annotation: Json,
+    type = "response.output_text.annotation.added",
+  ): Json => ({ type, output_index, content_index, annotation_index: 0, annotation });
+  const coreBlocks = (provider: Provider): Json[] => [
+    text(provider, "prefix fact tail", [cite(provider), ...searchAndPathCitations(provider)]),
+    { type: "text", text: " uncited" },
+    tool,
+    text(provider, ""),
+    text(provider, "last", [cite(provider), cite(provider)]),
+    { ...tool, name: "compare", arguments: '{"query":"other"}', id: "call_other" },
+  ];
+  /** Every cited stream shape the suite and the review rounds built. */
+  const corpus = (): [string, Provider, Json[], boolean][] => [
+    ...(["responses", "anthropic"] as const).flatMap(
+      (provider): [string, Provider, Json[], boolean][] => [
+        [`${provider} core turn`, provider, nativeEvents(provider, coreBlocks(provider)), true],
+        [
+          `${provider} SDK turn`,
+          provider,
+          nativeEvents(provider, [
+            text(provider, "fact"),
+            tool,
+            text(provider, " and more", [cite(provider), ...searchAndPathCitations(provider)]),
+          ]),
+          true,
+        ],
+        [
+          `${provider} citation-only empty turn`,
+          provider,
+          nativeEvents(provider, [text(provider, "")]),
+          true,
+        ],
+      ],
+    ),
+    [
+      "responses multi-part message",
+      "responses",
+      withCompleted(
+        responsesMessage(0, [
+          { text: "Fact one. ", annotations: [urlCitation] },
+          { text: "Fact two.", annotations: [{ ...urlCitation, url: "https://example.test/two" }] },
+        ]),
+      ),
+      true,
+    ],
+    [
+      "responses parts out of index order",
+      "responses",
+      [
+        { type: "response.output_text.delta", output_index: 2, content_index: 1, delta: "second" },
+        { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: "first" },
+        annotationAdded(2, 0, urlCitation),
+        annotationAdded(2, 1, urlCitation),
+      ],
+      true,
+    ],
+    [
+      "responses interleaved text and tools",
+      "responses",
+      [
+        ...functionCall(2, '{"a":1}', { name: "alpha", call_id: "call_a" }),
+        ...responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }]),
+        ...functionCall(1, '{"b":2}', { name: "beta", call_id: "call_b" }),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: " later" },
+      ],
+      true,
+    ],
+    [
+      "responses terminal snapshots",
+      "responses",
+      [
+        ...nativeEvents("responses", [text("responses", "draft")]).slice(0, -1),
+        {
+          type: "response.content_part.done",
+          output_index: 0,
+          content_index: 0,
+          part: { type: "output_text", text: "correct", annotations: [urlCitation, urlCitation] },
+        },
+        {
+          type: "response.completed",
+          response: nativeJSON("responses", [text("responses", "correct plus snapshot")]),
+        },
+      ],
+      true,
+    ],
+    [
+      "responses harmony turn",
+      "responses",
+      withCompleted(
+        responsesMessage(0, [
+          {
+            text: harmonyAnswer,
+            annotations: [{ ...urlCitation, start_index: answerAt, end_index: answerAt + 6 }],
+          },
+        ]),
+      ),
+      true,
+    ],
+    [
+      "responses harmony turn citing the analysis channel",
+      "responses",
+      withCompleted(
+        responsesMessage(0, [
+          {
+            text: harmonyAnswer,
+            annotations: [{ ...urlCitation, start_index: 30, end_index: 40 }],
+          },
+        ]),
+      ),
+      true,
+    ],
+    [
+      "responses delta without content_index",
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, delta: "Hello world" },
+        annotationAdded(0, 0, urlCitation),
+      ],
+      true,
+    ],
+    [
+      "responses openai@4 annotation event name",
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "fact" },
+        annotationAdded(0, 0, urlCitation, "response.output_text_annotation.added"),
+      ],
+      true,
+    ],
+    [
+      "responses citation addressed to a tool call",
+      "responses",
+      [
+        ...functionCall(0, "{}"),
+        annotationAdded(0, 0, urlCitation),
+        ...responsesMessage(1, [{ text: "fact", annotations: [urlCitation] }]),
+      ],
+      true,
+    ],
+    [
+      "responses custom call between cited text",
+      "responses",
+      withCompleted([
+        ...responsesMessage(0, [{ text: "before", annotations: [urlCitation] }]),
+        {
+          type: "response.output_item.added",
+          output_index: 1,
+          item: { type: "custom_tool_call", name: "shell", call_id: "call_c", input: "" },
+        },
+        { type: "response.custom_tool_call_input.delta", output_index: 1, delta: "ls" },
+        ...responsesMessage(2, [{ text: "after", annotations: [urlCitation] }]),
+      ]),
+      true,
+    ],
+    [
+      "anthropic text before any block opens",
+      "anthropic",
+      [
+        { type: "content_block_delta", delta: { type: "text_delta", text: "Lead " } },
+        ...anthropicText(0, "body", [documentCitation]),
+      ],
+      true,
+    ],
+    [
+      "anthropic index-less cited text, tool, text",
+      "anthropic",
+      withoutIndex([
+        ...anthropicText(0, "First", [documentCitation]),
+        ...anthropicTool(1, "toolu_1", "{}"),
+        ...anthropicText(2, " After", []),
+      ]),
+      true,
+    ],
+    [
+      "anthropic tools around cited text, out of index order",
+      "anthropic",
+      [
+        ...anthropicTool(2, "toolu_a", '{"a":1}'),
+        ...anthropicText(0, "fact", [documentCitation]),
+        ...anthropicTool(1, "toolu_b", '{"b":2}'),
+      ],
+      true,
+    ],
+    [
+      "anthropic block start text and initial citations",
+      "anthropic",
+      [
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "Pre ", citations: [documentCitation] },
+        },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "body" } },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "citations_delta", citation: documentCitation },
+        },
+      ],
+      true,
+    ],
+    [
+      "anthropic frames without event lines",
+      "anthropic",
+      [...anthropicText(0, "Hi", [documentCitation]), ...anthropicTool(1, "toolu_1", "{}")],
+      false,
+    ],
+  ];
+
+  it("every cited stream collapses to the uncited collapse plus citation data", () => {
+    let cited = 0;
+    for (const [name, provider, events, eventLines] of corpus()) {
+      const collapse = provider === "responses" ? collapseOpenAISSE : collapseAnthropicSSE;
+      const body = (wire: Json[]) => (eventLines ? sse(wire) : dataOnly(wire));
+      const base = collapse(body(uncitedWire(events))) as Json;
+      const result = collapse(body(events)) as Json;
+      expect(stripCitations(result, base), name).toEqual(base);
+      if (result.blocks?.some((block: Json) => block[key(provider)]?.length)) cited++;
+      // Every offset an annotation keeps falls inside its own text.
+      for (const block of (result.blocks ?? []) as Json[])
+        for (const annotation of block.annotations ?? [])
+          for (const field of ["start_index", "end_index", "index"])
+            if (typeof annotation[field] === "number" && block.text !== "")
+              expect(annotation[field], `${name} ${field}`).toBeLessThanOrEqual(block.text.length);
+    }
+    // The corpus is cited: all but the two whose citations cannot be kept.
+    expect(cited).toBe(corpus().length - 2);
+  });
+
+  it("every cited Responses JSON body records as the uncited collapse plus citation data", () => {
+    for (const blocks of [
+      coreBlocks("responses"),
+      [text("responses", "fact"), tool, text("responses", " and more")],
+      [text("responses", "")],
+    ]) {
+      const json = nativeJSON("responses", blocks);
+      const base = collapseResponsesJSON(uncitedWire([json])[0]) as Json;
+      const result = collapseResponsesJSON(json) as Json;
+      expect(stripCitations(result, base)).toEqual(base);
+      expect(result.blocks.some((block: Json) => block.annotations?.length)).toBe(true);
+    }
+  });
+
+  it("a Responses text delta without content_index keeps its text in a cited turn", () => {
+    const wire = [
+      messageAdded(0),
+      { type: "response.output_text.delta", output_index: 0, delta: "Hello world" },
+      annotationAdded(0, 0, urlCitation),
+    ];
+    expect(collapseOpenAISSE(sse(wire))).toEqual({
+      content: "Hello world",
+      blocks: [text("responses", "Hello world", [urlCitation])],
+    });
+  });
+
+  it("a cited harmony turn's annotation offsets point into the parsed text, or are dropped and reported", async () => {
+    const inFinal = { ...urlCitation, start_index: answerAt, end_index: answerAt + 6 };
+    const inAnalysis = { ...urlCitation, start_index: 30, end_index: 40 };
+    const wire = withCompleted(
+      responsesMessage(0, [{ text: harmonyAnswer, annotations: [inFinal, inAnalysis] }]),
+    );
+    const cited = collapseOpenAISSE(sse(wire));
+    expect(cited.content).toBe("Answer here");
+    expect(cited.blocks).toEqual([
+      text("responses", "Answer here", [{ ...urlCitation, start_index: 0, end_index: 6 }]),
+    ]);
+    expect(cited.citationNote).toContain("outside the harmony-parsed text");
+    const logger = new Logger("silent");
+    const warn = vi.spyOn(logger, "warn");
+    const server = await recorded("responses", wire, true, false, logger);
+    expect(saved(server).blocks).toEqual(cited.blocks);
+    expect(warn.mock.calls.flat().join("\n")).toContain("outside the harmony-parsed text");
+  });
+
+  it("Anthropic frames without an event line are read the same with or without citations", () => {
+    const wire = [
+      ...anthropicText(0, "Hi", [documentCitation]),
+      ...anthropicTool(1, "toolu_1", "{}"),
+    ];
+    const cited = collapseAnthropicSSE(dataOnly(wire));
+    expect(cited).toEqual(collapseAnthropicSSE(dataOnly(uncitedWire(wire))));
+    expect(cited.blocks).toBeUndefined();
+  });
+
+  it("Anthropic text on a block start is not content, cited or not", () => {
+    const wire = [
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "Pre ", citations: [] },
+      },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "body" } },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "citations_delta", citation: documentCitation },
+      },
+    ];
+    const plain = collapseAnthropicSSE(sse(uncitedWire(wire)));
+    const cited = collapseAnthropicSSE(sse(wire));
+    expect(plain.content).toBe("body");
+    expect(cited.content).toBe("body");
+    expect(cited.blocks).toEqual([text("anthropic", "body", [documentCitation])]);
+  });
+
+  it("Responses records annotations sent under the openai@4 event name and replays the API's name", async () => {
+    const wire = [
+      messageAdded(0),
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "fact" },
+      annotationAdded(0, 0, urlCitation, "response.output_text_annotation.added"),
+    ];
+    const server = await recorded("responses", wire, true);
+    expect(saved(server).blocks).toEqual([text("responses", "fact", [urlCitation])]);
+    const { events: replayed } = await request(server, "responses", true);
+    expect(replayed.map((event: Json) => event.type)).toContain(
+      "response.output_text.annotation.added",
+    );
+    expect(replayed.map((event: Json) => event.type)).not.toContain(
+      "response.output_text_annotation.added",
+    );
+  });
+
+  it("a Responses JSON turn whose annotations are all not objects records its text and warns", async () => {
+    const logger = new Logger("silent");
+    const warn = vi.spyOn(logger, "warn");
+    const body = {
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "fact", annotations: ["opaque", 7, null] }],
+        },
+      ],
+    };
+    const server = await recorded("responses", body, false, false, logger);
+    expect(saved(server)).toEqual({ content: "fact" });
+    expect(warn.mock.calls.flat().join("\n")).toContain(
+      "3 native citation entries that are not objects dropped",
+    );
   });
 });
 
