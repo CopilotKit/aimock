@@ -1178,20 +1178,24 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     // `index`, or a fresh synthetic key when the stream omits it. The citation
     // recording gets the same key, so cited text and tool calls share one key
     // space and keep stream order. An index-less delta belongs to the last
-    // block opened.
-    const citationEventType = eventType || parsed.type;
-    let blockIndex = typeof parsed.index === "number" ? parsed.index : undefined;
-    if (citationEventType === "content_block_start") {
-      blockIndex ??= nextSyntheticIndex++;
-      lastBlockIndex = blockIndex;
-    } else if (citationEventType === "content_block_delta") {
-      blockIndex ??= lastBlockIndex;
+    // block opened. A frame whose data is not an object (`data: null`)
+    // carries no block.
+    let blockIndex: number | undefined;
+    if (parsed !== null && typeof parsed === "object") {
+      const citationEventType = eventType || parsed.type;
+      blockIndex = typeof parsed.index === "number" ? parsed.index : undefined;
+      if (citationEventType === "content_block_start") {
+        blockIndex ??= nextSyntheticIndex++;
+        lastBlockIndex = blockIndex;
+      } else if (citationEventType === "content_block_delta") {
+        blockIndex ??= lastBlockIndex;
+      }
+      citations.captureEvent({
+        ...parsed,
+        type: citationEventType,
+        ...(blockIndex !== undefined ? { index: blockIndex } : {}),
+      });
     }
-    citations.captureEvent({
-      ...parsed,
-      type: citationEventType,
-      ...(blockIndex !== undefined ? { index: blockIndex } : {}),
-    });
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;

@@ -1813,6 +1813,18 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     }
   });
 
+  it("an Anthropic frame whose data is null is ignored, cited or not", () => {
+    for (const citations of [[], [documentCitation]]) {
+      const wire = sse(anthropicText(0, "hi", citations));
+      const withNull = wire.replace(
+        "event: content_block_start",
+        "event: ping\ndata: null\n\nevent: content_block_start",
+      );
+      expect(withNull).not.toBe(wire);
+      expect(collapseAnthropicSSE(withNull)).toEqual(collapseAnthropicSSE(wire));
+    }
+  });
+
   it("a null annotations or citations field reads as absent at load and at serve time", async () => {
     for (const provider of ["responses", "anthropic"] as const) {
       const absent = [
