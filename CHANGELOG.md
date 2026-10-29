@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Record and replay native citations and annotations from real provider turns (#594)
+
 ### Changed
 
 - `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
