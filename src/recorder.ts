@@ -2058,14 +2058,13 @@ function buildFixtureResponse(
         .filter((item) => item.type === "web_search_call")
         .map((item) => (item.action as Record<string, unknown> | undefined)?.query)
         .filter((query): query is string => typeof query === "string");
-      const usage = captureUsage({
-        ...captureContext,
-        family: "openai",
-        stage: "nonstream",
-        observation: obj,
-      });
+      // The citation reader captured the envelope usage raw; sanitize it like
+      // every other recorded usage so it never reaches the fixture unsanitized.
+      const citedFields = { ...cited };
+      delete citedFields.usage;
+      const usage = sanitizeRecordedUsage(cited.usage);
       return {
-        ...cited,
+        ...citedFields,
         ...(reasoning ? { reasoning } : {}),
         ...(webSearches.length ? { webSearches } : {}),
         ...(usage ? { usage } : {}),

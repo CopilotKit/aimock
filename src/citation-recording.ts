@@ -230,6 +230,7 @@ export class CitationRecording {
         customToolCalls?: CustomToolCall[];
         content: string;
         toolCalls: ToolCall[];
+        usage?: Record<string, unknown>;
       }
     | undefined {
     const entries: { position: [number, number]; block: ResponsesFixtureBlock }[] = [];
