@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { A2AMock } from "../a2a-mock.js";
 import { LLMock } from "../llmock.js";
 import { loadConfig, startFromConfig } from "../config-loader.js";
@@ -21,6 +22,7 @@ type Wire = {
   result?: { task?: A2ATask; tasks?: A2ATask[]; message?: { parts: A2APart[] } };
   error?: { code: number; message: string };
 };
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const INPUT = "TASK_STATE_INPUT_REQUIRED";
 const DONE = "TASK_STATE_COMPLETED";
 const FAILED = "TASK_STATE_FAILED";
@@ -138,6 +140,7 @@ async function list(url: string, params: Record<string, unknown> = {}): Promise<
 }
 async function rejected(
   url: string,
+  code: number,
   text: string,
   extra: Record<string, unknown>,
   streaming = false,
@@ -145,7 +148,7 @@ async function rejected(
   const result = await rpc(url, streaming ? "SendStreamingMessage" : "SendMessage", {
     message: message(text, extra),
   });
-  expect(result.error).toMatchObject({ code: expect.any(Number), message: expect.any(String) });
+  expect(result.error).toMatchObject({ code, message: expect.any(String) });
   expect(result.result).toBeUndefined();
 }
 
@@ -285,7 +288,7 @@ describe("bounded conversation retries", () => {
   ])("rejects changed %s without accepting a matching next turn", async (_name, changed) => {
     const { url } = await fixture(repeated(), false, { replayLimit: 1 });
     const first = await send(url, "", { messageId: "kept", parts: originalParts });
-    await rejected(url, "", { taskId: first.id, messageId: "kept", parts: changed }, true);
+    await rejected(url, -32602, "", { taskId: first.id, messageId: "kept", parts: changed }, true);
     expect(await getTask(url, first.id)).toEqual(first);
     expect(await list(url)).toEqual([first]);
     expect(
@@ -313,14 +316,18 @@ describe("bounded conversation retries", () => {
   it("keeps records across rejected new IDs, conflicts, and invalid contexts", async () => {
     const { url } = await fixture(script(), false, { replayLimit: 1 });
     const first = await send(url, "start", { messageId: "kept", contextId: "ctx" });
-    await rejected(url, "answer", { taskId: first.id, messageId: "kept" });
-    await rejected(url, "wrong", { taskId: first.id, messageId: "new" });
-    await rejected(url, "start", { taskId: first.id, messageId: "kept", contextId: "other" });
-    await rejected(url, "start", { taskId: "unknown", messageId: "kept" });
+    await rejected(url, -32602, "answer", { taskId: first.id, messageId: "kept" });
+    await rejected(url, -32000, "wrong", { taskId: first.id, messageId: "new" });
+    await rejected(url, -32602, "start", {
+      taskId: first.id,
+      messageId: "kept",
+      contextId: "other",
+    });
+    await rejected(url, -32001, "start", { taskId: "unknown", messageId: "kept" });
     expect(await send(url, "start", { taskId: first.id, messageId: "kept" })).toEqual(first);
     const second = await send(url, "answer", { taskId: first.id, messageId: "new" });
     expect(second.history).toHaveLength(4);
-    await rejected(url, "start", { taskId: first.id, messageId: "kept" });
+    await rejected(url, -32000, "start", { taskId: first.id, messageId: "kept" });
     expect(await getTask(url, first.id)).toEqual(second);
   });
 
@@ -360,8 +367,12 @@ describe("bounded conversation retries", () => {
       expect(await send(url, "start", { taskId: first.id, messageId: "first" }, true)).toEqual(
         first,
       );
-      await rejected(url, "end", { taskId: first.id, messageId: "unseen" });
-      await rejected(url, "start", { taskId: first.id, messageId: "first", contextId: "wrong" });
+      await rejected(url, -32004, "end", { taskId: first.id, messageId: "unseen" });
+      await rejected(url, -32602, "start", {
+        taskId: first.id,
+        messageId: "first",
+        contextId: "wrong",
+      });
       expect(await getTask(url, first.id)).toEqual(terminal);
       expect(await list(url)).toEqual([terminal]);
     },
@@ -399,7 +410,7 @@ describe("bounded conversation retries", () => {
     const two = await send(url, "two", { messageId: "first" });
     await send(url, "next", { taskId: one.id, messageId: "second" });
     await send(url, "next", { taskId: two.id, messageId: "second" });
-    await rejected(url, "one", { taskId: one.id, messageId: "first" });
+    await rejected(url, -32000, "one", { taskId: one.id, messageId: "first" });
     expect(await send(url, "two", { taskId: two.id, messageId: "first" })).toEqual(two);
   });
 
@@ -463,7 +474,7 @@ describe("bounded conversation retries", () => {
     const { mock, url } = await fixture(repeated(), false, { replayLimit: 2 });
     const first = await send(url, "same", { messageId: "shared" });
     mock.reset();
-    await rejected(url, "same", { taskId: first.id, messageId: "shared" });
+    await rejected(url, -32000, "same", { taskId: first.id, messageId: "shared" });
     expect(await list(url)).toEqual([]);
     mock
       .registerAgent({ name: "agent" })
@@ -496,14 +507,14 @@ describe("bounded conversation retries", () => {
 describe("task-bound conversation fixtures", () => {
   it(
     "exports a usable typed registration API and configuration surface",
-    { timeout: 0 },
+    { timeout: 60_000 },
     async () => {
       const mock = new A2AMock().registerAgent({ name: "agent" });
       expect(mock.onConversation("agent", script())).toBe(mock);
       const run = spawn(
         process.execPath,
         [
-          resolve("node_modules/typescript/bin/tsc"),
+          resolve(REPO_ROOT, "node_modules/typescript/bin/tsc"),
           "--noEmit",
           "--strict",
           "--skipLibCheck",
@@ -513,9 +524,9 @@ describe("task-bound conversation fixtures", () => {
           "NodeNext",
           "--moduleResolution",
           "NodeNext",
-          "src/__tests__/conversation.types.ts",
+          resolve(REPO_ROOT, "src/__tests__/conversation.types.ts"),
         ],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
       let diagnostics = "";
       run.stdout.on("data", (chunk: Buffer) => {
@@ -565,7 +576,7 @@ describe("task-bound conversation fixtures", () => {
           { pattern: later ? "bad-end" : "bad-output", response: { state: DONE, ...output } },
         ] as A2AConversationTurn[]),
       ).toThrow();
-      await rejected(url, "bad-output", {});
+      await rejected(url, -32000, "bad-output", {});
       expect(await list(url)).toEqual([]);
       expect((await send(url, "start")).history[1].parts).toEqual([{ text: "question" }]);
     },
@@ -606,7 +617,7 @@ describe("task-bound conversation fixtures", () => {
       expect(() =>
         mock.onConversation("agent", [turn("invalid", state), turn("end", DONE)]),
       ).toThrow();
-      await rejected(url, "invalid", {});
+      await rejected(url, -32000, "invalid", {});
       expect(await list(url)).toEqual([]);
     },
   );
@@ -644,7 +655,7 @@ describe("task-bound conversation fixtures", () => {
     "uses case-sensitive substring matching and joins input text parts (stream=%s)",
     async (stream) => {
       const { url } = await fixture([turn("Hello [World]", INPUT), turn("Next (Step)", DONE)]);
-      await rejected(url, "hello [world]", {}, stream);
+      await rejected(url, -32000, "hello [world]", {}, stream);
       const task = await send(
         url,
         "unused",
@@ -663,7 +674,7 @@ describe("task-bound conversation fixtures", () => {
         { data: { ignored: true } },
         { text: "[World] suffix" },
       ]);
-      await rejected(url, "prefix next (step) suffix", { taskId: task.id }, stream);
+      await rejected(url, -32000, "prefix next (step) suffix", { taskId: task.id }, stream);
       expect(await getTask(url, task.id)).toEqual(task);
       const nextParts = [
         { text: "prefix Next" },
@@ -685,7 +696,7 @@ describe("task-bound conversation fixtures", () => {
       const second = await send(url, "SAME", {}, stream);
       expect(first.id).not.toBe(second.id);
       for (const task of [first, second]) {
-        await rejected(url, "not-the-next-pattern", { taskId: task.id }, stream);
+        await rejected(url, -32000, "not-the-next-pattern", { taskId: task.id }, stream);
         expect(await getTask(url, task.id)).toEqual(task);
         expect((await send(url, "SAME", { taskId: task.id }, stream)).status.state).toBe(DONE);
       }
@@ -793,7 +804,7 @@ describe("task-bound conversation fixtures", () => {
       const { url } = await fixture();
       const live = await send(url, "start", { contextId: "shared" }, stream);
       for (const taskId of ["unknown", ""]) {
-        await rejected(url, "start", { taskId, contextId: "shared" }, stream);
+        await rejected(url, -32001, "start", { taskId, contextId: "shared" }, stream);
         expect(await list(url)).toEqual([live]);
         expect(await getTask(url, live.id)).toEqual(live);
       }
@@ -806,7 +817,7 @@ describe("task-bound conversation fixtures", () => {
     const one = await fixture();
     const two = await fixture();
     const task = await send(one.url, "start");
-    await rejected(two.url, "start", { taskId: task.id });
+    await rejected(two.url, -32001, "start", { taskId: task.id });
     expect(await list(two.url)).toEqual([]);
     expect((await send(one.url, "answer", { taskId: task.id })).history).toHaveLength(4);
   });
@@ -816,7 +827,7 @@ describe("task-bound conversation fixtures", () => {
     async (stream) => {
       const { url } = await fixture();
       const task = await send(url, "start", { contextId: "original" });
-      await rejected(url, "answer", { taskId: task.id, contextId: "conflict" }, stream);
+      await rejected(url, -32602, "answer", { taskId: task.id, contextId: "conflict" }, stream);
       expect(await getTask(url, task.id)).toEqual(task);
       expect(await list(url)).toEqual([task]);
       const next = await send(url, "answer", { taskId: task.id, contextId: "original" }, stream);
@@ -834,7 +845,7 @@ describe("task-bound conversation fixtures", () => {
       register(mock, [turn("finish", DONE, "wrong-script")]);
       const task = await send(url, "start");
       for (const text of ["wrong", "finish", "start"]) {
-        await rejected(url, text, { taskId: task.id }, stream);
+        await rejected(url, -32000, text, { taskId: task.id }, stream);
         expect(await getTask(url, task.id)).toEqual(task);
         expect(await list(url)).toEqual([task]);
       }
@@ -847,7 +858,8 @@ describe("task-bound conversation fixtures", () => {
     async (state) => {
       const { url } = await fixture([turn("again", state)]);
       const task = await send(url, "again");
-      for (const stream of [false, true]) await rejected(url, "again", { taskId: task.id }, stream);
+      for (const stream of [false, true])
+        await rejected(url, -32004, "again", { taskId: task.id }, stream);
       expect(await getTask(url, task.id)).toEqual(task);
       expect(await list(url)).toEqual([task]);
       expect((await send(url, "again")).id).not.toBe(task.id);
@@ -864,7 +876,7 @@ describe("task-bound conversation fixtures", () => {
     const { url } = await fixture(turns);
     const texts = ["start", "answer", "finish"];
     for (const text of texts.slice(1)) {
-      await rejected(url, text, {}, modes[0]);
+      await rejected(url, -32000, text, {}, modes[0]);
       expect(await list(url)).toEqual([]);
     }
     let task: A2ATask | undefined;
@@ -1019,8 +1031,8 @@ describe("task-bound conversation fixtures", () => {
     expect(canceled.status.state).toBe("TASK_STATE_CANCELED");
     expect(canceled.history).toEqual(one.history);
     expect(canceled.artifacts).toEqual(one.artifacts);
-    await rejected(url, "answer", { taskId: one.id }, true);
-    await rejected(url, "start", { taskId: one.id });
+    await rejected(url, -32004, "answer", { taskId: one.id }, true);
+    await rejected(url, -32004, "start", { taskId: one.id });
     expect(await getTask(url, one.id)).toEqual(canceled);
     expect((await send(url, "answer", { taskId: two.id })).history).toHaveLength(4);
   });
@@ -1031,10 +1043,10 @@ describe("task-bound conversation fixtures", () => {
     expect(mock.reset()).toBe(mock);
     expect(await list(url)).toEqual([]);
     expect((await rpc(url, "GetTask", { id: task.id })).error).toBeDefined();
-    await rejected(url, "start", {});
+    await rejected(url, -32000, "start", {});
     mock.registerAgent({ name: "agent" });
     register(mock);
-    await rejected(url, "answer", { taskId: task.id });
+    await rejected(url, -32000, "answer", { taskId: task.id });
     const fresh = await send(url, "start");
     expect(fresh.id).not.toBe(task.id);
     expect(fresh.history).toHaveLength(2);
@@ -1053,7 +1065,7 @@ describe("task-bound conversation fixtures", () => {
     expect(final.history[3].parts).toEqual([{ text: "second" }]);
     one.mock.registerAgent({ name: "agent" });
     register(one.mock, [turn("fresh", DONE, "new-first")]);
-    await rejected(one.url, "end", { taskId: first.id });
+    await rejected(one.url, -32000, "end", { taskId: first.id });
     expect((await send(one.url, "fresh")).history[1].parts).toEqual([{ text: "new-first" }]);
     expect(await getTask(two.url, second.id)).toEqual(final);
   });
@@ -1190,7 +1202,7 @@ describe("task-bound conversation fixtures", () => {
         { text: "earlier-conversation-stream" },
       ]);
     }
-    await rejected(url, "legacy-first", { taskId: task.id });
+    await rejected(url, -32000, "legacy-first", { taskId: task.id });
     expect((await send(url, "continue", { taskId: task.id })).status.state).toBe(DONE);
   });
 
@@ -1287,7 +1299,7 @@ it("compares every JSON data field before replay and preserves state on conflict
     ),
   ).toEqual(first);
   const changed = JSON.parse('{"label":"same","__proto__":{"marker":2}}');
-  await rejected(url, "step", {
+  await rejected(url, -32602, "step", {
     taskId: first.id,
     messageId: "retained",
     parts: [{ text: "step" }, { data: changed }],
