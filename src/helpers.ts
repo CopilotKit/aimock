@@ -1564,7 +1564,12 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text };
+      return {
+        type: "text",
+        text: b.text,
+        ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
+        ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
+      };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
         throw new Error(
@@ -1643,7 +1648,12 @@ export function resolveResponsesBlocks(
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text };
+      return {
+        type: "text",
+        text: b.text,
+        ...(Array.isArray(b.annotations) ? { annotations: structuredClone(b.annotations) } : {}),
+        ...(Array.isArray(b.citations) ? { citations: structuredClone(b.citations) } : {}),
+      };
     }
     if (b.type === "toolCall") {
       if (b.input !== undefined) failToolCall('"input" is only valid on a "customToolCall" block');

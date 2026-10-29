@@ -1,3 +1,4 @@
+import { CitationRecording } from "./citation-recording.js";
 import * as http from "node:http";
 import * as https from "node:https";
 import * as fs from "node:fs";
@@ -954,6 +955,14 @@ export async function proxyAndRecord(
         };
       }
     }
+    if (collapsed.blocks?.length) {
+      fixtureResponse = {
+        ...fixtureResponse,
+        content: collapsed.content ?? "",
+        toolCalls: collapsed.toolCalls ?? [],
+        blocks: collapsed.blocks,
+      };
+    }
   } else {
     // Non-streaming — try to parse as JSON
     let parsedResponse: unknown = null;
@@ -1009,6 +1018,28 @@ export async function proxyAndRecord(
         request,
         { provider: providerKey, contentType: ctString, operation: request._endpointType },
       );
+      if (parsedResponse && typeof parsedResponse === "object" && !("error" in fixtureResponse)) {
+        const obj = parsedResponse as Record<string, unknown>;
+        const provider = Array.isArray(obj.output)
+          ? "responses"
+          : Array.isArray(obj.content)
+            ? "anthropic"
+            : undefined;
+        if (provider) {
+          const citations = new CitationRecording(provider);
+          citations.captureJSON(obj);
+          const cited = citations.result();
+          if (cited) {
+            const compatible =
+              defaults.responsesTools === "extended" ? cited : withoutResponsesToolFields(cited);
+            if (defaults.responsesTools !== "extended") {
+              delete (fixtureResponse as { responsesBlocks?: unknown }).responsesBlocks;
+              delete (fixtureResponse as { customToolCalls?: unknown }).customToolCalls;
+            }
+            fixtureResponse = { ...fixtureResponse, ...compatible };
+          }
+        }
+      }
     }
   }
 
@@ -2007,6 +2038,37 @@ function buildFixtureResponse(
         content: "",
         ...(openaiReasoning ? { reasoning: openaiReasoning } : {}),
         ...usageSpread,
+      };
+    }
+  }
+
+  if (Array.isArray(obj.output)) {
+    const citations = new CitationRecording("responses");
+    citations.captureJSON(obj);
+    const cited = citations.result();
+    if (cited) {
+      const output = obj.output as Array<Record<string, unknown>>;
+      const reasoning = output
+        .filter((item) => item.type === "reasoning")
+        .flatMap((item) => (Array.isArray(item.summary) ? item.summary : []))
+        .filter((part) => part.type === "summary_text")
+        .map((part) => part.text)
+        .join("");
+      const webSearches = output
+        .filter((item) => item.type === "web_search_call")
+        .map((item) => (item.action as Record<string, unknown> | undefined)?.query)
+        .filter((query): query is string => typeof query === "string");
+      const usage = captureUsage({
+        ...captureContext,
+        family: "openai",
+        stage: "nonstream",
+        observation: obj,
+      });
+      return {
+        ...cited,
+        ...(reasoning ? { reasoning } : {}),
+        ...(webSearches.length ? { webSearches } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
   }

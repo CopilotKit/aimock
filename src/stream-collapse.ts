@@ -1,3 +1,4 @@
+import { CitationRecording } from "./citation-recording.js";
 /**
  * Stream collapsing functions for record-and-replay.
  *
@@ -509,6 +510,12 @@ export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseR
     return collapsed;
   }
   const result: CollapseResult = { ...collapsed };
+  // Preserve native text metadata even when extended tool calls are disabled.
+  if (result.responsesBlocks?.some((block) => block.type === "text" && block.annotations?.length)) {
+    result.blocks = result.responsesBlocks.filter(
+      (block): block is FixtureBlock => block.type !== "customToolCall",
+    );
+  }
   delete result.customToolCalls;
   delete result.responsesBlocks;
   if (result.toolCalls) {
@@ -537,6 +544,7 @@ export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseR
 export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
+  const citations = new CitationRecording("responses");
   const lines = splitSSEEvents(body);
   let content = "";
   let transcript = "";
@@ -592,6 +600,8 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       }
       continue;
     }
+
+    citations.captureEvent(parsed);
 
     // Responses API reasoning events
     if (parsed.type === "transcript.text.delta" && typeof parsed.delta === "string") {
@@ -1022,6 +1032,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
+      ...citations.result(),
     };
   }
 
@@ -1045,6 +1056,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
     ...(harmonyNote ? { harmonyNote } : {}),
     ...(inputTruncated ? { truncated: true } : {}),
+    ...citations.result(),
   };
 }
 
@@ -1064,6 +1076,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
 export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
+  const citations = new CitationRecording("anthropic");
   const blocks = splitSSEEvents(body);
   let usage: Record<string, unknown> | undefined;
   let content = "";
@@ -1126,6 +1139,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       previous: usage,
       observation: parsed,
     });
+    citations.captureEvent({ ...parsed, type: eventType || parsed.type });
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
@@ -1243,6 +1257,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
+      ...citations.result(),
     };
   }
 
@@ -1255,6 +1270,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(inputTruncated ? { truncated: true } : {}),
+    ...citations.result(),
   };
 }
 

@@ -1710,12 +1710,14 @@ export function contentWithToolCallsStreamEvents(
     let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
+        const annotations = block.annotations ?? textAnnotations[textPos];
+        textPos++;
         const { events: msgEvents, msgItem } = buildMessageOutputEvents(
           block.text,
           chunkSize,
           outputIndex,
           overrides?.phase,
-          textAnnotations[textPos++],
+          annotations,
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
@@ -1852,9 +1854,9 @@ function buildContentWithToolCallsResponse(
     let textPos = 0;
     for (const block of ordered) {
       if (block.type === "text") {
-        output.push(
-          buildMessageOutputItem(block.text, overrides?.phase, textAnnotations[textPos++]),
-        );
+        const annotations = block.annotations ?? textAnnotations[textPos];
+        textPos++;
+        output.push(buildMessageOutputItem(block.text, overrides?.phase, annotations));
       } else {
         output.push(buildToolCallOutputItem(block));
       }
@@ -2609,12 +2611,14 @@ export function buildResponsesMisbehavior(
     let textPos = 0;
     for (const block of blocks) {
       if (block.type === "text") {
+        const annotations = block.annotations ?? textAnnotations[textPos];
+        textPos++;
         const message = buildMessageOutputEvents(
           block.text,
           chunkSize,
           outputIndex,
           overrides.phase,
-          textAnnotations[textPos++],
+          annotations,
         );
         events.push(...message.events);
         output.push(message.msgItem);

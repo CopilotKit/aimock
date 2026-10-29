@@ -533,7 +533,12 @@ export type FixtureToolCall = (ToolCall & { type?: undefined }) | CustomToolCall
  * optional `id`).
  */
 export type FixtureBlock =
-  | { type: "text"; text: string }
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+    }
   | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string };
 
 /**
@@ -1112,7 +1117,12 @@ export interface FixtureFileCustomToolCall {
  * runtime string form. Normalizes to a {@link FixtureBlock}.
  */
 export type FixtureFileBlock =
-  | { type: "text"; text: string }
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+    }
   | {
       type: "toolCall";
       name: string;

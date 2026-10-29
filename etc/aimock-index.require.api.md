@@ -2123,6 +2123,8 @@ export interface Fixture {
 export type FixtureBlock = {
     type: "text";
     text: string;
+    annotations?: Record<string, unknown>[];
+    citations?: Record<string, unknown>[];
 } | {
     type: "toolCall";
     name: string;
@@ -2144,6 +2146,8 @@ export interface FixtureFile {
 type FixtureFileBlock = {
     type: "text";
     text: string;
+    annotations?: Record<string, unknown>[];
+    citations?: Record<string, unknown>[];
 } | {
     type: "toolCall";
     name: string;

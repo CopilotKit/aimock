@@ -844,7 +844,11 @@ function validateBlocks(
           fixtureIndex,
           message: `blocks[${j}].text must be a string, got ${typeof block.text}`,
         });
-      } else if (block.text === "") {
+      } else if (
+        block.text === "" &&
+        !(Array.isArray(block.annotations) && block.annotations.length > 0) &&
+        !(Array.isArray(block.citations) && block.citations.length > 0)
+      ) {
         // Mirror the content/toolCalls "empty string" rejection: an empty-text
         // block produces a meaningless/spurious wire chunk on replay.
         results.push({
