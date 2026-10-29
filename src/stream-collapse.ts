@@ -542,8 +542,11 @@ function extractSSEData(lines: string[]): string | undefined {
  *   data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}\n\n
  *   data: [DONE]\n\n
  *
- * Public, with the 1.44.0 result: an OpenAI Responses `namespace` and custom
- * tool calls are dropped. The recorder uses {@link collapseOpenAISSEWithResponsesTools}.
+ * Public. An OpenAI Responses `namespace` and custom tool calls are dropped,
+ * so for uncited input the result is unchanged from 1.44.0. For a cited
+ * Responses turn the result also has ordered `blocks` whose text blocks carry
+ * `annotations` (and `continuesMessage`). The recorder uses
+ * {@link collapseOpenAISSEWithResponsesTools}.
  */
 export function collapseOpenAISSE(rawBody: string): CollapseResult {
   return withoutResponsesToolFields(collapseOpenAISSEWithResponsesTools(rawBody));
@@ -1139,6 +1142,10 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
  * Format:
  *   event: message_start\ndata: {...}\n\n
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
+ *
+ * For uncited input the result is unchanged from 1.44.0. For a cited turn it
+ * also has `blocks`, ordered by content index, whose text blocks carry
+ * `citations`.
  */
 export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
@@ -2517,7 +2524,9 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
  * Returns null if the content type is not a known streaming format.
  * Falls back to OpenAI SSE parsing for unrecognized provider keys with text/event-stream.
  *
- * Public, with the 1.44.0 result (see {@link collapseOpenAISSE}). The recorder
+ * Public. For uncited input the result is unchanged from 1.44.0; a cited
+ * OpenAI Responses or Anthropic turn also gains the citation fields (see
+ * {@link collapseOpenAISSE} and {@link collapseAnthropicSSE}). The recorder
  * uses {@link collapseStreamingResponseWithResponsesTools}.
  */
 export function collapseStreamingResponse(
