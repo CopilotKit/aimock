@@ -2219,6 +2219,22 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     text(provider, "last", [cite(provider), cite(provider)]),
     { ...tool, name: "compare", arguments: '{"query":"other"}', id: "call_other" },
   ];
+  /** Harmony turns whose parser joins several bodies: name, text, cited answer start, length. */
+  const harmonyBodies: [string, string, number, number][] = [
+    [
+      "preamble and final answer",
+      "<|channel|>commentary<|message|>Pre. <|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
+      89,
+      6,
+    ],
+    [
+      "two final messages",
+      "<|channel|>final<|message|>One. <|end|><|start|>assistant<|channel|>final<|message|>Two<|return|>",
+      84,
+      3,
+    ],
+  ];
+  const harmonyLead = "<|channel|>final<|message|>Alpha ";
   /** Every cited stream shape the suite and the review rounds built. */
   const corpus = (): [string, Provider, Json[], boolean][] => [
     ...(["responses", "anthropic"] as const).flatMap(
@@ -2417,6 +2433,142 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       [...anthropicText(0, "Hi", [documentCitation]), ...anthropicTool(1, "toolu_1", "{}")],
       false,
     ],
+    // Round 5.
+    ...harmonyBodies.map(([name, raw, at, length]): [string, Provider, Json[], boolean] => [
+      `responses harmony ${name}`,
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: raw },
+        annotationAdded(0, 0, { ...urlCitation, start_index: at, end_index: at + length }),
+      ],
+      true,
+    ]),
+    [
+      "responses harmony part interleaved with another part",
+      "responses",
+      [
+        messageAdded(0),
+        {
+          type: "response.output_text.delta",
+          output_index: 0,
+          content_index: 0,
+          delta: harmonyLead,
+        },
+        { type: "response.output_text.delta", output_index: 0, content_index: 1, delta: "beta " },
+        {
+          type: "response.output_text.delta",
+          output_index: 0,
+          content_index: 0,
+          delta: "gamma<|return|>",
+        },
+        annotationAdded(0, 0, {
+          ...urlCitation,
+          start_index: harmonyLead.length,
+          end_index: harmonyLead.length + 5,
+        }),
+      ],
+      true,
+    ],
+    [
+      "responses empty cited part before a tool call",
+      "responses",
+      withCompleted([
+        ...responsesMessage(0, [{ text: "", annotations: [urlCitation] }]),
+        ...functionCall(1, "{}"),
+        ...responsesMessage(2, [{ text: "fact", annotations: [urlCitation] }]),
+      ]),
+      true,
+    ],
+    [
+      "anthropic empty cited part before a tool call",
+      "anthropic",
+      [
+        ...anthropicText(0, "", [documentCitation]),
+        ...anthropicTool(1, "toolu_1", "{}"),
+        ...anthropicText(2, "fact", [documentCitation]),
+      ],
+      true,
+    ],
+    [
+      "responses non-object entry replaced by a snapshot",
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "fact" },
+        { ...annotationAdded(0, 0, {}), annotation: null },
+        {
+          type: "response.content_part.done",
+          output_index: 0,
+          content_index: 0,
+          part: { type: "output_text", text: "fact", annotations: [urlCitation] },
+        },
+      ],
+      true,
+    ],
+    [
+      "anthropic non-object citation on a tool call",
+      "anthropic",
+      [
+        ...anthropicText(0, "fact", [documentCitation]),
+        ...anthropicTool(1, "toolu_1", "{}", [
+          {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "citations_delta", citation: 7 },
+          },
+        ]),
+      ],
+      true,
+    ],
+    [
+      "responses point annotation at the end of a split piece",
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "abcd" },
+        { type: "response.output_text.delta", output_index: 1, content_index: 0, delta: "zz" },
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "efgh" },
+        annotationAdded(0, 0, {
+          type: "file_citation",
+          file_id: "file_1",
+          filename: "a",
+          index: 4,
+        }),
+      ],
+      true,
+    ],
+    [
+      "responses offset past the streamed text",
+      "responses",
+      [
+        messageAdded(0),
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "ab" },
+        {
+          type: "response.content_part.done",
+          output_index: 0,
+          content_index: 0,
+          part: {
+            type: "output_text",
+            text: "abcdefgh",
+            annotations: [
+              { ...urlCitation, end_index: 1 },
+              { ...urlCitation, start_index: 5, end_index: 8 },
+            ],
+          },
+        },
+      ],
+      true,
+    ],
+    [
+      "responses two separate cited messages",
+      "responses",
+      withCompleted([
+        ...responsesMessage(0, [{ text: "One.", annotations: [urlCitation] }]),
+        ...responsesMessage(1, [{ text: "Two.", annotations: [urlCitation] }]),
+      ]),
+      true,
+    ],
   ];
 
   it("every cited stream collapses to the uncited collapse plus citation data", () => {
@@ -2444,6 +2596,9 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       coreBlocks("responses"),
       [text("responses", "fact"), tool, text("responses", " and more")],
       [text("responses", "")],
+      // Round 5: an empty cited message before a tool call, and two cited messages.
+      [text("responses", ""), tool, text("responses", "fact")],
+      [text("responses", "One."), text("responses", "Two.")],
     ]) {
       const json = nativeJSON("responses", blocks);
       const base = collapseResponsesJSON(uncitedWire([json])[0]) as Json;
@@ -2881,6 +3036,25 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       expect(result.citationNote).toBe(
         "1 native citation annotation pointing outside its text dropped",
       );
+    }
+  });
+
+  it("two separate cited messages record and replay as two messages", async () => {
+    const wire = withCompleted([
+      ...responsesMessage(0, [{ text: "One.", annotations: [urlCitation] }]),
+      ...responsesMessage(1, [{ text: "Two.", annotations: [urlCitation] }]),
+    ]);
+    for (const stream of [true, false]) {
+      const capture = stream ? wire : (wire[wire.length - 1].response as Json);
+      const server = await recorded("responses", capture, stream);
+      expect(saved(server).blocks).toEqual([
+        text("responses", "One.", [urlCitation]),
+        text("responses", "Two.", [urlCitation]),
+      ]);
+      for (const replayStream of [true, false]) {
+        const { body } = await request(server, "responses", replayStream);
+        expect(body.output.map((item: Json) => item.content.length)).toEqual([1, 1]);
+      }
     }
   });
 });
