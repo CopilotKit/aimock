@@ -1,4 +1,3 @@
-import { CitationRecording } from "./citation-recording.js";
 import * as http from "node:http";
 import * as https from "node:https";
 import * as fs from "node:fs";
@@ -25,6 +24,7 @@ import {
   capturedRedactedData,
   withoutResponsesToolFields,
 } from "./stream-collapse.js";
+import { CitationRecording, carriesNativeCitations } from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
@@ -955,11 +955,19 @@ export async function proxyAndRecord(
         };
       }
     }
-    if (collapsed.blocks?.length) {
+    // Native citation metadata lives on ordered text blocks, so a cited turn
+    // keeps its `blocks` even where the shape above would drop them (text-only
+    // or empty-text turns). Uncited turns never enter here and keep the shape
+    // above byte-identically, and a turn already ordered by `responsesBlocks`
+    // keeps that representation.
+    if (
+      collapsed.blocks?.some(carriesNativeCitations) &&
+      !(fixtureResponse as { responsesBlocks?: unknown }).responsesBlocks
+    ) {
       fixtureResponse = {
         ...fixtureResponse,
         content: collapsed.content ?? "",
-        toolCalls: collapsed.toolCalls ?? [],
+        toolCalls: (collapsed.toolCalls ?? []).map(sanitizeRecordedToolCall),
         blocks: collapsed.blocks,
       };
     }

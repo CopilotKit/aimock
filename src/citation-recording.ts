@@ -26,6 +26,16 @@ function argumentsText(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value ?? {});
 }
 
+/**
+ * True when a collapsed text block carries provider-native citation metadata,
+ * which only {@link CitationRecording} attaches and only for a cited turn.
+ */
+export function carriesNativeCitations(block: ResponsesFixtureBlock): boolean {
+  return (
+    block.type === "text" && (block.annotations !== undefined || block.citations !== undefined)
+  );
+}
+
 /** Retains text ownership until a cited turn can be represented as ordered fixtures. */
 export class CitationRecording {
   private readonly texts = new Map<string, TextState>();

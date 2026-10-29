@@ -1134,3 +1134,51 @@ describe("native citations with current Responses tool modes", () => {
     });
   }
 });
+
+describe("recording shape regressions", () => {
+  it("an uncited interleaved extended Responses stream records the pre-citation fixture shape", async () => {
+    const message = (output_index: number, value: string): Json[] => [
+      {
+        type: "response.output_item.added",
+        output_index,
+        item: { type: "message", role: "assistant", content: [] },
+      },
+      {
+        type: "response.content_part.added",
+        output_index,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] },
+      },
+      { type: "response.output_text.delta", output_index, content_index: 0, delta: value },
+      { type: "response.output_text.done", output_index, content_index: 0, text: value },
+    ];
+    const wire = [
+      ...message(0, "Before "),
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "function_call", name: "lookup", call_id: "call_1", arguments: "" },
+      },
+      {
+        type: "response.function_call_arguments.done",
+        output_index: 1,
+        arguments: '{"q":"x"}',
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 2,
+        item: { type: "custom_tool_call", name: "patch", call_id: "call_2", input: "" },
+      },
+      { type: "response.custom_tool_call_input.done", output_index: 2, input: "diff" },
+      ...message(3, "after"),
+    ];
+    const server = await recorded("responses", wire, true, true);
+    const saved = server.getFixtures()[0].response as Json;
+    expect(Object.keys(saved).sort()).toEqual([
+      "content",
+      "customToolCalls",
+      "responsesBlocks",
+      "toolCalls",
+    ]);
+  });
+});
