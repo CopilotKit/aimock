@@ -15,6 +15,7 @@ import {
   collapseStreamingResponse,
   setCollapseStringLimitForTests,
 } from "../stream-collapse.js";
+import { CitationRecording } from "../citation-recording.js";
 import { Logger } from "../logger.js";
 import type { FixtureFileEntry, FixtureResponse } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -2553,6 +2554,120 @@ describe("a cited recording is the uncited recording plus its citations", () => 
   // -------------------------------------------------------------------------
   // Round 5
   // -------------------------------------------------------------------------
+
+  /** A Responses message streamed as the given deltas, each `[content_index, text]`. */
+  const harmonyMessage = (output_index: number, deltas: [number, string][]): Json[] => [
+    messageAdded(output_index),
+    ...deltas.map(([content_index, delta]) => ({
+      type: "response.output_text.delta",
+      output_index,
+      content_index,
+      delta,
+    })),
+  ];
+
+  it("a harmony turn that joins a preamble and the final answer keeps an annotation on the answer", async () => {
+    const raw =
+      "<|channel|>commentary<|message|>Pre. <|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>";
+    const at = raw.indexOf("Answer");
+    const wire = [
+      ...harmonyMessage(0, [[0, raw]]),
+      annotationAdded(0, 0, { ...urlCitation, start_index: at, end_index: at + 6 }),
+    ];
+    const cited = collapseOpenAISSE(sse(wire));
+    expect(cited.content).toBe("Pre. Answer");
+    expect(cited.citationNote).toBeUndefined();
+    expect(cited.blocks).toEqual([
+      text("responses", "Pre. Answer", [{ ...urlCitation, start_index: 5, end_index: 11 }]),
+    ]);
+    const server = await recorded("responses", wire, true);
+    expect(saved(server).blocks).toEqual(cited.blocks);
+  });
+
+  it("a harmony turn with two final messages keeps an annotation on the second", () => {
+    const raw =
+      "<|channel|>final<|message|>One. <|end|><|start|>assistant<|channel|>final<|message|>Two<|return|>";
+    const at = raw.lastIndexOf("Two");
+    const cited = collapseOpenAISSE(
+      sse([
+        ...harmonyMessage(0, [[0, raw]]),
+        annotationAdded(0, 0, { ...urlCitation, start_index: at, end_index: at + 3 }),
+      ]),
+    );
+    expect(cited.content).toBe("One. Two");
+    expect(cited.citationNote).toBeUndefined();
+    expect(cited.blocks).toEqual([
+      text("responses", "One. Two", [{ ...urlCitation, start_index: 5, end_index: 8 }]),
+    ]);
+  });
+
+  it("a harmony turn maps an annotation on a part whose text is interleaved with another part", () => {
+    const first = "<|channel|>final<|message|>Alpha ";
+    const wire = [
+      ...harmonyMessage(0, [
+        [0, first],
+        [1, "beta "],
+        [0, "gamma<|return|>"],
+      ]),
+      // "gamma" in part 0's own text starts right after `first`.
+      annotationAdded(0, 0, {
+        ...urlCitation,
+        start_index: first.length,
+        end_index: first.length + 5,
+      }),
+    ];
+    const cited = collapseOpenAISSE(sse(wire));
+    expect(cited.content).toBe("Alpha beta gamma");
+    expect(cited.blocks).toEqual([
+      text("responses", "Alpha beta gamma", [{ ...urlCitation, start_index: 11, end_index: 16 }]),
+    ]);
+  });
+
+  it("a harmony turn with a custom call between its text parses every text block", async () => {
+    const before =
+      "<|channel|>analysis<|message|>Think<|end|><|start|>assistant<|channel|>final<|message|>Before ";
+    const wire = withCompleted([
+      ...harmonyMessage(0, [[0, before]]),
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "custom_tool_call", name: "shell", call_id: "call_c", input: "" },
+      },
+      { type: "response.custom_tool_call_input.delta", output_index: 1, delta: "ls" },
+      ...harmonyMessage(2, [[0, "after<|return|>"]]),
+      annotationAdded(2, 0, { ...urlCitation, start_index: 0, end_index: 5 }),
+    ]);
+    const server = await recorded("responses", wire, true, true);
+    const fixture = saved(server);
+    expect(fixture.content).toBe("Before after");
+    expect(fixture.reasoning).toBe("Think");
+    expect(fixture.responsesBlocks).toEqual([
+      { type: "text", text: "Before " },
+      { type: "customToolCall", name: "shell", input: "ls", id: "call_c" },
+      text("responses", "after", [{ ...urlCitation, start_index: 0, end_index: 5 }]),
+    ]);
+    expect(collapseOpenAISSE(sse(wire)).blocks).toEqual([
+      { type: "text", text: "Before " },
+      text("responses", "after", [{ ...urlCitation, start_index: 0, end_index: 5 }]),
+    ]);
+  });
+
+  it("a harmony annotation that cannot be placed is reported with the reason it was dropped", () => {
+    const raw = "<|channel|>final<|message|>Answer<|return|>";
+    const unplaced = new CitationRecording("responses");
+    unplaced.text("0:0", raw.length);
+    unplaced.responsesEvent(annotationAdded(0, 0, { ...urlCitation, start_index: 27 }));
+    // A `content` that the streamed text does not hold cannot be located.
+    expect(unplaced.attach({ content: "Elsewhere" }, raw).citationNote).toBe(
+      "1 native citation annotation dropped: the harmony-parsed text was not found in the streamed text",
+    );
+    const outside = new CitationRecording("responses");
+    outside.text("0:0", raw.length);
+    outside.responsesEvent(annotationAdded(0, 0, { ...urlCitation, start_index: 2 }));
+    expect(outside.attach({ content: "Answer" }, raw).citationNote).toBe(
+      "1 native citation annotation pointing outside the harmony-parsed text dropped",
+    );
+  });
 
   it("an empty cited text part keeps its wire place before a tool call", async () => {
     const anthropicWire = [

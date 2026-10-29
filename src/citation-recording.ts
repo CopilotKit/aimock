@@ -67,6 +67,71 @@ export function isResponsesMessage(item: ObjectValue): boolean {
   return typeof item.type !== "string" || item.type === "message";
 }
 
+/** A run of harmony-parsed text, and where it sits in the streamed text. */
+interface Span {
+  /** Where the run starts in the streamed text. */
+  raw: number;
+  /** Where the run starts in the parsed text. */
+  parsed: number;
+  length: number;
+}
+
+/**
+ * Where each run of the harmony-parsed text `parsed` sits in the streamed text
+ * `raw`, or `undefined` when `parsed` cannot be laid out over `raw`. The
+ * parser joins message bodies: an optional leading text, then each body it
+ * routes to the content, which starts right after a `<|message|>` and ends at
+ * a control token or at the end. A later body is tried first, so a final
+ * answer that repeats an analysis body maps to the answer.
+ */
+function harmonySpans(raw: string, parsed: string): Span[] | undefined {
+  const starts: number[] = raw.startsWith("<|") ? [] : [0];
+  for (
+    let at = raw.indexOf(HARMONY_MESSAGE);
+    at !== -1;
+    at = raw.indexOf(HARMONY_MESSAGE, at + 1)
+  ) {
+    starts.push(at + HARMONY_MESSAGE.length);
+  }
+  const failed = new Set<string>();
+  const layout = (from: number, after: number): Span[] | undefined => {
+    if (from === parsed.length) return [];
+    const memo = `${from}:${after}`;
+    if (failed.has(memo)) return undefined;
+    for (let i = starts.length - 1; i >= 0 && starts[i] >= after; i--) {
+      const start = starts[i];
+      let same = 0;
+      while (
+        from + same < parsed.length &&
+        start + same < raw.length &&
+        parsed[from + same] === raw[start + same]
+      ) {
+        same++;
+      }
+      for (let length = same; length > 0; length--) {
+        const end = start + length;
+        if (end !== raw.length && !raw.startsWith("<|", end)) continue;
+        const rest = layout(from + length, end);
+        if (rest) return [{ raw: start, parsed: from, length }, ...rest];
+      }
+    }
+    failed.add(memo);
+    return undefined;
+  };
+  return layout(0, 0);
+}
+
+/** The position in the parsed text of position `at` in the streamed text. */
+function parsedAt(spans: Span[], at: number): number | undefined {
+  const span = spans.find((s) => at >= s.raw && at <= s.raw + s.length);
+  return span && span.parsed + at - span.raw;
+}
+
+/** How much of the parsed text comes from the streamed text before `at`. */
+function parsedBefore(spans: Span[], at: number): number {
+  return spans.reduce((sum, s) => sum + Math.min(Math.max(at - s.raw, 0), s.length), 0);
+}
+
 /**
  * The piece, of the pieces of one text, that holds an entry: a point (an
  * `index` only, as a file citation) goes to the last piece that starts before
@@ -575,11 +640,12 @@ export class CitationRecording {
   }
 
   /**
-   * The blocks of a harmony-parsed turn: its one parsed text, carrying every
-   * annotation whose offsets fall inside it, in the place of the text, then
-   * the harmony tool calls. Offsets are counted from the start of their own
-   * part of the streamed text, so each is moved to the streamed text, then to
-   * the final-channel message body that the parsed text was taken from.
+   * The blocks of a harmony-parsed turn. Each text block of `base` that holds
+   * streamed text is replaced by the parsed text that came from it (and left
+   * out when none did); when `base`'s text is already the parsed text, it is
+   * one text block. The harmony tool calls follow. Offsets count from the
+   * start of their own part of the streamed text, so each is moved to the
+   * streamed text, then into the parsed text, then into its text block.
    */
   private harmonyBlocks(
     base: CollapseResult,
@@ -588,42 +654,99 @@ export class CitationRecording {
     notes: string[],
   ): ResponsesFixtureBlock[] {
     const content = base.content ?? "";
-    const start = new Map<string, number>();
-    let offset = 0;
+    const spans = harmonySpans(raw, content);
+    // Where each part's text sits in the streamed text, run by run.
+    const runs = new Map<string, { raw: number; offset: number; length: number }[]>();
+    let at = 0;
     for (const segment of this.segments) {
-      if (!start.has(segment.key)) start.set(segment.key, offset);
-      offset += segment.length;
+      const list = runs.get(segment.key) ?? [];
+      const last = list[list.length - 1];
+      list.push({ raw: at, offset: last ? last.offset + last.length : 0, length: segment.length });
+      runs.set(segment.key, list);
+      at += segment.length;
     }
-    const body = content === "" ? -1 : raw.lastIndexOf(HARMONY_MESSAGE + content);
-    const shift = body === -1 ? undefined : body + HARMONY_MESSAGE.length;
-    const annotations: ObjectValue[] = [];
-    let lost = 0;
-    const keys = [...start.keys(), ...[...cited.keys()].filter((key) => !start.has(key))];
+    // A start counts from the character it points at; an end or a point from
+    // the one before it.
+    const streamedAt = (key: string, value: number, start: boolean): number | undefined => {
+      const list = runs.get(key) ?? [];
+      const inside = (run: { offset: number; length: number }) =>
+        value >= run.offset && value <= run.offset + run.length;
+      const run =
+        list.find((r) => inside(r) && (start ? value < r.offset + r.length : value > r.offset)) ??
+        list.find(inside);
+      return run && run.raw + value - run.offset;
+    };
+    const mapped: ObjectValue[] = [];
+    let unplaced = 0;
+    let outside = 0;
+    const keys = [...runs.keys(), ...[...cited.keys()].filter((key) => !runs.has(key))];
     for (const key of keys) {
       for (const annotation of cited.get(key) ?? []) {
+        const offsets = OFFSET_FIELDS.filter((name) => typeof annotation[name] === "number");
+        if (offsets.length > 0 && !spans) {
+          unplaced++;
+          continue;
+        }
         const moved = { ...annotation };
-        const fits = OFFSET_FIELDS.every((field) => {
-          const value = annotation[field];
-          if (typeof value !== "number") return true;
-          if (shift === undefined || !start.has(key)) return false;
-          moved[field] = value + start.get(key)! - shift;
-          return (moved[field] as number) >= 0 && (moved[field] as number) <= content.length;
+        const fits = offsets.every((name) => {
+          const streamed = streamedAt(key, annotation[name] as number, name === "start_index");
+          const parsed = streamed === undefined ? undefined : parsedAt(spans!, streamed);
+          moved[name] = parsed;
+          return parsed !== undefined;
         });
-        if (fits) annotations.push(moved);
-        else lost++;
+        if (fits) mapped.push(moved);
+        else outside++;
       }
     }
-    if (lost > 0) {
+    if (unplaced > 0) {
       notes.push(
-        `${lost} native citation ${lost === 1 ? "annotation" : "annotations"} pointing outside the harmony-parsed text dropped`,
+        `${count(unplaced, "annotation", "annotations")} dropped: the harmony-parsed text was not found in the streamed text`,
       );
     }
+    if (outside > 0) {
+      notes.push(
+        `${count(outside, "annotation", "annotations")} pointing outside the harmony-parsed text dropped`,
+      );
+    }
+    // Each text block, as the parsed text it holds and where that starts.
     const blocks = this.baseBlocks(base, content);
-    const first = blocks.findIndex((block) => block.type === "text");
-    const text: TextBlock = { type: "text", text: content };
-    if (annotations.length > 0) text.annotations = annotations;
-    if (first === -1) return [text, ...blocks];
-    blocks[first] = text;
-    return blocks;
+    const streamedBlocks =
+      spans !== undefined &&
+      blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("") === raw;
+    const out: { block: ResponsesFixtureBlock; start?: number }[] = [];
+    let cursor = 0;
+    for (const block of blocks) {
+      if (block.type !== "text") {
+        out.push({ block });
+      } else if (streamedBlocks) {
+        const from = parsedBefore(spans, cursor);
+        cursor += block.text.length;
+        const to = parsedBefore(spans, cursor);
+        if (to > from)
+          out.push({ block: { type: "text", text: content.slice(from, to) }, start: from });
+      } else if (!out.some((piece) => piece.start !== undefined)) {
+        out.push({ block: { type: "text", text: content }, start: 0 });
+      }
+    }
+    if (!out.some((piece) => piece.start !== undefined)) {
+      out.unshift({ block: { type: "text", text: content }, start: 0 });
+    }
+    const texts = out.filter(
+      (piece): piece is { block: TextBlock; start: number } => piece.start !== undefined,
+    );
+    let split = 0;
+    for (const annotation of mapped) {
+      const piece = owner(texts, (p) => p.start, annotation);
+      const moved = { ...annotation };
+      const fits = OFFSET_FIELDS.every((name) => {
+        if (typeof annotation[name] !== "number") return true;
+        moved[name] = (annotation[name] as number) - piece.start;
+        return inRange(moved[name] as number, piece.block.text.length);
+      });
+      if (fits) (piece.block.annotations ??= []).push(moved);
+      else split++;
+    }
+    if (split > 0) notes.push(splitNote(split));
+    return out.map((piece) => piece.block);
   }
 }
