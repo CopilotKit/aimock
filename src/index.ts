@@ -21,6 +21,12 @@ export {
   loadFixturesFromDirWithServices,
 } from "./fixture-loader-services.js";
 export type { FixturesWithServices } from "./fixture-loader-services.js";
+export { loadFixtureModule } from "./fixture-module.js";
+export type {
+  FixtureModuleOptions,
+  FixtureModuleValue,
+  FixtureModuleInfo,
+} from "./fixture-module.js";
 
 // Logger
 export { Logger } from "./logger.js";

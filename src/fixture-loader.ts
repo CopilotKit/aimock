@@ -1043,6 +1043,7 @@ export function claimOneShotError(fixtures: Fixture[], fixture: Fixture): boolea
   const idx = fixtures.indexOf(fixture);
   if (idx === -1) return false;
   fixtures.splice(idx, 1);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.remove(fixture);
   oneShotClaimGeneration.set(fixture, queueGeneration(fixtures));
   return true;
 }
@@ -1064,6 +1065,29 @@ function queueGeneration(fixtures: Fixture[]): number {
   return fixtureQueueGeneration.get(fixtureListTarget(fixtures)) ?? 0;
 }
 
+interface FixtureQueueObserver {
+  append(fixtures: Fixture[]): void;
+  prepend(fixtures: Fixture[]): void;
+  remove(fixture: Fixture): void;
+  clear(): void;
+}
+
+const fixtureQueueObservers = new WeakMap<Fixture[], FixtureQueueObserver>();
+
+export function observeFixtureQueue(fixtures: Fixture[], observer: FixtureQueueObserver): void {
+  fixtureQueueObservers.set(fixtureListTarget(fixtures), observer);
+}
+
+export function appendFixtureQueue(fixtures: Fixture[], added: Fixture[]): void {
+  fixtures.push(...added);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.append(added);
+}
+
+export function prependFixtureQueue(fixtures: Fixture[], added: Fixture[]): void {
+  fixtures.unshift(...added);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.prepend(added);
+}
+
 /**
  * Empty a fixture queue in place (array identity preserved — the running
  * server reads this same array on every request) and invalidate every
@@ -1075,6 +1099,7 @@ function queueGeneration(fixtures: Fixture[]): number {
 export function clearFixtureQueue(fixtures: Fixture[]): void {
   fixtures.length = 0;
   fixtureQueueGeneration.set(fixtureListTarget(fixtures), queueGeneration(fixtures) + 1);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.clear();
 }
 
 /**
@@ -1097,6 +1122,7 @@ export function releaseOneShotError(fixtures: Fixture[], fixture: Fixture | null
   // Front, matching `queueOneShotError`: the one-shot wins registration-order
   // ties against everything else, exactly as it did before it was claimed.
   fixtures.unshift(fixture);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.prepend([fixture]);
 }
 
 export function queueOneShotError(
@@ -1126,6 +1152,7 @@ export function queueOneShotError(
   oneShotErrorFixtures.add(fixture);
   // Insert at front so it wins registration-order ties against everything else.
   fixtures.unshift(fixture);
+  fixtureQueueObservers.get(fixtureListTarget(fixtures))?.prepend([fixture]);
   return fixture;
 }
 

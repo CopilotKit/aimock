@@ -44,6 +44,7 @@ import {
   isOneShotError,
   claimOneShotError,
   clearFixtureQueue,
+  appendFixtureQueue,
   releaseOneShotError,
   FixtureLoadError,
   MisbehaviorConfigError,
@@ -1420,7 +1421,7 @@ async function handleControlAPI(
         return validationFailed(err.errors.map((e) => e.toJSON()));
       }
     }
-    fixtures.push(...converted);
+    appendFixtureQueue(fixtures, converted);
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }

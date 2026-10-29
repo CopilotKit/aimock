@@ -486,6 +486,37 @@ interface FixtureMatch {
 }
 
 // @public (undocumented)
+interface FixtureModuleInfo {
+    // (undocumented)
+    filePath: string;
+    // (undocumented)
+    files: string[];
+    // (undocumented)
+    fixtureCount: number;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    options: Required<FixtureModuleOptions>;
+    // (undocumented)
+    revision: number;
+}
+
+// @public (undocumented)
+interface FixtureModuleOptions {
+    // (undocumented)
+    maxDepth?: number;
+    // (undocumented)
+    maxFixtures?: number;
+    // (undocumented)
+    parameters?: Record<string, FixtureModuleValue>;
+}
+
+// @public (undocumented)
+type FixtureModuleValue = null | boolean | number | string | FixtureModuleValue[] | {
+    [key: string]: FixtureModuleValue;
+};
+
+// @public (undocumented)
 type FixtureOpts = Omit<Fixture, "match" | "response">;
 
 // @public (undocumented)
@@ -748,6 +779,8 @@ export class LLMock {
     // (undocumented)
     enableRecording(config: RecordConfig): this;
     // (undocumented)
+    getFixtureModules(): FixtureModuleInfo[];
+    // (undocumented)
     getFixtures(): readonly Fixture[];
     // (undocumented)
     getLastRequest(): JournalEntry | null;
@@ -758,7 +791,11 @@ export class LLMock {
     loadFixtureDir(dirPath: string): this;
     loadFixtureFile(filePath: string): this;
     // (undocumented)
+    loadFixtureModule(filePath: string, options?: FixtureModuleOptions): this;
+    // (undocumented)
     mount(path: string, handler: Mountable): this;
+    // (undocumented)
+    mountFixtureModule(name: string, filePath: string, options?: FixtureModuleOptions): this;
     nextRequestError(status: number, errorBody?: {
         message?: string;
         type?: string;
@@ -818,6 +855,8 @@ export class LLMock {
     get port(): number;
     // (undocumented)
     prependFixture(fixture: Fixture): this;
+    // (undocumented)
+    reloadFixtureModules(changedPaths?: readonly string[]): number;
     reset(): this;
     resetMatchCounts(testId?: string): this;
     setChaos(config: ChaosConfig): this;
@@ -826,6 +865,8 @@ export class LLMock {
     start(): Promise<string>;
     // (undocumented)
     stop(): Promise<void>;
+    // (undocumented)
+    unmountFixtureModule(name: string): boolean;
     // (undocumented)
     get url(): string;
 }

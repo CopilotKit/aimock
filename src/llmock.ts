@@ -44,6 +44,8 @@ import {
   markFixtureResponsesToolsExtended,
   markFixtureMisbehaviorEnabled,
   MisbehaviorConfigError,
+  appendFixtureQueue,
+  prependFixtureQueue,
 } from "./fixture-loader.js";
 import {
   loadFixtureFileWithServices,
@@ -55,6 +57,12 @@ import { MCPMock } from "./mcp-mock.js";
 import { build, msg, quote } from "./message-text.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 import { Journal } from "./journal.js";
+import {
+  compileFixtureModule,
+  type FixtureModuleOptions,
+  type FixtureModuleInfo,
+} from "./fixture-module.js";
+import { FixtureModuleRegistry } from "./fixture-module-registry.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
@@ -80,6 +88,7 @@ export class LLMock {
    * caller never held them: the stored object is their identity.
    */
   private readonly ownFixtures = new WeakSet<Fixture>();
+  private fixtureModules?: FixtureModuleRegistry;
   private searchFixtures: SearchFixture[] = [];
   private rerankFixtures: RerankFixture[] = [];
   private moderationFixtures: ModerationFixture[] = [];
@@ -168,17 +177,20 @@ export class LLMock {
   }
 
   addFixture(fixture: Fixture): this {
-    this.fixtures.push(this.normalizeFixture(fixture));
+    appendFixtureQueue(this.fixtures, [this.normalizeFixture(fixture)]);
     return this;
   }
 
   addFixtures(fixtures: Fixture[]): this {
-    this.fixtures.push(...fixtures.map((fixture) => this.normalizeFixture(fixture)));
+    appendFixtureQueue(
+      this.fixtures,
+      fixtures.map((fixture) => this.normalizeFixture(fixture)),
+    );
     return this;
   }
 
   prependFixture(fixture: Fixture): this {
-    this.fixtures.unshift(this.normalizeFixture(fixture));
+    prependFixtureQueue(this.fixtures, [this.normalizeFixture(fixture)]);
     return this;
   }
 
@@ -235,8 +247,37 @@ export class LLMock {
         this.mcpFakeBuffer.push(...loaded.mcpFakes);
       }
     }
-    this.fixtures.push(...loaded.fixtures);
+    appendFixtureQueue(this.fixtures, loaded.fixtures);
     return this;
+  }
+
+  loadFixtureModule(filePath: string, options?: FixtureModuleOptions): this {
+    return this.addFixtures(compileFixtureModule(filePath, options, this.options.live).fixtures);
+  }
+
+  getFixtureModules(): FixtureModuleInfo[] {
+    return this.fixtureModules?.list() ?? [];
+  }
+
+  private moduleRegistry(): FixtureModuleRegistry {
+    return (this.fixtureModules ??= new FixtureModuleRegistry(
+      this.fixtures,
+      this.options.live,
+      (fixtures) => fixtures.map((fixture) => this.normalizeFixture(fixture)),
+    ));
+  }
+
+  mountFixtureModule(name: string, filePath: string, options?: FixtureModuleOptions): this {
+    this.moduleRegistry().mount(name, filePath, options);
+    return this;
+  }
+
+  reloadFixtureModules(changedPaths?: readonly string[]): number {
+    return this.moduleRegistry().reload(changedPaths);
+  }
+
+  unmountFixtureModule(name: string): boolean {
+    return this.moduleRegistry().unmount(name);
   }
 
   /**
@@ -321,7 +362,7 @@ export class LLMock {
     if (errors.length > 0) {
       throw new Error(`Fixture validation failed: ${JSON.stringify(errors)}`);
     }
-    this.fixtures.push(...converted);
+    appendFixtureQueue(this.fixtures, converted);
     return this;
   }
 
