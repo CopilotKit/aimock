@@ -8,9 +8,7 @@ import type {
   ChatCompletionRequest,
   Fixture,
   FixtureMatch,
-  FixtureBlock,
   FixtureResponse,
-  CustomToolCall,
   ResponsesToolsMode,
   RecordConfig,
   RecordedTimings,
@@ -24,14 +22,10 @@ import type { Logger } from "./logger.js";
 import {
   collapseStreamingResponseWithResponsesTools,
   capturedRedactedData,
-  responsesOutputToolBlocks,
+  collapseResponsesJSON,
   withoutResponsesToolFields,
 } from "./stream-collapse.js";
-import {
-  CitationRecording,
-  hasNativeCitations,
-  withNativeCitations,
-} from "./citation-recording.js";
+import { CitationRecording, hasNativeCitations } from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
@@ -780,6 +774,9 @@ export async function proxyAndRecord(
       defaults.logger.warn(
         `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
       );
+    }
+    if (collapsed.citationNote) {
+      defaults.logger.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
     }
     // Provider-reported usage captured from the stream's final usage frame
     // (#368). Persisted on the text / toolCall fixture shapes so replay serves
@@ -2034,74 +2031,33 @@ function buildFixtureResponse(
     }
   }
 
-  // OpenAI Responses: { output: [...] }. Recognized only for a cited turn; an
-  // uncited body keeps the error fallback below, as before citations.
+  // OpenAI Responses: { output: [...] }. Recognized only for a turn that
+  // carries native citation metadata; an uncited body keeps the error fallback
+  // below, as before citations. It is collapsed as the stream of the same
+  // turn, so both recordings of one turn are made by one collapse.
   if (Array.isArray(obj.output)) {
-    const output = obj.output as unknown[];
-    const citations = new CitationRecording("responses");
-    citations.captureJSON(obj);
-    const tools = responsesOutputToolBlocks(output);
-    const ordered = citations.ordered(() => tools);
-    if (ordered) {
-      const items = output.filter(
-        (item): item is Record<string, unknown> =>
-          item !== null && typeof item === "object" && !Array.isArray(item),
-      );
-      const reasoning = items
-        .filter((item) => item.type === "reasoning" && Array.isArray(item.summary))
-        .flatMap((item) => item.summary as unknown[])
-        .flatMap((part) =>
-          part !== null &&
-          typeof part === "object" &&
-          (part as Record<string, unknown>).type === "summary_text" &&
-          typeof (part as Record<string, unknown>).text === "string"
-            ? [(part as Record<string, unknown>).text as string]
-            : [],
-        )
-        .join("");
-      const webSearches = items
-        .filter((item) => item.type === "web_search_call")
-        .map((item) => {
-          const action = item.action;
-          return action !== null && typeof action === "object"
-            ? (action as Record<string, unknown>).query
-            : undefined;
-        })
-        .filter((query): query is string => typeof query === "string");
-      const toolCalls: ToolCall[] = [];
-      const customToolCalls: CustomToolCall[] = [];
-      for (const block of tools.values()) {
-        if (block.type === "text") continue;
-        const { name, id, namespace } = block;
-        const ids = { ...(id ? { id } : {}), ...(namespace ? { namespace } : {}) };
-        if (block.type === "customToolCall") {
-          customToolCalls.push({ type: "custom", name, input: block.input, ...ids });
-        } else {
-          toolCalls.push({ name, arguments: block.arguments, ...ids });
-        }
+    const collapsed = collapseResponsesJSON(obj);
+    const cited = !!collapsed.blocks?.some(hasNativeCitations);
+    if (cited || collapsed.citationNote) {
+      if (collapsed.citationNote) {
+        logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
       }
-      const cited = withNativeCitations(
-        {
-          content: "",
-          ...(toolCalls.length ? { toolCalls } : {}),
-          ...(customToolCalls.length ? { customToolCalls } : {}),
-        },
-        ordered,
-      );
       // Shape it as the stream recorder shapes the same turn.
-      const shaped = responsesTools === "extended" ? cited : withoutResponsesToolFields(cited);
+      const shaped =
+        responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
       const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
-      const usage = citations.usage;
       return {
         ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
         ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
         ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
         ...(shaped.responsesBlocks
           ? { responsesBlocks: shaped.responsesBlocks }
-          : { blocks: shaped.blocks }),
-        ...(reasoning ? { reasoning } : {}),
-        ...(webSearches.length ? { webSearches } : {}),
-        ...(usage ? { usage } : {}),
+          : shaped.blocks
+            ? { blocks: shaped.blocks }
+            : {}),
+        ...(shaped.reasoning ? { reasoning: shaped.reasoning } : {}),
+        ...(shaped.webSearches?.length ? { webSearches: shaped.webSearches } : {}),
+        ...(shaped.usage ? { usage: shaped.usage } : {}),
       };
     }
   }
@@ -2169,20 +2125,18 @@ function buildFixtureResponse(
       arguments: toToolCallArguments(b.input),
       ...(b.id ? { id: String(b.id) } : {}),
     });
-    // A cited turn adds its ordered blocks, whose tool calls are `toolCalls`.
+    // A cited turn adds `blocks`: the text and tool calls below, in that
+    // order, with each text block's citations.
     const citations = new CitationRecording("anthropic");
-    citations.captureJSON(obj);
-    const cited = citations.ordered(
-      () =>
-        new Map(
-          blocks.flatMap((b, index) =>
-            b.type === "tool_use" ? [[index, { type: "toolCall" as const, ...toToolCall(b) }]] : [],
-          ),
-        ),
-    );
-    const citedSpread = cited
-      ? { blocks: cited.filter((b): b is FixtureBlock => b.type !== "customToolCall") }
-      : {};
+    citations.anthropicJSON(blocks);
+    const cited = citations.attach({
+      content: joinedText,
+      ...(hasToolCalls ? { toolCalls: toolUseBlocks.map(toToolCall) } : {}),
+    });
+    if (cited.citationNote) {
+      logger?.warn(`Native citation metadata not recorded — ${cited.citationNote}`);
+    }
+    const citedSpread = cited.blocks?.some(hasNativeCitations) ? { blocks: cited.blocks } : {};
 
     if (hasToolCalls) {
       const toolCalls: ToolCall[] = toolUseBlocks.map(toToolCall);
@@ -2229,7 +2183,7 @@ function buildFixtureResponse(
     // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
     // redactedThinking field.) A cited turn whose only text is empty (its
     // citations are the payload) is complete too, as on the streaming path.
-    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0 || cited) {
+    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0 || "blocks" in citedSpread) {
       return {
         ...usageSpread,
         content: "",

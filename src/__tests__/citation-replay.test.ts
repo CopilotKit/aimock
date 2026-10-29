@@ -86,6 +86,14 @@ const tool = {
   arguments: '{"query":"source"}',
   id: "call_reference",
 };
+/**
+ * The order of an Anthropic JSON capture: the uncited recording keeps its
+ * text, then its tool calls, and a cited recording keeps that order.
+ */
+const textFirst = (blocks: Json[]): Json[] => [
+  ...blocks.filter((block) => block.type === "text"),
+  ...blocks.filter((block) => block.type !== "text"),
+];
 function sse(events: Json[]): string {
   return events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
 }
@@ -807,7 +815,10 @@ describe("native citation fixtures", () => {
           });
           const server = await recorded(provider, captureStream ? wire : json, captureStream);
           expect(visible((await request(server, provider, replayStream)).body, provider)).toEqual(
-            expected(blocks, provider),
+            expected(
+              provider === "anthropic" && !captureStream ? textFirst(blocks) : blocks,
+              provider,
+            ),
           );
         });
       }
@@ -880,7 +891,7 @@ describe("native citation fixtures", () => {
       expect(result.body.content[event.index].citations).toEqual([event.delta.citation]);
     }
   });
-  it("Responses correlates content and annotation indexes independently of arrival", async () => {
+  it("Responses keys each annotation to its own part when parts arrive out of index order", async () => {
     const second = { ...urlCitation, url: "https://example.test/second" };
     const input = [
       { type: "response.output_text.delta", output_index: 2, content_index: 1, delta: "second" },
@@ -907,12 +918,17 @@ describe("native citation fixtures", () => {
         annotation: urlCitation,
       },
     ];
-    await replayCollapsed("responses", input, [
-      text("responses", "first", [second]),
+    // The text keeps the uncited collapse's (arrival) order.
+    expect(collapseOpenAISSE(sse(input)).blocks).toEqual([
       text("responses", "second", [urlCitation, second]),
+      { ...text("responses", "first", [second]), continuesMessage: true },
+    ]);
+    await replayCollapsed("responses", input, [
+      text("responses", "second", [urlCitation, second]),
+      text("responses", "first", [second]),
     ]);
   });
-  it("Responses replaces supplied terminal text and annotations without duplicating snapshots", async () => {
+  it("Responses takes terminal annotation snapshots without duplicating them and keeps the streamed text", async () => {
     const final = text("responses", "correct", [urlCitation, urlCitation]);
     const input = nativeEvents("responses", [text("responses", "draft")]).slice(0, -1);
     input.push({
@@ -927,7 +943,8 @@ describe("native citation fixtures", () => {
       item: nativeJSON("responses", [final]).output[0],
     });
     input.push({ type: "response.completed", response: nativeJSON("responses", [final]) });
-    await replayCollapsed("responses", input, [final]);
+    // The text is what the uncited collapse keeps: the streamed deltas.
+    await replayCollapsed("responses", input, [{ ...final, text: "draft" }]);
   });
   it("Responses records a turn whose terminal metadata clears every citation as uncited", async () => {
     const input = nativeEvents("responses", [text("responses", "draft")]).slice(0, -1);
@@ -960,12 +977,25 @@ describe("native citation fixtures", () => {
         { type: "message", content: blocks.map((block) => ({ ...block, type: "output_text" })) },
       ],
     };
-    const server = await recorded("responses", [{ type: "response.completed", response }], true);
+    // The text streams as deltas; only the completed snapshot carries citations.
+    const deltas = blocks.map((block, content_index) => ({
+      type: "response.output_text.delta",
+      output_index: 0,
+      content_index,
+      delta: block.text,
+    }));
+    const server = await recorded(
+      "responses",
+      [...deltas, { type: "response.completed", response }],
+      true,
+    );
     expect(visible((await request(server, "responses", true)).body, "responses")).toEqual(
       expected(blocks, "responses"),
     );
   });
   it("Anthropic appends indexed deltas to initial citations without global deduplication", async () => {
+    // The text is the streamed deltas, as in the uncited collapse: a block
+    // start's text is not content, so block 1 is an empty cited block.
     const a = documentCitation;
     await replayCollapsed(
       "anthropic",
@@ -980,11 +1010,12 @@ describe("native citation fixtures", () => {
         { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " end" } },
         { type: "content_block_delta", index: 0, delta: { type: "citations_delta", citation: a } },
       ],
-      [text("anthropic", "start end", [a, a]), text("anthropic", "other", [a])],
+      [text("anthropic", " end", [a, a]), text("anthropic", "", [a])],
     );
   });
-  it("Responses reconstructs interleaved text and tool deltas by output index", async () => {
+  it("Responses keeps the uncited order of interleaved text and tool deltas", async () => {
     const second = { ...urlCitation, url: "https://example.test/later" };
+    const early = { ...urlCitation, start_index: 0, end_index: 2 };
     await replayCollapsed(
       "responses",
       [
@@ -1012,7 +1043,7 @@ describe("native citation fixtures", () => {
           output_index: 0,
           content_index: 0,
           annotation_index: 0,
-          annotation: urlCitation,
+          annotation: early,
         },
         { type: "response.function_call_arguments.delta", output_index: 3, delta: '{"b":' },
         { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: "er" },
@@ -1020,19 +1051,24 @@ describe("native citation fixtures", () => {
         { type: "response.function_call_arguments.delta", output_index: 3, delta: "2}" },
         { type: "response.function_call_arguments.done", output_index: 1, arguments: '{"a":3}' },
       ],
+      // The uncited collapse's order: the calls opened first, then the text as
+      // it arrived, cut where it moves from one part to the other. The
+      // annotation spanning "lat" + "er" (0-4) cannot sit on one piece.
       [
-        text("responses", "early"),
         { type: "toolCall", name: "alpha", id: "call_alpha", arguments: '{"a":3}' },
-        text("responses", "later", [second]),
         { type: "toolCall", name: "beta", id: "call_beta", arguments: '{"b":2}' },
+        { type: "text", text: "lat" },
+        text("responses", "ear", [early]),
+        { type: "text", text: "er" },
+        { type: "text", text: "ly" },
       ],
     );
   });
 
-  it("Responses accepts terminal text independently of annotation snapshots", async () => {
+  it("Responses keeps the streamed text when output_text.done disagrees", async () => {
     const input = nativeEvents("responses", [text("responses", "draft")]).slice(0, -1);
     input.push({ type: "response.output_text.done", output_index: 0, content_index: 0, text: "" });
-    await replayCollapsed("responses", input, [text("responses", "")]);
+    await replayCollapsed("responses", input, [text("responses", "draft")]);
   });
 
   for (const terminal of [
@@ -1062,10 +1098,11 @@ describe("native citation fixtures", () => {
               : { type: terminal, response: { output: [item] } };
         const input = nativeEvents("responses", [original]).slice(0, -1);
         input.push(event, structuredClone(event));
+        // The text is always the streamed text, as in the uncited collapse.
         await replayCollapsed("responses", input, [
           text(
             "responses",
-            field === "text" ? "correct" : "draft",
+            "draft",
             field === "annotations" ? [replacement] : original.annotations,
           ),
         ]);
@@ -1205,10 +1242,17 @@ describe("recording shape regressions", () => {
   for (const captureStream of [false, true])
     for (const replayStream of [false, true])
       it(`Responses replays a cited multi-part message as one item (${captureStream ? "SSE" : "JSON"} capture, ${replayStream ? "SSE" : "JSON"} replay)`, async () => {
+        // A stream sends each part's text as deltas, then the completed snapshot.
+        const deltas = parts.map((part, content_index) => ({
+          type: "response.output_text.delta",
+          output_index: 0,
+          content_index,
+          delta: part.text,
+        }));
         const server = await recorded(
           "responses",
           captureStream
-            ? [{ type: "response.completed", response: structuredClone(multiPart) }]
+            ? [...deltas, { type: "response.completed", response: structuredClone(multiPart) }]
             : structuredClone(multiPart),
           captureStream,
         );
@@ -1821,13 +1865,23 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         "<|start|>assistant<|channel|>final<|message|>Here you go.<|return|>",
     ];
     for (const value of harmony) {
-      const wire = withCompleted(
-        responsesMessage(0, [{ text: value, annotations: [urlCitation] }]),
+      // The annotation's offsets count from the start of the streamed text,
+      // where the final-channel answer sits after its channel tokens.
+      const answer = value.slice(
+        value.lastIndexOf("<|message|>") + "<|message|>".length,
+        -"<|return|>".length,
       );
+      const start = value.lastIndexOf(answer);
+      const annotation = { ...urlCitation, start_index: start, end_index: start + 4 };
+      const wire = withCompleted(responsesMessage(0, [{ text: value, annotations: [annotation] }]));
       const plain = collapseOpenAISSE(sse(uncited(wire)));
       expect(plain.content).not.toContain("<|");
+      expect(plain.content).toBe(answer);
       const cited = collapseOpenAISSE(sse(wire));
-      const blocks = citedBlocks(plain, "responses", [[urlCitation]]);
+      // In the parsed text the same span starts at 0.
+      const blocks = citedBlocks(plain, "responses", [
+        [{ ...urlCitation, start_index: 0, end_index: 4 }],
+      ]);
       expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
       expect(cited.blocks).toEqual(blocks);
       const server = await recorded("responses", wire, true);
@@ -1861,7 +1915,7 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     ]);
   });
 
-  it("a cited turn's flat toolCalls follow its blocks when arrival and index order differ", async () => {
+  it("a cited turn keeps the uncited order of its blocks and flat toolCalls when arrival and index order differ", async () => {
     const named = (events: Json[], name: string): Json[] =>
       events.map((event) =>
         event.content_block ? { ...event, content_block: { ...event.content_block, name } } : event,
@@ -1908,15 +1962,16 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         delete call.type;
         return [call];
       });
-      expect(blockCalls.map((call) => call.name)).toEqual(["beta", "alpha"]);
+      // Arrival order, as the uncited collapse keeps it: alpha, the text, beta.
+      expect(blockCalls.map((call) => call.name)).toEqual(["alpha", "beta"]);
       expect(cited.toolCalls).toEqual(blockCalls);
-      expect(new Set(cited.toolCalls)).toEqual(new Set(plain.toolCalls));
+      expect(cited.toolCalls).toEqual(plain.toolCalls);
       expect(cited.content).toBe(plain.content);
       const server = await recorded(provider, wire, true);
       const fixture = server.getFixtures()[0];
       expect((fixture.response as Json).toolCalls.map((call: Json) => call.name)).toEqual([
-        "beta",
         "alpha",
+        "beta",
       ]);
       expect(validateFixtures([fixture])).toEqual([]);
     }
@@ -2104,7 +2159,12 @@ describe("cited recordings read through the provider SDK clients", () => {
               ? await client.messages.stream(request).finalMessage()
               : await client.messages.create(request);
           }
-          expect(visible(body, provider)).toEqual(expected(blocks, provider));
+          expect(visible(body, provider)).toEqual(
+            expected(
+              provider === "anthropic" && !captureStream ? textFirst(blocks) : blocks,
+              provider,
+            ),
+          );
         }
       });
 });

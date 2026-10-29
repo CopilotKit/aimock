@@ -1603,6 +1603,7 @@ export interface CollapseResult {
     // (undocumented)
     audioMimeType?: string;
     blocks?: FixtureBlock[];
+    citationNote?: string;
     // (undocumented)
     content?: string;
     customToolCalls?: CustomToolCall[];

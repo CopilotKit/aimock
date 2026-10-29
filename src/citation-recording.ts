@@ -1,21 +1,43 @@
-import { captureUsage } from "./response/usage/recording.js";
 import type { CollapseResult } from "./stream-collapse.js";
-import type { FixtureBlock, ResponseOverrides, ResponsesFixtureBlock, ToolCall } from "./types.js";
+import type { FixtureBlock, ResponsesFixtureBlock } from "./types.js";
 
 type ObjectValue = Record<string, unknown>;
 type TextBlock = Extract<FixtureBlock, { type: "text" }>;
 
-interface TextState {
-  position: [number, number];
-  text: string;
-  /** Native metadata by its index: `annotation_index` (Responses) or arrival (Anthropic). */
-  metadata: Map<number, ObjectValue>;
+/** Text the base collapse appended to its `content`, in arrival order. */
+interface Segment {
+  key: string;
+  length: number;
 }
+
+/** A piece of a base text block that belongs to one text part. */
+interface Piece {
+  key?: string;
+  /** Where the piece starts in its part's text. */
+  offset: number;
+  block: ResponsesFixtureBlock;
+}
+
+/** The OpenAI Responses annotation event, and the name openai@4 declares for it. */
+const ANNOTATION_EVENTS = new Set([
+  "response.output_text.annotation.added",
+  "response.output_text_annotation.added",
+]);
+
+/** Positional annotation fields, as offsets into the text of their part. */
+const OFFSET_FIELDS = ["start_index", "end_index", "index"] as const;
+
+/** The marker that opens a harmony message body. */
+const HARMONY_MESSAGE = "<|message|>";
 
 function object(value: unknown): ObjectValue | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as ObjectValue)
     : undefined;
+}
+
+function number(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }
 
 /**
@@ -32,227 +54,476 @@ export function hasNativeCitations(block: ResponsesFixtureBlock): boolean {
 }
 
 /**
- * Reads the provider-native citation metadata of one recorded turn. It owns
- * only text: every tool call in a cited turn comes from the caller's own
- * collapse, so a cited recording is the uncited recording plus citation data.
+ * The provider-native citation metadata of one recorded turn, attached to the
+ * collapse that the caller already made of it.
+ *
+ * It owns no text, no tool calls and no order. The base collapse tells it, at
+ * the place it appends text to its `content`, which text part (a Responses
+ * `output_index:content_index`, an Anthropic content block) that text belongs
+ * to ({@link text}). The citation events only fill each part's metadata.
+ * {@link attach} then splits the base result's own text blocks at part
+ * boundaries and puts each part's metadata on its pieces. So `content`,
+ * `toolCalls`, `reasoning` and the order of the blocks are always the base
+ * collapse's, and a cited recording is the uncited recording plus citation
+ * data.
  */
 export class CitationRecording {
-  private readonly texts = new Map<string, TextState>();
+  private readonly segments: Segment[] = [];
+  /** Each text part's native metadata, by its index, by part key. */
+  private readonly parts = new Map<string, Map<number, ObjectValue>>();
+  /** Every part key, in the order it was first seen. */
+  private readonly seen = new Set<string>();
   /**
-   * Output indexes (Responses) or block indexes (Anthropic) known to hold
-   * something other than text: a tool call, reasoning, a server tool. Citation
-   * events addressed to one of them are not text, so they make no text block.
+   * Responses output indexes, or Anthropic block keys, known to hold something
+   * other than text (a tool call, reasoning, a server tool). Metadata addressed
+   * to one of them is not text metadata, so it makes no text block.
    */
-  private readonly nonText = new Set<number>();
-  private recordedUsage?: ResponseOverrides["usage"];
+  private readonly nonText = new Set<string>();
+  /** Non-object metadata entries, by `key#index`, dropped once each. */
+  private readonly dropped = new Set<string>();
+  /** Responses: the open message item, and each item's open content part. */
+  private openOutput?: number;
+  private readonly openContent = new Map<number, number>();
+  /** Anthropic: the key of the last block opened, and the next minted key. */
+  private openBlock?: string;
+  private nextBlock = 0;
 
   constructor(private readonly provider: "responses" | "anthropic") {}
 
-  /** Sanitized usage of a captured Responses JSON body, ready for a fixture. */
-  get usage(): ResponseOverrides["usage"] | undefined {
-    return this.recordedUsage;
-  }
-
-  private text(output: number, content: number): TextState {
-    const key = `${output}:${content}`;
-    let state = this.texts.get(key);
-    if (!state) {
-      state = { position: [output, content], text: "", metadata: new Map() };
-      this.texts.set(key, state);
-    }
-    return state;
-  }
-
-  private snapshotText(output: number, content: number, part: ObjectValue): void {
-    const state = this.text(output, content);
-    if (typeof part.text === "string") state.text = part.text;
-    const metadata = part[this.provider === "responses" ? "annotations" : "citations"];
-    if (Array.isArray(metadata)) {
-      state.metadata.clear();
-      metadata.forEach((entry, index) => {
-        const value = object(entry);
-        if (value) state.metadata.set(index, value);
-      });
-    }
-  }
-
-  private responseItem(index: number, item: ObjectValue): void {
-    if (typeof item.type === "string" && item.type !== "message") {
-      this.nonText.add(index);
-    } else if (item.type === "message" && Array.isArray(item.content)) {
-      item.content.forEach((raw, contentIndex) => {
-        const part = object(raw);
-        if (part?.type === "output_text") this.snapshotText(index, contentIndex, part);
-      });
-    }
-  }
-
-  captureJSON(value: ObjectValue): void {
-    if (this.provider === "responses" && Array.isArray(value.output)) {
-      this.recordedUsage = captureUsage({
-        family: "final",
-        stage: "final",
-        observation: value.usage,
-      });
-      value.output.forEach((raw, index) => {
-        const item = object(raw);
-        if (item) this.responseItem(index, item);
-      });
-    } else if (this.provider === "anthropic" && Array.isArray(value.content)) {
-      value.content.forEach((raw, index) => {
-        const block = object(raw);
-        if (block?.type === "text") this.snapshotText(index, 0, block);
-      });
-    }
-  }
-
-  captureEvent(event: ObjectValue): void {
-    if (this.provider === "anthropic") {
-      this.anthropicEvent(event);
+  /**
+   * Called by the base collapse each time it appends `length` characters of
+   * text to its `content`, with the key of the text part they belong to.
+   */
+  text(key: string, length: number): void {
+    if (length === 0) return;
+    this.seen.add(key);
+    const last = this.segments[this.segments.length - 1];
+    if (last?.key === key) {
+      last.length += length;
     } else {
-      this.responsesEvent(event);
+      this.segments.push({ key, length });
     }
   }
 
-  private responsesEvent(event: ObjectValue): void {
+  private part(key: string): Map<number, ObjectValue> {
+    this.seen.add(key);
+    let part = this.parts.get(key);
+    if (!part) {
+      part = new Map();
+      this.parts.set(key, part);
+    }
+    return part;
+  }
+
+  private keep(key: string, index: number, entry: unknown): ObjectValue | undefined {
+    const value = object(entry);
+    if (!value) this.dropped.add(`${key}#${index}`);
+    return value;
+  }
+
+  /** A part's whole metadata array (a snapshot): it replaces what came before. */
+  private snapshot(key: string, metadata: unknown): void {
+    if (!Array.isArray(metadata)) return;
+    const part = this.part(key);
+    part.clear();
+    metadata.forEach((entry, index) => {
+      const value = this.keep(key, index, entry);
+      if (value) part.set(index, value);
+    });
+  }
+
+  /** One more metadata entry, at `index` or after the last one. */
+  private add(key: string, index: number | undefined, entry: unknown): void {
+    const part = this.part(key);
+    const at = index ?? Math.max(-1, ...part.keys()) + 1;
+    const value = this.keep(key, at, entry);
+    if (value) part.set(at, value);
+  }
+
+  // -------------------------------------------------------------------------
+  // OpenAI Responses
+  // -------------------------------------------------------------------------
+
+  /**
+   * The text-part key of a Responses event. An event that omits
+   * `output_index` or `content_index` belongs to the message item and the
+   * content part that opened last (or item -1, part 0 when none did).
+   */
+  responsesKey(event: ObjectValue): string {
+    const output = number(event.output_index) ?? this.openOutput ?? -1;
+    const content = number(event.content_index) ?? this.openContent.get(output) ?? 0;
+    return `${output}:${content}`;
+  }
+
+  private responseItem(output: number, item: ObjectValue): void {
+    if (typeof item.type === "string" && item.type !== "message") {
+      this.nonText.add(String(output));
+    } else if (Array.isArray(item.content)) {
+      item.content.forEach((raw, content) => {
+        const part = object(raw);
+        if (part?.type === "output_text") this.snapshot(`${output}:${content}`, part.annotations);
+      });
+    }
+  }
+
+  /** The metadata of one Responses stream event. */
+  responsesEvent(event: ObjectValue): void {
     const type = event.type;
     if (type === "response.completed" || type === "response.incomplete") {
-      const response = object(event.response);
-      if (response) this.captureJSON(response);
+      const output = object(event.response)?.output;
+      if (Array.isArray(output)) {
+        output.forEach((raw, index) => {
+          const item = object(raw);
+          if (item) this.responseItem(index, item);
+        });
+      }
       return;
     }
-    if (typeof event.output_index !== "number") return;
-    const output = event.output_index;
     if (type === "response.output_item.added" || type === "response.output_item.done") {
+      const output = number(event.output_index);
       const item = object(event.item);
-      if (item) this.responseItem(output, item);
+      if (output === undefined || !item) return;
+      if (type === "response.output_item.added" && item.type === "message") {
+        this.openOutput = output;
+      }
+      this.responseItem(output, item);
       return;
     }
-    if (typeof event.content_index !== "number") return;
-    const content = event.content_index;
     if (type === "response.content_part.added" || type === "response.content_part.done") {
       const part = object(event.part);
-      if (part?.type === "output_text") this.snapshotText(output, content, part);
-    } else if (type === "response.output_text.delta") {
-      if (typeof event.delta === "string") this.text(output, content).text += event.delta;
-    } else if (type === "response.output_text.done") {
-      if (typeof event.text === "string") this.text(output, content).text = event.text;
-    } else if (type === "response.output_text.annotation.added") {
-      const annotation = object(event.annotation);
-      if (annotation && typeof event.annotation_index === "number") {
-        this.text(output, content).metadata.set(event.annotation_index, annotation);
+      if (part?.type !== "output_text") return;
+      const key = this.responsesKey(event);
+      const output = number(event.output_index);
+      const content = number(event.content_index);
+      if (type === "response.content_part.added" && output !== undefined && content !== undefined) {
+        this.openContent.set(output, content);
       }
-    }
-  }
-
-  /**
-   * Anthropic events arrive keyed: collapseAnthropicSSE gives an index-less
-   * block its own key (the same key its tool calls use) before passing the
-   * event on, so an event without a numeric `index` is ignored here.
-   */
-  private anthropicEvent(event: ObjectValue): void {
-    if (typeof event.index !== "number") return;
-    const index = event.index;
-    if (event.type === "content_block_start") {
-      const block = object(event.content_block);
-      if (block?.type === "text") this.snapshotText(index, 0, block);
-      else if (typeof block?.type === "string") this.nonText.add(index);
+      this.snapshot(key, part.annotations);
       return;
     }
-    if (event.type !== "content_block_delta") return;
-    const delta = object(event.delta);
-    if (!delta) return;
-    if (delta.type === "text_delta" && typeof delta.text === "string") {
-      this.text(index, 0).text += delta.text;
-    } else if (delta.type === "citations_delta") {
-      const citation = object(delta.citation);
-      if (citation) {
-        const { metadata } = this.text(index, 0);
-        metadata.set(Math.max(-1, ...metadata.keys()) + 1, citation);
-      }
+    if (typeof type === "string" && ANNOTATION_EVENTS.has(type)) {
+      this.add(this.responsesKey(event), number(event.annotation_index), event.annotation);
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Anthropic
+  // -------------------------------------------------------------------------
+
   /**
-   * The cited turn's blocks in provider order (output or content index), or
-   * `undefined` when no text block carries citations. `tools` returns the
-   * caller's own finalized tool-call blocks, keyed by the same index, so each
-   * tool block is exactly the call the uncited recording holds. Empty text
-   * without citations is left out, as the uncited recording leaves it out,
-   * and so is text metadata addressed to a non-text index.
+   * The metadata of one Anthropic stream event, given the event type the base
+   * collapse reads it as. Returns the block key of a `content_block_start` or
+   * `content_block_delta` (its `index`, or for an index-less event the block
+   * that opened last), for the base collapse to pass to {@link text}.
    */
-  ordered(
-    tools: () => ReadonlyMap<number, ResponsesFixtureBlock>,
-  ): ResponsesFixtureBlock[] | undefined {
-    const key = this.provider === "responses" ? "annotations" : "citations";
-    const entries: { position: [number, number]; block: ResponsesFixtureBlock }[] = [];
-    for (const state of this.texts.values()) {
-      if (this.nonText.has(state.position[0])) continue;
-      const block: TextBlock = { type: "text", text: state.text };
-      if (state.metadata.size > 0) {
-        block[key] = [...state.metadata.entries()]
-          .sort(([a], [b]) => a - b)
-          .map(([, value]) => structuredClone(value));
+  anthropicEvent(eventType: string, event: ObjectValue): string | undefined {
+    if (eventType === "content_block_start") {
+      const index = number(event.index);
+      const key = index !== undefined ? String(index) : `+${this.nextBlock++}`;
+      this.openBlock = key;
+      const block = object(event.content_block);
+      if (block?.type === "text") {
+        this.snapshot(key, block.citations);
+      } else if (typeof block?.type === "string") {
+        this.nonText.add(key);
       }
-      if (block.text !== "" || hasNativeCitations(block))
-        entries.push({ position: state.position, block });
+      return key;
     }
-    if (!entries.some((entry) => hasNativeCitations(entry.block))) return undefined;
-    for (const [index, block] of tools()) entries.push({ position: [index, -1], block });
-    entries.sort((a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1]);
-    // A Responses message item can hold several output_text parts; later parts
-    // of one item are marked so replay rebuilds a single multi-part message.
+    if (eventType !== "content_block_delta") return undefined;
+    const index = number(event.index);
+    const key = index !== undefined ? String(index) : (this.openBlock ?? "lead");
+    const delta = object(event.delta);
+    if (delta?.type === "citations_delta") this.add(key, undefined, delta.citation);
+    return key;
+  }
+
+  /**
+   * The text and metadata of an Anthropic Messages JSON `content` array, whose
+   * text blocks the caller joins into its `content` in this order.
+   */
+  anthropicJSON(content: unknown[]): void {
+    content.forEach((raw, index) => {
+      const block = object(raw);
+      const key = String(index);
+      if (block?.type === "text" && typeof block.text === "string") {
+        this.snapshot(key, block.citations);
+        this.text(key, block.text.length);
+      } else if (typeof block?.type === "string") {
+        this.nonText.add(key);
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Attach
+  // -------------------------------------------------------------------------
+
+  private isNonText(key: string): boolean {
+    return this.nonText.has(this.provider === "responses" ? key.split(":")[0] : key);
+  }
+
+  /** Each cited part's metadata, as a sorted copy, by key. */
+  private cited(): Map<string, ObjectValue[]> {
+    const cited = new Map<string, ObjectValue[]>();
+    for (const [key, part] of this.parts) {
+      if (part.size === 0 || this.isNonText(key)) continue;
+      cited.set(
+        key,
+        [...part.entries()].sort(([a], [b]) => a - b).map(([, value]) => structuredClone(value)),
+      );
+    }
+    return cited;
+  }
+
+  /**
+   * `base` plus the citations: its text blocks, split where one text part ends
+   * and the next begins, with each part's metadata on its pieces.
+   * `content`, `toolCalls` and every other field stay `base`'s own, and the
+   * blocks keep `base`'s order. When `base` has no `blocks`, its order is the
+   * one it implies: the text, then the function calls, then the custom calls.
+   * `harmonyRaw` is the streamed text of a turn whose `content` was
+   * harmony-parsed; offsets are then moved into the parsed text, and an
+   * annotation that points outside it is dropped and reported.
+   */
+  attach(base: CollapseResult, harmonyRaw?: string): CollapseResult {
+    const notes: string[] = [];
+    if (this.dropped.size > 0) {
+      notes.push(
+        `${this.dropped.size} native citation ${this.dropped.size === 1 ? "entry" : "entries"} that are not objects dropped`,
+      );
+    }
+    const cited = this.cited();
+    let ordered: ResponsesFixtureBlock[] | undefined;
+    if (cited.size > 0) {
+      ordered =
+        harmonyRaw !== undefined
+          ? this.harmonyBlocks(base, harmonyRaw, cited, notes)
+          : this.splitBlocks(base, cited, notes);
+    }
+    const citationNote = notes.length > 0 ? { citationNote: notes.join("; ") } : {};
+    if (!ordered?.some(hasNativeCitations)) {
+      return notes.length > 0 ? { ...base, ...citationNote } : base;
+    }
+    const blocks = ordered.filter(
+      (block): block is FixtureBlock => block.type !== "customToolCall",
+    );
+    return {
+      ...base,
+      blocks,
+      ...(blocks.length < ordered.length ? { responsesBlocks: ordered } : {}),
+      ...citationNote,
+    };
+  }
+
+  /** The blocks `base` holds, or the order its flat fields imply. */
+  private baseBlocks(base: CollapseResult, content: string): ResponsesFixtureBlock[] {
+    const customs = (base.customToolCalls ?? []).map(
+      (call): ResponsesFixtureBlock => ({
+        type: "customToolCall",
+        name: call.name,
+        input: call.input,
+        ...(call.id !== undefined ? { id: call.id } : {}),
+        ...(call.namespace !== undefined ? { namespace: call.namespace } : {}),
+      }),
+    );
+    if (base.responsesBlocks) return base.responsesBlocks.map((block) => ({ ...block }));
+    if (base.blocks) return [...base.blocks.map((block) => ({ ...block })), ...customs];
+    return [
+      ...(content !== "" ? [{ type: "text" as const, text: content }] : []),
+      ...(base.toolCalls ?? []).map((tc): ResponsesFixtureBlock => ({ type: "toolCall", ...tc })),
+      ...customs,
+    ];
+  }
+
+  /**
+   * `base`'s blocks with each text block cut into pieces, one per text part,
+   * and each cited part's metadata placed on its pieces.
+   */
+  private splitBlocks(
+    base: CollapseResult,
+    cited: Map<string, ObjectValue[]>,
+    notes: string[],
+  ): ResponsesFixtureBlock[] {
+    const pieces: Piece[] = [];
+    const length = new Map<string, number>();
+    let segment = 0;
+    let used = 0;
+    for (const block of this.baseBlocks(base, base.content ?? "")) {
+      if (block.type !== "text") {
+        pieces.push({ offset: 0, block });
+        continue;
+      }
+      let at = 0;
+      while (at < block.text.length) {
+        const current = this.segments[segment];
+        const take = current
+          ? Math.min(current.length - used, block.text.length - at)
+          : block.text.length - at;
+        const offset = current ? (length.get(current.key) ?? 0) : 0;
+        if (current) length.set(current.key, offset + take);
+        pieces.push({
+          key: current?.key,
+          offset,
+          block: { type: "text", text: block.text.slice(at, at + take) },
+        });
+        at += take;
+        used += take;
+        if (current && used === current.length) {
+          segment++;
+          used = 0;
+        }
+      }
+    }
+    this.placeEmptyParts(pieces, cited);
+    let lost = 0;
+    for (const [key, metadata] of cited) {
+      lost += this.placeMetadata(
+        pieces.filter((piece) => piece.key === key),
+        metadata,
+      );
+    }
+    if (lost > 0) {
+      notes.push(
+        `${lost} native citation ${lost === 1 ? "annotation" : "annotations"} spanning text that the stream split dropped`,
+      );
+    }
     if (this.provider === "responses") {
-      entries.forEach((entry, i) => {
-        const previous = entries[i - 1];
+      // A later part of one Responses message item serves as a further part
+      // of that message.
+      pieces.forEach((piece, i) => {
+        const previous = pieces[i - 1];
         if (
-          entry.block.type === "text" &&
+          piece.block.type === "text" &&
+          piece.key !== undefined &&
           previous?.block.type === "text" &&
-          previous.position[0] === entry.position[0]
+          previous.key !== undefined &&
+          previous.key !== piece.key &&
+          previous.key.split(":")[0] === piece.key.split(":")[0]
         ) {
-          entry.block.continuesMessage = true;
+          piece.block.continuesMessage = true;
         }
       });
     }
-    return entries.map((entry) => entry.block);
+    return pieces.map((piece) => piece.block);
   }
-}
 
-/**
- * A collapse result for a cited turn: `base` (the uncited result) plus the
- * ordered blocks that carry the citations. `blocks` holds the text and
- * function calls; `responsesBlocks` is added only when custom tool calls need
- * it. `content` follows the cited text, and the flat `toolCalls` follow the
- * order of the `toolCall` blocks, so the two lists never disagree (#274), as
- * for an uncited interleaved turn. Every other field is `base`'s own.
- */
-export function withNativeCitations(
-  base: CollapseResult,
-  ordered: ResponsesFixtureBlock[] | undefined,
-): CollapseResult {
-  if (!ordered) return base;
-  const blocks = ordered.filter((block): block is FixtureBlock => block.type !== "customToolCall");
-  const content = blocks
-    .filter((block): block is TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-  const toolCalls = blocks.flatMap((block): ToolCall[] =>
-    block.type === "toolCall"
-      ? [
-          {
-            name: block.name,
-            arguments: block.arguments,
-            ...(block.id !== undefined ? { id: block.id } : {}),
-            ...(block.namespace !== undefined ? { namespace: block.namespace } : {}),
-          },
-        ]
-      : [],
-  );
-  return {
-    ...base,
-    ...(base.content !== undefined || content !== "" ? { content } : {}),
-    ...(base.toolCalls !== undefined ? { toolCalls } : {}),
-    blocks,
-    ...(blocks.length < ordered.length ? { responsesBlocks: ordered } : {}),
-  };
+  /**
+   * A cited part that streamed no text becomes an empty text block. It goes
+   * after the part seen just before it, before the next text piece.
+   */
+  private placeEmptyParts(pieces: Piece[], cited: Map<string, ObjectValue[]>): void {
+    const placed = new Set(pieces.flatMap((piece) => (piece.key ? [piece.key] : [])));
+    let previous: string | undefined;
+    for (const key of this.seen) {
+      if (!placed.has(key) && cited.has(key)) {
+        let at = 0;
+        if (previous !== undefined) {
+          for (let i = pieces.length - 1; i >= 0; i--) {
+            if (pieces[i].key === previous) {
+              at = i + 1;
+              break;
+            }
+          }
+        }
+        while (at < pieces.length && pieces[at].block.type !== "text") at++;
+        pieces.splice(at, 0, { key, offset: 0, block: { type: "text", text: "" } });
+        placed.add(key);
+      }
+      if (placed.has(key)) previous = key;
+    }
+  }
+
+  /**
+   * Puts one part's metadata on its pieces. When the stream split the part,
+   * an entry with offsets goes on the piece its start falls in, with the offsets made relative to that piece;
+   * one that ends past that piece is dropped. Any other entry goes on the
+   * first piece. Returns the number dropped.
+   */
+  private placeMetadata(pieces: Piece[], metadata: ObjectValue[]): number {
+    const field = this.provider === "responses" ? "annotations" : "citations";
+    // A part in one piece keeps its metadata as the provider sent it.
+    if (pieces.length === 1) {
+      (pieces[0].block as TextBlock)[field] = metadata;
+      return 0;
+    }
+    const into = new Map<Piece, ObjectValue[]>();
+    let lost = 0;
+    for (const entry of metadata) {
+      const offsets = OFFSET_FIELDS.filter((name) => typeof entry[name] === "number");
+      const start =
+        offsets.length > 0 ? Math.min(...offsets.map((name) => entry[name] as number)) : 0;
+      const piece =
+        offsets.length === 0
+          ? pieces[0]
+          : (pieces.find(
+              (p) => start >= p.offset && start < p.offset + (p.block as TextBlock).text.length,
+            ) ?? pieces[pieces.length - 1]);
+      const moved = { ...entry };
+      const text = (piece.block as TextBlock).text.length;
+      const fits = offsets.every((name) => {
+        moved[name] = (entry[name] as number) - piece.offset;
+        return (moved[name] as number) >= 0 && (moved[name] as number) <= text;
+      });
+      if (!fits) {
+        lost++;
+        continue;
+      }
+      into.set(piece, [...(into.get(piece) ?? []), moved]);
+    }
+    for (const [piece, entries] of into) (piece.block as TextBlock)[field] = entries;
+    return lost;
+  }
+
+  /**
+   * The blocks of a harmony-parsed turn: its one parsed text, carrying every
+   * annotation whose offsets fall inside it, in the place of the text, then
+   * the harmony tool calls. Offsets are counted from the start of their own
+   * part of the streamed text, so each is moved to the streamed text, then to
+   * the final-channel message body that the parsed text was taken from.
+   */
+  private harmonyBlocks(
+    base: CollapseResult,
+    raw: string,
+    cited: Map<string, ObjectValue[]>,
+    notes: string[],
+  ): ResponsesFixtureBlock[] {
+    const content = base.content ?? "";
+    const start = new Map<string, number>();
+    let offset = 0;
+    for (const segment of this.segments) {
+      if (!start.has(segment.key)) start.set(segment.key, offset);
+      offset += segment.length;
+    }
+    const body = content === "" ? -1 : raw.lastIndexOf(HARMONY_MESSAGE + content);
+    const shift = body === -1 ? undefined : body + HARMONY_MESSAGE.length;
+    const annotations: ObjectValue[] = [];
+    let lost = 0;
+    const keys = [...start.keys(), ...[...cited.keys()].filter((key) => !start.has(key))];
+    for (const key of keys) {
+      for (const annotation of cited.get(key) ?? []) {
+        const moved = { ...annotation };
+        const fits = OFFSET_FIELDS.every((field) => {
+          const value = annotation[field];
+          if (typeof value !== "number") return true;
+          if (shift === undefined || !start.has(key)) return false;
+          moved[field] = value + start.get(key)! - shift;
+          return (moved[field] as number) >= 0 && (moved[field] as number) <= content.length;
+        });
+        if (fits) annotations.push(moved);
+        else lost++;
+      }
+    }
+    if (lost > 0) {
+      notes.push(
+        `${lost} native citation ${lost === 1 ? "annotation" : "annotations"} pointing outside the harmony-parsed text dropped`,
+      );
+    }
+    const blocks = this.baseBlocks(base, content);
+    const first = blocks.findIndex((block) => block.type === "text");
+    const text: TextBlock = { type: "text", text: content };
+    if (annotations.length > 0) text.annotations = annotations;
+    if (first === -1) return [text, ...blocks];
+    blocks[first] = text;
+    return blocks;
+  }
 }

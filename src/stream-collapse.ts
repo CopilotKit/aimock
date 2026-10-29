@@ -18,7 +18,7 @@ import type {
 } from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
-import { CitationRecording, withNativeCitations } from "./citation-recording.js";
+import { CitationRecording } from "./citation-recording.js";
 
 // ---------------------------------------------------------------------------
 // Accumulated-string cap (RangeError: Invalid string length guard)
@@ -171,6 +171,12 @@ export interface CollapseResult {
   /** Short human-readable note accompanying {@link harmonyUnparsed}. */
   harmonyNote?: string;
   /**
+   * Set when native citation metadata could not be kept: an entry that is not
+   * an object, or a harmony-parsed turn's annotation whose offsets fall
+   * outside the parsed text. The recorder logs it as a warning.
+   */
+  citationNote?: string;
+  /**
    * Ordered cross-channel block list, in STREAM order, populated ONLY when the
    * stream is "interleaved" — i.e. a tool-call delta appeared STRICTLY BEFORE
    * the first content delta, OR a content delta appeared AFTER any tool-call
@@ -180,8 +186,9 @@ export interface CollapseResult {
    * persist the ordered shape. Absent (undefined) for text-first, text-only,
    * and tool-only streams — i.e. anything NOT interleaved — so the recorder
    * keeps the legacy `{ content, toolCalls }` shape byte-identical. A cited
-   * OpenAI Responses or Anthropic turn always has `blocks`, ordered by output
-   * or content index, so its text blocks can carry `annotations` / `citations`.
+   * OpenAI Responses or Anthropic turn always has `blocks`, in the order of
+   * the uncited collapse, with its text split where one text part ends and
+   * the next begins, so its text blocks can carry `annotations` / `citations`.
    *
    * Each text block coalesces all contiguous content deltas between tool
    * atoms. Each tool block sits in the position where its FIRST delta arrived:
@@ -297,57 +304,6 @@ function toFunctionToolCall(ref: FunctionCallAcc): ToolCall {
     ...(ref.id ? { id: ref.id } : {}),
     ...(ref.namespace ? { namespace: ref.namespace } : {}),
   };
-}
-
-/**
- * @internal The tool-call blocks of an OpenAI Responses JSON `output` array,
- * keyed by output index: each `function_call` and `custom_tool_call` item
- * finalized by the same rules as a streamed one.
- */
-export function responsesOutputToolBlocks(output: unknown[]): Map<number, ResponsesFixtureBlock> {
-  const tools = new Map<number, ResponsesFixtureBlock>();
-  output.forEach((raw, index) => {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
-    const item = raw as Record<string, unknown>;
-    const name = typeof item.name === "string" ? item.name : "";
-    const id = typeof item.call_id === "string" ? item.call_id : "";
-    const namespace = responsesNamespace(item);
-    if (item.type === "function_call") {
-      const args = typeof item.arguments === "string" ? item.arguments : "";
-      tools.set(index, toToolCallBlock({ name, arguments: args, id, namespace }));
-    } else if (item.type === "custom_tool_call") {
-      const input = typeof item.input === "string" ? item.input : "";
-      tools.set(index, toCustomToolCallBlock({ name, input, id, namespace }));
-    }
-  });
-  return tools;
-}
-
-/**
- * The blocks of a cited turn whose streamed text was harmony-parsed. The
- * recorded text blocks still hold the raw channel tokens, so they become one
- * text block that holds the parsed `content` and all of their annotations, in
- * the place of the first text block, followed by the harmony tool calls. The
- * result then has the parsed text, reasoning and tool calls of the uncited
- * collapse, plus the citations.
- */
-function harmonyCitedBlocks(
-  ordered: ResponsesFixtureBlock[] | undefined,
-  content: string,
-  harmonyToolCalls: ToolCall[],
-): ResponsesFixtureBlock[] | undefined {
-  if (!ordered) return undefined;
-  const first = ordered.findIndex((block) => block.type === "text");
-  const annotations = ordered.flatMap((block) =>
-    block.type === "text" ? (block.annotations ?? []) : [],
-  );
-  const parsed: ResponsesFixtureBlock[] = [
-    { type: "text", text: content, annotations },
-    ...harmonyToolCalls.map((tc): ResponsesFixtureBlock => ({ type: "toolCall", ...tc })),
-  ];
-  // Every block before the first text block is a tool block.
-  const others = ordered.filter((block) => block.type !== "text");
-  return [...others.slice(0, first), ...parsed, ...others.slice(first)];
 }
 
 /** Project a custom-call accumulator to a flat fixture custom tool call. */
@@ -651,7 +607,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       continue;
     }
 
-    citations.captureEvent(parsed);
+    citations.responsesEvent(parsed);
 
     // Responses API reasoning events
     if (parsed.type === "transcript.text.delta" && typeof parsed.delta === "string") {
@@ -882,6 +838,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     // Responses API text content events
     if (parsed.type === "response.output_text.delta" && typeof parsed.delta === "string") {
       content += parsed.delta;
+      citations.text(citations.responsesKey(parsed), parsed.delta.length);
       if (parsed.delta.length > 0) {
         orderAtoms.push({ kind: "text", text: parsed.delta });
       }
@@ -925,6 +882,9 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     // Text content
     if (typeof delta.content === "string") {
       content += delta.content;
+      // Chat Completions text carries no native citations; it is keyed only so
+      // the citation recording sees all of `content`.
+      citations.text("chat", delta.content.length);
       if (delta.content.length > 0) {
         orderAtoms.push({ kind: "text", text: delta.content });
       }
@@ -1000,7 +960,9 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
   // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
   // signal (NOT droppedChunks/truncated — the bytes are not lost).
   const harmonyToolCalls: ToolCall[] = [];
-  let harmonyParsed = false;
+  // The streamed text, kept for the citation recording when harmony parsing
+  // replaces `content`.
+  let harmonyRaw: string | undefined;
   // Custom tool calls do not count as structured calls here, as before they
   // were collapsed at all.
   const hasFunctionCalls = Array.from(toolCallMap.values()).some((tc) => tc.kind === "function");
@@ -1010,7 +972,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       harmonyUnparsed = true;
       harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
     } else {
-      harmonyParsed = true;
+      harmonyRaw = content;
       content = parsed.content;
       if (parsed.reasoning) {
         reasoning += parsed.reasoning;
@@ -1027,20 +989,6 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
   const sortedEntries = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
   const customEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "custom" ? [tc] : []));
   const functionEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "function" ? [tc] : []));
-  // Tool blocks for a cited turn, keyed by output_index like the citations.
-  const citedTools = () =>
-    new Map(
-      sortedEntries.map(([key, tc]) => [
-        key,
-        tc.kind === "custom" ? toCustomToolCallBlock(tc) : toToolCallBlock(tc),
-      ]),
-    );
-  // The cited blocks hold the streamed text, so after a harmony parse they
-  // take the parsed text and tool calls, as the uncited result does.
-  const citedBlocks = () => {
-    const ordered = citations.ordered(citedTools);
-    return harmonyParsed ? harmonyCitedBlocks(ordered, content, harmonyToolCalls) : ordered;
-  };
   let customFields: Pick<CollapseResult, "customToolCalls" | "responsesBlocks"> = {};
   if (customEntries.length > 0) {
     const firstCustomAtom = orderAtoms.findIndex((a) => a.kind === "customToolCall");
@@ -1069,7 +1017,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       a.kind === "toolCall" ? [toFunctionToolCall(a.ref)] : [],
     );
     const indexSortedToolCalls = functionEntries.map(toFunctionToolCall);
-    return withNativeCitations(
+    return citations.attach(
       {
         ...(transcriptSeen
           ? {
@@ -1100,11 +1048,11 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
         ...(harmonyNote ? { harmonyNote } : {}),
         ...(inputTruncated ? { truncated: true } : {}),
       },
-      citedBlocks(),
+      harmonyRaw,
     );
   }
 
-  return withNativeCitations(
+  return citations.attach(
     {
       ...(transcriptSeen
         ? {
@@ -1126,8 +1074,54 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
     },
-    citedBlocks(),
+    harmonyRaw,
   );
+}
+
+/**
+ * @internal An OpenAI Responses JSON body collapsed as the stream of the same
+ * turn: each `output` item becomes the events that stream it (message text
+ * parts with their annotations, reasoning summaries, function, custom and web
+ * search calls), read by {@link collapseOpenAISSEWithResponsesTools}, plus the
+ * body's sanitized `usage`. The
+ * recorder uses it for a cited Responses JSON turn, so the JSON and the stream
+ * recording of one turn are made by one collapse.
+ */
+export function collapseResponsesJSON(body: Record<string, unknown>): CollapseResult {
+  const events: Record<string, unknown>[] = [];
+  const output = Array.isArray(body.output) ? body.output : [];
+  output.forEach((raw, output_index) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
+    const item = raw as Record<string, unknown>;
+    if (item.type === "message") {
+      events.push({ type: "response.output_item.added", output_index, item: { type: "message" } });
+      const parts = Array.isArray(item.content) ? item.content : [];
+      parts.forEach((part, content_index) => {
+        const value = part as Record<string, unknown> | null;
+        if (value?.type !== "output_text" || typeof value.text !== "string") return;
+        events.push(
+          { type: "response.output_text.delta", output_index, content_index, delta: value.text },
+          { type: "response.content_part.done", output_index, content_index, part: value },
+        );
+      });
+    } else if (item.type === "reasoning") {
+      const summary = Array.isArray(item.summary) ? item.summary : [];
+      for (const part of summary as (Record<string, unknown> | null)[]) {
+        if (part?.type === "summary_text" && typeof part.text === "string") {
+          events.push({ type: "response.reasoning_summary_text.delta", delta: part.text });
+        }
+      }
+      events.push({ type: "response.output_item.done", output_index, item });
+    } else {
+      events.push({ type: "response.output_item.done", output_index, item });
+    }
+  });
+  const collapsed = collapseOpenAISSEWithResponsesTools(
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+  );
+  // The body's own usage, sanitized as a final usage.
+  const usage = captureUsage({ family: "final", stage: "final", observation: body.usage });
+  return usage ? { ...collapsed, usage } : collapsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1144,7 +1138,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
  *
  * For uncited input the result is unchanged from 1.44.0. For a cited turn it
- * also has `blocks`, ordered by content index, whose text blocks carry
+ * also has `blocks`, in the uncited result's order, whose text blocks carry
  * `citations`.
  */
 export function collapseAnthropicSSE(rawBody: string): CollapseResult {
@@ -1180,12 +1174,6 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   // below it.
   let nextSyntheticIndex = 1_000_000;
   let lastSyntheticIndex: number | undefined;
-  // The block an index-less delta belongs to for the citation recording: the
-  // last block of ANY type that opened (the citation recording owns text).
-  let lastBlockIndex: number | undefined;
-  // The key of text deltas that arrive before any block opens: below every
-  // real index, so that text sorts first, where the stream put it.
-  const LEADING_BLOCK_INDEX = -1;
   // Cross-channel order atoms (#274), in stream arrival order.
   const orderAtoms: OrderAtom[] = [];
 
@@ -1219,30 +1207,13 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       previous: usage,
       observation: parsed,
     });
-    // Every content block start is keyed here, from one counter: its streamed
-    // `index`, or a fresh synthetic key when the stream omits it. The citation
-    // recording gets the same key, so cited text and tool calls share one key
-    // space and keep stream order. An index-less delta belongs to the last
-    // block opened; before any block opens it gets a key below every other
-    // key, so its text keeps its place at the start of the turn. A frame whose
-    // data is not an object (`data: null`) carries no block.
-    let blockIndex: number | undefined;
-    if (parsed !== null && typeof parsed === "object") {
-      const citationEventType = eventType || parsed.type;
-      blockIndex = typeof parsed.index === "number" ? parsed.index : undefined;
-      if (citationEventType === "content_block_start") {
-        blockIndex ??= nextSyntheticIndex++;
-        lastBlockIndex = blockIndex;
-      } else if (citationEventType === "content_block_delta") {
-        lastBlockIndex ??= LEADING_BLOCK_INDEX;
-        blockIndex ??= lastBlockIndex;
-      }
-      citations.captureEvent({
-        ...parsed,
-        type: citationEventType,
-        ...(blockIndex !== undefined ? { index: blockIndex } : {}),
-      });
-    }
+    // The citation recording reads the same event types as the code below
+    // (only a frame with an `event:` line), and keys the text this collapse
+    // appends to `content` to its content block.
+    const citationKey =
+      parsed !== null && typeof parsed === "object"
+        ? citations.anthropicEvent(eventType, parsed)
+        : undefined;
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
@@ -1255,9 +1226,14 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         redactedThinking.push(redactedData);
       }
       if (contentBlock?.type === "tool_use") {
-        // The streamed `index`, or the synthetic key minted above, so distinct
-        // index-less tool_use blocks never merge.
-        const index = blockIndex ?? nextSyntheticIndex++;
+        // Prefer the streamed `index`; when absent, mint a fresh synthetic key
+        // so distinct index-less tool_use blocks never merge.
+        let index: number;
+        if (typeof parsed.index === "number") {
+          index = parsed.index;
+        } else {
+          index = nextSyntheticIndex++;
+        }
         lastSyntheticIndex = index;
         const created = {
           id: (contentBlock.id as string) ?? "",
@@ -1277,6 +1253,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
 
       if (delta.type === "text_delta" && typeof delta.text === "string") {
         content += delta.text;
+        if (citationKey !== undefined) citations.text(citationKey, delta.text.length);
         if (delta.text.length > 0) {
           orderAtoms.push({ kind: "text", text: delta.text });
         }
@@ -1320,10 +1297,6 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     }
   }
 
-  // Tool blocks for a cited turn, keyed by content index like the citations.
-  const citedTools = () =>
-    new Map(Array.from(toolCallMap, ([key, tc]) => [key, toToolCallBlock(tc)]));
-
   if (toolCallMap.size > 0) {
     const orderedBlocks = buildOrderedBlocks(orderAtoms);
     // When interleaved (`blocks` present) the flat `toolCalls` MUST match the
@@ -1348,36 +1321,30 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         arguments: normalizeToolArguments(tc.arguments),
         ...(tc.id ? { id: tc.id } : {}),
       }));
-    return withNativeCitations(
-      {
-        ...(usage ? { usage } : {}),
-        ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
-        ...(content ? { content } : {}),
-        toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
-        ...(reasoning ? { reasoning } : {}),
-        ...(reasoningSignature ? { reasoningSignature } : {}),
-        ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
-        ...(droppedChunks > 0 ? { droppedChunks } : {}),
-        ...(firstDroppedSample ? { firstDroppedSample } : {}),
-        ...(inputTruncated ? { truncated: true } : {}),
-      },
-      citations.ordered(citedTools),
-    );
-  }
-
-  return withNativeCitations(
-    {
+    return citations.attach({
       ...(usage ? { usage } : {}),
-      content,
+      ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
+      ...(content ? { content } : {}),
+      toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(reasoningSignature ? { reasoningSignature } : {}),
       ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-    },
-    citations.ordered(citedTools),
-  );
+    });
+  }
+
+  return citations.attach({
+    ...(usage ? { usage } : {}),
+    content,
+    ...(reasoning ? { reasoning } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
+    ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
