@@ -1464,3 +1464,62 @@ describe("conversation turn copies", () => {
     expect((await send(url, "parts")).history[1].parts).toEqual([{ text: "parts" }]);
   });
 });
+
+describe("conversation part validation", () => {
+  it.each([
+    { label: "data-null", part: { data: null } },
+    { label: "data-undefined", part: { data: undefined } },
+    { label: "text-and-url", part: { text: "t", url: "https://example.invalid" } },
+    { label: "text-and-data", part: { text: "t", data: {} } },
+    { label: "data-and-url", part: { data: {}, url: "https://example.invalid" } },
+  ])("rejects fixture part $label in replies and artifacts", async ({ part }) => {
+    const { mock, url } = await fixture();
+    for (const response of [
+      { state: DONE, parts: [part] },
+      { state: DONE, artifacts: [{ parts: [part] }] },
+    ]) {
+      expect(() =>
+        mock.onConversation("agent", [{ pattern: "bad", response } as A2AConversationTurn]),
+      ).toThrow("Invalid conversation turn at index 0");
+    }
+    await rejected(url, -32000, "bad", {});
+  });
+
+  it.each([false, true])(
+    "rejects invalid message parts with invalid params (stream=%s)",
+    async (stream) => {
+      const { url } = await fixture();
+      for (const parts of [
+        [{ text: "start" }, { text: 5 }],
+        [{ text: "start" }, {}],
+        [{ text: "start" }, { url: 5 }],
+        [{ text: "start" }, { raw: 5 }],
+        [{ text: "start", url: "https://example.invalid" }],
+        [{ text: "start" }, { data: null }],
+        [{ text: "start", mediaType: 3 }],
+      ]) {
+        const raw = await post(url, {
+          jsonrpc: "2.0",
+          id: "bad",
+          method: stream ? "SendStreamingMessage" : "SendMessage",
+          params: { message: message("start", { parts }) },
+        });
+        expect(raw.type).toMatch(/^application\/json/);
+        expect(JSON.parse(raw.data), JSON.stringify(parts)).toEqual({
+          jsonrpc: "2.0",
+          id: "bad",
+          error: { code: -32602, message: "Invalid message parts" },
+        });
+      }
+      expect(await list(url)).toEqual([]);
+      const parts = [
+        { text: "start" },
+        { data: { ok: true }, mediaType: "application/json" },
+        { url: "https://example.invalid/doc" },
+        { raw: "aGk=", mediaType: "text/plain" },
+      ];
+      const task = await send(url, "start", { parts }, stream);
+      expect(task.history[0].parts).toEqual(parts);
+    },
+  );
+});

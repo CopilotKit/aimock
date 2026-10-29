@@ -80,10 +80,12 @@
         </div>
         <p>
           Conversations must be nonempty, with input-required intermediate turns and a completed or
-          failed final turn. Invalid definitions throw without being registered. A send without
-          <code>message.taskId</code> selects a first turn in the existing registration order.
-          <code>SendMessage</code> considers every fixture kind, so an earlier message or task
-          fixture that matches the same text is used instead.
+          failed final turn. Each part has exactly one of <code>text</code>, <code>data</code>, or
+          <code>url</code>, and <code>data</code> is not null. Invalid definitions throw without
+          being registered. Sends that match a conversation with malformed parts are rejected. A
+          send without <code>message.taskId</code> selects a first turn in the existing registration
+          order. <code>SendMessage</code> considers every fixture kind, so an earlier message or
+          task fixture that matches the same text is used instead.
           <code>SendStreamingMessage</code> considers only streaming tasks and conversations.
           Subsequent sends include that task ID and must match its next turn. A supplied
           <code>message.contextId</code> must agree with the task. An omitted or empty context is

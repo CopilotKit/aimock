@@ -28,21 +28,24 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validParts(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.every((part: unknown) => {
-      if (!isObject(part)) return false;
-      if (
-        ("text" in part && typeof part.text !== "string") ||
-        ("url" in part && typeof part.url !== "string") ||
-        (part.mediaType !== undefined && typeof part.mediaType !== "string")
-      ) {
-        return false;
-      }
-      return "text" in part || "data" in part || "url" in part;
-    })
-  );
+function isPart(part: unknown, contentKeys: readonly string[]): boolean {
+  if (!isObject(part)) return false;
+  // A part has exactly one content field, and that field holds a value.
+  const content = contentKeys.filter((key) => key in part);
+  if (content.length !== 1) return false;
+  const value = part[content[0]];
+  if (content[0] === "data" ? value === undefined || value === null : typeof value !== "string") {
+    return false;
+  }
+  return part.mediaType === undefined || typeof part.mediaType === "string";
+}
+
+const FIXTURE_CONTENT = ["text", "data", "url"];
+// Clients may also send raw (base64) parts, which are valid A2A parts.
+const MESSAGE_CONTENT = [...FIXTURE_CONTENT, "raw"];
+
+function validParts(value: unknown, contentKeys = FIXTURE_CONTENT): boolean {
+  return Array.isArray(value) && value.every((part: unknown) => isPart(part, contentKeys));
 }
 
 function validArtifacts(value: unknown): boolean {
@@ -132,7 +135,7 @@ export class ConversationStore {
     if (!message || !Array.isArray(message.parts)) {
       return fail(-32602, "A conversation send requires message parts");
     }
-    if (!message.parts.every(isObject)) {
+    if (!validParts(message.parts, MESSAGE_CONTENT)) {
       return fail(-32602, "Invalid message parts");
     }
     if (message.messageId !== undefined && typeof message.messageId !== "string") {
