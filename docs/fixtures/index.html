@@ -1138,12 +1138,13 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
 
         <h3 id="recording-citations">Recording citations</h3>
         <p>
-          Recording is on by default for citations. When a real OpenAI Responses or Claude Messages
-          turn carries native citations, the recorded fixture keeps them on its text
-          <code>blocks</code>: <code>annotations</code> for Responses, <code>citations</code> for
-          Claude. The text, tool calls, reasoning, usage and block order are the same as the
-          recording of that turn without citations; the citations are only added. A turn without
-          citations records exactly as before.
+          Recording keeps citations automatically; no option is needed. When a real OpenAI Responses
+          or Claude Messages turn carries native citations, the recorded fixture keeps them on its
+          text <code>blocks</code> (or <code>responsesBlocks</code> when a Responses turn has custom
+          tool calls): <code>annotations</code> for Responses, <code>citations</code> for Claude.
+          The text, tool calls, reasoning, usage and block order are the same as the recording of
+          that turn without citations; the citations are only added. A turn without citations
+          records exactly as before.
         </p>
         <div class="code-block">
           <div class="code-block-header">
@@ -1181,8 +1182,9 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>
                 Annotation events (<code>response.output_text.annotation.added</code>, and the
                 <code>response.output_text_annotation.added</code> name from openai 4.x) and the
-                annotations in part, item and completed snapshots. A message with several text parts
-                records one block per part; later parts carry <code>"continuesMessage": true</code>
+                annotations in part, item and final (completed or incomplete) response snapshots. A
+                message with several text parts records one block per part; later parts carry
+                <code>"continuesMessage": true</code>
                 so replay serves one message. A gpt-oss harmony turn moves each annotation's offsets
                 into the parsed answer text
               </td>
@@ -1191,8 +1193,8 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>OpenAI Responses JSON</td>
               <td>
                 Recorded when the body carries annotations, with its text, tool calls, reasoning and
-                usage. A Responses JSON body without annotations is saved as an error fixture, as
-                before
+                usage. A Responses JSON body without annotations it can keep is saved as an error
+                fixture, as before
               </td>
             </tr>
             <tr>
@@ -1209,8 +1211,9 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           </tbody>
         </table>
         <p>
-          An entry that is not an object, or a harmony annotation that points outside the answer
-          text, is left out and the recorder logs a warning.
+          An entry that is not an object, an annotation whose offsets point outside its text, an
+          annotation that spans text the stream split across blocks, or a harmony annotation that
+          points outside the answer text, is left out and the recorder logs a warning.
         </p>
 
         <h2>Fixture Options</h2>

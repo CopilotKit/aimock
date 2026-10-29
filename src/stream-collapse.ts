@@ -172,8 +172,10 @@ export interface CollapseResult {
   harmonyNote?: string;
   /**
    * Set when native citation metadata could not be kept: an entry that is not
-   * an object, or a harmony-parsed turn's annotation whose offsets fall
-   * outside the parsed text. The recorder logs it as a warning.
+   * an object; an annotation whose offsets fall outside its text; one that
+   * spans text the stream split into several blocks; or, in a harmony-parsed
+   * turn, one whose offsets fall outside the parsed text or whose parsed text
+   * was not found in the streamed text. The recorder logs it as a warning.
    */
   citationNote?: string;
   /**

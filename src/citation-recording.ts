@@ -152,7 +152,8 @@ function owner<T>(pieces: T[], start: (piece: T) => number, entry: ObjectValue):
 /**
  * The one test for a cited turn: a text block whose provider-native citation
  * metadata (`annotations` on Responses, `citations` on Anthropic) is a
- * non-empty array. Recording, collapsing and the recorder all decide with it.
+ * non-empty array. `CitationRecording.attach` and the recorder (recorder.ts)
+ * both decide with it.
  */
 export function hasNativeCitations(block: ResponsesFixtureBlock): boolean {
   return (
@@ -345,8 +346,9 @@ export class CitationRecording {
   /**
    * The metadata of one Anthropic stream event, given the event type the base
    * collapse reads it as. Returns the block key of a `content_block_start` or
-   * `content_block_delta` (its `index`, or for an index-less event the block
-   * that opened last), for the base collapse to pass to {@link text}.
+   * `content_block_delta`, for the base collapse to pass to {@link text}: its
+   * `index`; for an index-less start, a new synthetic key; for an index-less
+   * delta, the block that opened last, or `"lead"` when none has.
    */
   anthropicEvent(eventType: string, event: ObjectValue): string | undefined {
     if (eventType === "content_block_start") {
@@ -420,13 +422,15 @@ export class CitationRecording {
 
   /**
    * `base` plus the citations: its text blocks, split where one text part ends
-   * and the next begins, with each part's metadata on its pieces.
-   * `content`, `toolCalls` and every other field stay `base`'s own, and the
-   * blocks keep `base`'s order. When `base` has no `blocks`, its order is the
-   * one it implies: the text, then the function calls, then the custom calls.
-   * `harmonyRaw` is the streamed text of a turn whose `content` was
-   * harmony-parsed; offsets are then moved into the parsed text, and an
-   * annotation that points outside it is dropped and reported.
+   * and the next begins, with each part's metadata on its pieces. `blocks` is
+   * rebuilt from them, and so is `responsesBlocks` when the turn has custom
+   * tool calls; `content`, `toolCalls` and every other field stay `base`'s
+   * own, and the blocks keep `base`'s order. When `base` has no `blocks`, its
+   * order is the one it implies: the text, then the function calls, then the
+   * custom calls. `harmonyRaw` is the streamed text of a turn whose `content`
+   * was harmony-parsed; each text block is then the parsed text it holds, and
+   * offsets are moved into it. An entry that cannot be kept is dropped and
+   * reported in `citationNote`.
    */
   attach(base: CollapseResult, harmonyRaw?: string): CollapseResult {
     const notes: string[] = [];
