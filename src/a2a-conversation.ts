@@ -6,6 +6,7 @@ import type {
   A2APart,
   A2ATask,
 } from "./a2a-types.js";
+import { errorResponse } from "./jsonrpc.js";
 import type { JsonRpcResponse } from "./jsonrpc.js";
 import { generateId } from "./helpers.js";
 
@@ -121,11 +122,8 @@ export class ConversationStore {
     text: string,
     entry?: ConversationPatternEntry,
   ): JsonRpcResponse {
-    const fail = (code: number, message: string): JsonRpcResponse => ({
-      jsonrpc: "2.0",
-      id,
-      error: { code, message },
-    });
+    const fail = (code: number, message: string): JsonRpcResponse =>
+      errorResponse(code, message, id);
     const message = (params as { message?: A2AMessage } | undefined)?.message;
     if (!message || !Array.isArray(message.parts)) {
       return fail(-32602, "A conversation send requires message parts");
