@@ -323,6 +323,33 @@ export function responsesOutputToolBlocks(output: unknown[]): Map<number, Respon
   return tools;
 }
 
+/**
+ * The blocks of a cited turn whose streamed text was harmony-parsed. The
+ * recorded text blocks still hold the raw channel tokens, so they become one
+ * text block that holds the parsed `content` and all of their annotations, in
+ * the place of the first text block, followed by the harmony tool calls. The
+ * result then has the parsed text, reasoning and tool calls of the uncited
+ * collapse, plus the citations.
+ */
+function harmonyCitedBlocks(
+  ordered: ResponsesFixtureBlock[] | undefined,
+  content: string,
+  harmonyToolCalls: ToolCall[],
+): ResponsesFixtureBlock[] | undefined {
+  if (!ordered) return undefined;
+  const first = ordered.findIndex((block) => block.type === "text");
+  const annotations = ordered.flatMap((block) =>
+    block.type === "text" ? (block.annotations ?? []) : [],
+  );
+  const parsed: ResponsesFixtureBlock[] = [
+    { type: "text", text: content, annotations },
+    ...harmonyToolCalls.map((tc): ResponsesFixtureBlock => ({ type: "toolCall", ...tc })),
+  ];
+  // Every block before the first text block is a tool block.
+  const others = ordered.filter((block) => block.type !== "text");
+  return [...others.slice(0, first), ...parsed, ...others.slice(first)];
+}
+
 /** Project a custom-call accumulator to a flat fixture custom tool call. */
 function toCustomToolCall(ref: CustomCallAcc): CustomToolCall {
   return {
@@ -970,6 +997,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
   // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
   // signal (NOT droppedChunks/truncated — the bytes are not lost).
   const harmonyToolCalls: ToolCall[] = [];
+  let harmonyParsed = false;
   // Custom tool calls do not count as structured calls here, as before they
   // were collapsed at all.
   const hasFunctionCalls = Array.from(toolCallMap.values()).some((tc) => tc.kind === "function");
@@ -979,6 +1007,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       harmonyUnparsed = true;
       harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
     } else {
+      harmonyParsed = true;
       content = parsed.content;
       if (parsed.reasoning) {
         reasoning += parsed.reasoning;
@@ -1003,6 +1032,12 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
         tc.kind === "custom" ? toCustomToolCallBlock(tc) : toToolCallBlock(tc),
       ]),
     );
+  // The cited blocks hold the streamed text, so after a harmony parse they
+  // take the parsed text and tool calls, as the uncited result does.
+  const citedBlocks = () => {
+    const ordered = citations.ordered(citedTools);
+    return harmonyParsed ? harmonyCitedBlocks(ordered, content, harmonyToolCalls) : ordered;
+  };
   let customFields: Pick<CollapseResult, "customToolCalls" | "responsesBlocks"> = {};
   if (customEntries.length > 0) {
     const firstCustomAtom = orderAtoms.findIndex((a) => a.kind === "customToolCall");
@@ -1062,7 +1097,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
         ...(harmonyNote ? { harmonyNote } : {}),
         ...(inputTruncated ? { truncated: true } : {}),
       },
-      citations.ordered(citedTools),
+      citedBlocks(),
     );
   }
 
@@ -1088,7 +1123,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
     },
-    citations.ordered(citedTools),
+    citedBlocks(),
   );
 }
 

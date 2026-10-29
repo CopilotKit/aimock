@@ -1813,6 +1813,39 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     }
   });
 
+  it("a cited Responses harmony turn keeps the harmony-parsed text, reasoning and tool calls", async () => {
+    const harmony = [
+      "<|channel|>analysis<|message|>think<|end|><|start|>assistant<|channel|>final<|message|>Hello world<|return|>",
+      "<|channel|>analysis<|message|>Need the tool.<|end|><|start|>assistant<|channel|>commentary " +
+        'to=functions.lookup <|constrain|>json<|message|>{"q":1}<|call|>' +
+        "<|start|>assistant<|channel|>final<|message|>Here you go.<|return|>",
+    ];
+    for (const value of harmony) {
+      const wire = withCompleted(
+        responsesMessage(0, [{ text: value, annotations: [urlCitation] }]),
+      );
+      const plain = collapseOpenAISSE(sse(uncited(wire)));
+      expect(plain.content).not.toContain("<|");
+      const cited = collapseOpenAISSE(sse(wire));
+      const blocks = citedBlocks(plain, "responses", [[urlCitation]]);
+      expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
+      expect(cited.blocks).toEqual(blocks);
+      const server = await recorded("responses", wire, true);
+      expect(saved(server).blocks).toEqual(blocks);
+      // A harmony tool call has no id of its own; replay mints one.
+      const withoutIds = (values: Json[]): Json[] =>
+        values.map((value) => {
+          const copy = { ...value };
+          delete copy.id;
+          return copy;
+        });
+      for (const replayStream of [false, true])
+        expect(
+          withoutIds(visible((await request(server, "responses", replayStream)).body, "responses")),
+        ).toEqual(expected(blocks, "responses"));
+    }
+  });
+
   it("Anthropic text that streams before any block opens stays first in a cited turn", async () => {
     const wire = [
       { type: "content_block_delta", delta: { type: "text_delta", text: "Lead " } },
