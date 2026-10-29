@@ -91,7 +91,6 @@ interface ClaudeContentBlock {
     | "thinking"
     | "redacted_thinking";
   text?: string;
-  citations?: Record<string, unknown>[];
   id?: string;
   name?: string;
   input?: unknown;
@@ -1293,9 +1292,12 @@ export function prepareClaudeMisbehavior(
       ...preparedResponse,
       content: outcome.content,
       toolCalls,
-      blocks: outcome.ordered.map((block) =>
-        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
-      ),
+      blocks: outcome.ordered.map((block) => {
+        if (block.type !== "text") return { ...block, ...toolCalls[index++] };
+        // A text block's native citations follow the same `citations` rule.
+        const { citations, ...text } = block;
+        return context.citations && citations !== undefined ? { ...text, citations } : text;
+      }),
     };
   } else if ("toolCalls" in response) {
     preparedResponse = { ...preparedResponse, toolCalls };
