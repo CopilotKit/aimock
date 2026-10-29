@@ -2568,6 +2568,18 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       setCollapseStringLimitForTests(undefined);
     }
   });
+
+  it("an output item without a type reads as a message for its text and its annotations alike", () => {
+    const body = {
+      output: [{ content: [{ type: "output_text", text: "fact", annotations: [urlCitation] }] }],
+    };
+    const result = collapseResponsesJSON(body) as Json;
+    expect(result.content).toBe("fact");
+    expect(result.blocks).toEqual([text("responses", "fact", [urlCitation])]);
+    expect(stripCitations(result, collapseResponsesJSON(uncitedWire([body])[0]) as Json)).toEqual(
+      collapseResponsesJSON(uncitedWire([body])[0]),
+    );
+  });
 });
 
 describe("cited recordings read through the provider SDK clients", () => {

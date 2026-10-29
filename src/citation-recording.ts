@@ -41,6 +41,15 @@ function number(value: unknown): number | undefined {
 }
 
 /**
+ * Whether a Responses `output` item is a message: its `type` is `"message"`,
+ * or it names no type at all, as some OpenAI-compatible servers send it. The
+ * JSON collapse and the citation recording both decide with it.
+ */
+export function isResponsesMessage(item: ObjectValue): boolean {
+  return typeof item.type !== "string" || item.type === "message";
+}
+
+/**
  * The one test for a cited turn: a text block whose provider-native citation
  * metadata (`annotations` on Responses, `citations` on Anthropic) is a
  * non-empty array. Recording, collapsing and the recorder all decide with it.
@@ -156,7 +165,7 @@ export class CitationRecording {
   }
 
   private responseItem(output: number, item: ObjectValue): void {
-    if (typeof item.type === "string" && item.type !== "message") {
+    if (!isResponsesMessage(item)) {
       this.nonText.add(String(output));
     } else if (Array.isArray(item.content)) {
       item.content.forEach((raw, content) => {
@@ -183,7 +192,7 @@ export class CitationRecording {
       const output = number(event.output_index);
       const item = object(event.item);
       if (output === undefined || !item) return;
-      if (type === "response.output_item.added" && item.type === "message") {
+      if (type === "response.output_item.added" && isResponsesMessage(item)) {
         this.openOutput = output;
       }
       this.responseItem(output, item);

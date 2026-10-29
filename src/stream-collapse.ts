@@ -18,7 +18,7 @@ import type {
 } from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
-import { CitationRecording } from "./citation-recording.js";
+import { CitationRecording, isResponsesMessage } from "./citation-recording.js";
 
 // ---------------------------------------------------------------------------
 // Accumulated-string cap (RangeError: Invalid string length guard)
@@ -1100,7 +1100,7 @@ export function collapseResponsesJSON(body: Record<string, unknown>): CollapseRe
   output.forEach((raw, output_index) => {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
     const item = raw as Record<string, unknown>;
-    if (item.type === "message") {
+    if (isResponsesMessage(item)) {
       events.push({ type: "response.output_item.added", output_index, item: { type: "message" } });
       const parts = Array.isArray(item.content) ? item.content : [];
       parts.forEach((part, content_index) => {
