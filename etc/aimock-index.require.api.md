@@ -3198,6 +3198,8 @@ export class LLMock {
     addFixturesFromJSON(input: string | FixtureFileEntry[]): this;
     // (undocumented)
     get baseUrl(): string;
+    // (undocumented)
+    beginRecordingSession(testId: string): RecordingSession;
     clearChaos(): this;
     // (undocumented)
     clearFixtures(): this;
@@ -4669,6 +4671,33 @@ interface RecorderHost {
 }
 
 // @public (undocumented)
+interface RecordingCapture {
+    // (undocumented)
+    finish(): void;
+    // (undocumented)
+    stage(fixture: Fixture, warnings: string[], cacheable: boolean): void;
+}
+
+// @public
+export interface RecordingSession {
+    // (undocumented)
+    commit(): Promise<number>;
+    // (undocumented)
+    discard(): void;
+}
+
+// @public (undocumented)
+class RecordingSessions {
+    constructor(fixtures: Fixture[]);
+    // (undocumented)
+    admit(testId: string): RecordingCapture | undefined;
+    // (undocumented)
+    begin(testId: string, record?: RecordConfig): RecordingSession;
+    // (undocumented)
+    discardAll(): void;
+}
+
+// @public (undocumented)
 export type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus";
 
 // @public (undocumented)
@@ -4869,6 +4898,8 @@ export interface ServerInstance {
     journal: Journal;
     // (undocumented)
     openRouterVideoJobs: OpenRouterVideoJobMap;
+    // (undocumented)
+    recordingSessions: RecordingSessions;
     // (undocumented)
     server: http$1.Server;
     // (undocumented)

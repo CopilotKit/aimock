@@ -380,8 +380,15 @@ import { build, msg, quote } from "./message-text.js";
 
 const liveClosers = new WeakMap<HandlerDefaults, (testId?: string) => void>();
 
+import {
+  RecordingSessions,
+  bindRecordingSessions,
+  recordingSessionsFor,
+} from "./recording-session.js";
+
 export interface ServerInstance {
   closeLiveSessions(testId?: string): void;
+  recordingSessions: RecordingSessions;
   server: http.Server;
   journal: Journal;
   url: string;
@@ -508,6 +515,7 @@ const JOURNAL_PARAMS: ReadonlySet<string> = new Set([
  * share a single definition of "everything" instead of two lists that drift.
  */
 export interface FullResetTargets {
+  recordingSessions?: RecordingSessions;
   journal: Journal;
   videoStates: VideoStateMap;
   openRouterVideoJobs: OpenRouterVideoJobMap;
@@ -553,6 +561,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   resetEventIdCounter();
   if (!targets) return;
   liveClosers.get(targets.defaults)?.();
+  targets.recordingSessions?.discardAll();
   targets.journal.clear();
   // Chaos warning latches are per-server state too: a suite that resets between
   // tests must see a bad static chaos value reported again, not inherit the
@@ -1447,6 +1456,7 @@ async function handleControlAPI(
   }
 
   const resetTargets = (): FullResetTargets => ({
+    recordingSessions: recordingSessionsFor(req),
     journal,
     videoStates,
     openRouterVideoJobs,
@@ -3043,6 +3053,7 @@ async function startServer(
     () => serverOptions.responsesTools,
     responsesToolsExtendedView,
   );
+  const recordingSessions = new RecordingSessions(fixtures);
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under
@@ -3595,6 +3606,7 @@ async function startServer(
     registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+    bindRecordingSessions(req, recordingSessions);
     // Delegate to async handler — catch unhandled rejections to prevent Node.js crashes.
     // Run inside the request scope so every journal write made while serving
     // this request (in any handler module) is attributed back to it.
@@ -5941,6 +5953,7 @@ async function startServer(
       resolve({
         closeLiveSessions,
         server,
+        recordingSessions,
         journal,
         url,
         defaults,

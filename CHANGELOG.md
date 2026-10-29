@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `LLMock.beginRecordingSession(testId)` stages HTTP text-generation recordings until an explicit atomic `commit()`, with retryable publication and lifecycle-safe `discard()`.
+
 ### Changed
 
 - `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated

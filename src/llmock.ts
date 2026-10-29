@@ -31,6 +31,7 @@ import {
   type ServerInstance,
 } from "./server.js";
 import type { ResolvedInboundAuth } from "./api-key-auth.js";
+import type { RecordingSession } from "./recording-session.js";
 import {
   isInjectableStatus,
   INJECTED_STATUS_RANGE,
@@ -718,13 +719,20 @@ export class LLMock {
   // ---- Recording ----
 
   enableRecording(config: RecordConfig): this {
+    this.serverInstance?.recordingSessions.discardAll();
     this.options.record = config;
     return this;
   }
 
   disableRecording(): this {
+    this.serverInstance?.recordingSessions.discardAll();
     delete this.options.record;
     return this;
+  }
+
+  beginRecordingSession(testId: string): RecordingSession {
+    if (!this.serverInstance?.server.listening) throw new Error("Server not started");
+    return this.serverInstance.recordingSessions.begin(testId, this.options.record);
   }
 
   // ---- Reset ----
@@ -802,6 +810,7 @@ export class LLMock {
       throw new Error("Server not started");
     }
     const { server } = this.serverInstance;
+    this.serverInstance.recordingSessions.discardAll();
     await new Promise<void>((resolve, reject) => {
       server.close((err: Error | undefined) => (err ? reject(err) : resolve()));
     });

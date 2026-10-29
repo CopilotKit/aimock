@@ -1,5 +1,6 @@
 // Main class
 export { LLMock } from "./llmock.js";
+export type { RecordingSession } from "./recording-session.js";
 
 // Server
 export { createServer, type ServerInstance } from "./server.js";

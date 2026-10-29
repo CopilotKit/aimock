@@ -25,6 +25,21 @@ bills.
 
 </div>
 
+## Recording sessions
+
+For tests that should publish recordings only after success, enable recording,
+start the server, and call `mock.beginRecordingSession(testId)`. Send that exact
+ID through `X-Test-Id` or `?testId=` on HTTP text-generation requests. Captures
+remain private until `await session.commit()` returns their count. Commit waits
+for admitted proxy operations; new misses for the sealed ID receive HTTP 409.
+Existing fixtures still replay normally.
+
+Call `session.discard()` to abandon a test's recordings without canceling its
+upstream requests. Failed publication leaves a sealed session available for
+retry after storage is repaired. Successful commits are idempotent. Full reset,
+stop, and recording reconfiguration discard unfinished sessions; clearing the
+request journal does not. Sessions do not alter recording for media/job APIs.
+
 ## Quick Start
 
 ```bash

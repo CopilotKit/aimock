@@ -33,6 +33,11 @@ import { DEFAULT_TEST_ID } from "./constants.js";
 import { captureUsage } from "./response/usage/recording.js";
 import { renderError } from "./response/errors.js";
 import { getEmbeddingRequest } from "./embedding-request.js";
+import {
+  admitRecording,
+  RecordingSessionSealedError,
+  type RecordingCapture,
+} from "./recording-session.js";
 
 /** True when an SSE frame completes an OpenAI stream. */
 function isTerminalSSEFrame(frame: string): boolean {
@@ -283,6 +288,7 @@ export type ProxyOutcome = "not_configured" | "relayed" | "handled_by_hook";
 
 /**
  * Result of `persistFixture`:
+ * - `"staged"` - capture retained privately until its recording session commits.
  * - `"skipped"` — proxy-only mode; the caller has nothing else to do.
  * - `"written"` — fixture saved to `filepath` and (unless the match was empty)
  *    registered into the in-memory cache so the next identical request matches.
@@ -290,6 +296,7 @@ export type ProxyOutcome = "not_configured" | "relayed" | "handled_by_hook";
  *    (e.g. setting `X-AIMock-Record-Error` on a relay response).
  */
 export type PersistFixtureResult =
+  | { kind: "staged" }
   | { kind: "skipped" }
   | { kind: "written"; filepath: string }
   | { kind: "failed"; error: string };
@@ -331,6 +338,7 @@ export function pickContentType(contentType: string | string[] | undefined): str
  * snapshot-mode merging and warnings.
  */
 export function persistFixture(opts: {
+  capture?: RecordingCapture;
   record: RecordConfig;
   providerKey: RecordProviderKey;
   testId: string;
@@ -361,6 +369,18 @@ export function persistFixture(opts: {
   // persisted or registered, so an empty match has no consequence there.
   if (isEmptyMatch) {
     logger.warn("Recorded fixture has empty match criteria — skipping in-memory registration");
+  }
+
+  if (opts.capture) {
+    opts.capture.stage(
+      fixture,
+      [
+        ...(isEmptyMatch ? ["Empty match criteria — this fixture will not match any request"] : []),
+        ...warnings,
+      ],
+      !isEmptyMatch,
+    );
+    return { kind: "staged" };
   }
 
   const fixturePath = record.fixturePath ?? "./fixtures/recorded";
@@ -532,6 +552,50 @@ export async function proxyAndRecord(
   },
   rawBody?: string,
   options?: ProxyOptions,
+): Promise<ProxyOutcome> {
+  let capture: RecordingCapture | undefined;
+  try {
+    if (defaults.record) capture = admitRecording(req, request._endpointType);
+  } catch (error) {
+    if (!(error instanceof RecordingSessionSealedError)) throw error;
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Recording session sealed" }));
+    return "relayed";
+  }
+  try {
+    return await proxyAndRecordResponse(
+      req,
+      res,
+      request,
+      providerKey,
+      pathname,
+      fixtures,
+      defaults,
+      rawBody,
+      options,
+      capture,
+    );
+  } finally {
+    capture?.finish();
+  }
+}
+
+async function proxyAndRecordResponse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  request: ChatCompletionRequest,
+  providerKey: RecordProviderKey,
+  pathname: string,
+  fixtures: Fixture[],
+  defaults: {
+    record?: RecordConfig;
+    logger: Logger;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+    responsesTools?: ResponsesToolsMode;
+  },
+  rawBody?: string,
+  options?: ProxyOptions,
+  capture?: RecordingCapture,
 ): Promise<ProxyOutcome> {
   const record = defaults.record;
   if (!record) return "not_configured";
@@ -1066,6 +1130,7 @@ export async function proxyAndRecord(
     persistWarnings.push("Stream response was truncated — fixture may be incomplete");
   }
   const persistResult = persistFixture({
+    capture,
     record,
     providerKey,
     testId: getTestId(req),

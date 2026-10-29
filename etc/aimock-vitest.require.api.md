@@ -734,6 +734,8 @@ export class LLMock {
     addFixturesFromJSON(input: string | FixtureFileEntry[]): this;
     // (undocumented)
     get baseUrl(): string;
+    // (undocumented)
+    beginRecordingSession(testId: string): RecordingSession;
     clearChaos(): this;
     // (undocumented)
     clearFixtures(): this;
@@ -1197,6 +1199,14 @@ interface RecordedTimings {
     totalDurationMs: number;
     // (undocumented)
     ttftMs: number;
+}
+
+// @public
+interface RecordingSession {
+    // (undocumented)
+    commit(): Promise<number>;
+    // (undocumented)
+    discard(): void;
 }
 
 // @public (undocumented)
