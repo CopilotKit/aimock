@@ -102,12 +102,11 @@
           and context IDs, and appending artifacts. While the task awaits input,
           <code>status.message</code> holds the agent reply. Rejected sends leave task state
           unchanged. <code>GetTask</code> and <code>ListTasks</code> expose current state.
-          <code>GetTask</code> and <code>CancelTask</code> return the task under
-          <code>result.task</code>, as in
-          <code>{ "result": { "task": { "id": "task-...", "status": {...} } } }</code>, so A2A SDK
-          clients that expect the task at the top level of <code>result</code> should read
-          <code>result.task</code>. <code>CancelTask</code> preserves accepted output but prevents
-          continuation. <code>reset()</code> removes all registrations and tasks.
+          <code>GetTask</code> and <code>CancelTask</code> return the task itself as
+          <code>result</code>, as in
+          <code>{ "result": { "id": "task-...", "status": {...}, "history": [...] } }</code>, which
+          A2A SDK clients decode directly. <code>CancelTask</code> preserves accepted output but
+          prevents continuation. <code>reset()</code> removes all registrations and tasks.
         </p>
         <p>
           In JSON configuration, add <code>conversations: [{ turns: [...] }]</code> to an agent.
