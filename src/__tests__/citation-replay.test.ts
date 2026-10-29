@@ -1,12 +1,17 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LLMock } from "../llmock.js";
+import { LLMock as MisbehaviorLLMock } from "./helpers/misbehavior-enabled.js";
 import { proxyAndRecord } from "../recorder.js";
-import { loadFixturesFromDir, validateFixtures } from "../fixture-loader.js";
-import { collapseOpenAISSE, collapseAnthropicSSE } from "../stream-collapse.js";
+import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "../fixture-loader.js";
+import {
+  collapseOpenAISSE,
+  collapseAnthropicSSE,
+  collapseStreamingResponse,
+} from "../stream-collapse.js";
 import { Logger } from "../logger.js";
 import type { FixtureFileEntry, FixtureResponse } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -16,7 +21,16 @@ type Json = Record<string, any>;
 type Provider = "responses" | "anthropic";
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  // Run every cleanup even when one fails, then report all failures.
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups.splice(0).reverse()) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "citation-replay cleanup failed");
 });
 const urlCitation = {
   type: "url_citation",
@@ -373,6 +387,7 @@ async function recorded(
   wire: Json | Json[],
   stream: boolean,
   extended = false,
+  logger = new Logger("silent"),
 ): Promise<LLMock> {
   const dir = directory();
   const upstream = await listen(
@@ -410,20 +425,28 @@ async function recorded(
               providers: { [provider === "responses" ? "openai" : "anthropic"]: upstream },
               fixturePath: dir,
             },
-            logger: new Logger("silent"),
+            logger,
             ...(extended ? { responsesTools: "extended" as const } : {}),
           },
           raw,
-        ).then(resolveDone, rejectDone);
+        ).then(resolveDone, (error: unknown) => {
+          rejectDone(error);
+          res.destroy();
+        });
       });
     }),
   );
-  const response = await fetch(proxy, {
-    method: "POST",
-    body: JSON.stringify({ stream }),
-    headers: { "content-type": "application/json" },
-  });
-  await response.text();
+  // A recording failure rejects `done`; surface that error, not a fetch timeout.
+  const failed = done.then(() => new Promise<never>(() => {}));
+  const response = await Promise.race([
+    fetch(proxy, {
+      method: "POST",
+      body: JSON.stringify({ stream }),
+      headers: { "content-type": "application/json" },
+    }),
+    failed,
+  ]);
+  await Promise.race([response.text(), failed]);
   await done;
   const replay = await mock(undefined, extended);
   const fixtures = loadFixturesFromDir(dir);
@@ -894,7 +917,7 @@ describe("native citation fixtures", () => {
     input.push({ type: "response.completed", response: nativeJSON("responses", [final]) });
     await replayCollapsed("responses", input, [final]);
   });
-  it("Responses explicit empty terminal metadata clears prior citations and replaces text", async () => {
+  it("Responses records a turn whose terminal metadata clears every citation as uncited", async () => {
     const input = nativeEvents("responses", [text("responses", "draft")]).slice(0, -1);
     input.push({
       type: "response.content_part.done",
@@ -902,7 +925,9 @@ describe("native citation fixtures", () => {
       content_index: 0,
       part: { type: "output_text", text: "final", annotations: [] },
     });
-    await replayCollapsed("responses", input, [text("responses", "final", [])]);
+    const uncited = input.filter((event) => event.type !== "response.output_text.annotation.added");
+    expect(collapseOpenAISSE(sse(input))).toEqual(collapseOpenAISSE(sse(uncited)));
+    expect(collapseOpenAISSE(sse(input)).blocks).toBeUndefined();
   });
 
   it("Responses omitted snapshot fields retain accumulated values", async () => {
@@ -1078,23 +1103,47 @@ describe("native citation fixtures", () => {
 });
 
 describe("native citations with current Responses tool modes", () => {
+  // Real Responses usage nests *_details objects; a fixture keeps only the
+  // sanitized numeric fields.
+  const upstreamUsage = {
+    input_tokens: 7,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: 3,
+    output_tokens_details: { reasoning_tokens: 0 },
+    total_tokens: 10,
+  };
+  function toolModeTurn(stream: boolean): Json | Json[] {
+    const json = nativeJSON("responses", [text("responses", "fact"), tool]);
+    json.output[1].namespace = "search";
+    json.output.push({
+      type: "custom_tool_call",
+      call_id: "custom-1",
+      name: "code",
+      namespace: "sandbox",
+      input: "print(1)",
+    });
+    json.usage = structuredClone(upstreamUsage);
+    if (!stream) return json;
+    const [, call, custom] = json.output;
+    return [
+      ...nativeEvents("responses", [text("responses", "fact")]).slice(0, -1),
+      { type: "response.output_item.added", output_index: 1, item: { ...call, arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index: 1, delta: call.arguments },
+      { type: "response.output_item.done", output_index: 1, item: call },
+      { type: "response.output_item.added", output_index: 2, item: { ...custom, input: "" } },
+      { type: "response.custom_tool_call_input.delta", output_index: 2, delta: custom.input },
+      { type: "response.output_item.done", output_index: 2, item: custom },
+      { type: "response.completed", response: json },
+    ];
+  }
   for (const stream of [false, true]) {
-    it(`preserves extended calls, text metadata and usage while recording ${stream ? "SSE" : "JSON"}`, async () => {
-      const json = nativeJSON("responses", [
-        text("responses", "fact"),
-        { ...tool, namespace: "search" },
-      ]);
-      json.output[1].namespace = "search";
-      json.output.push({
-        type: "custom_tool_call",
-        call_id: "custom-1",
-        name: "code",
-        namespace: "sandbox",
-        input: "print(1)",
-      });
-      json.usage = { input_tokens: 7, output_tokens: 3, total_tokens: 10 };
-      const wire = stream ? [{ type: "response.completed", response: json }] : json;
-      const server = await recorded("responses", wire, stream, true);
+    it(`preserves extended calls, text metadata and sanitized usage while recording ${stream ? "SSE" : "JSON"}`, async () => {
+      const server = await recorded("responses", toolModeTurn(stream), stream, true);
+      const saved = server.getFixtures()[0].response as Json;
+      // JSON capture keeps the sanitized usage exactly; a Responses stream
+      // records no usage, cited or not.
+      if (stream) expect(saved).not.toHaveProperty("usage");
+      else expect(saved.usage).toEqual({ input_tokens: 7, output_tokens: 3, total_tokens: 10 });
       const { body } = await request(server, "responses", false);
       expect(
         body.output.find((item: Json) => item.type === "message").content[0].annotations,
@@ -1107,22 +1156,14 @@ describe("native citations with current Responses tool modes", () => {
         namespace: "sandbox",
         input: "print(1)",
       });
-      expect(body.usage).toMatchObject({ input_tokens: 7, output_tokens: 3, total_tokens: 10 });
+      if (!stream)
+        expect(body.usage).toMatchObject({ input_tokens: 7, output_tokens: 3, total_tokens: 10 });
     });
     it(`retains citations while dropping extended tool fields in default ${stream ? "SSE" : "JSON"} recording`, async () => {
-      const json = nativeJSON("responses", [text("responses", "fact"), tool]);
-      json.output[1].namespace = "search";
-      json.output.push({
-        type: "custom_tool_call",
-        call_id: "custom-1",
-        name: "code",
-        input: "print(1)",
-      });
-      const server = await recorded(
-        "responses",
-        stream ? [{ type: "response.completed", response: json }] : json,
-        stream,
-      );
+      const server = await recorded("responses", toolModeTurn(stream), stream);
+      const saved = server.getFixtures()[0].response as Json;
+      expect(saved).not.toHaveProperty("responsesBlocks");
+      expect(saved).not.toHaveProperty("customToolCalls");
       const { body } = await request(server, "responses", false);
       expect(
         body.output.find((item: Json) => item.type === "message").content[0].annotations,
@@ -1225,5 +1266,456 @@ describe("recording shape regressions", () => {
       "responsesBlocks",
       "toolCalls",
     ]);
+  });
+});
+
+describe("a cited recording is the uncited recording plus its citations", () => {
+  const saved = (server: LLMock) => server.getFixtures()[0].response as Json;
+  const webCitation = searchAndPathCitations("anthropic")[0];
+  const anthropicText = (index: number, value: string, citations: Json[]): Json[] => [
+    {
+      type: "content_block_start",
+      index,
+      content_block: { type: "text", text: "", citations: [] },
+    },
+    ...(value
+      ? [{ type: "content_block_delta", index, delta: { type: "text_delta", text: value } }]
+      : []),
+    ...citations.map((citation) => ({
+      type: "content_block_delta",
+      index,
+      delta: { type: "citations_delta", citation },
+    })),
+    { type: "content_block_stop", index },
+  ];
+  const responsesMessage = (output_index: number, parts: Json[]): Json[] => [
+    {
+      type: "response.output_item.added",
+      output_index,
+      item: { type: "message", role: "assistant", content: [] },
+    },
+    ...parts.flatMap((part, content_index) => [
+      {
+        type: "response.content_part.added",
+        output_index,
+        content_index,
+        part: { type: "output_text", text: "", annotations: [] },
+      },
+      ...(part.text
+        ? [{ type: "response.output_text.delta", output_index, content_index, delta: part.text }]
+        : []),
+      ...(part.annotations ?? []).map((annotation: Json, annotation_index: number) => ({
+        type: "response.output_text.annotation.added",
+        output_index,
+        content_index,
+        annotation_index,
+        annotation,
+      })),
+    ]),
+    {
+      type: "response.output_item.done",
+      output_index,
+      item: {
+        type: "message",
+        role: "assistant",
+        content: parts.map((part) => ({ type: "output_text", annotations: [], ...part })),
+      },
+    },
+  ];
+  const functionCall = (output_index: number, args: string, extra: Json = {}): Json[] => {
+    const item = {
+      type: "function_call",
+      name: "lookup",
+      call_id: "call_1",
+      arguments: args,
+      ...extra,
+    };
+    return [
+      { type: "response.output_item.added", output_index, item: { ...item, arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index, delta: args },
+      { type: "response.output_item.done", output_index, item },
+    ];
+  };
+  const completed = (events: Json[]): Json => ({
+    type: "response.completed",
+    response: {
+      output: events.filter((e) => e.type === "response.output_item.done").map((e) => e.item),
+      usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+    },
+  });
+  const withCompleted = (events: Json[]): Json[] => [...events, completed(events)];
+  /** The same wire with every citation removed: what an uncited turn sends. */
+  const uncited = (events: Json[]): Json[] =>
+    events
+      .filter(
+        (e) =>
+          e.type !== "response.output_text.annotation.added" && e.delta?.type !== "citations_delta",
+      )
+      .map((e) =>
+        e.type === "response.completed" || e.type === "response.output_item.done"
+          ? JSON.parse(JSON.stringify(e).replace(/"annotations":\[[^\]]*\]/g, '"annotations":[]'))
+          : e,
+      );
+  const withoutBlocks = (result: Json): Json => {
+    const copy = { ...result };
+    delete copy.blocks;
+    return copy;
+  };
+
+  it("Anthropic web search records no tool call for its server_tool_use input", async () => {
+    const wire = [
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: {} },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query":"fact"}' },
+      },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] },
+      },
+      { type: "content_block_stop", index: 1 },
+      ...anthropicText(2, "fact", [webCitation]),
+    ];
+    const server = await recorded("anthropic", wire, true);
+    expect(saved(server)).toEqual({
+      content: "fact",
+      blocks: [text("anthropic", "fact", [webCitation])],
+    });
+    const replay = await request(server, "anthropic", true);
+    expect(replay.body.content.map((block: Json) => block.type)).toEqual(["text"]);
+  });
+
+  for (const stream of [false, true])
+    it(`Anthropic ${stream ? "SSE" : "JSON"} leaves out an empty uncited text block`, async () => {
+      const wire = stream
+        ? [...anthropicText(0, "", []), ...anthropicText(1, "fact", [documentCitation])]
+        : {
+            content: [
+              { type: "text", text: "", citations: [] },
+              { type: "text", text: "fact", citations: [documentCitation] },
+            ],
+          };
+      const server = await recorded("anthropic", wire, stream);
+      expect(saved(server)).toEqual({
+        content: "fact",
+        blocks: [text("anthropic", "fact", [documentCitation])],
+      });
+    });
+
+  it("Anthropic normalizes whitespace-only tool arguments and keeps an index-less tool_use", async () => {
+    const wire = [
+      ...anthropicText(0, "fact", [documentCitation]),
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "toolu_1", name: "first", input: {} },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: " " },
+      },
+      { type: "content_block_stop", index: 1 },
+      {
+        type: "content_block_start",
+        content_block: { type: "tool_use", id: "toolu_2", name: "second", input: {} },
+      },
+      { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"q":1}' } },
+      { type: "content_block_stop" },
+    ];
+    const toolCalls = [
+      { name: "first", arguments: "{}", id: "toolu_1" },
+      { name: "second", arguments: '{"q":1}', id: "toolu_2" },
+    ];
+    expect(collapseAnthropicSSE(sse(wire))).toEqual({
+      content: "fact",
+      toolCalls,
+      blocks: [
+        text("anthropic", "fact", [documentCitation]),
+        ...toolCalls.map((call) => ({ type: "toolCall", ...call })),
+      ],
+    });
+    const server = await recorded("anthropic", wire, true);
+    expect(saved(server).toolCalls).toEqual(toolCalls);
+  });
+
+  it("Responses drops an empty namespace and normalizes whitespace-only arguments", async () => {
+    const wire = withCompleted([
+      ...responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }]),
+      ...functionCall(1, " ", { namespace: "" }),
+    ]);
+    const server = await recorded("responses", wire, true, true);
+    expect(saved(server)).toEqual({
+      content: "fact",
+      toolCalls: [{ name: "lookup", arguments: "{}", id: "call_1" }],
+      blocks: [
+        text("responses", "fact", [urlCitation]),
+        { type: "toolCall", name: "lookup", arguments: "{}", id: "call_1" },
+      ],
+    });
+  });
+
+  for (const stream of [false, true])
+    it(`Responses ${stream ? "SSE" : "JSON"} text-only turn records no empty toolCalls`, async () => {
+      const events = withCompleted(
+        responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }]),
+      );
+      const server = await recorded(
+        "responses",
+        stream ? events : events[events.length - 1].response,
+        stream,
+      );
+      expect(saved(server)).toEqual({
+        content: "fact",
+        blocks: [text("responses", "fact", [urlCitation])],
+        ...(stream ? {} : { usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } }),
+      });
+    });
+
+  it("Responses leaves out an opened output_text part that never received text", async () => {
+    const wire = withCompleted(
+      responsesMessage(0, [{ text: "fact", annotations: [urlCitation] }, { text: "" }]),
+    );
+    const server = await recorded("responses", wire, true);
+    expect(saved(server).blocks).toEqual([text("responses", "fact", [urlCitation])]);
+  });
+
+  it("Responses keeps what the uncited recording keeps of refusal parts and logprobs", async () => {
+    const parts = [
+      { type: "refusal", refusal: "no" },
+      {
+        type: "output_text",
+        text: "but fact",
+        annotations: [urlCitation],
+        logprobs: [{ token: "but", logprob: -0.1, bytes: [98, 117, 116], top_logprobs: [] }],
+      },
+    ];
+    const wire = withCompleted([
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "message", content: [] },
+      },
+      { type: "response.refusal.delta", output_index: 0, content_index: 0, delta: "no" },
+      { type: "response.output_text.delta", output_index: 0, content_index: 1, delta: "but fact" },
+      {
+        type: "response.output_text.annotation.added",
+        output_index: 0,
+        content_index: 1,
+        annotation_index: 0,
+        annotation: urlCitation,
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "message", content: parts },
+      },
+    ]);
+    const cited = collapseOpenAISSE(sse(wire));
+    expect(withoutBlocks(cited)).toEqual(collapseOpenAISSE(sse(uncited(wire))));
+    expect(cited.blocks).toEqual([text("responses", "but fact", [urlCitation])]);
+  });
+
+  it("Responses JSON tolerates null output and summary entries", async () => {
+    const server = await recorded(
+      "responses",
+      {
+        output: [
+          null,
+          { type: "reasoning", summary: [null, { type: "summary_text", text: "think" }] },
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "fact", annotations: [urlCitation] }],
+          },
+        ],
+      },
+      false,
+    );
+    expect(saved(server)).toEqual({
+      content: "fact",
+      blocks: [text("responses", "fact", [urlCitation])],
+      reasoning: "think",
+    });
+  });
+
+  it("a citation-only empty turn records without an empty-content warning", async () => {
+    const logger = new Logger("silent");
+    const warn = vi.spyOn(logger, "warn");
+    const wire = withCompleted(responsesMessage(0, [{ text: "", annotations: [urlCitation] }]));
+    const server = await recorded("responses", wire, true, false, logger);
+    expect(saved(server).blocks).toEqual([text("responses", "", [urlCitation])]);
+    expect(warn.mock.calls.flat().join("\n")).not.toContain("empty content");
+  });
+
+  for (const extended of [false, true])
+    it(`Responses ${extended ? "extended" : "default"} mode keeps text and tool order around a custom call`, async () => {
+      const wire = withCompleted([
+        ...responsesMessage(0, [{ text: "before", annotations: [urlCitation] }]),
+        {
+          type: "response.output_item.added",
+          output_index: 1,
+          item: { type: "custom_tool_call", name: "patch", call_id: "custom-1", input: "" },
+        },
+        { type: "response.custom_tool_call_input.delta", output_index: 1, delta: "diff" },
+        {
+          type: "response.output_item.done",
+          output_index: 1,
+          item: { type: "custom_tool_call", name: "patch", call_id: "custom-1", input: "diff" },
+        },
+        ...functionCall(2, '{"q":1}'),
+        ...responsesMessage(3, [{ text: "after" }]),
+      ]);
+      const server = await recorded("responses", wire, true, extended);
+      const fixture = saved(server);
+      const ordered = [
+        text("responses", "before", [urlCitation]),
+        ...(extended
+          ? [{ type: "customToolCall", name: "patch", input: "diff", id: "custom-1" }]
+          : []),
+        { type: "toolCall", name: "lookup", arguments: '{"q":1}', id: "call_1" },
+        { type: "text", text: "after" },
+      ];
+      if (extended) {
+        expect(fixture).not.toHaveProperty("blocks");
+        expect(fixture.responsesBlocks).toEqual(ordered);
+      } else {
+        expect(fixture).not.toHaveProperty("responsesBlocks");
+        expect(fixture.blocks).toEqual(ordered);
+      }
+    });
+
+  it("public collapse functions return the uncited result plus blocks for cited input", () => {
+    const responses = [
+      withCompleted(responsesMessage(0, [{ text: "Hi", annotations: [urlCitation] }])),
+      withCompleted([
+        ...functionCall(0, '{"q":1}', { namespace: "ns" }),
+        ...responsesMessage(1, [{ text: "after", annotations: [urlCitation] }]),
+      ]),
+      withCompleted([
+        ...responsesMessage(0, [{ text: "Hi", annotations: [urlCitation] }, { text: "" }]),
+        ...functionCall(1, " ", { namespace: "" }),
+      ]),
+    ];
+    for (const wire of responses) {
+      for (const collapse of [
+        collapseOpenAISSE,
+        (body: string) => collapseStreamingResponse("text/event-stream", "openai", body)!,
+      ]) {
+        const cited = collapse(sse(wire));
+        const plain = collapse(sse(uncited(wire)));
+        expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
+        expect(cited.blocks?.some((block) => block.type === "text" && block.annotations)).toBe(
+          true,
+        );
+      }
+    }
+    const anthropic = [
+      [...anthropicText(0, "", []), ...anthropicText(1, "fact", [documentCitation])],
+      [
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "server_tool_use", id: "s", name: "web_search", input: {} },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{}" },
+        },
+        ...anthropicText(1, "fact", [webCitation]),
+      ],
+    ];
+    for (const wire of anthropic) {
+      const cited = collapseAnthropicSSE(sse(wire));
+      expect(withoutBlocks(cited)).toEqual(collapseAnthropicSSE(sse(uncited(wire))));
+      expect(cited.blocks?.length).toBeGreaterThan(0);
+    }
+  });
+
+  for (const stream of [false, true])
+    it(`Bedrock InvokeModel ${stream ? "stream" : "JSON"} serves no native citations under a misbehavior`, async () => {
+      const server = new MisbehaviorLLMock({ port: 0, latency: 0 });
+      server.addFixture({
+        match: {},
+        response: {
+          blocks: [
+            text("anthropic", "fact", [documentCitation]),
+            { type: "toolCall", name: "lookup", arguments: '{"q":1}', id: "toolu_fixed" },
+          ],
+        } as FixtureResponse,
+        misbehavior: { faults: [{ fault: "tool-unknown-name" }] },
+      });
+      await server.start();
+      cleanups.push(() => server.stop());
+      const response = await fetch(
+        `${server.url}/model/anthropic.claude-3-sonnet-20240229-v1:0/${stream ? "invoke-with-response-stream" : "invoke"}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            anthropic_version: "bedrock-2023-05-31",
+            max_tokens: 64,
+            messages: [{ role: "user", content: "lookup" }],
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      const raw = Buffer.from(await response.arrayBuffer()).toString("latin1");
+      const served = stream
+        ? [...raw.matchAll(/"bytes":"([A-Za-z0-9+/=]+)"/g)]
+            .map((match) => Buffer.from(match[1], "base64").toString("utf8"))
+            .join("\n")
+        : raw;
+      expect(served).toContain("lookup_v2");
+      expect(served).not.toContain("citations");
+    });
+
+  it("rejects malformed native citation fields at load and at serve time", async () => {
+    const dir = directory();
+    const invalid: Json[] = [
+      { type: "text", text: "fact", annotations: { type: "url_citation" } },
+      { type: "text", text: "fact", annotations: [null, "x", 3] },
+      { type: "text", text: "fact", citations: [1] },
+      { type: "text", text: "fact", continuesMessage: "true" },
+      { type: "text", text: "", annotations: [null] },
+    ];
+    invalid.forEach((block, index) =>
+      writeFileSync(
+        join(dir, `${index}.json`),
+        JSON.stringify({
+          fixtures: [{ match: { userMessage: "x" }, response: { blocks: [block] } }],
+        }),
+      ),
+    );
+    for (let index = 0; index < invalid.length; index++) {
+      const errors = validateFixtures(loadFixtureFile(join(dir, `${index}.json`)))
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => issue.message);
+      expect(
+        errors.some((message) => /annotations|citations|continuesMessage/.test(message)),
+        JSON.stringify(errors),
+      ).toBe(true);
+    }
+    for (const block of [
+      { type: "text", text: "fact", annotations: [{ type: "url_citation", read: () => 1 }] },
+      { type: "text", text: "fact", annotations: { type: "url_citation" } },
+      { type: "text", text: "fact", continuesMessage: "true" },
+    ]) {
+      const server = await mock({ blocks: [block] });
+      const response = await fetch(`${server.url}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", input: "cited answer" }),
+      });
+      expect(response.status).toBe(500);
+      expect((await response.json()).error.message).toMatch(/^Invalid fixture block at index 0: /);
+    }
   });
 });
