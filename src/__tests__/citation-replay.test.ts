@@ -13,6 +13,7 @@ import {
   collapseAnthropicSSE,
   collapseResponsesJSON,
   collapseStreamingResponse,
+  setCollapseStringLimitForTests,
 } from "../stream-collapse.js";
 import { Logger } from "../logger.js";
 import type { FixtureFileEntry, FixtureResponse } from "../types.js";
@@ -2543,6 +2544,29 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     expect(warn.mock.calls.flat().join("\n")).toContain(
       "3 native citation entries that are not objects dropped",
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Round 5
+  // -------------------------------------------------------------------------
+
+  it("a complete Responses JSON body under the collapse limit is not marked truncated", () => {
+    const body = {
+      output: [
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "y".repeat(600), annotations: [urlCitation] }],
+        },
+      ],
+    };
+    setCollapseStringLimitForTests(JSON.stringify(body).length + 50);
+    try {
+      const result = collapseResponsesJSON(body);
+      expect(result.truncated).toBeUndefined();
+      expect(result.content).toBe("y".repeat(600));
+    } finally {
+      setCollapseStringLimitForTests(undefined);
+    }
   });
 });
 

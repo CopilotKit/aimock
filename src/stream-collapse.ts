@@ -546,10 +546,15 @@ export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseR
 /**
  * @internal {@link collapseOpenAISSE} keeping an OpenAI Responses `namespace`
  * and custom tool calls, for the recorder with `responsesTools: "extended"`.
+ * `inputTruncated` says whether the source of `rawBody` is larger than the
+ * collapse limit (by default, `rawBody` itself); only then is the stream cut
+ * to the limit and the result marked `truncated`.
  */
-export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseResult {
-  const inputTruncated = isCollapseInputTruncated(rawBody);
-  const body = guardCollapseBody(rawBody);
+export function collapseOpenAISSEWithResponsesTools(
+  rawBody: string,
+  inputTruncated = isCollapseInputTruncated(rawBody),
+): CollapseResult {
+  const body = inputTruncated ? guardCollapseBody(rawBody) : rawBody;
   const citations = new CitationRecording("responses");
   const lines = splitSSEEvents(body);
   let content = "";
@@ -1085,7 +1090,9 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
  * search calls), read by {@link collapseOpenAISSEWithResponsesTools}, plus the
  * body's sanitized `usage`. The
  * recorder uses it for a cited Responses JSON turn, so the JSON and the stream
- * recording of one turn are made by one collapse.
+ * recording of one turn are made by one collapse. The collapse limit applies
+ * to the body itself, not to the events made from it, so a complete body
+ * under the limit is never marked `truncated`.
  */
 export function collapseResponsesJSON(body: Record<string, unknown>): CollapseResult {
   const events: Record<string, unknown>[] = [];
@@ -1099,9 +1106,12 @@ export function collapseResponsesJSON(body: Record<string, unknown>): CollapseRe
       parts.forEach((part, content_index) => {
         const value = part as Record<string, unknown> | null;
         if (value?.type !== "output_text" || typeof value.text !== "string") return;
+        // The part's text is streamed once, by its delta; its done event
+        // carries only its annotations.
+        const { text, ...done } = value;
         events.push(
-          { type: "response.output_text.delta", output_index, content_index, delta: value.text },
-          { type: "response.content_part.done", output_index, content_index, part: value },
+          { type: "response.output_text.delta", output_index, content_index, delta: text },
+          { type: "response.content_part.done", output_index, content_index, part: done },
         );
       });
     } else if (item.type === "reasoning") {
@@ -1118,6 +1128,7 @@ export function collapseResponsesJSON(body: Record<string, unknown>): CollapseRe
   });
   const collapsed = collapseOpenAISSEWithResponsesTools(
     events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+    JSON.stringify(body).length > effectiveCollapseStringLimit(),
   );
   // The body's own usage, sanitized as a final usage.
   const usage = captureUsage({ family: "final", stage: "final", observation: body.usage });
