@@ -1813,6 +1813,21 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     }
   });
 
+  it("Anthropic text that streams before any block opens stays first in a cited turn", async () => {
+    const wire = [
+      { type: "content_block_delta", delta: { type: "text_delta", text: "Lead " } },
+      ...anthropicText(0, "body", [documentCitation]),
+    ];
+    const plain = collapseAnthropicSSE(sse(uncited(wire)));
+    expect(plain.content).toBe("Lead body");
+    const cited = collapseAnthropicSSE(sse(wire));
+    expect(withoutBlocks(cited)).toEqual(withoutBlocks(plain));
+    expect(cited.blocks).toEqual([
+      { type: "text", text: "Lead " },
+      text("anthropic", "body", [documentCitation]),
+    ]);
+  });
+
   it("an Anthropic frame whose data is null is ignored, cited or not", () => {
     for (const citations of [[], [documentCitation]]) {
       const wire = sse(anthropicText(0, "hi", citations));

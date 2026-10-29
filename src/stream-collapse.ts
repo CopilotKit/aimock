@@ -1141,6 +1141,9 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   // The block an index-less delta belongs to for the citation recording: the
   // last block of ANY type that opened (the citation recording owns text).
   let lastBlockIndex: number | undefined;
+  // The key of text deltas that arrive before any block opens: below every
+  // real index, so that text sorts first, where the stream put it.
+  const LEADING_BLOCK_INDEX = -1;
   // Cross-channel order atoms (#274), in stream arrival order.
   const orderAtoms: OrderAtom[] = [];
 
@@ -1178,8 +1181,9 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     // `index`, or a fresh synthetic key when the stream omits it. The citation
     // recording gets the same key, so cited text and tool calls share one key
     // space and keep stream order. An index-less delta belongs to the last
-    // block opened. A frame whose data is not an object (`data: null`)
-    // carries no block.
+    // block opened; before any block opens it gets a key below every other
+    // key, so its text keeps its place at the start of the turn. A frame whose
+    // data is not an object (`data: null`) carries no block.
     let blockIndex: number | undefined;
     if (parsed !== null && typeof parsed === "object") {
       const citationEventType = eventType || parsed.type;
@@ -1188,6 +1192,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         blockIndex ??= nextSyntheticIndex++;
         lastBlockIndex = blockIndex;
       } else if (citationEventType === "content_block_delta") {
+        lastBlockIndex ??= LEADING_BLOCK_INDEX;
         blockIndex ??= lastBlockIndex;
       }
       citations.captureEvent({
