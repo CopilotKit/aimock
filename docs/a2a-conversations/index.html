@@ -98,9 +98,10 @@
           task ID selects the conversation. A conversation stream sends one event that contains the
           accumulated <code>result.task</code> snapshot. A rejected streaming send returns a plain
           JSON-RPC error body, not an event stream. Each accepted turn records the user message and
-          agent reply in order, preserving user message IDs and appending artifacts. Rejected sends
-          leave task state unchanged. <code>GetTask</code> and <code>ListTasks</code> expose current
-          state; <code>CancelTask</code> preserves accepted output but prevents continuation.
+          agent reply in order, preserving user message IDs, stamping both messages with the task
+          and context IDs, and appending artifacts. Rejected sends leave task state unchanged.
+          <code>GetTask</code> and <code>ListTasks</code> expose current state;
+          <code>CancelTask</code> preserves accepted output but prevents continuation.
           <code>reset()</code> removes all registrations and tasks.
         </p>
         <p>

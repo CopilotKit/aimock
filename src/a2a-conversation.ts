@@ -185,19 +185,26 @@ export class ConversationStore {
     if (!matchesConversation(text, turn.pattern)) {
       return fail(-32000, "Message does not match the next conversation turn");
     }
+    // Stored and returned messages carry the IDs of the task they belong to.
+    const ids = {
+      taskId: task?.id ?? generateId("task"),
+      contextId: task?.contextId ?? contextId ?? generateId("ctx"),
+    };
     const user: A2AMessage = {
       ...structuredClone(message),
       messageId: messageId ?? generateId("msg"),
       role: "ROLE_USER",
+      ...ids,
     };
     const reply: A2AMessage = {
       messageId: generateId("msg"),
       role: "ROLE_AGENT",
       parts: structuredClone(turn.response.parts ?? []),
+      ...ids,
     };
     const nextTask: A2ATask = {
-      id: task?.id ?? generateId("task"),
-      contextId: task?.contextId ?? contextId ?? generateId("ctx"),
+      id: ids.taskId,
+      contextId: ids.contextId,
       status: { state: turn.response.state, timestamp: new Date().toISOString() },
       history: [...(task?.history ?? []), user, reply],
       artifacts: [...(task?.artifacts ?? []), ...structuredClone(turn.response.artifacts ?? [])],

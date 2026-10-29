@@ -1570,3 +1570,28 @@ describe("absent conversation IDs", () => {
     },
   );
 });
+
+describe("conversation message IDs", () => {
+  it.each([false, true])(
+    "stamps stored and returned messages with their task (stream=%s)",
+    async (stream) => {
+      const { url } = await fixture();
+      const first = await send(url, "start", { contextId: "", messageId: "" }, stream);
+      const next = await send(url, "answer", { taskId: first.id }, stream);
+      for (const task of [first, next, await getTask(url, first.id)]) {
+        for (const entry of task.history) {
+          expect(entry).toMatchObject({ taskId: first.id, contextId: first.contextId });
+          expect(entry.messageId).not.toBe("");
+        }
+      }
+      expect(next.history.map((entry) => entry.role)).toEqual([
+        "ROLE_USER",
+        "ROLE_AGENT",
+        "ROLE_USER",
+        "ROLE_AGENT",
+      ]);
+      expect(first.history[0].messageId).toMatch(/^msg-/);
+      expect(next.history[2].messageId).toBe("user:answer");
+    },
+  );
+});
