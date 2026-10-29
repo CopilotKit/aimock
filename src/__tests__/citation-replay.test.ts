@@ -2554,6 +2554,38 @@ describe("a cited recording is the uncited recording plus its citations", () => 
   // Round 5
   // -------------------------------------------------------------------------
 
+  it("an empty cited text part keeps its wire place before a tool call", async () => {
+    const anthropicWire = [
+      ...anthropicText(0, "", [documentCitation]),
+      ...anthropicTool(1, "toolu_1", "{}"),
+      ...anthropicText(2, "fact", [documentCitation]),
+      { type: "message_stop" },
+    ];
+    const anthropic = saved(await recorded("anthropic", anthropicWire, true));
+    expect(anthropic.blocks.map((block: Json) => [block.type, block.text])).toEqual([
+      ["text", ""],
+      ["toolCall", undefined],
+      ["text", "fact"],
+    ]);
+    const onA = { ...urlCitation, end_index: 1 };
+    const responsesWire = withCompleted([
+      ...responsesMessage(0, [
+        { text: "A", annotations: [onA] },
+        { text: "", annotations: [urlCitation] },
+      ]),
+      ...functionCall(1, "{}"),
+    ]);
+    const server = await recorded("responses", responsesWire, true);
+    expect(saved(server).blocks).toEqual([
+      text("responses", "A", [onA]),
+      { ...text("responses", "", [urlCitation]), continuesMessage: true },
+      { type: "toolCall", name: "lookup", arguments: "{}", id: "call_1" },
+    ]);
+    const { body } = await request(server, "responses", false);
+    expect(body.output.map((item: Json) => item.type)).toEqual(["message", "function_call"]);
+    expect(body.output[0].content).toHaveLength(2);
+  });
+
   it("a non-object entry that a later snapshot replaces is not reported as dropped", () => {
     const replaced = collapseOpenAISSE(
       sse([

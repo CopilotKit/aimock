@@ -115,7 +115,11 @@ export class CitationRecording {
   private readonly segments: Segment[] = [];
   /** Each text part's native metadata, by its index, by part key. */
   private readonly parts = new Map<string, Map<number, ObjectValue>>();
-  /** Every part key, in the order it was first seen. */
+  /**
+   * Every part key, in the order it was first seen, with a `tool#` key at the
+   * place each tool call arrived (a Responses function or custom call, an
+   * Anthropic `tool_use`).
+   */
   private readonly seen = new Set<string>();
   /**
    * Responses output indexes, or Anthropic block keys, known to hold something
@@ -218,6 +222,9 @@ export class CitationRecording {
   private responseItem(output: number, item: ObjectValue): void {
     if (!isResponsesMessage(item)) {
       this.nonText.add(String(output));
+      if (item.type === "function_call" || item.type === "custom_tool_call") {
+        this.seen.add(`tool#${output}`);
+      }
     } else if (Array.isArray(item.content)) {
       item.content.forEach((raw, content) => {
         const part = object(raw);
@@ -286,6 +293,7 @@ export class CitationRecording {
         this.snapshot(key, block.citations);
       } else if (typeof block?.type === "string") {
         this.nonText.add(key);
+        if (block.type === "tool_use") this.seen.add(`tool#${key}`);
       }
       return key;
     }
@@ -310,6 +318,7 @@ export class CitationRecording {
         this.text(key, block.text.length);
       } else if (typeof block?.type === "string") {
         this.nonText.add(key);
+        if (block.type === "tool_use") this.seen.add(`tool#${key}`);
       }
     });
   }
@@ -444,7 +453,11 @@ export class CitationRecording {
         }
       }
     }
-    this.placeEmptyParts(pieces, cited);
+    this.placeEmptyParts(
+      pieces,
+      cited,
+      base.blocks !== undefined || base.responsesBlocks !== undefined,
+    );
     let outside = 0;
     let split = 0;
     for (const [key, metadata] of cited) {
@@ -482,28 +495,37 @@ export class CitationRecording {
   }
 
   /**
-   * A cited part that streamed no text becomes an empty text block. It goes
-   * after the part seen just before it, before the next text piece.
+   * A cited part that streamed no text becomes an empty text block, in the
+   * place it arrived: right after what arrived just before it (the last piece
+   * of a text part, or the block of a tool call), or first when nothing did.
+   * Tool calls are matched to `base`'s tool blocks in arrival order. When
+   * `base` has no blocks of its own (`ordered` is false), its text comes
+   * before its tool calls, so the part is placed among the text only.
    */
-  private placeEmptyParts(pieces: Piece[], cited: Map<string, ObjectValue[]>): void {
+  private placeEmptyParts(
+    pieces: Piece[],
+    cited: Map<string, ObjectValue[]>,
+    ordered: boolean,
+  ): void {
     const placed = new Set(pieces.flatMap((piece) => (piece.key ? [piece.key] : [])));
-    let previous: string | undefined;
+    const tools = ordered
+      ? pieces.filter(
+          (piece) => piece.block.type === "toolCall" || piece.block.type === "customToolCall",
+        )
+      : [];
+    let tool = 0;
+    let previous: Piece | undefined;
     for (const key of this.seen) {
-      if (!placed.has(key) && cited.has(key)) {
-        let at = 0;
-        if (previous !== undefined) {
-          for (let i = pieces.length - 1; i >= 0; i--) {
-            if (pieces[i].key === previous) {
-              at = i + 1;
-              break;
-            }
-          }
-        }
-        while (at < pieces.length && pieces[at].block.type !== "text") at++;
-        pieces.splice(at, 0, { key, offset: 0, block: { type: "text", text: "" } });
+      if (key.startsWith("tool#")) {
+        previous = tools[tool++] ?? previous;
+      } else if (!placed.has(key) && cited.has(key)) {
+        const piece: Piece = { key, offset: 0, block: { type: "text", text: "" } };
+        pieces.splice(previous ? pieces.indexOf(previous) + 1 : 0, 0, piece);
         placed.add(key);
+        previous = piece;
+      } else if (placed.has(key)) {
+        previous = lastOf(pieces, (piece) => piece.key === key);
       }
-      if (placed.has(key)) previous = key;
     }
   }
 
