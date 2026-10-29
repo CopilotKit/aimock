@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
+
 ### Changed
 
 - `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
