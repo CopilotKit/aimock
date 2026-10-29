@@ -1352,4 +1352,19 @@ describe("conversation request validation and isolation", () => {
     await send(`${llm.url}/nested/a2a?testId=probe`, "start", {}, true);
     expect(llm.getRequests().map((entry) => entry.path)).toEqual(["/nested/a2a?testId=probe"]);
   });
+
+  it("keeps the registered turns when the caller mutates its array afterwards", async () => {
+    const turns = [turn("start", INPUT, "question"), turn("finish", DONE, "result")];
+    const { url } = await fixture(turns);
+    const first = await send(url, "start");
+    turns.pop();
+    turns[0].response.state = "TASK_STATE_WORKING" as A2AConversationTurn["response"]["state"];
+    turns[0].response.parts = [{ text: 17 as unknown as string }];
+    const done = await send(url, "finish", { taskId: first.id });
+    expect(done.status.state).toBe(DONE);
+    expect(done.history[3].parts).toEqual([{ text: "result" }]);
+    const again = await send(url, "start");
+    expect(again.status.state).toBe(INPUT);
+    expect(again.history[1].parts).toEqual([{ text: "question" }]);
+  });
 });

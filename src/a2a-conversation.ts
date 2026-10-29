@@ -89,7 +89,9 @@ export function conversationPattern(
         : state === "TASK_STATE_COMPLETED" || state === "TASK_STATE_FAILED";
     if (!valid) throw new Error(`Invalid conversation state at index ${index}`);
   }
-  return { kind: "conversation", agentName, pattern: turns[0].pattern, turns, replayLimit };
+  // Keep a private copy so later changes to the caller's turns cannot bypass validation.
+  const copy = structuredClone(turns);
+  return { kind: "conversation", agentName, pattern: copy[0].pattern, turns: copy, replayLimit };
 }
 
 interface Progress {
