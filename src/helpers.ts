@@ -1241,41 +1241,29 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 }
 
 /**
- * The optional native-citation fields of fixture text block `i`, validated
- * and copied: `annotations` / `citations` must be arrays of plain objects
- * (`null` or an empty array reads as absent) and `continuesMessage` a
- * boolean. Throws the module's "Invalid fixture block" error otherwise, the
- * same as the other text-block checks.
+ * The optional native-citation fields of a fixture text block, copied:
+ * `annotations` / `citations` when they are a non-empty array of plain data
+ * objects, and `continuesMessage` when it is `true`. Any other value is
+ * dropped and reads as absent, so the response-level `citations` still apply.
+ * Earlier releases ignored these keys on a text block, so a fixture that
+ * carries a malformed one serves as before instead of failing; load-time
+ * validation (validateFixtures) still reports it.
  */
 function textBlockMetadata(
   b: Record<string, unknown>,
-  i: number,
 ): Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> {
-  const fail = (problem: string): never => {
-    throw new Error(`Invalid fixture block at index ${i}: "text" block ${problem}`);
-  };
   const result: Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> = {};
   for (const key of ["annotations", "citations"] as const) {
     const value = b[key];
-    // `null` is the provider SDKs' own "no citations" value, and an empty
-    // array carries none either: both read as absent, so the response-level
-    // `citations` still apply to this block.
-    if (value === undefined || value === null) continue;
-    // Array.from turns holes into `undefined`, so a sparse array fails too.
-    if (!Array.isArray(value) || !Array.from(value).every(isPlainObject)) {
-      fail(`"${key}" must be an array of objects`);
+    // Array.from turns holes into `undefined`, so a sparse array is dropped too.
+    if (!Array.isArray(value) || value.length === 0 || !Array.from(value).every(isPlainObject)) {
+      continue;
     }
-    if ((value as unknown[]).length === 0) continue;
     try {
       result[key] = structuredClone(value as Record<string, unknown>[]);
-    } catch (err) {
-      fail(
-        `"${key}" must hold only data values (${err instanceof Error ? err.message : String(err)})`,
-      );
+    } catch {
+      // A value that is not plain data (a function, a symbol) cannot be cloned.
     }
-  }
-  if (b.continuesMessage !== undefined && typeof b.continuesMessage !== "boolean") {
-    fail(`"continuesMessage" must be a boolean`);
   }
   if (b.continuesMessage === true) result.continuesMessage = true;
   return result;
@@ -1605,7 +1593,7 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text, ...textBlockMetadata(b, i) };
+      return { type: "text", text: b.text, ...textBlockMetadata(b) };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
         throw new Error(
@@ -1684,7 +1672,7 @@ export function resolveResponsesBlocks(
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text, ...textBlockMetadata(b, i) };
+      return { type: "text", text: b.text, ...textBlockMetadata(b) };
     }
     if (b.type === "toolCall") {
       if (b.input !== undefined) failToolCall('"input" is only valid on a "customToolCall" block');

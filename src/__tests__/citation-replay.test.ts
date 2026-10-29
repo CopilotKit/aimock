@@ -1876,7 +1876,7 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     }
   });
 
-  it("rejects malformed native citation fields at load and at serve time", async () => {
+  it("reports malformed native citation fields at load and drops them at serve time", async () => {
     const dir = directory();
     const invalid: Json[] = [
       { type: "text", text: "fact", annotations: { type: "url_citation" } },
@@ -1917,21 +1917,31 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         expect.stringMatching(/^blocks\[0\]\.(annotations|citations) must be an array of objects$/),
       ]);
     }
-    for (const block of [
-      { type: "text", text: "fact", annotations: [{ type: "url_citation", read: () => 1 }] },
-      { type: "text", text: "fact", annotations: { type: "url_citation" } },
-      { type: "text", text: "fact", annotations: [null, "x", 3] },
-      { type: "text", text: "fact", continuesMessage: "true" },
-      ...sparse,
-    ]) {
-      const server = await mock({ blocks: [block] });
-      const response = await fetch(`${server.url}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-4o", input: "cited answer" }),
-      });
-      expect(response.status).toBe(500);
-      expect((await response.json()).error.message).toMatch(/^Invalid fixture block at index 0: /);
+    // Earlier releases ignored these keys on a text block, so a code-built
+    // fixture (no load pass) that carries a malformed one still serves, as if
+    // the key were absent.
+    const plain = { type: "text", text: "fact" };
+    for (const field of ["blocks", "responsesBlocks"] as const) {
+      for (const provider of ["responses", "anthropic"] as const) {
+        for (const stream of [false, true]) {
+          const want = (await request(await mock({ [field]: [plain] }, true), provider, stream))
+            .body;
+          for (const block of [
+            { ...plain, annotations: [{ type: "url_citation", read: () => 1 }] },
+            { ...plain, annotations: { type: "url_citation" } },
+            { ...plain, annotations: "x" },
+            { ...plain, citations: [null, "x", 3] },
+            { ...plain, continuesMessage: "true" },
+            { ...plain, continuesMessage: null },
+            ...sparse,
+          ]) {
+            const label = `${field} ${provider} ${stream} ${Object.keys(block).join(",")}`;
+            const got = (await request(await mock({ [field]: [block] }, true), provider, stream))
+              .body;
+            expect(visible(got, provider), label).toEqual(visible(want, provider));
+          }
+        }
+      }
     }
   });
 });
