@@ -1242,9 +1242,10 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 
 /**
  * The optional native-citation fields of fixture text block `i`, validated
- * and copied: `annotations` / `citations` must be arrays of plain objects and
- * `continuesMessage` a boolean. Throws the module's "Invalid fixture block"
- * error otherwise, the same as the other text-block checks.
+ * and copied: `annotations` / `citations` must be arrays of plain objects
+ * (`null` reads as absent) and `continuesMessage` a boolean. Throws the
+ * module's "Invalid fixture block" error otherwise, the same as the other
+ * text-block checks.
  */
 function textBlockMetadata(
   b: Record<string, unknown>,
@@ -1256,8 +1257,10 @@ function textBlockMetadata(
   const result: Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> = {};
   for (const key of ["annotations", "citations"] as const) {
     const value = b[key];
-    if (value === undefined) continue;
-    if (!Array.isArray(value) || !value.every(isPlainObject)) {
+    // `null` is the provider SDKs' own "no citations" value: it reads as absent.
+    if (value === undefined || value === null) continue;
+    // Array.from turns holes into `undefined`, so a sparse array fails too.
+    if (!Array.isArray(value) || !Array.from(value).every(isPlainObject)) {
       fail(`"${key}" must be an array of objects`);
     }
     try {

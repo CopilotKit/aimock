@@ -800,12 +800,16 @@ function validateResponsesToolKeys(
   });
 }
 
-/** Problems with a text block's optional `annotations`, `citations` and `continuesMessage`. */
+/**
+ * Problems with a text block's optional `annotations`, `citations` and
+ * `continuesMessage`. `null` (the provider SDKs' own "no citations" value)
+ * reads as absent, as it does at serve time.
+ */
 function textMetadataProblems(block: Record<string, unknown>): string[] {
   const problems: string[] = [];
   for (const key of ["annotations", "citations"] as const) {
     const value = block[key];
-    if (value !== undefined && (!Array.isArray(value) || !value.every(isCitationObject))) {
+    if (value !== undefined && value !== null && !isCitationArray(value)) {
       problems.push(`${key} must be an array of objects`);
     }
   }
@@ -819,11 +823,16 @@ function isCitationObject(value: unknown): boolean {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** An array of plain objects. Array.from turns holes into `undefined`, so a sparse array fails. */
+function isCitationArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && Array.from(value).every(isCitationObject);
+}
+
 /** True when a text block carries valid, non-empty `annotations` or `citations`. */
 function carriesCitationData(block: Record<string, unknown>): boolean {
   return (["annotations", "citations"] as const).some((key) => {
     const value = block[key];
-    return Array.isArray(value) && value.length > 0 && value.every(isCitationObject);
+    return isCitationArray(value) && value.length > 0;
   });
 }
 
