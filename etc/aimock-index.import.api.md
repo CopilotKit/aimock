@@ -7,6 +7,7 @@
 import { EventEmitter } from 'node:events';
 import * as http$1 from 'node:http';
 import http from 'node:http';
+import { IncomingHttpHeaders } from 'node:http';
 import * as net from 'node:net';
 
 // @public (undocumented)
@@ -3284,14 +3285,19 @@ export class LLMock {
     prependFixture(fixture: Fixture): this;
     reset(): this;
     resetMatchCounts(testId?: string): this;
+    // (undocumented)
+    resetRequestVerification(testId?: string): this;
     setChaos(config: ChaosConfig): this;
     setMisbehavior(config: MisbehaviorConfig | MisbehaviorFaultId): this;
+    setRequestExpectations(testId: string, expectations: readonly RequestExpectation[], options?: RequestVerificationOptions): this;
     // (undocumented)
     start(): Promise<string>;
     // (undocumented)
     stop(): Promise<void>;
     // (undocumented)
     get url(): string;
+    // (undocumented)
+    verifyRequests(testId: string): RequestVerificationResult;
 }
 
 // @public (undocumented)
@@ -4677,6 +4683,75 @@ export type RecordReplayLoadRule = (typeof RECORD_REPLAY_LOAD_RULES)[number];
 // @public
 export function renderValidationRef(ref: ValidationRef, renderIndex: (fixtureIndex: number) => string): string;
 
+// @public (undocumented)
+export interface RequestExpectation {
+    // (undocumented)
+    after?: readonly string[];
+    // (undocumented)
+    afterEach?: readonly string[];
+    // (undocumented)
+    count: number;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    match: {
+        path: string | RegExp;
+        method?: string;
+    };
+}
+
+// @public (undocumented)
+export interface RequestExpectationResult {
+    // (undocumented)
+    aborted: number;
+    // (undocumented)
+    completed: number;
+    // (undocumented)
+    excess: number;
+    // (undocumented)
+    expected: number;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    missing: number;
+    // (undocumented)
+    pending: number;
+    // (undocumented)
+    premature: number;
+    // (undocumented)
+    started: number;
+}
+
+// @public (undocumented)
+export interface RequestVerificationOptions {
+    // (undocumented)
+    causal?: boolean;
+    // (undocumented)
+    correlationHeader?: string;
+}
+
+// @public (undocumented)
+export interface RequestVerificationResult {
+    // (undocumented)
+    expectations: RequestExpectationResult[];
+    // (undocumented)
+    ok: boolean;
+}
+
+// @public (undocumented)
+class RequestVerifier {
+    // (undocumented)
+    admit(testId: string, method: string, path: string, headers?: IncomingHttpHeaders): ((completed: boolean) => void) | undefined;
+    // (undocumented)
+    clear(): void;
+    // (undocumented)
+    reset(testId?: string): void;
+    // (undocumented)
+    set(testId: string, expectations: readonly RequestExpectation[], options?: RequestVerificationOptions): void;
+    // (undocumented)
+    snapshot(testId: string): RequestVerificationResult;
+}
+
 // @public
 export function requireFunctionToolCalls(calls: ToolCall[]): ToolCall[];
 
@@ -4869,6 +4944,8 @@ export interface ServerInstance {
     journal: Journal;
     // (undocumented)
     openRouterVideoJobs: OpenRouterVideoJobMap;
+    // (undocumented)
+    requestVerification: RequestVerifier;
     // (undocumented)
     server: http$1.Server;
     // (undocumented)

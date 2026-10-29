@@ -34,6 +34,7 @@ import {
   resolveMisbehaviorShortCircuit,
 } from "./misbehavior.js";
 import { Journal } from "./journal.js";
+import { RequestVerifier } from "./request-verification.js";
 import { matchFixtureDiagnostic, recordMatchOptions, type MatchOptions } from "./router.js";
 import {
   validateFixtures,
@@ -384,6 +385,7 @@ export interface ServerInstance {
   closeLiveSessions(testId?: string): void;
   server: http.Server;
   journal: Journal;
+  requestVerification: RequestVerifier;
   url: string;
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
@@ -509,6 +511,7 @@ const JOURNAL_PARAMS: ReadonlySet<string> = new Set([
  */
 export interface FullResetTargets {
   journal: Journal;
+  requestVerification?: RequestVerifier;
   videoStates: VideoStateMap;
   openRouterVideoJobs: OpenRouterVideoJobMap;
   veoVideoJobs: VeoVideoJobMap;
@@ -554,6 +557,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   if (!targets) return;
   liveClosers.get(targets.defaults)?.();
   targets.journal.clear();
+  targets.requestVerification?.clear();
   // Chaos warning latches are per-server state too: a suite that resets between
   // tests must see a bad static chaos value reported again, not inherit the
   // latch the previous test left armed. Scoped by the server's logger, so this
@@ -903,6 +907,7 @@ async function handleControlAPI(
   grokVideoJobs: GrokVideoJobMap,
   bytePlusVideoJobs: BytePlusVideoJobMap,
   defaults: HandlerDefaults,
+  requestVerification: RequestVerifier,
   mounts: MountList,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
@@ -1448,6 +1453,7 @@ async function handleControlAPI(
 
   const resetTargets = (): FullResetTargets => ({
     journal,
+    requestVerification,
     videoStates,
     openRouterVideoJobs,
     veoVideoJobs,
@@ -3019,6 +3025,7 @@ async function startServer(
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  const requestVerification = new RequestVerifier();
   // Invalid JavaScript options warn even when ordinary server logging is silent.
   parsePolicy(serverOptions.policy, (message) => new Logger("warn").warn(message));
   // 1.44.0 ignored an unknown `responsesTools` option, so an invalid value is
@@ -3614,6 +3621,9 @@ async function startServer(
     // Record start time for metrics
     const startTime = registry ? process.hrtime.bigint() : 0n;
 
+    // Verification correlates caller headers, not normalized infrastructure values.
+    const incomingHeaders = { ...req.headers };
+
     // Request-id propagation: echo a well-formed caller id, else mint one.
     // Normalized back onto `req.headers` so every downstream
     // `flattenHeaders` journal snapshot carries it with zero per-handler
@@ -3716,6 +3726,28 @@ async function startServer(
     // OpenRouter `/api/v1/` base is the detection signal and would otherwise be
     // erased (`/api/v1/chat/completions` → `/v1/chat/completions`).
     const originalPathname = pathname;
+    if (
+      !pathname.startsWith(CONTROL_PREFIX) &&
+      ![HEALTH_PATH, READY_PATH, "/metrics"].includes(pathname)
+    ) {
+      const complete = requestVerification.admit(
+        getTestId(req),
+        req.method ?? "GET",
+        pathname,
+        incomingHeaders,
+      );
+      if (complete) {
+        const settle = (completed: boolean) => {
+          res.off("finish", finish);
+          res.off("close", abort);
+          complete(completed);
+        };
+        const finish = () => settle(true);
+        const abort = () => settle(false);
+        res.once("finish", finish);
+        res.once("close", abort);
+      }
+    }
     const isOpenRouter = isOpenRouterPath(originalPathname);
     // BytePlus Ark attribution, GATED ON CONFIGURATION. A path prefix is not
     // evidence of a vendor — the COMPAT_SUFFIXES comment above exists precisely
@@ -3772,6 +3804,7 @@ async function startServer(
         grokVideoJobs,
         bytePlusVideoJobs,
         defaults,
+        requestVerification,
         mountList,
       );
       return;
@@ -5902,6 +5935,7 @@ async function startServer(
   // Close active WS connections when server shuts down
   const originalClose = server.close.bind(server);
   server.close = function (this: http.Server, callback?: (err?: Error) => void) {
+    requestVerification.clear();
     closeLiveSessions();
     for (const ws of activeConnections) {
       ws.close(1001, "Server shutting down");
@@ -5942,6 +5976,7 @@ async function startServer(
         closeLiveSessions,
         server,
         journal,
+        requestVerification,
         url,
         defaults,
         videoStates,

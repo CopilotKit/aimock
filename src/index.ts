@@ -1,5 +1,11 @@
 // Main class
 export { LLMock } from "./llmock.js";
+export type {
+  RequestExpectation,
+  RequestExpectationResult,
+  RequestVerificationResult,
+  RequestVerificationOptions,
+} from "./request-verification.js";
 
 // Server
 export { createServer, type ServerInstance } from "./server.js";

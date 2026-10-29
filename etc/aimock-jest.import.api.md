@@ -820,14 +820,19 @@ export class LLMock {
     prependFixture(fixture: Fixture): this;
     reset(): this;
     resetMatchCounts(testId?: string): this;
+    // (undocumented)
+    resetRequestVerification(testId?: string): this;
     setChaos(config: ChaosConfig): this;
     setMisbehavior(config: MisbehaviorConfig | MisbehaviorFaultId): this;
+    setRequestExpectations(testId: string, expectations: readonly RequestExpectation[], options?: RequestVerificationOptions): this;
     // (undocumented)
     start(): Promise<string>;
     // (undocumented)
     stop(): Promise<void>;
     // (undocumented)
     get url(): string;
+    // (undocumented)
+    verifyRequests(testId: string): RequestVerificationResult;
 }
 
 // @public (undocumented)
@@ -1201,6 +1206,61 @@ interface RecordedTimings {
 
 // @public (undocumented)
 type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus";
+
+// @public (undocumented)
+interface RequestExpectation {
+    // (undocumented)
+    after?: readonly string[];
+    // (undocumented)
+    afterEach?: readonly string[];
+    // (undocumented)
+    count: number;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    match: {
+        path: string | RegExp;
+        method?: string;
+    };
+}
+
+// @public (undocumented)
+interface RequestExpectationResult {
+    // (undocumented)
+    aborted: number;
+    // (undocumented)
+    completed: number;
+    // (undocumented)
+    excess: number;
+    // (undocumented)
+    expected: number;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    missing: number;
+    // (undocumented)
+    pending: number;
+    // (undocumented)
+    premature: number;
+    // (undocumented)
+    started: number;
+}
+
+// @public (undocumented)
+interface RequestVerificationOptions {
+    // (undocumented)
+    causal?: boolean;
+    // (undocumented)
+    correlationHeader?: string;
+}
+
+// @public (undocumented)
+interface RequestVerificationResult {
+    // (undocumented)
+    expectations: RequestExpectationResult[];
+    // (undocumented)
+    ok: boolean;
+}
 
 // @public (undocumented)
 interface RerankResult {

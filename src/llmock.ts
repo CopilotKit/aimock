@@ -55,6 +55,11 @@ import { MCPMock } from "./mcp-mock.js";
 import { build, msg, quote } from "./message-text.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 import { Journal } from "./journal.js";
+import type {
+  RequestExpectation,
+  RequestVerificationResult,
+  RequestVerificationOptions,
+} from "./request-verification.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
@@ -639,6 +644,30 @@ export class LLMock {
    */
   clearRequests(): void {
     this.journal.clearEntries();
+  }
+
+  /** Register expected requests and completion dependencies for a running server. */
+  setRequestExpectations(
+    testId: string,
+    expectations: readonly RequestExpectation[],
+    options?: RequestVerificationOptions,
+  ): this {
+    this.requestVerification.set(testId, expectations, options);
+    return this;
+  }
+
+  verifyRequests(testId: string): RequestVerificationResult {
+    return this.requestVerification.snapshot(testId);
+  }
+
+  resetRequestVerification(testId?: string): this {
+    this.requestVerification.reset(testId);
+    return this;
+  }
+
+  private get requestVerification() {
+    if (!this.serverInstance?.server.listening) throw new Error("Server not running");
+    return this.serverInstance.requestVerification;
   }
 
   /**
