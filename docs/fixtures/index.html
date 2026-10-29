@@ -1136,6 +1136,83 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           </p>
         </div>
 
+        <h3 id="recording-citations">Recording citations</h3>
+        <p>
+          Recording is on by default for citations. When a real OpenAI Responses or Claude Messages
+          turn carries native citations, the recorded fixture keeps them on its text
+          <code>blocks</code>: <code>annotations</code> for Responses, <code>citations</code> for
+          Claude. The text, tool calls, reasoning, usage and block order are the same as the
+          recording of that turn without citations; the citations are only added. A turn without
+          citations records exactly as before.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            recorded-citations.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"content"</span>: <span class="str">"A fact"</span>,
+  <span class="prop">"blocks"</span>: [
+    {
+      <span class="prop">"type"</span>: <span class="str">"text"</span>,
+      <span class="prop">"text"</span>: <span class="str">"A fact"</span>,
+      <span class="prop">"annotations"</span>: [
+        { <span class="prop">"type"</span>: <span class="str">"url_citation"</span>, <span class="prop">"url"</span>: <span class="str">"https://example.test/source"</span>, <span class="prop">"start_index"</span>: <span class="num">0</span>, <span class="prop">"end_index"</span>: <span class="num">6</span> }
+      ]
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          Each entry is kept as the provider sent it, unknown fields included, and replays on the
+          same provider in its own wire shape. A native entry on a text block takes the place of the
+          response-level <code>citations</code> for that block. You can write these blocks by hand
+          too.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Recorded from</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI Responses SSE</td>
+              <td>
+                Annotation events (<code>response.output_text.annotation.added</code>, and the
+                <code>response.output_text_annotation.added</code> name from openai 4.x) and the
+                annotations in part, item and completed snapshots. A message with several text parts
+                records one block per part; later parts carry <code>"continuesMessage": true</code>
+                so replay serves one message. A gpt-oss harmony turn moves each annotation's offsets
+                into the parsed answer text
+              </td>
+            </tr>
+            <tr>
+              <td>OpenAI Responses JSON</td>
+              <td>
+                Recorded when the body carries annotations, with its text, tool calls, reasoning and
+                usage. A Responses JSON body without annotations is saved as an error fixture, as
+                before
+              </td>
+            </tr>
+            <tr>
+              <td>Claude Messages SSE and JSON</td>
+              <td>
+                <code>citations_delta</code> events and the <code>citations</code> of each text
+                block. A JSON capture keeps its text before its tool calls, as without citations
+              </td>
+            </tr>
+            <tr>
+              <td>Every other wire</td>
+              <td>Not recorded</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          An entry that is not an object, or a harmony annotation that points outside the answer
+          text, is left out and the recorder logs a warning.
+        </p>
+
         <h2>Fixture Options</h2>
 
         <table class="endpoint-table">
