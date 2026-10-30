@@ -1634,6 +1634,7 @@ export interface CollapseResult {
     // (undocumented)
     audioMimeType?: string;
     blocks?: FixtureBlock[];
+    citationNote?: string;
     // (undocumented)
     content?: string;
     customToolCalls?: CustomToolCall[];
@@ -2154,6 +2155,9 @@ export interface Fixture {
 export type FixtureBlock = {
     type: "text";
     text: string;
+    annotations?: Record<string, unknown>[];
+    citations?: Record<string, unknown>[];
+    continuesMessage?: boolean;
 } | {
     type: "toolCall";
     name: string;
@@ -2175,6 +2179,9 @@ export interface FixtureFile {
 type FixtureFileBlock = {
     type: "text";
     text: string;
+    annotations?: Record<string, unknown>[];
+    citations?: Record<string, unknown>[];
+    continuesMessage?: boolean;
 } | {
     type: "toolCall";
     name: string;

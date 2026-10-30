@@ -982,6 +982,9 @@ interface Fixture {
 type FixtureBlock = {
     type: "text";
     text: string;
+    annotations?: Record<string, unknown>[];
+    citations?: Record<string, unknown>[];
+    continuesMessage?: boolean;
 } | {
     type: "toolCall";
     name: string;

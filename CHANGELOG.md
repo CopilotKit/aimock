@@ -5,6 +5,7 @@
 ### Added
 
 - A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
+- Record and replay native citations and annotations from real provider turns (#594)
 
 ### Changed
 

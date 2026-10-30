@@ -990,7 +990,9 @@ function buildClaudeContentWithToolCallsStreamEvents(
           });
         }
 
-        events.push(...claudeCitationDeltas(textCitations[textPos++] ?? [], blockIndex));
+        const citations = block.citations ?? textCitations[textPos];
+        textPos++;
+        events.push(...claudeCitationDeltas(citations ?? [], blockIndex));
 
         events.push({
           type: "content_block_stop",
@@ -1192,7 +1194,9 @@ function buildClaudeContentWithToolCallsResponse(
     blockHasTools = outcome.hasToolCalls;
     for (const block of ordered) {
       if (block.type === "text") {
-        contentBlocks.push(claudeTextBlock(block.text, textCitations[textPos++] ?? []));
+        const citations = block.citations ?? textCitations[textPos];
+        textPos++;
+        contentBlocks.push(claudeTextBlock(block.text, citations ?? []));
       } else {
         contentBlocks.push(
           toolUseBlock({ name: block.name, arguments: block.arguments, id: block.id }),
@@ -1288,9 +1292,12 @@ export function prepareClaudeMisbehavior(
       ...preparedResponse,
       content: outcome.content,
       toolCalls,
-      blocks: outcome.ordered.map((block) =>
-        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
-      ),
+      blocks: outcome.ordered.map((block) => {
+        if (block.type !== "text") return { ...block, ...toolCalls[index++] };
+        // A text block's native citations follow the same `citations` rule.
+        const { citations, ...text } = block;
+        return context.citations && citations !== undefined ? { ...text, citations } : text;
+      }),
     };
   } else if ("toolCalls" in response) {
     preparedResponse = { ...preparedResponse, toolCalls };

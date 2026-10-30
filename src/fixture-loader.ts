@@ -759,6 +759,7 @@ function validateResponsesToolKeys(
     const block = entry as Record<string, unknown>;
     if (block.type === "text") {
       if (typeof block.text !== "string") error(`${path}.text must be a string`);
+      textMetadataProblems(block).forEach((problem) => warning(`${path}.${problem}`));
       return;
     }
     if (block.type === "customToolCall") {
@@ -796,6 +797,46 @@ function validateResponsesToolKeys(
     } else if (args === null || typeof args !== "object") {
       error(`${path}.arguments must be a string or an object`);
     }
+  });
+}
+
+/**
+ * Problems with a text block's optional `annotations`, `citations` and
+ * `continuesMessage`. `null` (the provider SDKs' own "no citations" value)
+ * reads as absent, as it does at serve time. Each is a warning, not a load
+ * error: earlier releases ignored these keys on a text block, and a malformed
+ * value is dropped when served, so registration never throws for it.
+ */
+function textMetadataProblems(block: Record<string, unknown>): string[] {
+  const problems: string[] = [];
+  for (const key of ["annotations", "citations"] as const) {
+    const value = block[key];
+    if (value !== undefined && value !== null && !isCitationArray(value)) {
+      problems.push(`${key} must be an array of objects — ignored when served`);
+    }
+  }
+  if (block.continuesMessage !== undefined && typeof block.continuesMessage !== "boolean") {
+    problems.push(
+      `continuesMessage must be a boolean, got ${typeof block.continuesMessage} — ignored when served`,
+    );
+  }
+  return problems;
+}
+
+function isCitationObject(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** An array of plain objects. Array.from turns holes into `undefined`, so a sparse array fails. */
+function isCitationArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && Array.from(value).every(isCitationObject);
+}
+
+/** True when a text block carries valid, non-empty `annotations` or `citations`. */
+function carriesCitationData(block: Record<string, unknown>): boolean {
+  return (["annotations", "citations"] as const).some((key) => {
+    const value = block[key];
+    return isCitationArray(value) && value.length > 0;
   });
 }
 
@@ -844,14 +885,18 @@ function validateBlocks(
           fixtureIndex,
           message: `blocks[${j}].text must be a string, got ${typeof block.text}`,
         });
-      } else if (block.text === "") {
+      } else if (block.text === "" && !carriesCitationData(block)) {
         // Mirror the content/toolCalls "empty string" rejection: an empty-text
-        // block produces a meaningless/spurious wire chunk on replay.
+        // block produces a meaningless/spurious wire chunk on replay. A block
+        // whose citations point at an empty span is the one exception.
         results.push({
           severity: "error",
           fixtureIndex,
           message: `blocks[${j}].text is empty string`,
         });
+      }
+      for (const problem of textMetadataProblems(block)) {
+        results.push({ severity: "warning", fixtureIndex, message: `blocks[${j}].${problem}` });
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.

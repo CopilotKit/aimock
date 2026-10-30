@@ -18,6 +18,7 @@ import type {
 } from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
+import { CitationRecording, isResponsesMessage } from "./citation-recording.js";
 
 // ---------------------------------------------------------------------------
 // Accumulated-string cap (RangeError: Invalid string length guard)
@@ -170,6 +171,14 @@ export interface CollapseResult {
   /** Short human-readable note accompanying {@link harmonyUnparsed}. */
   harmonyNote?: string;
   /**
+   * Set when native citation metadata could not be kept: an entry that is not
+   * an object; an annotation whose offsets fall outside its text; one that
+   * spans text the stream split into several blocks; or, in a harmony-parsed
+   * turn, one whose offsets fall outside the parsed text or whose parsed text
+   * was not found in the streamed text. The recorder logs it as a warning.
+   */
+  citationNote?: string;
+  /**
    * Ordered cross-channel block list, in STREAM order, populated ONLY when the
    * stream is "interleaved" — i.e. a tool-call delta appeared STRICTLY BEFORE
    * the first content delta, OR a content delta appeared AFTER any tool-call
@@ -178,7 +187,10 @@ export interface CollapseResult {
    * positional instrumentation the recorder consults to decide whether to
    * persist the ordered shape. Absent (undefined) for text-first, text-only,
    * and tool-only streams — i.e. anything NOT interleaved — so the recorder
-   * keeps the legacy `{ content, toolCalls }` shape byte-identical.
+   * keeps the legacy `{ content, toolCalls }` shape byte-identical. A cited
+   * OpenAI Responses or Anthropic turn always has `blocks`, in the order of
+   * the uncited collapse, with its text split where one text part ends and
+   * the next begins, so its text blocks can carry `annotations` / `citations`.
    *
    * Each text block coalesces all contiguous content deltas between tool
    * atoms. Each tool block sits in the position where its FIRST delta arrived:
@@ -488,8 +500,11 @@ function extractSSEData(lines: string[]): string | undefined {
  *   data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}\n\n
  *   data: [DONE]\n\n
  *
- * Public, with the 1.44.0 result: an OpenAI Responses `namespace` and custom
- * tool calls are dropped. The recorder uses {@link collapseOpenAISSEWithResponsesTools}.
+ * Public. An OpenAI Responses `namespace` and custom tool calls are dropped,
+ * so for uncited input the result is unchanged from 1.44.0. For a cited
+ * Responses turn the result also has ordered `blocks` whose text blocks carry
+ * `annotations` (and `continuesMessage`). The recorder uses
+ * {@link collapseOpenAISSEWithResponsesTools}.
  */
 export function collapseOpenAISSE(rawBody: string): CollapseResult {
   return withoutResponsesToolFields(collapseOpenAISSEWithResponsesTools(rawBody));
@@ -533,10 +548,16 @@ export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseR
 /**
  * @internal {@link collapseOpenAISSE} keeping an OpenAI Responses `namespace`
  * and custom tool calls, for the recorder with `responsesTools: "extended"`.
+ * `inputTruncated` says whether the source of `rawBody` is larger than the
+ * collapse limit (by default, `rawBody` itself); only then is the stream cut
+ * to the limit and the result marked `truncated`.
  */
-export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseResult {
-  const inputTruncated = isCollapseInputTruncated(rawBody);
-  const body = guardCollapseBody(rawBody);
+export function collapseOpenAISSEWithResponsesTools(
+  rawBody: string,
+  inputTruncated = isCollapseInputTruncated(rawBody),
+): CollapseResult {
+  const body = inputTruncated ? guardCollapseBody(rawBody) : rawBody;
+  const citations = new CitationRecording("responses");
   const lines = splitSSEEvents(body);
   let content = "";
   let transcript = "";
@@ -592,6 +613,8 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       }
       continue;
     }
+
+    citations.responsesEvent(parsed);
 
     // Responses API reasoning events
     if (parsed.type === "transcript.text.delta" && typeof parsed.delta === "string") {
@@ -822,6 +845,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     // Responses API text content events
     if (parsed.type === "response.output_text.delta" && typeof parsed.delta === "string") {
       content += parsed.delta;
+      citations.text(citations.responsesKey(parsed), parsed.delta.length);
       if (parsed.delta.length > 0) {
         orderAtoms.push({ kind: "text", text: parsed.delta });
       }
@@ -865,6 +889,9 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
     // Text content
     if (typeof delta.content === "string") {
       content += delta.content;
+      // Chat Completions text carries no native citations; it is keyed only so
+      // the citation recording sees all of `content`.
+      citations.text("chat", delta.content.length);
       if (delta.content.length > 0) {
         orderAtoms.push({ kind: "text", text: delta.content });
       }
@@ -940,6 +967,9 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
   // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
   // signal (NOT droppedChunks/truncated — the bytes are not lost).
   const harmonyToolCalls: ToolCall[] = [];
+  // The streamed text, kept for the citation recording when harmony parsing
+  // replaces `content`.
+  let harmonyRaw: string | undefined;
   // Custom tool calls do not count as structured calls here, as before they
   // were collapsed at all.
   const hasFunctionCalls = Array.from(toolCallMap.values()).some((tc) => tc.kind === "function");
@@ -949,6 +979,7 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       harmonyUnparsed = true;
       harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
     } else {
+      harmonyRaw = content;
       content = parsed.content;
       if (parsed.reasoning) {
         reasoning += parsed.reasoning;
@@ -993,7 +1024,43 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
       a.kind === "toolCall" ? [toFunctionToolCall(a.ref)] : [],
     );
     const indexSortedToolCalls = functionEntries.map(toFunctionToolCall);
-    return {
+    return citations.attach(
+      {
+        ...(transcriptSeen
+          ? {
+              transcription: {
+                text: transcript,
+                ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
+                ...(transcriptUsage ? { usage: transcriptUsage } : {}),
+              },
+            }
+          : {}),
+        ...(blocks ? { blocks } : {}),
+        ...(content ? { content } : {}),
+        // Fallback-only: harmonyToolCalls are populated ONLY in the
+        // no-structured-calls branch, so this is never a merge of both sources.
+        toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+        ...customFields,
+        // Reasoning is preserved alongside tool calls for ALL structured streams
+        // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
+        // parity with every other collapser and the non-streaming path.
+        ...(reasoning ? { reasoning } : {}),
+        // webSearches parity with the text-only return branch.
+        ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
+        // Provider-reported usage parity with the text-only return branch (#368).
+        ...(usage ? { usage } : {}),
+        ...(droppedChunks > 0 ? { droppedChunks } : {}),
+        ...(firstDroppedSample ? { firstDroppedSample } : {}),
+        ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+        ...(harmonyNote ? { harmonyNote } : {}),
+        ...(inputTruncated ? { truncated: true } : {}),
+      },
+      harmonyRaw,
+    );
+  }
+
+  return citations.attach(
+    {
       ...(transcriptSeen
         ? {
             transcription: {
@@ -1003,49 +1070,71 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
             },
           }
         : {}),
-      ...(blocks ? { blocks } : {}),
-      ...(content ? { content } : {}),
-      // Fallback-only: harmonyToolCalls are populated ONLY in the
-      // no-structured-calls branch, so this is never a merge of both sources.
-      toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+      content,
       ...customFields,
-      // Reasoning is preserved alongside tool calls for ALL structured streams
-      // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
-      // parity with every other collapser and the non-streaming path.
       ...(reasoning ? { reasoning } : {}),
-      // webSearches parity with the text-only return branch.
       ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-      // Provider-reported usage parity with the text-only return branch (#368).
       ...(usage ? { usage } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-    };
-  }
+    },
+    harmonyRaw,
+  );
+}
 
-  return {
-    ...(transcriptSeen
-      ? {
-          transcription: {
-            text: transcript,
-            ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
-            ...(transcriptUsage ? { usage: transcriptUsage } : {}),
-          },
+/**
+ * @internal An OpenAI Responses JSON body collapsed as the stream of the same
+ * turn: each `output` item becomes the events that stream it (message text
+ * parts with their annotations, reasoning summaries, function, custom and web
+ * search calls), read by {@link collapseOpenAISSEWithResponsesTools}, plus the
+ * body's sanitized `usage`. The
+ * recorder uses it for a cited Responses JSON turn, so the JSON and the stream
+ * recording of one turn are made by one collapse. The collapse limit applies
+ * to the body itself, not to the events made from it, so a complete body
+ * under the limit is never marked `truncated`.
+ */
+export function collapseResponsesJSON(body: Record<string, unknown>): CollapseResult {
+  const events: Record<string, unknown>[] = [];
+  const output = Array.isArray(body.output) ? body.output : [];
+  output.forEach((raw, output_index) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
+    const item = raw as Record<string, unknown>;
+    if (isResponsesMessage(item)) {
+      events.push({ type: "response.output_item.added", output_index, item: { type: "message" } });
+      const parts = Array.isArray(item.content) ? item.content : [];
+      parts.forEach((part, content_index) => {
+        const value = part as Record<string, unknown> | null;
+        if (value?.type !== "output_text" || typeof value.text !== "string") return;
+        // The part's text is streamed once, by its delta; its done event
+        // carries only its annotations.
+        const { text, ...done } = value;
+        events.push(
+          { type: "response.output_text.delta", output_index, content_index, delta: text },
+          { type: "response.content_part.done", output_index, content_index, part: done },
+        );
+      });
+    } else if (item.type === "reasoning") {
+      const summary = Array.isArray(item.summary) ? item.summary : [];
+      for (const part of summary as (Record<string, unknown> | null)[]) {
+        if (part?.type === "summary_text" && typeof part.text === "string") {
+          events.push({ type: "response.reasoning_summary_text.delta", delta: part.text });
         }
-      : {}),
-    content,
-    ...customFields,
-    ...(reasoning ? { reasoning } : {}),
-    ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-    ...(usage ? { usage } : {}),
-    ...(droppedChunks > 0 ? { droppedChunks } : {}),
-    ...(firstDroppedSample ? { firstDroppedSample } : {}),
-    ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
-    ...(harmonyNote ? { harmonyNote } : {}),
-    ...(inputTruncated ? { truncated: true } : {}),
-  };
+      }
+      events.push({ type: "response.output_item.done", output_index, item });
+    } else {
+      events.push({ type: "response.output_item.done", output_index, item });
+    }
+  });
+  const collapsed = collapseOpenAISSEWithResponsesTools(
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+    JSON.stringify(body).length > effectiveCollapseStringLimit(),
+  );
+  // The body's own usage, sanitized as a final usage.
+  const usage = captureUsage({ family: "final", stage: "final", observation: body.usage });
+  return usage ? { ...collapsed, usage } : collapsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,10 +1149,15 @@ export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseRe
  * Format:
  *   event: message_start\ndata: {...}\n\n
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
+ *
+ * For uncited input the result is unchanged from 1.44.0. For a cited turn it
+ * also has `blocks`, in the uncited result's order, whose text blocks carry
+ * `citations`.
  */
 export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
+  const citations = new CitationRecording("anthropic");
   const blocks = splitSSEEvents(body);
   let usage: Record<string, unknown> | undefined;
   let content = "";
@@ -1126,6 +1220,13 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       previous: usage,
       observation: parsed,
     });
+    // The citation recording reads the same event types as the code below
+    // (only a frame with an `event:` line), and keys the text this collapse
+    // appends to `content` to its content block.
+    const citationKey =
+      parsed !== null && typeof parsed === "object"
+        ? citations.anthropicEvent(eventType, parsed)
+        : undefined;
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
@@ -1165,6 +1266,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
 
       if (delta.type === "text_delta" && typeof delta.text === "string") {
         content += delta.text;
+        if (citationKey !== undefined) citations.text(citationKey, delta.text.length);
         if (delta.text.length > 0) {
           orderAtoms.push({ kind: "text", text: delta.text });
         }
@@ -1232,7 +1334,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         arguments: normalizeToolArguments(tc.arguments),
         ...(tc.id ? { id: tc.id } : {}),
       }));
-    return {
+    return citations.attach({
       ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       ...(content ? { content } : {}),
@@ -1243,10 +1345,10 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-    };
+    });
   }
 
-  return {
+  return citations.attach({
     ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
@@ -1255,7 +1357,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(inputTruncated ? { truncated: true } : {}),
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2402,7 +2504,9 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
  * Returns null if the content type is not a known streaming format.
  * Falls back to OpenAI SSE parsing for unrecognized provider keys with text/event-stream.
  *
- * Public, with the 1.44.0 result (see {@link collapseOpenAISSE}). The recorder
+ * Public. For uncited input the result is unchanged from 1.44.0; a cited
+ * OpenAI Responses or Anthropic turn also gains the citation fields (see
+ * {@link collapseOpenAISSE} and {@link collapseAnthropicSSE}). The recorder
  * uses {@link collapseStreamingResponseWithResponsesTools}.
  */
 export function collapseStreamingResponse(

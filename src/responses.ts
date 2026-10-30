@@ -1324,6 +1324,30 @@ function buildMessageOutputEvents(
   phase: ResponseOverrides["phase"] | undefined,
   annotations: object[],
 ): MessageBlockResult {
+  return buildMessagePartsOutputEvents(
+    [{ text: content, annotations }],
+    chunkSize,
+    outputIndex,
+    phase,
+  );
+}
+
+/** One `output_text` content part of a message item. */
+interface MessagePart {
+  text: string;
+  annotations: object[];
+}
+
+/**
+ * {@link buildMessageOutputEvents} for a message item holding one or more
+ * `output_text` parts, each streamed at its own `content_index`.
+ */
+function buildMessagePartsOutputEvents(
+  parts: MessagePart[],
+  chunkSize: number,
+  outputIndex: number,
+  phase: ResponseOverrides["phase"] | undefined,
+): MessageBlockResult {
   const msgId = itemId();
   const events: ResponsesSSEEvent[] = [];
 
@@ -1339,47 +1363,50 @@ function buildMessageOutputEvents(
       content: [],
     },
   });
-  events.push({
-    type: "response.content_part.added",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: "", annotations: [] },
-  });
 
-  for (let i = 0; i < content.length; i += chunkSize) {
+  parts.forEach(({ text: content, annotations }, contentIndex) => {
     events.push({
-      type: "response.output_text.delta",
+      type: "response.content_part.added",
       item_id: msgId,
       output_index: outputIndex,
-      content_index: 0,
-      delta: content.slice(i, i + chunkSize),
+      content_index: contentIndex,
+      part: { type: "output_text", text: "", annotations: [] },
     });
-  }
 
-  events.push({
-    type: "response.output_text.done",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    text: content,
-  });
-  annotations.forEach((annotation, annotationIndex) => {
+    for (let i = 0; i < content.length; i += chunkSize) {
+      events.push({
+        type: "response.output_text.delta",
+        item_id: msgId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        delta: content.slice(i, i + chunkSize),
+      });
+    }
+
     events.push({
-      type: "response.output_text.annotation.added",
+      type: "response.output_text.done",
       item_id: msgId,
       output_index: outputIndex,
-      content_index: 0,
-      annotation_index: annotationIndex,
-      annotation,
+      content_index: contentIndex,
+      text: content,
     });
-  });
-  events.push({
-    type: "response.content_part.done",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: content, annotations },
+    annotations.forEach((annotation, annotationIndex) => {
+      events.push({
+        type: "response.output_text.annotation.added",
+        item_id: msgId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        annotation_index: annotationIndex,
+        annotation,
+      });
+    });
+    events.push({
+      type: "response.content_part.done",
+      item_id: msgId,
+      output_index: outputIndex,
+      content_index: contentIndex,
+      part: { type: "output_text", text: content, annotations },
+    });
   });
 
   const msgItem = {
@@ -1388,12 +1415,47 @@ function buildMessageOutputEvents(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [{ type: "output_text", text: content, annotations }],
+    content: parts.map(({ text, annotations }) => ({ type: "output_text", text, annotations })),
   };
 
   events.push({ type: "response.output_item.done", output_index: outputIndex, item: msgItem });
 
   return { events, msgItem };
+}
+
+/** An output item of an ordered block turn: a message (one or more text parts) or a tool call. */
+type OrderedOutputItem =
+  | { type: "message"; parts: MessagePart[] }
+  | { type: "tool"; block: Exclude<ResponsesFixtureBlock, { type: "text" }> };
+
+/**
+ * Groups ordered blocks into output items. Each text block opens its own
+ * message item unless it sets `continuesMessage` directly after another text
+ * block, in which case it becomes that message's next part. Native
+ * `annotations` win over the portable citations mapped onto the same text.
+ */
+function groupOrderedOutputs(
+  blocks: ResponsesFixtureBlock[],
+  citations?: ResponseOverrides["citations"],
+): OrderedOutputItem[] {
+  const textAnnotations = orderedBlockAnnotations(blocks, citations);
+  const items: OrderedOutputItem[] = [];
+  let textPos = 0;
+  for (const block of blocks) {
+    if (block.type === "text") {
+      const part = { text: block.text, annotations: block.annotations ?? textAnnotations[textPos] };
+      textPos++;
+      const previous = items[items.length - 1];
+      if (block.continuesMessage === true && previous?.type === "message") {
+        previous.parts.push(part);
+      } else {
+        items.push({ type: "message", parts: [part] });
+      }
+    } else {
+      items.push({ type: "tool", block });
+    }
+  }
+  return items;
 }
 
 /** One streamed tool-call item: a `function_call` or a `custom_tool_call`. */
@@ -1706,22 +1768,19 @@ export function contentWithToolCallsStreamEvents(
     // placed before a text block therefore yields a tool call item at
     // a LOWER output_index than the message — it leads the output array.
     let outputIndex = nextOutputIndex;
-    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
-    let textPos = 0;
-    for (const block of ordered) {
-      if (block.type === "text") {
-        const { events: msgEvents, msgItem } = buildMessageOutputEvents(
-          block.text,
+    for (const entry of groupOrderedOutputs(ordered, overrides?.citations)) {
+      if (entry.type === "message") {
+        const { events: msgEvents, msgItem } = buildMessagePartsOutputEvents(
+          entry.parts,
           chunkSize,
           outputIndex,
           overrides?.phase,
-          textAnnotations[textPos++],
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
       } else {
         const { events: callEvents, item } = buildToolCallOutputEvents(
-          block,
+          entry.block,
           chunkSize,
           outputIndex,
         );
@@ -1793,10 +1852,9 @@ function buildToolCallOutputItem(tc: EmittableToolCall): object {
   );
 }
 
-function buildMessageOutputItem(
-  content: string,
+function buildMessagePartsOutputItem(
+  parts: MessagePart[],
   phase: ResponseOverrides["phase"] | undefined,
-  annotations: object[],
 ): object {
   return {
     type: "message",
@@ -1804,7 +1862,7 @@ function buildMessageOutputItem(
     status: "completed",
     role: "assistant",
     ...(phase !== undefined ? { phase } : {}),
-    content: [{ type: "output_text", text: content, annotations }],
+    content: parts.map(({ text, annotations }) => ({ type: "output_text", text, annotations })),
   };
 }
 
@@ -1848,16 +1906,12 @@ function buildContentWithToolCallsResponse(
       }
     }
     output.push(...imageGenerationCallItems(overrides?.files));
-    const textAnnotations = orderedBlockAnnotations(ordered, overrides?.citations);
-    let textPos = 0;
-    for (const block of ordered) {
-      if (block.type === "text") {
-        output.push(
-          buildMessageOutputItem(block.text, overrides?.phase, textAnnotations[textPos++]),
-        );
-      } else {
-        output.push(buildToolCallOutputItem(block));
-      }
+    for (const entry of groupOrderedOutputs(ordered, overrides?.citations)) {
+      output.push(
+        entry.type === "message"
+          ? buildMessagePartsOutputItem(entry.parts, overrides?.phase)
+          : buildToolCallOutputItem(entry.block),
+      );
     }
     return buildResponseEnvelope(model, output, overrides);
   }
@@ -2605,20 +2659,18 @@ export function buildResponsesMisbehavior(
         : []),
     ];
     let callIndex = 0;
-    const textAnnotations = orderedBlockAnnotations(blocks, overrides.citations);
-    let textPos = 0;
-    for (const block of blocks) {
-      if (block.type === "text") {
-        const message = buildMessageOutputEvents(
-          block.text,
+    for (const entry of groupOrderedOutputs(blocks, overrides.citations)) {
+      if (entry.type === "message") {
+        const message = buildMessagePartsOutputEvents(
+          entry.parts,
           chunkSize,
           outputIndex,
           overrides.phase,
-          textAnnotations[textPos++],
         );
         events.push(...message.events);
         output.push(message.msgItem);
       } else {
+        const block = entry.block;
         const call =
           block.type === "customToolCall"
             ? buildCustomToolCallOutputEvents(block, chunkSize, outputIndex)

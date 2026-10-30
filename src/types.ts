@@ -533,7 +533,19 @@ export type FixtureToolCall = (ToolCall & { type?: undefined }) | CustomToolCall
  * optional `id`).
  */
 export type FixtureBlock =
-  | { type: "text"; text: string }
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+      /**
+       * OpenAI Responses API only: `true` serves this text as a further
+       * `output_text` part of the message item opened by the preceding text
+       * block, as recorded from a multi-part upstream message. Other providers
+       * ignore it.
+       */
+      continuesMessage?: boolean;
+    }
   | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string };
 
 /**
@@ -1112,7 +1124,19 @@ export interface FixtureFileCustomToolCall {
  * runtime string form. Normalizes to a {@link FixtureBlock}.
  */
 export type FixtureFileBlock =
-  | { type: "text"; text: string }
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+      /**
+       * OpenAI Responses API only: `true` serves this text as a further
+       * `output_text` part of the message item opened by the preceding text
+       * block, as recorded from a multi-part upstream message. Other providers
+       * ignore it.
+       */
+      continuesMessage?: boolean;
+    }
   | {
       type: "toolCall";
       name: string;

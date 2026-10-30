@@ -1240,6 +1240,35 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The optional native-citation fields of a fixture text block, copied:
+ * `annotations` / `citations` when they are a non-empty array of plain data
+ * objects, and `continuesMessage` when it is `true`. Any other value is
+ * dropped and reads as absent, so the response-level `citations` still apply.
+ * Earlier releases ignored these keys on a text block, so a fixture that
+ * carries a malformed one serves as before instead of failing; load-time
+ * validation (validateFixtures) still reports it.
+ */
+function textBlockMetadata(
+  b: Record<string, unknown>,
+): Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> {
+  const result: Omit<Extract<FixtureBlock, { type: "text" }>, "type" | "text"> = {};
+  for (const key of ["annotations", "citations"] as const) {
+    const value = b[key];
+    // Array.from turns holes into `undefined`, so a sparse array is dropped too.
+    if (!Array.isArray(value) || value.length === 0 || !Array.from(value).every(isPlainObject)) {
+      continue;
+    }
+    try {
+      result[key] = structuredClone(value as Record<string, unknown>[]);
+    } catch {
+      // A value that is not plain data (a function, a symbol) cannot be cloned.
+    }
+  }
+  if (b.continuesMessage === true) result.continuesMessage = true;
+  return result;
+}
+
 /** A non-empty string, the only valid value of a tool call's `namespace`. */
 function isValidNamespace(value: unknown): value is string {
   return typeof value === "string" && value !== "";
@@ -1564,7 +1593,7 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text };
+      return { type: "text", text: b.text, ...textBlockMetadata(b) };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
         throw new Error(
@@ -1643,7 +1672,7 @@ export function resolveResponsesBlocks(
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return { type: "text", text: b.text };
+      return { type: "text", text: b.text, ...textBlockMetadata(b) };
     }
     if (b.type === "toolCall") {
       if (b.input !== undefined) failToolCall('"input" is only valid on a "customToolCall" block');

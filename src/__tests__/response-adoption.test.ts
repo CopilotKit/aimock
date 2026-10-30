@@ -1513,7 +1513,7 @@ describe("W7 recording adoption", () => {
 
   it.each([
     ["recorder.ts", 11],
-    ["stream-collapse.ts", 9],
+    ["stream-collapse.ts", 10],
   ] as const)("%s retains every capture call", (file, count) => {
     expect(calls(source(`src/${file}`), capture())).toHaveLength(count);
   });
@@ -1544,6 +1544,7 @@ describe("W7 recording adoption", () => {
   it.each([
     ["collapseOpenAISSEWithResponsesTools", 2],
     ["collapseAnthropicSSE", 1],
+    ["collapseResponsesJSON", 1],
     ["collapseGeminiSSE", 1],
     ["collapseOllamaNDJSON", 1],
     ["collapseCohereSSE", 1],

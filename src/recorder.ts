@@ -22,8 +22,11 @@ import type { Logger } from "./logger.js";
 import {
   collapseStreamingResponseWithResponsesTools,
   capturedRedactedData,
+  collapseResponsesJSON,
   withoutResponsesToolFields,
+  type CollapseResult,
 } from "./stream-collapse.js";
+import { CitationRecording, hasNativeCitations } from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
@@ -760,19 +763,11 @@ export async function proxyAndRecord(
   } else if (collapsed) {
     // Streaming response — use collapsed result
     defaults.logger.warn(`Streaming response detected (${ctString}) — collapsing to fixture`);
-    if (collapsed.truncated) {
-      defaults.logger.warn("Bedrock EventStream: CRC mismatch — response may be truncated");
-    }
-    if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
-      defaults.logger.warn(
-        `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
-      );
-    }
-    if (collapsed.harmonyUnparsed) {
-      defaults.logger.warn(
-        `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
-      );
-    }
+    logCollapseWarnings(
+      defaults.logger,
+      collapsed,
+      "Bedrock EventStream: CRC mismatch — response may be truncated",
+    );
     // Provider-reported usage captured from the stream's final usage frame
     // (#368). Persisted on the text / toolCall fixture shapes so replay serves
     // the REAL token counts instead of the `ceil(len/4)` estimate, and so
@@ -827,7 +822,10 @@ export async function proxyAndRecord(
       (!collapsed.toolCalls || collapsed.toolCalls.length === 0) &&
       !collapsed.customToolCalls?.length
     ) {
-      defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      // A cited empty-text turn is complete: its citations ride on `blocks`.
+      if (!collapsed.blocks?.some(hasNativeCitations)) {
+        defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      }
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       // Carry the real Anthropic thinking-block signature only when reasoning is
       // also present (a bare signature has nothing to attach to on replay), so a
@@ -954,6 +952,16 @@ export async function proxyAndRecord(
         };
       }
     }
+    // A cited turn is the shape above plus its citations, which ride on the
+    // ordered `blocks` (or on `responsesBlocks`, which the custom-tool branch
+    // above already took). Uncited turns never enter here.
+    if (
+      collapsed.blocks?.some(hasNativeCitations) &&
+      !("responsesBlocks" in fixtureResponse) &&
+      ("content" in fixtureResponse || "toolCalls" in fixtureResponse)
+    ) {
+      fixtureResponse = { ...fixtureResponse, blocks: collapsed.blocks };
+    }
   } else {
     // Non-streaming — try to parse as JSON
     let parsedResponse: unknown = null;
@@ -1008,6 +1016,7 @@ export async function proxyAndRecord(
         defaults.logger,
         request,
         { provider: providerKey, contentType: ctString, operation: request._endpointType },
+        defaults.responsesTools,
       );
     }
   }
@@ -1649,6 +1658,34 @@ function logDroppedReasoningSignature(
   }
 }
 
+/**
+ * Warn about what a collapse could not keep: a truncated input (with
+ * `truncatedWarning`), dropped chunks, unparseable harmony tokens and native
+ * citation metadata that was not recorded.
+ */
+function logCollapseWarnings(
+  logger: Logger | undefined,
+  collapsed: CollapseResult,
+  truncatedWarning: string,
+): void {
+  if (collapsed.truncated) {
+    logger?.warn(truncatedWarning);
+  }
+  if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
+    logger?.warn(
+      `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
+    );
+  }
+  if (collapsed.harmonyUnparsed) {
+    logger?.warn(
+      `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
+    );
+  }
+  if (collapsed.citationNote) {
+    logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+  }
+}
+
 /** Sanitize a collapsed function call before it is persisted: string `name` and `arguments`. */
 function sanitizeRecordedToolCall(tc: ToolCall): ToolCall {
   return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
@@ -1704,6 +1741,7 @@ function buildFixtureResponse(
   logger?: Logger,
   request?: ChatCompletionRequest,
   captureContext: { provider?: RecordProviderKey; contentType?: string; operation?: string } = {},
+  responsesTools?: ResponsesToolsMode,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -2011,6 +2049,43 @@ function buildFixtureResponse(
     }
   }
 
+  // OpenAI Responses: { output: [...] }. Recognized only for a turn that
+  // records native citation metadata; an uncited body, including one whose
+  // citation entries were all dropped, keeps the error fallback below, as
+  // before citations. It is collapsed as the stream of the same turn, so both
+  // recordings of one turn are made by one collapse, with the same warnings.
+  if (Array.isArray(obj.output)) {
+    const collapsed = collapseResponsesJSON(obj);
+    if (!collapsed.blocks?.some(hasNativeCitations)) {
+      if (collapsed.citationNote) {
+        logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+      }
+    } else {
+      logCollapseWarnings(
+        logger,
+        collapsed,
+        "Responses JSON body exceeded the collapse limit — response may be truncated",
+      );
+      // Shape it as the stream recorder shapes the same turn.
+      const shaped =
+        responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
+      const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
+      return {
+        ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
+        ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
+        ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
+        ...(shaped.responsesBlocks
+          ? { responsesBlocks: shaped.responsesBlocks }
+          : shaped.blocks
+            ? { blocks: shaped.blocks }
+            : {}),
+        ...(shaped.reasoning ? { reasoning: shaped.reasoning } : {}),
+        ...(shaped.webSearches?.length ? { webSearches: shaped.webSearches } : {}),
+        ...(shaped.usage ? { usage: shaped.usage } : {}),
+      };
+    }
+  }
+
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
   if (Array.isArray(obj.content) && obj.content.length > 0) {
     const capturedUsage = captureUsage({
@@ -2069,13 +2144,26 @@ function buildFixtureResponse(
         : {};
     logDroppedReasoningSignature(logger, anthropicReasoning, anthropicReasoningSignature);
     const redactedThinkingSpread = redactedThinking.length > 0 ? { redactedThinking } : {};
+    const toToolCall = (b: Record<string, unknown>): ToolCall => ({
+      name: String(b.name),
+      arguments: toToolCallArguments(b.input),
+      ...(b.id ? { id: String(b.id) } : {}),
+    });
+    // A cited turn adds `blocks`: the text and tool calls below, in that
+    // order, with each text block's citations.
+    const citations = new CitationRecording("anthropic");
+    citations.anthropicJSON(blocks);
+    const cited = citations.attach({
+      content: joinedText,
+      ...(hasToolCalls ? { toolCalls: toolUseBlocks.map(toToolCall) } : {}),
+    });
+    if (cited.citationNote) {
+      logger?.warn(`Native citation metadata not recorded — ${cited.citationNote}`);
+    }
+    const citedSpread = cited.blocks?.some(hasNativeCitations) ? { blocks: cited.blocks } : {};
 
     if (hasToolCalls) {
-      const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
-        name: String(b.name),
-        arguments: toToolCallArguments(b.input),
-        ...(b.id ? { id: String(b.id) } : {}),
-      }));
+      const toolCalls: ToolCall[] = toolUseBlocks.map(toToolCall);
       if (hasContent) {
         return {
           ...usageSpread,
@@ -2084,6 +2172,7 @@ function buildFixtureResponse(
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
           ...reasoningSignatureSpread,
           ...redactedThinkingSpread,
+          ...citedSpread,
         };
       }
       return {
@@ -2092,6 +2181,7 @@ function buildFixtureResponse(
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
     if (hasContent) {
@@ -2101,6 +2191,7 @@ function buildFixtureResponse(
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
     // Thinking-only / redacted-only response (no text, no tool calls). A turn can
@@ -2114,14 +2205,16 @@ function buildFixtureResponse(
     // emptiness for the same logical turn. (Per the persistence contract, a bare
     // signature with empty reasoning is still dropped via
     // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
-    // redactedThinking field.)
-    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0) {
+    // redactedThinking field.) A cited turn whose only text is empty (its
+    // citations are the payload) is complete too, as on the streaming path.
+    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0 || "blocks" in citedSpread) {
       return {
         ...usageSpread,
         content: "",
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
   }
