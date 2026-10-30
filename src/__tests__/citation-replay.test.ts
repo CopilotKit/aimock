@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
+import { createRequire } from "node:module";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { LLMock } from "../llmock.js";
 import { LLMock as MisbehaviorLLMock } from "./helpers/misbehavior-enabled.js";
@@ -386,6 +388,45 @@ function nativeEvents(provider: Provider, blocks: Json[]): Json[] {
       : { type: "message_stop" },
   );
   return result;
+}
+/** Start `llmock --validate-on-load`; resolve with its exit code, or "listening". */
+function validateOnLoad(file: string, extra: string[] = []) {
+  return new Promise<{ result: number | "listening"; output: string }>((done, fail) => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        createRequire(import.meta.url).resolve("tsx"),
+        resolve("src/cli.ts"),
+        "--validate-on-load",
+        "--port",
+        "0",
+        "--fixtures",
+        file,
+        ...extra,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let output = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      fail(new Error(`llmock neither listened nor exited within 20s:\n${output}`));
+    }, 20_000);
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (/listening on/.test(output)) {
+        clearTimeout(timer);
+        child.kill();
+        done({ result: "listening", output });
+      }
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      done({ result: code ?? -1, output });
+    });
+  });
 }
 async function listen(server: Server): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -2061,6 +2102,48 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     }
   });
 
+  it("loads a fixture with malformed native citation fields on every load path, as earlier releases did", async () => {
+    const malformed: Json[] = [
+      { type: "text", text: "fact", annotations: { type: "url_citation" } },
+      { type: "text", text: "fact", annotations: [null, "x", 3] },
+      { type: "text", text: "fact", citations: [1] },
+      { type: "text", text: "fact", continuesMessage: "true" },
+    ];
+    for (const field of ["blocks", "responsesBlocks"] as const) {
+      const entries = malformed.map(
+        (block, index): FixtureFileEntry => ({
+          match: { userMessage: `case-${index}` },
+          response: { [field]: [block] } as FixtureResponse,
+        }),
+      );
+      // addFixturesFromJSON registers them.
+      const server = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+      expect(() => server.addFixturesFromJSON(entries)).not.toThrow();
+      expect(server.getFixtures()).toHaveLength(malformed.length);
+      // The control API accepts them, and they serve as if the key were absent.
+      const live = await mock(undefined, true);
+      const posted = await fetch(`${live.url}/__aimock/fixtures`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fixtures: entries }),
+      });
+      expect(posted.status, await posted.text()).toBe(200);
+      for (let index = 0; index < malformed.length; index++) {
+        const { body } = await request(live, "responses", false, `case-${index}`);
+        expect(visible(body, "responses")).toEqual([
+          { type: "text", text: "fact", annotations: [] },
+        ]);
+      }
+      // `--validate-on-load` starts and warns.
+      const dir = directory();
+      const file = join(dir, "fixtures.json");
+      writeFileSync(file, JSON.stringify({ fixtures: entries }));
+      const started = await validateOnLoad(file, ["--responses-tools", "extended"]);
+      expect(started.result, started.output).toBe("listening");
+      expect(started.output).toContain(`${field}[0].citations must be an array of objects`);
+    }
+  }, 60_000);
+
   it("reports malformed native citation fields at load and drops them at serve time", async () => {
     const dir = directory();
     const invalid: Json[] = [
@@ -2078,14 +2161,19 @@ describe("a cited recording is the uncited recording plus its citations", () => 
         }),
       ),
     );
+    // A warning, never an error: earlier releases ignored these keys.
+    const metadata = /annotations|citations|continuesMessage/;
     for (let index = 0; index < invalid.length; index++) {
-      const errors = validateFixtures(loadFixtureFile(join(dir, `${index}.json`)))
-        .filter((issue) => issue.severity === "error")
-        .map((issue) => issue.message);
+      const issues = validateFixtures(loadFixtureFile(join(dir, `${index}.json`)));
+      const label = JSON.stringify(issues);
       expect(
-        errors.some((message) => /annotations|citations|continuesMessage/.test(message)),
-        JSON.stringify(errors),
+        issues.some((issue) => issue.severity === "warning" && metadata.test(issue.message)),
+        label,
       ).toBe(true);
+      expect(
+        issues.filter((issue) => issue.severity === "error" && metadata.test(issue.message)),
+        label,
+      ).toEqual([]);
     }
     // Holes in a code-built array are not citation objects either.
     const sparse: Json[] = [
@@ -2093,13 +2181,16 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       { type: "text", text: "fact", citations: Object.assign([], { 1: documentCitation }) },
     ];
     for (const block of sparse) {
-      const errors = validateFixtures([
+      const issues = validateFixtures([
         { match: { userMessage: "x" }, response: { blocks: [block] } as FixtureResponse },
-      ])
-        .filter((issue) => issue.severity === "error")
-        .map((issue) => issue.message);
-      expect(errors).toEqual([
-        expect.stringMatching(/^blocks\[0\]\.(annotations|citations) must be an array of objects$/),
+      ]).map((issue) => [issue.severity, issue.message]);
+      expect(issues).toEqual([
+        [
+          "warning",
+          expect.stringMatching(
+            /^blocks\[0\]\.(annotations|citations) must be an array of objects — ignored when served$/,
+          ),
+        ],
       ]);
     }
     // Earlier releases ignored these keys on a text block, so a code-built

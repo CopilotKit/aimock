@@ -759,7 +759,7 @@ function validateResponsesToolKeys(
     const block = entry as Record<string, unknown>;
     if (block.type === "text") {
       if (typeof block.text !== "string") error(`${path}.text must be a string`);
-      textMetadataProblems(block).forEach((problem) => error(`${path}.${problem}`));
+      textMetadataProblems(block).forEach((problem) => warning(`${path}.${problem}`));
       return;
     }
     if (block.type === "customToolCall") {
@@ -803,18 +803,22 @@ function validateResponsesToolKeys(
 /**
  * Problems with a text block's optional `annotations`, `citations` and
  * `continuesMessage`. `null` (the provider SDKs' own "no citations" value)
- * reads as absent, as it does at serve time.
+ * reads as absent, as it does at serve time. Each is a warning, not a load
+ * error: earlier releases ignored these keys on a text block, and a malformed
+ * value is dropped when served, so registration never throws for it.
  */
 function textMetadataProblems(block: Record<string, unknown>): string[] {
   const problems: string[] = [];
   for (const key of ["annotations", "citations"] as const) {
     const value = block[key];
     if (value !== undefined && value !== null && !isCitationArray(value)) {
-      problems.push(`${key} must be an array of objects`);
+      problems.push(`${key} must be an array of objects — ignored when served`);
     }
   }
   if (block.continuesMessage !== undefined && typeof block.continuesMessage !== "boolean") {
-    problems.push(`continuesMessage must be a boolean, got ${typeof block.continuesMessage}`);
+    problems.push(
+      `continuesMessage must be a boolean, got ${typeof block.continuesMessage} — ignored when served`,
+    );
   }
   return problems;
 }
@@ -892,7 +896,7 @@ function validateBlocks(
         });
       }
       for (const problem of textMetadataProblems(block)) {
-        results.push({ severity: "error", fixtureIndex, message: `blocks[${j}].${problem}` });
+        results.push({ severity: "warning", fixtureIndex, message: `blocks[${j}].${problem}` });
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.
