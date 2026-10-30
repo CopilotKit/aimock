@@ -10,6 +10,7 @@ import { proxyAndRecord } from "../recorder.js";
 import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "../fixture-loader.js";
 import {
   collapseOpenAISSE,
+  collapseOpenAISSEWithResponsesTools,
   collapseAnthropicSSE,
   collapseResponsesJSON,
   collapseStreamingResponse,
@@ -2235,6 +2236,38 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     ],
   ];
   const harmonyLead = "<|channel|>final<|message|>Alpha ";
+  /** A harmony turn with a custom tool call at output 1 between two harmony messages. */
+  const harmonyCustomTurn = (first: string, second: string, cited: Json): Json[] =>
+    withCompleted([
+      messageAdded(0),
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: first },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "custom_tool_call", name: "shell", call_id: "call_c", input: "" },
+      },
+      { type: "response.custom_tool_call_input.delta", output_index: 1, delta: "ls" },
+      messageAdded(2),
+      { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: second },
+      cited,
+    ]);
+  /** Cited text after the custom call. */
+  const harmonyCustomBetween = (): Json[] =>
+    harmonyCustomTurn(
+      "<|channel|>analysis<|message|>Think<|end|><|start|>assistant<|channel|>final<|message|>Before ",
+      "after<|return|>",
+      annotationAdded(2, 0, { ...urlCitation, start_index: 0, end_index: 5 }),
+    );
+  /** Cited text before the custom call, and a harmony function call after it. */
+  const harmonyCustomThenCall = (): Json[] => {
+    const final = "<|channel|>final<|message|>Hello world<|end|>";
+    const at = final.indexOf("Hello");
+    return harmonyCustomTurn(
+      final,
+      '<|start|>assistant<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>{"city":"SF"}<|call|>',
+      annotationAdded(0, 0, { ...urlCitation, start_index: at, end_index: at + 5 }),
+    );
+  };
   /** Every cited stream shape the suite and the review rounds built. */
   const corpus = (): [string, Provider, Json[], boolean][] => [
     ...(["responses", "anthropic"] as const).flatMap(
@@ -2560,6 +2593,14 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       ],
       true,
     ],
+    // Round 6: a harmony turn with a custom call keeps the streamed text.
+    ["responses harmony turn with a custom call", "responses", harmonyCustomBetween(), true],
+    [
+      "responses harmony turn with a custom call and a harmony call",
+      "responses",
+      harmonyCustomThenCall(),
+      true,
+    ],
     [
       "responses two separate cited messages",
       "responses",
@@ -2579,7 +2620,12 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       const base = collapse(body(uncitedWire(events))) as Json;
       const result = collapse(body(events)) as Json;
       expect(stripCitations(result, base), name).toEqual(base);
-      if (result.blocks?.some((block: Json) => block[key(provider)]?.length)) cited++;
+      if (
+        (result.blocks ?? result.responsesBlocks)?.some(
+          (block: Json) => block[key(provider)]?.length,
+        )
+      )
+        cited++;
       // Every offset an annotation keeps falls inside its own text.
       for (const block of (result.blocks ?? []) as Json[])
         for (const annotation of block.annotations ?? [])
@@ -2780,33 +2826,40 @@ describe("a cited recording is the uncited recording plus its citations", () => 
     ]);
   });
 
-  it("a harmony turn with a custom call between its text parses every text block", async () => {
-    const before =
-      "<|channel|>analysis<|message|>Think<|end|><|start|>assistant<|channel|>final<|message|>Before ";
-    const wire = withCompleted([
-      ...harmonyMessage(0, [[0, before]]),
-      {
-        type: "response.output_item.added",
-        output_index: 1,
-        item: { type: "custom_tool_call", name: "shell", call_id: "call_c", input: "" },
-      },
-      { type: "response.custom_tool_call_input.delta", output_index: 1, delta: "ls" },
-      ...harmonyMessage(2, [[0, "after<|return|>"]]),
-      annotationAdded(2, 0, { ...urlCitation, start_index: 0, end_index: 5 }),
-    ]);
-    const server = await recorded("responses", wire, true, true);
-    const fixture = saved(server);
-    expect(fixture.content).toBe("Before after");
-    expect(fixture.reasoning).toBe("Think");
-    expect(fixture.responsesBlocks).toEqual([
-      { type: "text", text: "Before " },
-      { type: "customToolCall", name: "shell", input: "ls", id: "call_c" },
-      text("responses", "after", [{ ...urlCitation, start_index: 0, end_index: 5 }]),
-    ]);
-    expect(collapseOpenAISSE(sse(wire)).blocks).toEqual([
-      { type: "text", text: "Before " },
-      text("responses", "after", [{ ...urlCitation, start_index: 0, end_index: 5 }]),
-    ]);
+  it("a cited harmony turn with a custom call records as the uncited turn plus its annotations", async () => {
+    const annotations = (blocks: Json[] = []): Json[] =>
+      blocks.flatMap((block) => block.annotations ?? []);
+    for (const wire of [harmonyCustomBetween(), harmonyCustomThenCall()]) {
+      for (const collapse of [collapseOpenAISSE, collapseOpenAISSEWithResponsesTools]) {
+        const base = collapse(sse(uncitedWire(wire))) as Json;
+        const cited = collapse(sse(wire)) as Json;
+        expect(stripCitations(cited, base)).toEqual(base);
+        expect(cited.citationNote).toBeUndefined();
+        // `blocks` hold the parsed text and every tool call the turn's flat fields hold.
+        expect(annotations(cited.blocks)).toHaveLength(1);
+      }
+      // `responsesBlocks` keep the streamed harmony text, as the uncited turn's
+      // do, with the annotation at its wire offsets.
+      const extended = collapseOpenAISSEWithResponsesTools(sse(wire)) as Json;
+      expect(annotations(extended.responsesBlocks)).toHaveLength(1);
+      for (const responsesTools of [false, true]) {
+        const field = responsesTools ? "responsesBlocks" : "blocks";
+        const plain = saved(await recorded("responses", uncitedWire(wire), true, responsesTools));
+        const fixture = saved(await recorded("responses", wire, true, responsesTools));
+        expect({ ...fixture, [field]: undefined }).toEqual({ ...plain, [field]: undefined });
+        expect(fixture[field]).toEqual(
+          (responsesTools ? extended : collapseOpenAISSE(sse(wire)))[field],
+        );
+      }
+    }
+    // Replay of the cited recording keeps the harmony function call.
+    const server = await recorded("responses", harmonyCustomThenCall(), true);
+    for (const replayStream of [false, true]) {
+      const { body } = await request(server, "responses", replayStream);
+      expect(body.output.filter((item: Json) => item.type === "function_call")).toEqual([
+        expect.objectContaining({ name: "get_weather", arguments: '{"city":"SF"}' }),
+      ]);
+    }
   });
 
   it("a harmony annotation that cannot be placed is reported with the reason it was dropped", () => {

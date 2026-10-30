@@ -127,11 +127,6 @@ function parsedAt(spans: Span[], at: number): number | undefined {
   return span && span.parsed + at - span.raw;
 }
 
-/** How much of the parsed text comes from the streamed text before `at`. */
-function parsedBefore(spans: Span[], at: number): number {
-  return spans.reduce((sum, s) => sum + Math.min(Math.max(at - s.raw, 0), s.length), 0);
-}
-
 /**
  * The piece, of the pieces of one text, that holds an entry: a point (an
  * `index` only, as a file citation) goes to the last piece that starts before
@@ -428,9 +423,10 @@ export class CitationRecording {
    * own, and the blocks keep `base`'s order. When `base` has no `blocks`, its
    * order is the one it implies: the text, then the function calls, then the
    * custom calls. `harmonyRaw` is the streamed text of a turn whose `content`
-   * was harmony-parsed; each text block is then the parsed text it holds, and
-   * offsets are moved into it. An entry that cannot be kept is dropped and
-   * reported in `citationNote`.
+   * was harmony-parsed; `blocks` then hold the parsed text in the order the
+   * flat fields imply, with offsets moved into it, and `responsesBlocks`, when
+   * `base` has them, keep the streamed text as `base`'s do. An entry that
+   * cannot be kept is dropped and reported in `citationNote`.
    */
   attach(base: CollapseResult, harmonyRaw?: string): CollapseResult {
     const notes: string[] = [];
@@ -442,19 +438,33 @@ export class CitationRecording {
     }
     const cited = this.cited();
     let ordered: ResponsesFixtureBlock[] | undefined;
+    // The streamed text of a harmony turn whose `responsesBlocks` hold it.
+    let streamed: ResponsesFixtureBlock[] | undefined;
     if (cited.size > 0) {
-      ordered =
-        harmonyRaw !== undefined
-          ? this.harmonyBlocks(base, harmonyRaw, cited, notes)
-          : this.splitBlocks(base, cited, notes);
+      if (harmonyRaw === undefined) {
+        ordered = this.splitBlocks(base, cited, notes);
+      } else {
+        ordered = this.harmonyBlocks(base, harmonyRaw, cited, notes);
+        if (base.responsesBlocks) streamed = this.splitBlocks(base, cited, notes);
+      }
     }
     const citationNote = notes.length > 0 ? { citationNote: notes.join("; ") } : {};
-    if (!ordered?.some(hasNativeCitations)) {
+    const parsedCited = ordered?.some(hasNativeCitations) ?? false;
+    const streamedCited = streamed?.some(hasNativeCitations) ?? false;
+    if (!ordered || (!parsedCited && !streamedCited)) {
       return notes.length > 0 ? { ...base, ...citationNote } : base;
     }
     const blocks = ordered.filter(
       (block): block is FixtureBlock => block.type !== "customToolCall",
     );
+    if (streamed) {
+      return {
+        ...base,
+        ...(parsedCited ? { blocks } : {}),
+        ...(streamedCited ? { responsesBlocks: streamed } : {}),
+        ...citationNote,
+      };
+    }
     return {
       ...base,
       blocks,
@@ -644,12 +654,11 @@ export class CitationRecording {
   }
 
   /**
-   * The blocks of a harmony-parsed turn. Each text block of `base` that holds
-   * streamed text is replaced by the parsed text that came from it (and left
-   * out when none did); when `base`'s text is already the parsed text, it is
-   * one text block. The harmony tool calls follow. Offsets count from the
-   * start of their own part of the streamed text, so each is moved to the
-   * streamed text, then into the parsed text, then into its text block.
+   * The blocks of a harmony-parsed turn, in the order its flat fields imply:
+   * the parsed text as one text block, then every tool call (the harmony ones
+   * included), then the custom calls. Offsets count from the start of their
+   * own part of the streamed text, so each is moved to the streamed text, then
+   * into the parsed text.
    */
   private harmonyBlocks(
     base: CollapseResult,
@@ -712,45 +721,13 @@ export class CitationRecording {
         `${count(outside, "annotation", "annotations")} pointing outside the harmony-parsed text dropped`,
       );
     }
-    // Each text block, as the parsed text it holds and where that starts.
-    const blocks = this.baseBlocks(base, content);
-    const streamedBlocks =
-      spans !== undefined &&
-      blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("") === raw;
-    const out: { block: ResponsesFixtureBlock; start?: number }[] = [];
-    let cursor = 0;
-    for (const block of blocks) {
-      if (block.type !== "text") {
-        out.push({ block });
-      } else if (streamedBlocks) {
-        const from = parsedBefore(spans, cursor);
-        cursor += block.text.length;
-        const to = parsedBefore(spans, cursor);
-        if (to > from)
-          out.push({ block: { type: "text", text: content.slice(from, to) }, start: from });
-      } else if (!out.some((piece) => piece.start !== undefined)) {
-        out.push({ block: { type: "text", text: content }, start: 0 });
-      }
-    }
-    if (!out.some((piece) => piece.start !== undefined)) {
-      out.unshift({ block: { type: "text", text: content }, start: 0 });
-    }
-    const texts = out.filter(
-      (piece): piece is { block: TextBlock; start: number } => piece.start !== undefined,
+    // The implied order, built from the flat fields even when `base` keeps
+    // the streamed text in `responsesBlocks`.
+    const others = this.baseBlocks({ ...base, responsesBlocks: undefined }, "").filter(
+      (block) => block.type !== "text",
     );
-    let split = 0;
-    for (const annotation of mapped) {
-      const piece = owner(texts, (p) => p.start, annotation);
-      const moved = { ...annotation };
-      const fits = OFFSET_FIELDS.every((name) => {
-        if (typeof annotation[name] !== "number") return true;
-        moved[name] = (annotation[name] as number) - piece.start;
-        return inRange(moved[name] as number, piece.block.text.length);
-      });
-      if (fits) (piece.block.annotations ??= []).push(moved);
-      else split++;
-    }
-    if (split > 0) notes.push(splitNote(split));
-    return out.map((piece) => piece.block);
+    const text: TextBlock = { type: "text", text: content };
+    for (const annotation of mapped) (text.annotations ??= []).push(annotation);
+    return [text, ...others];
   }
 }

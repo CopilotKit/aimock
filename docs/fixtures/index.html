@@ -1186,7 +1186,8 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
                 message with several text parts records one block per part; later parts carry
                 <code>"continuesMessage": true</code>
                 so replay serves one message. A gpt-oss harmony turn moves each annotation's offsets
-                into the parsed answer text
+                into the parsed answer text; with custom tool calls,
+                <code>responsesBlocks</code> keep the streamed text and the offsets it was sent with
               </td>
             </tr>
             <tr>
