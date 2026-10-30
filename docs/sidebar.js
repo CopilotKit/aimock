@@ -73,6 +73,7 @@
       links: [
         { label: "MCPMock", href: "/mcp-mock" },
         { label: "A2AMock", href: "/a2a-mock" },
+        { label: "A2A Conversations", href: "/a2a-conversations" },
         { label: "AGUIMock", href: "/agui-mock" },
         { label: "VectorMock", href: "/vector-mock" },
         { label: "Services", href: "/services" },

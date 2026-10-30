@@ -4,12 +4,17 @@
 
 ### Added
 
+- A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
 - Record and replay native citations and annotations from real provider turns (#594)
 
 ### Changed
 
 - `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
   files, raw passthrough and client disconnect handling.
+
+### Fixed
+
+- A2A GetTask/CancelTask return the task as `result` (was `result.task`), matching the spec and SDK (#595)
 
 ## [1.47.0] - 2026-10-26
 

@@ -18,7 +18,7 @@ export interface JsonRpcDispatcherOptions {
   onNotification?: (method: string, params: unknown) => void;
 }
 
-function errorResponse(
+export function errorResponse(
   code: number,
   message: string,
   id: string | number | null = null,
