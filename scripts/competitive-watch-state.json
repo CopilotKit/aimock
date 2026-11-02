@@ -1,19 +1,19 @@
 {
   "mastra-blog-tool-mocks": {
     "url": "https://mastra.ai/blog/introducing-experiment-tool-mocks",
-    "hash": "sha256:61cfea5345605b89ca2d89882e38181ef7f00ab6919d71ddd1f77768c754f388",
+    "hash": "sha256:c531ff54a10a0feca73ab8da633d9cfc1aff278397cfac3ce9e78b5526e69d63",
     "checks": {
       "mcp": false,
       "workflow-mocks-planned": true
     },
-    "lastChanged": "2026-10-12"
+    "lastChanged": "2026-11-02"
   },
   "mastra-core-npm": {
     "url": "https://registry.npmjs.org/@mastra%2Fcore/latest",
-    "hash": "sha256:0811fd07fcb0c406c899be71f419afa7a5fa4e18d9cbcf5e350b2ea5f3e1b6df",
+    "hash": "sha256:e3527de90125a9692bde4f68ced9eb900e462ade081bb465b11323813a566e5d",
     "checks": {},
-    "version": "1.79.0",
-    "lastChanged": "2026-10-26"
+    "version": "1.81.0",
+    "lastChanged": "2026-11-02"
   },
   "mastra-docs-tool-mocks": {
     "url": "https://mastra.ai/docs/evals/experiments",
