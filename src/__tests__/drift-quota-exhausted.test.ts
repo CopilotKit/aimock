@@ -25,6 +25,7 @@ import type { Duplex } from "node:stream";
 import {
   collectDriftEntries,
   computeExitCode,
+  conclusionForExitCode,
   parseProviderQuotaExhausted,
 } from "../../scripts/drift-report-collector.js";
 import { summarizeDriftReport } from "../../scripts/drift-slack-summary.js";
@@ -304,6 +305,11 @@ describe("provider quota exhaustion — collector side", () => {
     expect(exitOf(collected)).toBe(5);
   });
 
+  it("a quota-only run concludes provider-quota-exhausted; any silent leg keeps live-timeout", () => {
+    expect(conclusionForExitCode(6, true)).toBe("provider-quota-exhausted");
+    expect(conclusionForExitCode(6, false)).toBe("live-timeout");
+    expect(conclusionForExitCode(6)).toBe("live-timeout");
+  });
   it("a real critical drift beside the quota legs still wins (exit 2)", () => {
     const genuine: ShapeDiff = {
       path: "SSE:response.output_text.annotation.added",
@@ -429,9 +435,10 @@ describe("provider quota exhaustion — Slack summary", () => {
     timeouts,
   });
 
-  it("says top up credit, and is the infra class, not real-drift", () => {
+  it("says top up credit, and is the persistent provider-quota class, not real-drift", () => {
     const summary = summarizeDriftReport(report([], [quotaLeg]));
-    expect(summary).toContain("*Classification:* infra-transient");
+    expect(summary).toContain("*Classification:* provider-quota");
+    expect(summary).not.toContain("infra-transient");
     expect(summary).toContain("Provider quota exhausted — top up credit");
     expect(summary).toContain("not API drift");
     expect(summary).not.toContain("real-drift");

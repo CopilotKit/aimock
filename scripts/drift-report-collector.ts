@@ -14,9 +14,10 @@
  *       Covers BOTH legs: an HTTP failure that could not be mapped to a
  *       provider, and an AG-UI failure the collector could not structurally
  *       interpret. An uninterpretable failure is NEVER silently dropped.
- *   6 — at least one live leg timed out having observed ZERO messages: the
- *       surface went silent, so nothing was graded there. Not drift, not a
- *       collector fault, and NOT a clean baseline.
+ *   6 — at least one leg graded nothing, for one of two reasons: a live leg
+ *       timed out having observed ZERO messages (the surface went silent), or
+ *       the provider account is out of credit (a quota leg; the report names
+ *       its code). Not drift, not a collector fault, and NOT a clean baseline.
  *   1 — AG-UI drift detection was skipped (infra), or an unhandled script error
  *
  * Usage:
@@ -2206,8 +2207,10 @@ export interface CollectResult {
   entries: DriftEntry[];
   quarantine: QuarantineEntry[];
   /**
-   * Live legs that timed out having observed nothing (see `parseLiveTimeout`).
-   * A recognized outcome in its own right — neither a drift finding nor
+   * Legs that graded nothing: live legs that timed out having observed nothing
+   * (see `parseLiveTimeout`), and legs whose provider account is out of credit
+   * (`providerQuotaExhausted` set; see `parseProviderQuotaExhausted`). Each is a
+   * recognized outcome in its own right — neither a drift finding nor
    * unparseable output.
    */
   timeouts: TimeoutEntry[];
@@ -2935,7 +2938,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
   const quotaLegs = timeouts.filter((t) => t.providerQuotaExhausted !== undefined);
   if (quotaLegs.length > 0) {
     console.warn(
-      `WARNING: ${quotaLegs.length} live drift leg(s) failed because the provider account is out of ` +
+      `WARNING: ${quotaLegs.length} drift leg(s) failed because the provider account is out of ` +
         `credit — provider quota exhausted — top up credit. This is infra, NOT API drift: nothing ` +
         `was graded on these legs (exit 6).`,
     );
@@ -3339,11 +3342,11 @@ export function computeExitCode(
   if (criticalCount > 0) return 2;
   if (quarantineCount > 0) return 5;
   if (agUiSkipped) return 1;
-  // 6 — every leg that failed did so by observing nothing at all. Distinct from
-  // 5 so a silent live surface is never reported as a collector fault needing
-  // manual triage, and distinct from 0 so it is never a clean baseline: the legs
-  // that timed out graded NOTHING, and a run that graded nothing must not be
-  // able to certify that surface as drift-free.
+  // 6 — every leg that failed graded nothing: it observed nothing at all, or the
+  // provider account was out of credit. Distinct from 5 so neither is reported
+  // as a collector fault needing manual triage, and distinct from 0 so it is
+  // never a clean baseline: those legs graded NOTHING, and a run that graded
+  // nothing must not be able to certify that surface as drift-free.
   if (timeoutCount > 0) return 6;
   return 0;
 }
@@ -3353,8 +3356,13 @@ export function computeExitCode(
  * report, so the base-report reuse guard (`isBaseReportReusable`) can read
  * `report.conclusion` directly. Only exit 0 ("clean") is a reusable baseline;
  * "critical"/"quarantine" (and the exit-1 "skipped" case) are not.
+ *
+ * `quotaOnly` names an exit-6 run whose every ungraded leg was out of credit:
+ * its conclusion is "provider-quota-exhausted", not "live-timeout", because no
+ * surface went silent. A run with any silent leg stays "live-timeout"; its quota
+ * legs are still named in `timeouts[].providerQuotaExhausted`.
  */
-export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
+export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6, quotaOnly = false): string {
   switch (exitCode) {
     case 0:
       return "clean";
@@ -3364,9 +3372,9 @@ export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
       return "quarantine";
     case 6:
       // NOT in drift-delta's REUSABLE_CONCLUSIONS, deliberately: a run whose
-      // legs observed nothing cannot serve as a baseline that says they were
+      // legs graded nothing cannot serve as a baseline that says they were
       // clean.
-      return "live-timeout";
+      return quotaOnly ? "provider-quota-exhausted" : "live-timeout";
     default:
       return "skipped";
   }
@@ -3587,6 +3595,10 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   );
   const quarantineCount = quarantine.length;
   const timeoutCount = timeouts.length;
+  // Out-of-credit legs share the exit-6 lane but are not silence: counted and
+  // reported apart, so neither is described as the other.
+  const quotaCount = timeouts.filter((t) => t.providerQuotaExhausted !== undefined).length;
+  const silentCount = timeoutCount - quotaCount;
 
   // Compute the exit code BEFORE writing so the report can carry the coarse
   // `conclusion` derived from it (base-report reuse contract).
@@ -3608,7 +3620,7 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
     // Alias of `timestamp` read by the reuse guard; `timestamp` kept for
     // back-compat with existing consumers.
     generatedAt: timestamp,
-    conclusion: conclusionForExitCode(exitCode),
+    conclusion: conclusionForExitCode(exitCode, timeoutCount > 0 && silentCount === 0),
     entries,
     ...(quarantine.length > 0 ? { quarantine } : {}),
     ...(timeouts.length > 0 ? { timeouts } : {}),
@@ -3653,7 +3665,8 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   console.log(`  Total entries: ${entries.length}`);
   console.log(`  Critical diffs: ${criticalCount}`);
   console.log(`  Quarantined failures: ${quarantineCount}`);
-  console.log(`  Live timeouts (zero observations): ${timeoutCount}`);
+  console.log(`  Live timeouts (zero observations): ${silentCount}`);
+  console.log(`  Provider quota exhausted (not graded — top up credit): ${quotaCount}`);
   if (unverifiedSurfaces.length > 0) {
     console.log(
       `  Surfaces with NO live drift coverage (offline conformance only, not verified ` +
@@ -3688,8 +3701,14 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
       return 5;
     case 6:
       console.warn(
-        `Exiting with code 6 (${timeoutCount} live leg(s) timed out with zero observations — ` +
-          `no drift graded on those surfaces; NOT a collector fault).`,
+        `Exiting with code 6 (${[
+          ...(silentCount > 0
+            ? [`${silentCount} live leg(s) timed out with zero observations`]
+            : []),
+          ...(quotaCount > 0
+            ? [`${quotaCount} leg(s) failed on provider quota exhaustion — top up credit`]
+            : []),
+        ].join("; ")} — no drift graded on those legs; NOT a collector fault).`,
       );
       return 6;
     case 1:

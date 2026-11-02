@@ -41,8 +41,10 @@ import type { DriftEntry, DriftReport, DriftSeverity } from "./drift-types.js";
  *   infra-transient  — InfraError status 429 or ≥500
  *   real-drift       — at least one entry has a critical diff (exit 2)
  *   quarantine       — report.quarantine[] is non-empty (exit 5)
- *   infra-transient  — a leg failed on provider quota exhaustion
- *                      (report.timeouts[].providerQuotaExhausted, exit 6)
+ *   provider-quota   — a leg failed on provider quota exhaustion
+ *                      (report.timeouts[].providerQuotaExhausted, exit 6).
+ *                      Persistent until someone tops up credit, so it is NOT
+ *                      infra-transient: waiting does not clear it.
  *   test-infra-false-positive — everything else (exit 0 / advisory only)
  */
 export type HeadlineClass =
@@ -50,7 +52,8 @@ export type HeadlineClass =
   | "test-infra-false-positive"
   | "infra-transient"
   | "stale-key"
-  | "quarantine";
+  | "quarantine"
+  | "provider-quota";
 
 /** Optional context the caller may supply to sharpen classification. */
 export interface SummarizeOptions {
@@ -81,8 +84,8 @@ function computeHeadlineClass(report: DriftReport, opts: SummarizeOptions): Head
   const hasQuarantine = (report.quarantine?.length ?? 0) > 0;
   if (hasQuarantine) return "quarantine";
 
-  // Out of credit is the 429 infra class (OpenAI reports quota as 429), never drift.
-  if (quotaExhaustedLegs(report).length > 0) return "infra-transient";
+  // Out of credit is infra, never drift, and it persists until credit is added.
+  if (quotaExhaustedLegs(report).length > 0) return "provider-quota";
 
   return "test-infra-false-positive";
 }
@@ -175,8 +178,12 @@ function formatCounts(counts: Record<DriftSeverity, number>): string {
  * Build the Slack mrkdwn summary lines for the drifted providers.
  *
  * Returns a single string with real `\n` line breaks. The first line is a
- * headline classification (`*Classification:* <class>`), followed by per-item
- * bullets in one of two forms depending on the class:
+ * headline classification (`*Classification:* <class>`), followed by these
+ * blocks, each only when it has something to show:
+ *
+ *   Provider quota exhausted (first, when any leg is out of credit):
+ *     `*Provider quota exhausted — top up credit* (code, …): N legs not graded — infra, not API drift.`
+ *     `• testName` (up to five, then `• …and N more`)
  *
  *   Real-drift/advisory:
  *     `• *Provider* — 2 critical: \`path.a\`, \`path.b\` (src/helpers.ts)`
@@ -184,8 +191,9 @@ function formatCounts(counts: Record<DriftSeverity, number>): string {
  *   Quarantine:
  *     `• [quarantine] Provider — testName (file:line): truncated message`
  *
- * Returns an empty string only when no entries, no quarantine, no InfraError
- * context, and no exitCode hint are present (i.e. caller has nothing to say).
+ * Returns an empty string only when no entries, no quarantine, no quota legs,
+ * no InfraError context, and no exitCode hint are present (i.e. caller has
+ * nothing to say).
  *
  * The `drift_summary` GITHUB_OUTPUT key is the full return value of this
  * function — callers write it verbatim to `GITHUB_OUTPUT` via writeGithubOutput.
