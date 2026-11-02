@@ -46,6 +46,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
 import { MAX_EVIDENCE_RECORD_BYTES } from "./drift-evidence-reporter.js";
+import { parseProviderQuotaMarker, quotaCodeInCloseReason } from "./drift-quota.js";
 import type { EvidenceReporterRecord } from "./drift-evidence-reporter.js";
 
 import { SURFACE_REGISTRY, isKnownSurface } from "../src/__tests__/drift/surface-registry.js";
@@ -2140,30 +2141,40 @@ export function classifySingleUnparseableAsInfra(message: string): boolean {
   return hasInfraEvidence && !isDriftLike;
 }
 
-/**
- * Provider out-of-credit evidence. OpenAI names it with these codes in every
- * place it reports it: an HTTP 429 body, an in-band `error` / `response.failed`
- * event, and a Realtime 1013 close reason
- * (`insufficient_quota.credit_balance_exhausted`). Most specific first: a
- * Realtime close reason carries both.
- */
-const PROVIDER_QUOTA_CODES = [/\bcredit_balance_exhausted\b/, /\binsufficient_quota\b/];
+/** The WS probe's server-close error header, as `WSClosedError` reports it. */
+const WS_SERVER_CLOSE_HEADER = /^(?:WSClosedError: )?WebSocket closed by server during waitUntil:/;
 
 /**
  * Recognize a leg that failed because the provider account ran out of credit.
  * This is infra (the same class as a rate limit, a dead key or a network
  * failure), never drift: the account cannot generate, so nothing was graded.
  *
- * Same evidence rule as {@link classifySingleUnparseableAsInfra}: a quota code
- * must be present and the message must not look like drift, both judged on the
- * stack-stripped text. Only called on failures that carry no drift block, so a
- * drift report that merely mentions a quota code is still drift.
+ * Only STRUCTURED provider evidence counts, read from the failure's FIRST line
+ * (the thrown error's own header). A quota code that appears anywhere else in
+ * free text does not count. The two kinds of evidence are:
+ *   - the drift harness's quota marker (`providerQuotaMarker` in
+ *     drift-quota.ts). A leg throws it only after it reads the code from the
+ *     real provider's HTTP body, stream event or Live session.
+ *   - the WS probe's server-close error, when the close REASON names a quota
+ *     code. Realtime closes with 1013 `insufficient_quota.credit_balance_exhausted`.
+ * A test's own assertion that only mentions `insufficient_quota` (a
+ * `toStrictEqual`, a `toThrow`, a thrown Error that echoes a mock body) has
+ * neither, so it stays a test failure.
+ *
+ * When the evidence is a close frame, it is returned as `serverClose` so the
+ * caller can keep the frame on the record.
  */
-export function parseProviderQuotaExhausted(message: string): { code: string } | null {
-  const normalized = stripStackFrames(message);
-  if (DRIFT_LIKE_INDICATORS.some((re) => re.test(normalized))) return null;
-  const match = PROVIDER_QUOTA_CODES.map((re) => normalized.match(re)).find((m) => m !== null);
-  return match ? { code: match[0] } : null;
+export function parseProviderQuotaExhausted(
+  message: string,
+): { code: string; serverClose?: WSServerClose } | null {
+  const markerCode = parseProviderQuotaMarker(message);
+  if (markerCode !== null) return { code: markerCode };
+  const firstLine = message.split("\n", 1)[0];
+  if (!WS_SERVER_CLOSE_HEADER.test(firstLine)) return null;
+  const serverClose = parseWSServerClose(firstLine);
+  if (serverClose === null) return null;
+  const code = quotaCodeInCloseReason(serverClose.reason);
+  return code === null ? null : { code, serverClose };
 }
 
 export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
@@ -2478,12 +2489,17 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         // baseline) and is named so the alert can say "top up credit".
         const quota = parseProviderQuotaExhausted(fullMessage);
         if (quota !== null) {
-          const serverClose = parseWSServerClose(fullMessage);
+          // `serverClose` keeps its contract: a REFUSAL code is never recorded
+          // there. A refusal close whose reason names a quota code is still out
+          // of credit; its frame stays in `message`.
+          const { serverClose } = quota;
           timeouts.push({
             testName,
             rawLocation: extractRawLocation(fullMessage),
-            ...(serverClose !== null ? { serverClose } : {}),
-            providerQuotaExhausted: quota,
+            ...(serverClose !== undefined && !isRefusalCloseCode(serverClose.code)
+              ? { serverClose }
+              : {}),
+            providerQuotaExhausted: { code: quota.code },
             message: fullMessage,
           });
           continue;

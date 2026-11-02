@@ -6,6 +6,13 @@
  */
 
 import { extractShape, type SSEEventShape } from "./schema.js";
+import {
+  PROVIDER_QUOTA_EXHAUSTED,
+  isProviderQuotaCode,
+  providerQuotaMarker,
+} from "../../../scripts/drift-quota.js";
+
+export { PROVIDER_QUOTA_EXHAUSTED };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,38 +87,21 @@ export function isInfraSkip(status: number): boolean {
   return status === 401 || status === 402 || status === 403 || status === 429 || status >= 500;
 }
 
-/**
- * OpenAI error `code`/`type` values that mean the account has no credit or
- * quota left. This is the out-of-credit class of {@link isInfraSkip} (402),
- * reported IN BAND: OpenAI accepts the request (HTTP 200 / WS upgrade) and then
- * sends an `error` / `response.failed` event, or closes a Realtime session with
- * 1013 `insufficient_quota.credit_balance_exhausted`. It is never API drift.
- */
-const PROVIDER_QUOTA_CODES: ReadonlySet<string> = new Set([
-  "insufficient_quota",
-  "credit_balance_exhausted",
-]);
-
-/**
- * The fixed text every quota-exhausted leg reports. The drift collector keys
- * off the quota CODE in the failure message, not this prose.
- */
-export const PROVIDER_QUOTA_EXHAUSTED = "provider quota exhausted — top up credit";
-
 function quotaCodeOf(value: unknown, depth = 0): string | null {
   if (depth > 2 || typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   for (const key of ["code", "type"]) {
     const field = record[key];
-    if (typeof field === "string" && PROVIDER_QUOTA_CODES.has(field)) return field;
+    if (isProviderQuotaCode(field)) return field;
   }
   return quotaCodeOf(record.error, depth + 1) ?? quotaCodeOf(record.response, depth + 1);
 }
 
 /**
  * The quota code carried by the first provider event (or error body) that
- * reports quota exhaustion, or null. Looks at the event itself, its `error`,
- * and a `response.failed` event's `response.error`.
+ * reports quota exhaustion, or null. The codes are the shared list in
+ * scripts/drift-quota.ts. Looks at the event itself, its `error`, and a
+ * `response.failed` event's `response.error`.
  */
 export function findProviderQuotaExhaustion(events: readonly unknown[]): string | null {
   for (const event of events) {
@@ -121,9 +111,28 @@ export function findProviderQuotaExhaustion(events: readonly unknown[]): string 
   return null;
 }
 
-/** The {@link InfraError} a leg throws when its provider account is out of credit. */
-export function providerQuotaExhaustedError(provider: string, code: string): InfraError {
-  return new InfraError(`INFRA_ERROR: ${provider} — ${PROVIDER_QUOTA_EXHAUSTED} (${code})`, 402);
+/**
+ * The {@link InfraError} a leg throws when its provider account is out of
+ * credit. Its message is the marker the drift collector recognizes. `status`
+ * is the provider's real HTTP status when it refused the request (OpenAI
+ * answers 429), or 0 when the quota error arrived in band on a stream or
+ * session the provider had already accepted.
+ */
+export class ProviderQuotaExhaustedError extends InfraError {
+  readonly code: string;
+
+  constructor(provider: string, code: string, status: number) {
+    super(providerQuotaMarker(provider, code), status);
+    this.code = code;
+  }
+}
+
+export function providerQuotaExhaustedError(
+  provider: string,
+  code: string,
+  status = 0,
+): ProviderQuotaExhaustedError {
+  return new ProviderQuotaExhaustedError(provider, code, status);
 }
 
 /**

@@ -110,7 +110,8 @@ describe("provider quota exhaustion — leg side", () => {
   it("a Responses leg reports the quota stream as an InfraError, not a drift report", () => {
     const err = thrownBy(() => throwIfProviderQuotaExhausted("OpenAI Responses", httpEvents));
     expect(err).toBeInstanceOf(InfraError);
-    expect((err as InfraError).status).toBe(402);
+    // In band on an accepted stream: there is no failing HTTP status to report.
+    expect((err as InfraError).status).toBe(0);
     expect(err.message).toContain(PROVIDER_QUOTA_EXHAUSTED);
     expect(err.message).not.toMatch(/drift/i);
   });
@@ -173,20 +174,6 @@ describe("provider quota exhaustion — collector side", () => {
       });
       expect(t.providerQuotaExhausted).toEqual({ code: "credit_balance_exhausted" });
     }
-  });
-
-  it("an HTTP 429 insufficient_quota InfraError from providers.ts is infra too", () => {
-    const message =
-      "InfraError: INFRA_ERROR: OpenAI Embeddings — OpenAI Embeddings: API returned 429: " +
-      '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota",' +
-      '"param":null,"code":"insufficient_quota"}}';
-    const collected = collectDriftEntries(
-      results([
-        failure("OpenAI Embeddings drift > embedding response shape matches", message),
-      ]) as never,
-    );
-    expect(collected.timeouts[0].providerQuotaExhausted).toEqual({ code: "insufficient_quota" });
-    expect(exitOf(collected)).toBe(6);
   });
 
   it("a real critical drift beside the quota legs still wins (exit 2)", () => {
@@ -267,6 +254,36 @@ describe("provider quota exhaustion — collector side", () => {
       ),
     ).toBeNull();
   });
+
+  // Real failure messages from a drift leg that exercised the mock-side
+  // insufficient_quota fixture (openai-chat.drift.ts) and regressed: a
+  // toStrictEqual, a toThrow, and a thrown Error echoing the mock body. Each
+  // names the code but carries no provider evidence, so each is a test failure.
+  const maskedAssertions = [
+    "AssertionError: expected 'insufficient_quota' to strictly equal 'insufficient_quota_v2'\n" +
+      "    at src/__tests__/drift/openai-chat.drift.ts:36:29",
+    "AssertionError: expected [Function] to throw error including 'rate_limit_exceeded' but got 'mock said insufficient_quota'\n" +
+      "    at Proxy.<anonymous> (node_modules/@vitest/expect/dist/index.js:1420:16)",
+    'Error: unexpected mock error body {"error":{"message":"You exceeded your current quota","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}\n' +
+      "    at src/__tests__/drift/openai-chat.drift.ts:46:58",
+    // An assertion that QUOTES the marker is not the marker.
+    `AssertionError: expected [Function] to throw error including 'x' but got '${asMessage(
+      providerQuotaExhaustedError("OpenAI Chat", "insufficient_quota"),
+    )}'`,
+  ];
+
+  it.each(maskedAssertions)(
+    "NEGATIVE CONTROL: a real test failure that only names a quota code stays a failure (%#)",
+    (message) => {
+      expect(parseProviderQuotaExhausted(message)).toBeNull();
+      const collected = collectDriftEntries(
+        results([failure("OpenAI Chat drift > mock quota envelope", message)]) as never,
+      );
+      expect(collected.timeouts).toEqual([]);
+      expect(collected.quarantine).toHaveLength(1);
+      expect(exitOf(collected)).toBe(5);
+    },
+  );
 });
 
 describe("provider quota exhaustion — Slack summary", () => {
