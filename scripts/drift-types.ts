@@ -77,7 +77,18 @@ export interface QuarantineEntry {
 }
 
 /**
- * A live drift leg that reached its wait timeout having collected ZERO messages.
+ * A drift leg that graded nothing. Two kinds share this entry:
+ *
+ *   - SILENT: a live leg that reached its wait timeout having collected ZERO
+ *     messages (`timeoutMs`), or whose session the server closed with a
+ *     non-refusal code (`serverClose`). Described below.
+ *   - OUT OF CREDIT: `providerQuotaExhausted` is set. The provider said the
+ *     account has no credit (an HTTP 429 body, an in-band `error` event, a
+ *     quota close reason or a refused Live session). Such a leg may be an HTTP
+ *     leg, may have observed messages, and may carry neither `timeoutMs` nor
+ *     `serverClose`. It is NOT silence: read `providerQuotaExhausted` first.
+ *
+ * For a SILENT leg:
  *
  * This is a RECOGNIZED failure shape, not unparseable garbage: the probe opened
  * the connection, sent its request, and the live surface then sent nothing back
@@ -102,6 +113,8 @@ export interface TimeoutEntry {
    * The wait budget that expired, in milliseconds, as reported by the probe.
    * Absent when the leg produced nothing because the server CLOSED the session
    * rather than because a wait ran out — in that case `serverClose` explains it.
+   * Absent on an out-of-credit leg (`providerQuotaExhausted`), which did not
+   * wait out a budget.
    */
   timeoutMs?: number;
   /**
@@ -111,8 +124,17 @@ export interface TimeoutEntry {
    * peer stated that it left, not that anything we sent was wrong — so this is a
    * hang-up, not a finding, and it shares the timeout lane's outcome. A REFUSAL
    * code is not recorded here; it becomes an attributed critical drift entry.
+   * An out-of-credit leg keeps a non-refusal close here (Realtime's 1013); a
+   * refusal close whose reason names a quota code is never recorded here.
    */
   serverClose?: { code: number; reason: string };
+  /**
+   * Set when the leg failed because the provider account is out of credit
+   * (OpenAI `insufficient_quota` / `credit_balance_exhausted`). Infra, like a
+   * rate limit or a dead key: nothing was graded and it is never drift. The
+   * fix is to top up credit, so the report names the code that said so.
+   */
+  providerQuotaExhausted?: { code: string };
   /** The full failure message, retained verbatim for the reader. */
   message: string;
 }
@@ -158,7 +180,9 @@ export interface DriftReport {
   generatedAt?: string;
   /**
    * Coarse run outcome derived from the collector exit code
-   * (0→"clean", 2→"critical", 5→"quarantine", 6→"live-timeout"), written so the
+   * (0→"clean", 2→"critical", 5→"quarantine", 6→"live-timeout", or
+   * 6→"provider-quota-exhausted" when every ungraded leg was out of credit and
+   * none went silent), written so the
    * reuse guard can read `report.conclusion` instead of relying solely on the CI
    * run conclusion. Absent on legacy reports.
    */
@@ -171,9 +195,10 @@ export interface DriftReport {
    */
   quarantine?: QuarantineEntry[];
   /**
-   * Optional list of live legs that timed out having observed nothing (see
-   * TimeoutEntry). Absent/empty on a run where every leg produced output —
-   * legacy consumers that ignore this field are unaffected.
+   * Optional list of legs that graded nothing (see TimeoutEntry): live legs
+   * that went silent, and legs whose provider account is out of credit
+   * (`providerQuotaExhausted` set). Absent/empty on a run where every leg
+   * produced output — legacy consumers that ignore this field are unaffected.
    */
   timeouts?: TimeoutEntry[];
   /**

@@ -14,9 +14,10 @@
  *       Covers BOTH legs: an HTTP failure that could not be mapped to a
  *       provider, and an AG-UI failure the collector could not structurally
  *       interpret. An uninterpretable failure is NEVER silently dropped.
- *   6 — at least one live leg timed out having observed ZERO messages: the
- *       surface went silent, so nothing was graded there. Not drift, not a
- *       collector fault, and NOT a clean baseline.
+ *   6 — at least one leg graded nothing, for one of two reasons: a live leg
+ *       timed out having observed ZERO messages (the surface went silent), or
+ *       the provider account is out of credit (a quota leg; the report names
+ *       its code). Not drift, not a collector fault, and NOT a clean baseline.
  *   1 — AG-UI drift detection was skipped (infra), or an unhandled script error
  *
  * Usage:
@@ -46,6 +47,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
 import { MAX_EVIDENCE_RECORD_BYTES } from "./drift-evidence-reporter.js";
+import { parseProviderQuotaMarker, quotaCodeInCloseReason } from "./drift-quota.js";
 import type { EvidenceReporterRecord } from "./drift-evidence-reporter.js";
 
 import { SURFACE_REGISTRY, isKnownSurface } from "../src/__tests__/drift/surface-registry.js";
@@ -2140,6 +2142,42 @@ export function classifySingleUnparseableAsInfra(message: string): boolean {
   return hasInfraEvidence && !isDriftLike;
 }
 
+/** The WS probe's server-close error header, as `WSClosedError` reports it. */
+const WS_SERVER_CLOSE_HEADER = /^(?:WSClosedError: )?WebSocket closed by server during waitUntil:/;
+
+/**
+ * Recognize a leg that failed because the provider account ran out of credit.
+ * This is infra (the same class as a rate limit, a dead key or a network
+ * failure), never drift: the account cannot generate, so nothing was graded.
+ *
+ * Only STRUCTURED provider evidence counts, read from the failure's FIRST line
+ * (the thrown error's own header). A quota code that appears anywhere else in
+ * free text does not count. The two kinds of evidence are:
+ *   - the drift harness's quota marker (`providerQuotaMarker` in
+ *     drift-quota.ts). A leg throws it only after it reads the code from the
+ *     real provider's HTTP body, stream event or Live session.
+ *   - the WS probe's server-close error, when the close REASON names a quota
+ *     code. Realtime closes with 1013 `insufficient_quota.credit_balance_exhausted`.
+ * A test's own assertion that only mentions `insufficient_quota` (a
+ * `toStrictEqual`, a `toThrow`, a thrown Error that echoes a mock body) has
+ * neither, so it stays a test failure.
+ *
+ * When the evidence is a close frame, it is returned as `serverClose` so the
+ * caller can keep the frame on the record.
+ */
+export function parseProviderQuotaExhausted(
+  message: string,
+): { code: string; serverClose?: WSServerClose } | null {
+  const markerCode = parseProviderQuotaMarker(message);
+  if (markerCode !== null) return { code: markerCode };
+  const firstLine = message.split("\n", 1)[0];
+  if (!WS_SERVER_CLOSE_HEADER.test(firstLine)) return null;
+  const serverClose = parseWSServerClose(firstLine);
+  if (serverClose === null) return null;
+  const code = quotaCodeInCloseReason(serverClose.reason);
+  return code === null ? null : { code, serverClose };
+}
+
 export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
   // CLASS 1 — fail-loud on absent evidence. No messages means NO positive infra
   // evidence, so this is NOT a benign "all clear". `[].every(...)` is vacuously
@@ -2169,8 +2207,10 @@ export interface CollectResult {
   entries: DriftEntry[];
   quarantine: QuarantineEntry[];
   /**
-   * Live legs that timed out having observed nothing (see `parseLiveTimeout`).
-   * A recognized outcome in its own right — neither a drift finding nor
+   * Legs that graded nothing: live legs that timed out having observed nothing
+   * (see `parseLiveTimeout`), and legs whose provider account is out of credit
+   * (`providerQuotaExhausted` set; see `parseProviderQuotaExhausted`). Each is a
+   * recognized outcome in its own right — neither a drift finding nor
    * unparseable output.
    */
   timeouts: TimeoutEntry[];
@@ -2445,6 +2485,28 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
       const testName = `${ancestorText} > ${assertion.title}`;
       const parsed = parseDriftBlock(fullMessage);
       if (!parsed || parsed.diffs.length === 0) {
+        // Out of credit, checked FIRST: the account cannot generate, so every
+        // surface fails the same way (an `error` event, a 1013 close, a refused
+        // Live session). That is infra, not drift and not a collector fault. It
+        // shares the exit-6 lane (nothing graded, alerted, never a clean
+        // baseline) and is named so the alert can say "top up credit".
+        const quota = parseProviderQuotaExhausted(fullMessage);
+        if (quota !== null) {
+          // `serverClose` keeps its contract: a REFUSAL code is never recorded
+          // there. A refusal close whose reason names a quota code is still out
+          // of credit; its frame stays in `message`.
+          const { serverClose } = quota;
+          timeouts.push({
+            testName,
+            rawLocation: extractRawLocation(fullMessage),
+            ...(serverClose !== undefined && !isRefusalCloseCode(serverClose.code)
+              ? { serverClose }
+              : {}),
+            providerQuotaExhausted: { code: quota.code },
+            message: fullMessage,
+          });
+          continue;
+        }
         // Check for the ws-realtime canary assertion shapes BEFORE classifying
         // as unparseable — both the unknown-models mode and the hasGA-false mode
         // (CLASS 2) are genuine, critical drift and must be surfaced (exit 2),
@@ -2808,6 +2870,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           // handshake recognizer claimed nothing, so no input distinguishes the
           // two arguments today; passing the real name keeps that a property of
           // the precondition rather than of a value chosen here.)
+          // Out-of-credit legs were claimed by the exit-6 lane in the pass above.
+          if (parseProviderQuotaExhausted(fullMessage) !== null) continue;
           if (parseKnownModelsCanary(fullMessage) !== null) continue;
           if (parseWSHandshakeFailure(fullMessage, testName) !== null) continue;
           // Recognized zero-observation live timeouts were claimed by the
@@ -2871,17 +2935,30 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
     );
   }
 
-  if (timeouts.length > 0) {
+  const quotaLegs = timeouts.filter((t) => t.providerQuotaExhausted !== undefined);
+  if (quotaLegs.length > 0) {
+    console.warn(
+      `WARNING: ${quotaLegs.length} drift leg(s) failed because the provider account is out of ` +
+        `credit — provider quota exhausted — top up credit. This is infra, NOT API drift: nothing ` +
+        `was graded on these legs (exit 6).`,
+    );
+    for (const t of quotaLegs)
+      console.warn(
+        `  - ${t.testName} — ${t.providerQuotaExhausted?.code} @ ${t.rawLocation || "<no frame>"}`,
+      );
+  }
+  const silentLegs = timeouts.filter((t) => t.providerQuotaExhausted === undefined);
+  if (silentLegs.length > 0) {
     // Reported as what it is, with the one thing a reader needs to act on: the
     // surface that went quiet. Explicitly NOT the quarantine wording — nothing
     // here needs collector triage, so nobody should be sent looking for it.
     console.warn(
-      `WARNING: ${timeouts.length} live drift leg(s) timed out having observed ZERO messages — ` +
+      `WARNING: ${silentLegs.length} live drift leg(s) timed out having observed ZERO messages — ` +
         `the live surface accepted the connection and then sent nothing. This is neither drift ` +
         `nor unparseable output (exit 6, conclusion "live-timeout"): there is no collector fault ` +
         `to triage. Check the surface below for an outage, a retired model, or a rejected session.`,
     );
-    for (const t of timeouts) {
+    for (const t of silentLegs) {
       const why = t.serverClose
         ? `session closed by the server (code ${t.serverClose.code}` +
           `${t.serverClose.reason ? `: ${t.serverClose.reason}` : ", no reason given"})`
@@ -3265,11 +3342,11 @@ export function computeExitCode(
   if (criticalCount > 0) return 2;
   if (quarantineCount > 0) return 5;
   if (agUiSkipped) return 1;
-  // 6 — every leg that failed did so by observing nothing at all. Distinct from
-  // 5 so a silent live surface is never reported as a collector fault needing
-  // manual triage, and distinct from 0 so it is never a clean baseline: the legs
-  // that timed out graded NOTHING, and a run that graded nothing must not be
-  // able to certify that surface as drift-free.
+  // 6 — every leg that failed graded nothing: it observed nothing at all, or the
+  // provider account was out of credit. Distinct from 5 so neither is reported
+  // as a collector fault needing manual triage, and distinct from 0 so it is
+  // never a clean baseline: those legs graded NOTHING, and a run that graded
+  // nothing must not be able to certify that surface as drift-free.
   if (timeoutCount > 0) return 6;
   return 0;
 }
@@ -3279,8 +3356,13 @@ export function computeExitCode(
  * report, so the base-report reuse guard (`isBaseReportReusable`) can read
  * `report.conclusion` directly. Only exit 0 ("clean") is a reusable baseline;
  * "critical"/"quarantine" (and the exit-1 "skipped" case) are not.
+ *
+ * `quotaOnly` names an exit-6 run whose every ungraded leg was out of credit:
+ * its conclusion is "provider-quota-exhausted", not "live-timeout", because no
+ * surface went silent. A run with any silent leg stays "live-timeout"; its quota
+ * legs are still named in `timeouts[].providerQuotaExhausted`.
  */
-export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
+export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6, quotaOnly = false): string {
   switch (exitCode) {
     case 0:
       return "clean";
@@ -3290,9 +3372,9 @@ export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
       return "quarantine";
     case 6:
       // NOT in drift-delta's REUSABLE_CONCLUSIONS, deliberately: a run whose
-      // legs observed nothing cannot serve as a baseline that says they were
+      // legs graded nothing cannot serve as a baseline that says they were
       // clean.
-      return "live-timeout";
+      return quotaOnly ? "provider-quota-exhausted" : "live-timeout";
     default:
       return "skipped";
   }
@@ -3513,6 +3595,10 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   );
   const quarantineCount = quarantine.length;
   const timeoutCount = timeouts.length;
+  // Out-of-credit legs share the exit-6 lane but are not silence: counted and
+  // reported apart, so neither is described as the other.
+  const quotaCount = timeouts.filter((t) => t.providerQuotaExhausted !== undefined).length;
+  const silentCount = timeoutCount - quotaCount;
 
   // Compute the exit code BEFORE writing so the report can carry the coarse
   // `conclusion` derived from it (base-report reuse contract).
@@ -3534,7 +3620,7 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
     // Alias of `timestamp` read by the reuse guard; `timestamp` kept for
     // back-compat with existing consumers.
     generatedAt: timestamp,
-    conclusion: conclusionForExitCode(exitCode),
+    conclusion: conclusionForExitCode(exitCode, timeoutCount > 0 && silentCount === 0),
     entries,
     ...(quarantine.length > 0 ? { quarantine } : {}),
     ...(timeouts.length > 0 ? { timeouts } : {}),
@@ -3579,7 +3665,8 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
   console.log(`  Total entries: ${entries.length}`);
   console.log(`  Critical diffs: ${criticalCount}`);
   console.log(`  Quarantined failures: ${quarantineCount}`);
-  console.log(`  Live timeouts (zero observations): ${timeoutCount}`);
+  console.log(`  Live timeouts (zero observations): ${silentCount}`);
+  console.log(`  Provider quota exhausted (not graded — top up credit): ${quotaCount}`);
   if (unverifiedSurfaces.length > 0) {
     console.log(
       `  Surfaces with NO live drift coverage (offline conformance only, not verified ` +
@@ -3614,8 +3701,14 @@ function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): numbe
       return 5;
     case 6:
       console.warn(
-        `Exiting with code 6 (${timeoutCount} live leg(s) timed out with zero observations — ` +
-          `no drift graded on those surfaces; NOT a collector fault).`,
+        `Exiting with code 6 (${[
+          ...(silentCount > 0
+            ? [`${silentCount} live leg(s) timed out with zero observations`]
+            : []),
+          ...(quotaCount > 0
+            ? [`${quotaCount} leg(s) failed on provider quota exhaustion — top up credit`]
+            : []),
+        ].join("; ")} — no drift graded on those legs; NOT a collector fault).`,
       );
       return 6;
     case 1:

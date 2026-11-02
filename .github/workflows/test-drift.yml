@@ -85,6 +85,13 @@ jobs:
       # job can classify an exit-5 quarantine distinctly instead of folding it
       # into the generic "job failed → HTTP drift" fallback (M5 backstop).
       exit_code: ${{ steps.drift.outputs.exit_code }}
+      # "true" when any leg failed on provider quota exhaustion (out of credit),
+      # on any exit that wrote a report (2, 5 or 6), so `notify` says "top up
+      # credit". quota_legs / silent_legs are the counts of ungraded legs that
+      # were out of credit / went silent, so `notify` can name both.
+      quota_exhausted: ${{ steps.drift.outputs.quota_exhausted }}
+      quota_legs: ${{ steps.drift.outputs.quota_legs }}
+      silent_legs: ${{ steps.drift.outputs.silent_legs }}
       # Probe-model retirement preflight results, for the `notify` job: Slack
       # lines for retired / soon-retiring probe models, and whether any is
       # already retired (which stopped the run before drift was graded).
@@ -386,6 +393,31 @@ jobs:
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          # Ungraded legs, whenever the collector wrote a report, whatever the exit
+          # (exit 1, AG-UI skipped, writes one too). Out of credit is infra, not
+          # drift and not silence, and it often comes with other failures: a
+          # critical diff (2), a quarantine (5) or a skipped AG-UI check (1) must not
+          # hide it. Silent legs are named apart, so neither is reported as the
+          # other. An unreadable or missing report on 2/5/6 is said out loud, never
+          # read as zero legs.
+          if [ -f drift-report.json ] || [ "$EXIT_CODE" -eq 2 ] || [ "$EXIT_CODE" -eq 5 ] || [ "$EXIT_CODE" -eq 6 ]; then
+            if LEG_COUNTS=$(jq -er '[([.timeouts[]? | select(.providerQuotaExhausted)] | length), ([.timeouts[]? | select(.providerQuotaExhausted | not)] | length)] | @tsv' drift-report.json); then
+              read -r QUOTA_LEGS SILENT_LEGS <<< "$LEG_COUNTS"
+              echo "quota_legs=$QUOTA_LEGS" >> "$GITHUB_OUTPUT"
+              echo "silent_legs=$SILENT_LEGS" >> "$GITHUB_OUTPUT"
+              if [ "$QUOTA_LEGS" -gt 0 ]; then
+                echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"
+                echo "::error title=provider-quota-exhausted::${QUOTA_LEGS} drift leg(s) failed because the provider account is out of credit — provider quota exhausted — top up credit. Not API drift; nothing was graded there."
+                jq -r '.timeouts[]? | select(.providerQuotaExhausted) | "::error title=provider-quota-exhausted::\(.testName) — \(.providerQuotaExhausted.code); not graded"' drift-report.json
+              fi
+              if [ "$SILENT_LEGS" -gt 0 ]; then
+                jq -r '.timeouts[]? | select(.providerQuotaExhausted | not) | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); nothing graded on this surface"' drift-report.json
+                echo "::warning::Drift collector: ${SILENT_LEGS} live leg(s) observed nothing — the surface is silent, not drifting. Nothing was graded there."
+              fi
+            else
+              echo "::error title=drift-report-unreadable::Could not read timeouts from drift-report.json (collector exit $EXIT_CODE). Provider-quota and silent-leg counts are UNKNOWN, not zero; see the jq error above."
+            fi
+          fi
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift persisted across retries, continue
           elif [ "$EXIT_CODE" -eq 5 ]; then
@@ -399,9 +431,8 @@ jobs:
             # either: each silent leg gets a named ::warning::, the report keeps
             # its `timeouts[]`, and the `notify` job below alerts on exit 6 with
             # its own wording. A day that graded nothing is never a clean day.
-            jq -r '.timeouts[]? | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); nothing graded on this surface"' \
-              drift-report.json || true
-            echo "::warning::Drift collector: $(jq -r '.timeouts | length' drift-report.json) live leg(s) observed nothing (exit 6) — the surface is silent, not drifting. Nothing was graded there."
+            # The quota / silent annotations were written above.
+            :
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"
@@ -475,6 +506,9 @@ jobs:
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
           DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
+          QUOTA_EXHAUSTED: ${{ needs.drift.outputs.quota_exhausted }}
+          QUOTA_LEGS: ${{ needs.drift.outputs.quota_legs }}
+          SILENT_LEGS: ${{ needs.drift.outputs.silent_legs }}
           MODEL_ALERT: ${{ needs.drift.outputs.model_alert }}
           MODEL_RETIRED: ${{ needs.drift.outputs.model_retired }}
           REPO: ${{ github.repository }}
@@ -554,6 +588,7 @@ jobs:
           # drift — so nobody chases a phantom provider format change. The
           # DRIFT_SUMMARY already carries the quarantine detail block (C5.2).
           ALERT_SHOWN=false
+          QUOTA_SHOWN=false
           if [ "$PROBE_RETIRED" = "true" ]; then
             EMOJI="🛑"
             MSG="*Drift probe model retired* in aimock — the preflight stopped the run before any drift was graded (not API drift). Update the probe model:${NL}${MODEL_ALERT}${NL}${RUN_URL}"
@@ -564,13 +599,30 @@ jobs:
           elif [ "$QUARANTINE" = "true" ]; then
             EMOJI="🔬"
             MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
-          # Live surface silent (collector exit 6): a live leg observed nothing at
-          # all, so that surface was NOT checked this run. Not drift, not a
-          # collector fault — but a surface that has stopped answering is worth
-          # knowing about, especially if it repeats day over day.
+          # Collector exit 6: legs graded nothing. Two causes, named apart and
+          # BOTH listed when both happened, plus any AG-UI schema drift:
+          #   - provider out of credit (quota legs): infra, not drift, top up;
+          #   - live surface silent: a live leg observed nothing at all, so that
+          #     surface was NOT checked this run. Not drift, not a collector
+          #     fault — but a surface that has stopped answering is worth
+          #     knowing about, especially if it repeats day over day.
           elif [ "$LIVE_TIMEOUT" = "true" ]; then
-            EMOJI="⏱️"
-            MSG="*Live drift surface went silent* in aimock — a live leg observed zero messages, so nothing was graded on that surface (not API drift, no collector triage needed). Repeats day over day mean the surface is rejecting or has retired the session, not a flake.${DETAIL}${NL}${RUN_URL}"
+            SILENT_MSG="a live leg observed zero messages, so nothing was graded on that surface (not API drift, no collector triage needed). Repeats day over day mean the surface is rejecting or has retired the session, not a flake."
+            if [ "$QUOTA_EXHAUSTED" = "true" ]; then
+              EMOJI="💳"
+              MSG="*Drift provider quota exhausted* in aimock — top up credit on the drift account. Not API drift: ${QUOTA_LEGS:-some} leg(s) graded nothing."
+              QUOTA_SHOWN=true
+              if [ "${SILENT_LEGS:-0}" -gt 0 ] 2>/dev/null; then
+                MSG="${MSG}${NL}*Also: ${SILENT_LEGS} live drift leg(s) went silent* — ${SILENT_MSG}"
+              fi
+            else
+              EMOJI="⏱️"
+              MSG="*Live drift surface went silent* in aimock — ${SILENT_MSG}"
+            fi
+            if [ "$AGUI_DRIFT" = "true" ]; then
+              MSG="${MSG}${NL}AG-UI schema drift was also detected — canonical ag-ui types changed."
+            fi
+            MSG="${MSG}${DETAIL}${NL}${RUN_URL}"
           # Both types of drift
           elif [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
@@ -600,6 +652,12 @@ jobs:
           # Good → good — stay quiet
           else
             exit 0
+          fi
+
+          # Out of credit beside a critical drift (exit 2) or a quarantine
+          # (exit 5) is still named in the headline, not only in the summary.
+          if [ "$QUOTA_EXHAUSTED" = "true" ] && [ "$QUOTA_SHOWN" = "false" ]; then
+            MSG="${MSG}${NL}💳 *Also: provider quota exhausted* — ${QUOTA_LEGS:-some} drift leg(s) failed because the drift account is out of credit; top up credit (not API drift)."
           fi
 
           # Any other alert still carries a pending probe-model retirement.
@@ -921,13 +979,18 @@ jobs:
             BASE_EXIT=$?
             set -e
             cd "$GITHUB_WORKSPACE"
+            # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+            # AG-UI skipped, writes one too): out of credit and silence are named apart.
+            # An unreadable or missing report on 2/5/6 is said out loud.
+            if [ -f drift-report-base.json ] || [ "$BASE_EXIT" -eq 2 ] || [ "$BASE_EXIT" -eq 5 ] || [ "$BASE_EXIT" -eq 6 ]; then
+              if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (base)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on main" else "::warning title=live-timeout (base)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on main" end' \
+                drift-report-base.json; then
+                echo "::error title=drift-report-unreadable (base)::Could not read timeouts from drift-report-base.json (collector exit $BASE_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
+              fi
+            fi
             if [ "$BASE_EXIT" -eq 5 ]; then
               echo "::error::Base collector quarantined unparseable output (exit 5) — manual triage required"
               exit "$BASE_EXIT"
-            fi
-            if [ "$BASE_EXIT" -eq 6 ]; then
-              jq -r '.timeouts[]? | "::warning title=live-timeout (base)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); this surface was not graded on main"' \
-                drift-report-base.json || true
             fi
             if [ "$BASE_EXIT" -ne 0 ] && [ "$BASE_EXIT" -ne 2 ] && [ "$BASE_EXIT" -ne 6 ]; then
               echo "::error::Base collector faulted (exit $BASE_EXIT) — not a drift signal"
@@ -989,13 +1052,18 @@ jobs:
             --observations-out drift-observations-head.json
           HEAD_EXIT=$?
           set -e
+          # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+          # AG-UI skipped, writes one too): out of credit and silence are named apart.
+          # An unreadable or missing report on 2/5/6 is said out loud.
+          if [ -f drift-report-head.json ] || [ "$HEAD_EXIT" -eq 2 ] || [ "$HEAD_EXIT" -eq 5 ] || [ "$HEAD_EXIT" -eq 6 ]; then
+            if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (head)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on the PR ref" else "::warning title=live-timeout (head)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on the PR ref" end' \
+              drift-report-head.json; then
+              echo "::error title=drift-report-unreadable (head)::Could not read timeouts from drift-report-head.json (collector exit $HEAD_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
+            fi
+          fi
           if [ "$HEAD_EXIT" -eq 5 ]; then
             echo "::error::Head collector quarantined unparseable output (exit 5) — manual triage required"
             exit "$HEAD_EXIT"
-          fi
-          if [ "$HEAD_EXIT" -eq 6 ]; then
-            jq -r '.timeouts[]? | "::warning title=live-timeout (head)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); this surface was not graded on the PR ref"' \
-              drift-report-head.json || true
           fi
           if [ "$HEAD_EXIT" -ne 0 ] && [ "$HEAD_EXIT" -ne 2 ] && [ "$HEAD_EXIT" -ne 6 ]; then
             echo "::error::Head collector faulted (exit $HEAD_EXIT) — not a drift signal"
