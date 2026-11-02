@@ -12,7 +12,11 @@ import type { WebSocketConnection } from "../../ws-framing.js";
 import { readLiveCase, runLiveScenario } from "../live-test-support.js";
 import { connectWebSocket } from "../ws-test-client.js";
 import type { ShapeDiff } from "./schema.js";
-import { findProviderQuotaExhaustion, providerQuotaExhaustedError } from "./providers.js";
+import {
+  ProviderQuotaExhaustedError,
+  findProviderQuotaExhaustion,
+  providerQuotaExhaustedError,
+} from "./providers.js";
 import { quotaCodeInCloseReason } from "../../../scripts/drift-quota.js";
 
 type Observation = { direction: "client" | "server"; event: LiveObject };
@@ -425,6 +429,9 @@ export async function runLiveProvider(
       `waitUntil timeout after 45000ms. Collected ${observations.filter((e) => e.direction === "server").length} messages: OpenAI Live session.closed`,
     );
   } catch (error) {
+    // A send can fail with "WebSocket closed" after the quota close or error
+    // event was recorded. Report the recorded quota cause, not the send error.
+    if (failure instanceof ProviderQuotaExhaustedError && error !== failure) throw failure;
     if (error instanceof UpstreamWebSocketRefusedError) {
       // A refused upgrade names out-of-credit in its error envelope. Record it
       // so the next Live mode reports the same cause without a paid connect.

@@ -467,7 +467,7 @@ describe("provider quota exhaustion — Live leg on the wire", () => {
   // or a refused upgrade. `runLiveProvider` keeps module state across modes (a
   // refusal stops later modes from paying for a session), so each test loads a
   // fresh copy of the module.
-  type PeerMode = "close1013" | "quotaThenOther" | "upgrade429";
+  type PeerMode = "close1013" | "quotaThenOther" | "upgrade429" | "closeDuringSends";
   const servers: Server[] = [];
   const sockets: Duplex[] = [];
   afterEach(async () => {
@@ -514,6 +514,34 @@ describe("provider quota exhaustion — Live leg on the wire", () => {
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
           `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
       );
+      if (mode === "closeDuringSends") {
+        // Ask for three tool results, then close for quota as soon as the
+        // first result arrives, while the leg is still sending the others.
+        let reads = 0;
+        socket.on("data", () => {
+          reads++;
+          if (reads === 1)
+            socket.write(
+              Buffer.concat(
+                [
+                  ...["read_red", "read_blue", "read_green"].map((name, i) => ({
+                    type: "response.event",
+                    event: {
+                      type: "response.output_item.done",
+                      item: { type: "function_call", call_id: `call_${i}`, name },
+                    },
+                  })),
+                  { type: "response.event", event: { type: "response.completed" } },
+                ].map(text),
+              ),
+            );
+          else if (reads === 2) {
+            const reason = Buffer.from("insufficient_quota.credit_balance_exhausted");
+            socket.end(frame(8, Buffer.concat([Buffer.from([1013 >> 8, 1013 & 255]), reason])));
+          }
+        });
+        return;
+      }
       socket.once("data", () => {
         if (mode === "close1013") {
           const reason = Buffer.from("insufficient_quota.credit_balance_exhausted");
@@ -566,4 +594,40 @@ describe("provider quota exhaustion — Live leg on the wire", () => {
     },
     20_000,
   );
+
+  it("a send that fails because the quota close already arrived still reports quota", async () => {
+    vi.resetModules();
+    // Over wss (as api.openai.com is) a write completes on a later loop turn,
+    // so a close frame can arrive between two sends. Model that on the
+    // loopback peer by starting each write one loop turn later.
+    const { WebSocketConnection } = await import("../ws-framing.js");
+    const sendAsync = WebSocketConnection.prototype.sendAsync;
+    const deferred = vi
+      .spyOn(WebSocketConnection.prototype, "sendAsync")
+      .mockImplementation(async function (
+        this: InstanceType<typeof WebSocketConnection>,
+        data: string,
+        signal?: AbortSignal,
+      ) {
+        await new Promise((turn) => setImmediate(turn));
+        return sendAsync.call(this, data, signal);
+      });
+    try {
+      const { runLiveProvider } = await import("./drift/live-scenarios.js");
+      const { url, connects } = await peer("closeDuringSends");
+      const err = await runLiveProvider("client", "sk-test", url).then(
+        () => new Error("expected a failure"),
+        (error: Error) => error,
+      );
+      expect(err.message).toBe(
+        `INFRA_ERROR: OpenAI Live — ${PROVIDER_QUOTA_EXHAUSTED} (credit_balance_exhausted)`,
+      );
+      expect(connects()).toBe(1);
+      expect(parseProviderQuotaExhausted(asMessage(err))).toEqual({
+        code: "credit_balance_exhausted",
+      });
+    } finally {
+      deferred.mockRestore();
+    }
+  }, 20_000);
 });
