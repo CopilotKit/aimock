@@ -5,7 +5,7 @@
     "response": {
       "id": "resp_quota0001",
       "object": "response",
-      "created_at": 1761804680,
+      "created_at": 0,
       "status": "in_progress",
       "model": "gpt-4o-mini-2024-07-18",
       "output": [],
@@ -19,7 +19,7 @@
     "response": {
       "id": "resp_quota0001",
       "object": "response",
-      "created_at": 1761804680,
+      "created_at": 0,
       "status": "in_progress",
       "model": "gpt-4o-mini-2024-07-18",
       "output": [],

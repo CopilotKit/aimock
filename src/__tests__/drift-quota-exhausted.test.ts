@@ -8,7 +8,8 @@
  * was refused. The collector reported "real API emits event type error but
  * mock does not" as critical drift and failed the run.
  *
- * Fixtures in drift/fixtures/quota-exhausted-2026-10-30/:
+ * Fixtures in drift/fixtures/quota-exhausted-2026-10-30/ (README.md there says
+ * which parts are real and which are reconstructed):
  *   - run-41012506730.json: failure messages and critical diffs copied verbatim
  *     from that run's drift-report.json artifact.
  *   - responses-http.sse / responses-ws.json: the streams the Responses legs
@@ -96,7 +97,7 @@ const exitOf = (collected: ReturnType<typeof collectDriftEntries>) =>
   );
 
 describe("provider quota exhaustion — leg side", () => {
-  it("finds the quota code in the real error events of every OpenAI surface", () => {
+  it("finds the quota code in the real Realtime error and the reconstructed Responses streams", () => {
     expect(findProviderQuotaExhaustion(httpEvents)).toBe("credit_balance_exhausted");
     expect(findProviderQuotaExhaustion(wsEvents)).toBe("credit_balance_exhausted");
     expect(findProviderQuotaExhaustion([realtimeErrorEvent])).toBe("credit_balance_exhausted");

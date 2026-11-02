@@ -1,12 +1,12 @@
 event: response.created
-data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_quota0001","object":"response","created_at":1761804680,"status":"in_progress","model":"gpt-4o-mini-2024-07-18","output":[],"error":null,"incomplete_details":null}}
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_quota0001","object":"response","created_at":0,"status":"in_progress","model":"gpt-4o-mini-2024-07-18","output":[],"error":null,"incomplete_details":null}}
 
 event: response.in_progress
-data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_quota0001","object":"response","created_at":1761804680,"status":"in_progress","model":"gpt-4o-mini-2024-07-18","output":[],"error":null,"incomplete_details":null}}
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_quota0001","object":"response","created_at":0,"status":"in_progress","model":"gpt-4o-mini-2024-07-18","output":[],"error":null,"incomplete_details":null}}
 
 event: error
 data: {"type":"error","sequence_number":2,"error":{"type":"insufficient_quota","code":"credit_balance_exhausted","message":"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.","param":null}}
 
 event: response.failed
-data: {"type":"response.failed","sequence_number":3,"response":{"id":"resp_quota0001","object":"response","created_at":1761804680,"status":"failed","model":"gpt-4o-mini-2024-07-18","output":[],"error":{"code":"credit_balance_exhausted","message":"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/."},"incomplete_details":null}}
+data: {"type":"response.failed","sequence_number":3,"response":{"id":"resp_quota0001","object":"response","created_at":0,"status":"failed","model":"gpt-4o-mini-2024-07-18","output":[],"error":{"code":"credit_balance_exhausted","message":"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/."},"incomplete_details":null}}
 
