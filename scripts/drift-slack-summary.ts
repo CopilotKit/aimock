@@ -39,8 +39,10 @@ import type { DriftEntry, DriftReport, DriftSeverity } from "./drift-types.js";
  * Derivation priority (highest wins):
  *   stale-key        — InfraError status 401 or 403
  *   infra-transient  — InfraError status 429 or ≥500
- *   quarantine       — report.quarantine[] is non-empty (exit 5)
  *   real-drift       — at least one entry has a critical diff (exit 2)
+ *   quarantine       — report.quarantine[] is non-empty (exit 5)
+ *   infra-transient  — a leg failed on provider quota exhaustion
+ *                      (report.timeouts[].providerQuotaExhausted, exit 6)
  *   test-infra-false-positive — everything else (exit 0 / advisory only)
  */
 export type HeadlineClass =
@@ -56,6 +58,11 @@ export interface SummarizeOptions {
   infraErrorStatus?: number;
   /** Process exit code produced by the collector/retry wrapper, if known. */
   exitCode?: number;
+}
+
+/** Legs that failed because the provider account is out of credit. */
+function quotaExhaustedLegs(report: DriftReport) {
+  return (report.timeouts ?? []).filter((t) => t.providerQuotaExhausted !== undefined);
 }
 
 function computeHeadlineClass(report: DriftReport, opts: SummarizeOptions): HeadlineClass {
@@ -74,6 +81,9 @@ function computeHeadlineClass(report: DriftReport, opts: SummarizeOptions): Head
   const hasQuarantine = (report.quarantine?.length ?? 0) > 0;
   if (hasQuarantine) return "quarantine";
 
+  // Out of credit is the 429 infra class (OpenAI reports quota as 429), never drift.
+  if (quotaExhaustedLegs(report).length > 0) return "infra-transient";
+
   return "test-infra-false-positive";
 }
 
@@ -81,6 +91,7 @@ function computeHeadlineClass(report: DriftReport, opts: SummarizeOptions): Head
 // and how many total providers we enumerate before collapsing to a count.
 const MAX_PATHS_PER_PROVIDER = 3;
 const MAX_PROVIDERS_LISTED = 8;
+const MAX_QUOTA_LEGS_LISTED = 5;
 
 const SEVERITY_ORDER: DriftSeverity[] = ["critical", "warning", "info"];
 
@@ -187,12 +198,14 @@ export function summarizeDriftReport(report: DriftReport, opts: SummarizeOptions
 
   const summaries = summarizeByProvider(report.entries);
   const quarantine = report.quarantine ?? [];
+  const quotaLegs = quotaExhaustedLegs(report);
 
   // Nothing to say at all — preserve historical empty-string behaviour for a
   // clean run with no context supplied.
   if (
     summaries.length === 0 &&
     quarantine.length === 0 &&
+    quotaLegs.length === 0 &&
     headlineClass === "test-infra-false-positive" &&
     opts.infraErrorStatus === undefined &&
     opts.exitCode === undefined
@@ -204,6 +217,19 @@ export function summarizeDriftReport(report: DriftReport, opts: SummarizeOptions
 
   // ── Headline classification ────────────────────────────────────────────────
   lines.push(`*Classification:* ${headlineClass}`);
+
+  // ── Provider quota exhausted ──────────────────────────────────────────────
+  // Listed first: it is the one thing to act on, and it is not drift.
+  if (quotaLegs.length > 0) {
+    const codes = [...new Set(quotaLegs.map((t) => t.providerQuotaExhausted?.code))].join(", ");
+    lines.push(
+      `*Provider quota exhausted — top up credit* (${codes}): ${quotaLegs.length} ` +
+        `leg${quotaLegs.length === 1 ? "" : "s"} not graded — infra, not API drift.`,
+    );
+    for (const t of quotaLegs.slice(0, MAX_QUOTA_LEGS_LISTED)) lines.push(`• ${t.testName}`);
+    const hidden = quotaLegs.length - MAX_QUOTA_LEGS_LISTED;
+    if (hidden > 0) lines.push(`• …and ${hidden} more`);
+  }
 
   // ── Per-entry drift bullets (real-drift / advisory) ───────────────────────
   if (summaries.length > 0) {

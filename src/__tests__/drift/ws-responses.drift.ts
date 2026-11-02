@@ -24,7 +24,13 @@ import {
   isResponsesWSTerminal,
   type ResponsesWSRequestOptions,
 } from "./ws-providers.js";
-import { resolveLiveModel, isInfraSkip, isModelNotFound, listOpenAIModels } from "./providers.js";
+import {
+  resolveLiveModel,
+  isInfraSkip,
+  isModelNotFound,
+  listOpenAIModels,
+  throwIfProviderQuotaExhausted,
+} from "./providers.js";
 import {
   startDriftServer,
   stopDriftServer,
@@ -120,6 +126,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS drift", () => {
       ctx.skip();
       return;
     }
+    // Out of credit: the session opens, then sends an `error` event. Billing, not drift.
+    throwIfProviderQuotaExhausted("OpenAI Responses WS", realResult.rawMessages);
 
     // Mock via WS — uses flat format matching real API
     const mockWs = await connectWebSocket(instance.url, "/v1/responses");
@@ -208,6 +216,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS drift", () => {
       ctx.skip();
       return;
     }
+    // Out of credit: the session opens, then sends an `error` event. Billing, not drift.
+    throwIfProviderQuotaExhausted("OpenAI Responses WS", realResult.rawMessages);
 
     // Mock via WS — uses flat format matching real API
     const mockWs = await connectWebSocket(instance.url, "/v1/responses");
@@ -697,6 +707,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS exhaustion live drift", ()
             events: result.rawMessages,
           }).replaceAll(OPENAI_API_KEY!, "[REDACTED]"),
         );
+        throwIfProviderQuotaExhausted("OpenAI Responses WS", result.rawMessages);
         // The SDK union supplies event discriminators; semantic validation below
         // still grades the untrusted native response, including error terminals.
         await compareWSExhaustion(

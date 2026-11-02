@@ -38,6 +38,8 @@ import {
   resolveLiveModel,
   isInfraSkip,
   isModelNotFound,
+  throwIfProviderQuotaExhausted,
+  errorBodyEvents,
   type LiveModelEntry,
   type ResolvedModel,
 } from "./providers.js";
@@ -323,6 +325,15 @@ function gradeExhaustion(
   }
 }
 
+/** SSE event bodies for the quota check; a malformed stream is left to the grader. */
+function sseBodies(raw: string): unknown[] {
+  try {
+    return parseTypedSSE(raw).map((e) => e.data);
+  } catch {
+    return [];
+  }
+}
+
 /** The provider stream plus the model it was requested from. */
 async function exhaustionProviderWire(
   scenario: (typeof exhaustionCases)[number],
@@ -401,6 +412,7 @@ describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
       "$kind provider terminal agrees with actual localhost",
       async (scenario) => {
         const wire = await exhaustionProviderWire(scenario);
+        throwIfProviderQuotaExhausted("OpenAI Responses", sseBodies(wire.raw));
         await compareExhaustion(scenario, wire.raw, wire.requested);
       },
     );
@@ -673,6 +685,9 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    if (isInfraSkip(realRes.status))
+      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       // Retired/renamed model or a transient provider condition — honest skip.
       ctx.skip();
@@ -719,6 +734,9 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    if (isInfraSkip(realRes.status))
+      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -726,6 +744,12 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
 
     const realEvents = parseTypedSSE(realRes.raw);
+    // An out-of-credit account answers 200 and then sends `error` /
+    // `response.failed`. That is billing, not a new event type.
+    throwIfProviderQuotaExhausted(
+      "OpenAI Responses",
+      realEvents.map((e) => e.data),
+    );
     expect(realEvents.length, "Real API returned no SSE events").toBeGreaterThan(0);
     const realSSEShapes = realEvents.map((e) => ({
       type: e.type,
@@ -790,6 +814,9 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    if (isInfraSkip(realRes.status))
+      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -854,6 +881,9 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    if (isInfraSkip(realRes.status))
+      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -861,6 +891,12 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
 
     const realEvents = parseTypedSSE(realRes.raw);
+    // An out-of-credit account answers 200 and then sends `error` /
+    // `response.failed`. That is billing, not a new event type.
+    throwIfProviderQuotaExhausted(
+      "OpenAI Responses",
+      realEvents.map((e) => e.data),
+    );
     expect(realEvents.length, "Real API returned no SSE events").toBeGreaterThan(0);
     const realSSEShapes = realEvents.map((e) => ({
       type: e.type,

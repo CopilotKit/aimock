@@ -2140,6 +2140,32 @@ export function classifySingleUnparseableAsInfra(message: string): boolean {
   return hasInfraEvidence && !isDriftLike;
 }
 
+/**
+ * Provider out-of-credit evidence. OpenAI names it with these codes in every
+ * place it reports it: an HTTP 429 body, an in-band `error` / `response.failed`
+ * event, and a Realtime 1013 close reason
+ * (`insufficient_quota.credit_balance_exhausted`). Most specific first: a
+ * Realtime close reason carries both.
+ */
+const PROVIDER_QUOTA_CODES = [/\bcredit_balance_exhausted\b/, /\binsufficient_quota\b/];
+
+/**
+ * Recognize a leg that failed because the provider account ran out of credit.
+ * This is infra (the same class as a rate limit, a dead key or a network
+ * failure), never drift: the account cannot generate, so nothing was graded.
+ *
+ * Same evidence rule as {@link classifySingleUnparseableAsInfra}: a quota code
+ * must be present and the message must not look like drift, both judged on the
+ * stack-stripped text. Only called on failures that carry no drift block, so a
+ * drift report that merely mentions a quota code is still drift.
+ */
+export function parseProviderQuotaExhausted(message: string): { code: string } | null {
+  const normalized = stripStackFrames(message);
+  if (DRIFT_LIKE_INDICATORS.some((re) => re.test(normalized))) return null;
+  const match = PROVIDER_QUOTA_CODES.map((re) => normalized.match(re)).find((m) => m !== null);
+  return match ? { code: match[0] } : null;
+}
+
 export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
   // CLASS 1 — fail-loud on absent evidence. No messages means NO positive infra
   // evidence, so this is NOT a benign "all clear". `[].every(...)` is vacuously
@@ -2445,6 +2471,23 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
       const testName = `${ancestorText} > ${assertion.title}`;
       const parsed = parseDriftBlock(fullMessage);
       if (!parsed || parsed.diffs.length === 0) {
+        // Out of credit, checked FIRST: the account cannot generate, so every
+        // surface fails the same way (an `error` event, a 1013 close, a refused
+        // Live session). That is infra, not drift and not a collector fault. It
+        // shares the exit-6 lane (nothing graded, alerted, never a clean
+        // baseline) and is named so the alert can say "top up credit".
+        const quota = parseProviderQuotaExhausted(fullMessage);
+        if (quota !== null) {
+          const serverClose = parseWSServerClose(fullMessage);
+          timeouts.push({
+            testName,
+            rawLocation: extractRawLocation(fullMessage),
+            ...(serverClose !== null ? { serverClose } : {}),
+            providerQuotaExhausted: quota,
+            message: fullMessage,
+          });
+          continue;
+        }
         // Check for the ws-realtime canary assertion shapes BEFORE classifying
         // as unparseable — both the unknown-models mode and the hasGA-false mode
         // (CLASS 2) are genuine, critical drift and must be surfaced (exit 2),
@@ -2808,6 +2851,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           // handshake recognizer claimed nothing, so no input distinguishes the
           // two arguments today; passing the real name keeps that a property of
           // the precondition rather than of a value chosen here.)
+          // Out-of-credit legs were claimed by the exit-6 lane in the pass above.
+          if (parseProviderQuotaExhausted(fullMessage) !== null) continue;
           if (parseKnownModelsCanary(fullMessage) !== null) continue;
           if (parseWSHandshakeFailure(fullMessage, testName) !== null) continue;
           // Recognized zero-observation live timeouts were claimed by the
@@ -2871,17 +2916,30 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
     );
   }
 
-  if (timeouts.length > 0) {
+  const quotaLegs = timeouts.filter((t) => t.providerQuotaExhausted !== undefined);
+  if (quotaLegs.length > 0) {
+    console.warn(
+      `WARNING: ${quotaLegs.length} live drift leg(s) failed because the provider account is out of ` +
+        `credit — provider quota exhausted — top up credit. This is infra, NOT API drift: nothing ` +
+        `was graded on these legs (exit 6).`,
+    );
+    for (const t of quotaLegs)
+      console.warn(
+        `  - ${t.testName} — ${t.providerQuotaExhausted?.code} @ ${t.rawLocation || "<no frame>"}`,
+      );
+  }
+  const silentLegs = timeouts.filter((t) => t.providerQuotaExhausted === undefined);
+  if (silentLegs.length > 0) {
     // Reported as what it is, with the one thing a reader needs to act on: the
     // surface that went quiet. Explicitly NOT the quarantine wording — nothing
     // here needs collector triage, so nobody should be sent looking for it.
     console.warn(
-      `WARNING: ${timeouts.length} live drift leg(s) timed out having observed ZERO messages — ` +
+      `WARNING: ${silentLegs.length} live drift leg(s) timed out having observed ZERO messages — ` +
         `the live surface accepted the connection and then sent nothing. This is neither drift ` +
         `nor unparseable output (exit 6, conclusion "live-timeout"): there is no collector fault ` +
         `to triage. Check the surface below for an outage, a retired model, or a rejected session.`,
     );
-    for (const t of timeouts) {
+    for (const t of silentLegs) {
       const why = t.serverClose
         ? `session closed by the server (code ${t.serverClose.code}` +
           `${t.serverClose.reason ? `: ${t.serverClose.reason}` : ", no reason given"})`

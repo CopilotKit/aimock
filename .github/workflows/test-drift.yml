@@ -85,6 +85,9 @@ jobs:
       # job can classify an exit-5 quarantine distinctly instead of folding it
       # into the generic "job failed → HTTP drift" fallback (M5 backstop).
       exit_code: ${{ steps.drift.outputs.exit_code }}
+      # "true" when the exit-6 legs include provider quota exhaustion (out of
+      # credit), so `notify` says "top up credit" instead of "went silent".
+      quota_exhausted: ${{ steps.drift.outputs.quota_exhausted }}
       # Probe-model retirement preflight results, for the `notify` job: Slack
       # lines for retired / soon-retiring probe models, and whether any is
       # already retired (which stopped the run before drift was graded).
@@ -399,9 +402,19 @@ jobs:
             # either: each silent leg gets a named ::warning::, the report keeps
             # its `timeouts[]`, and the `notify` job below alerts on exit 6 with
             # its own wording. A day that graded nothing is never a clean day.
-            jq -r '.timeouts[]? | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); nothing graded on this surface"' \
+            # Out of credit is infra, not drift and not silence: name it so the
+            # alert says "top up credit" instead of "surface went silent".
+            QUOTA_LEGS=$(jq -r '[.timeouts[]? | select(.providerQuotaExhausted)] | length' drift-report.json 2>/dev/null || echo 0)
+            if [ "${QUOTA_LEGS:-0}" -gt 0 ] 2>/dev/null; then
+              echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"
+              echo "::error title=provider-quota-exhausted::${QUOTA_LEGS} live drift leg(s) failed because the provider account is out of credit — provider quota exhausted — top up credit. Not API drift; nothing was graded there."
+            fi
+            jq -r '.timeouts[]? | select(.providerQuotaExhausted | not) | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); nothing graded on this surface"' \
               drift-report.json || true
-            echo "::warning::Drift collector: $(jq -r '.timeouts | length' drift-report.json) live leg(s) observed nothing (exit 6) — the surface is silent, not drifting. Nothing was graded there."
+            SILENT_LEGS=$(jq -r '[.timeouts[]? | select(.providerQuotaExhausted | not)] | length' drift-report.json 2>/dev/null || echo 0)
+            if [ "${SILENT_LEGS:-0}" -gt 0 ] 2>/dev/null; then
+              echo "::warning::Drift collector: ${SILENT_LEGS} live leg(s) observed nothing (exit 6) — the surface is silent, not drifting. Nothing was graded there."
+            fi
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"
@@ -475,6 +488,7 @@ jobs:
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
           DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
+          QUOTA_EXHAUSTED: ${{ needs.drift.outputs.quota_exhausted }}
           MODEL_ALERT: ${{ needs.drift.outputs.model_alert }}
           MODEL_RETIRED: ${{ needs.drift.outputs.model_retired }}
           REPO: ${{ github.repository }}
@@ -564,6 +578,10 @@ jobs:
           elif [ "$QUARANTINE" = "true" ]; then
             EMOJI="🔬"
             MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
+          # Provider out of credit (exit 6 with quota legs): infra, not drift.
+          elif [ "$LIVE_TIMEOUT" = "true" ] && [ "$QUOTA_EXHAUSTED" = "true" ]; then
+            EMOJI="💳"
+            MSG="*Drift provider quota exhausted* in aimock — top up credit on the drift account. Not API drift: the affected live legs graded nothing.${DETAIL}${NL}${RUN_URL}"
           # Live surface silent (collector exit 6): a live leg observed nothing at
           # all, so that surface was NOT checked this run. Not drift, not a
           # collector fault — but a surface that has stopped answering is worth

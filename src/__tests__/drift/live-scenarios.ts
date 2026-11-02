@@ -12,6 +12,7 @@ import type { WebSocketConnection } from "../../ws-framing.js";
 import { readLiveCase, runLiveScenario } from "../live-test-support.js";
 import { connectWebSocket } from "../ws-test-client.js";
 import type { ShapeDiff } from "./schema.js";
+import { findProviderQuotaExhaustion, providerQuotaExhaustedError } from "./providers.js";
 
 type Observation = { direction: "client" | "server"; event: LiveObject };
 function object(value: unknown): LiveObject {
@@ -239,10 +240,25 @@ export async function runLiveMock(mode: LiveMode): Promise<Observation[]> {
 }
 
 let providerRefused = false;
+// Set when the refusal was an out-of-credit error, so the legs that follow report
+// the same infra cause instead of a bare "earlier provider refusal".
+let refusalQuotaCode: string | null = null;
+
+/**
+ * The failure a Live `error` event becomes. Provider error text stays redacted;
+ * only an out-of-credit code is named, because that is infra, not drift.
+ */
+export function liveProviderErrorFailure(event: LiveObject): Error {
+  const code = findProviderQuotaExhaustion([event]);
+  if (code !== null) return providerQuotaExhaustedError("OpenAI Live", code);
+  return new Error("OpenAI Live provider error; configured access or scenario unavailable");
+}
 
 export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<Observation[]> {
   if (providerRefused)
-    throw new Error("OpenAI Live unavailable: earlier provider refusal; no retry");
+    throw refusalQuotaCode !== null
+      ? providerQuotaExhaustedError("OpenAI Live", refusalQuotaCode)
+      : new Error("OpenAI Live unavailable: earlier provider refusal; no retry");
   const started = performance.now(),
     abort = new AbortController();
   const observations: Observation[] = [];
@@ -292,9 +308,8 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
         store("server", event, Buffer.byteLength(raw));
         if (event.type === "error") {
           providerRefused = true;
-          failure = new Error(
-            "OpenAI Live provider error; configured access or scenario unavailable",
-          );
+          refusalQuotaCode = findProviderQuotaExhaustion([event]);
+          failure = liveProviderErrorFailure(event);
         }
       } catch {
         failure = new Error("OpenAI Live malformed or oversized capture");

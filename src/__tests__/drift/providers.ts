@@ -81,6 +81,72 @@ export function isInfraSkip(status: number): boolean {
 }
 
 /**
+ * OpenAI error `code`/`type` values that mean the account has no credit or
+ * quota left. This is the out-of-credit class of {@link isInfraSkip} (402),
+ * reported IN BAND: OpenAI accepts the request (HTTP 200 / WS upgrade) and then
+ * sends an `error` / `response.failed` event, or closes a Realtime session with
+ * 1013 `insufficient_quota.credit_balance_exhausted`. It is never API drift.
+ */
+const PROVIDER_QUOTA_CODES: ReadonlySet<string> = new Set([
+  "insufficient_quota",
+  "credit_balance_exhausted",
+]);
+
+/**
+ * The fixed text every quota-exhausted leg reports. The drift collector keys
+ * off the quota CODE in the failure message, not this prose.
+ */
+export const PROVIDER_QUOTA_EXHAUSTED = "provider quota exhausted — top up credit";
+
+function quotaCodeOf(value: unknown, depth = 0): string | null {
+  if (depth > 2 || typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["code", "type"]) {
+    const field = record[key];
+    if (typeof field === "string" && PROVIDER_QUOTA_CODES.has(field)) return field;
+  }
+  return quotaCodeOf(record.error, depth + 1) ?? quotaCodeOf(record.response, depth + 1);
+}
+
+/**
+ * The quota code carried by the first provider event (or error body) that
+ * reports quota exhaustion, or null. Looks at the event itself, its `error`,
+ * and a `response.failed` event's `response.error`.
+ */
+export function findProviderQuotaExhaustion(events: readonly unknown[]): string | null {
+  for (const event of events) {
+    const code = quotaCodeOf(event);
+    if (code !== null) return code;
+  }
+  return null;
+}
+
+/** The {@link InfraError} a leg throws when its provider account is out of credit. */
+export function providerQuotaExhaustedError(provider: string, code: string): InfraError {
+  return new InfraError(`INFRA_ERROR: ${provider} — ${PROVIDER_QUOTA_EXHAUSTED} (${code})`, 402);
+}
+
+/**
+ * Throw {@link providerQuotaExhaustedError} when the real leg's events show the
+ * provider account is out of credit. Call it on the REAL side before grading,
+ * so an `error` / `response.failed` event caused by billing is reported as
+ * infra instead of as "real API emits event type error but mock does not".
+ */
+export function throwIfProviderQuotaExhausted(provider: string, events: readonly unknown[]): void {
+  const code = findProviderQuotaExhaustion(events);
+  if (code !== null) throw providerQuotaExhaustedError(provider, code);
+}
+
+/** Parse an HTTP error body for {@link throwIfProviderQuotaExhausted}; [] when not JSON. */
+export function errorBodyEvents(raw: string): unknown[] {
+  try {
+    return [JSON.parse(raw)];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * True when a PROBE response indicates the requested MODEL does not exist (the
  * pinned model id was retired) rather than a live-envelope drift. Providers
  * signal this as a 404, or a 400 whose error body names a model-not-found

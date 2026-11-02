@@ -113,6 +113,13 @@ export interface TimeoutEntry {
    * code is not recorded here; it becomes an attributed critical drift entry.
    */
   serverClose?: { code: number; reason: string };
+  /**
+   * Set when the leg failed because the provider account is out of credit
+   * (OpenAI `insufficient_quota` / `credit_balance_exhausted`). Infra, like a
+   * rate limit or a dead key: nothing was graded and it is never drift. The
+   * fix is to top up credit, so the report names the code that said so.
+   */
+  providerQuotaExhausted?: { code: string };
   /** The full failure message, retained verbatim for the reader. */
   message: string;
 }
