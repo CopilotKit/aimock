@@ -4,7 +4,7 @@ import { createServer as createTlsServer } from "node:https";
 import { createHash } from "node:crypto";
 import { once, getEventListeners } from "node:events";
 import type { Socket } from "node:net";
-import { connectUpstreamWebSocket } from "../ws-upstream.js";
+import { UpstreamWebSocketRefusedError, connectUpstreamWebSocket } from "../ws-upstream.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -171,6 +171,31 @@ describe("upstream WebSocket transport", () => {
       await expect.poll(() => peer.sockets.size).toBe(0);
     },
   );
+  it("names a refusal's JSON error code and type, without exposing the body text", async () => {
+    const body = JSON.stringify({
+      error: {
+        message: "secret-token detail",
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+      },
+    });
+    const { connect } = await open({ status: 429, body });
+    const error = await connect().then(
+      () => new Error("expected a refusal"),
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(UpstreamWebSocketRefusedError);
+    const refused = error as UpstreamWebSocketRefusedError;
+    expect(refused.message).toBe("Upstream WebSocket refused (HTTP 429)");
+    expect(refused.name).toBe("Error");
+    expect(refused.status).toBe(429);
+    expect(refused.errorCode).toBe("insufficient_quota");
+    expect(refused.errorType).toBe("insufficient_quota");
+    expect(JSON.stringify({ ...refused })).not.toContain("secret-token");
+    // A non-JSON body names nothing.
+    const plain = await (await open({ status: 429 })).connect().catch((err: unknown) => err);
+    expect((plain as UpstreamWebSocketRefusedError).errorCode).toBeUndefined();
+  });
   it("bounds refusal body", async () => {
     const { peer, connect } = await open({ status: 401, body: "secret".repeat(20000) });
     await expect(connect()).rejects.toThrow("Upstream WebSocket refusal body limit exceeded");

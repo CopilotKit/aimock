@@ -7,12 +7,13 @@ import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { LLMock } from "../../llmock.js";
 import type { LiveJson, LiveMode, LiveObject } from "../../live-types.js";
-import { connectUpstreamWebSocket } from "../../ws-upstream.js";
+import { UpstreamWebSocketRefusedError, connectUpstreamWebSocket } from "../../ws-upstream.js";
 import type { WebSocketConnection } from "../../ws-framing.js";
 import { readLiveCase, runLiveScenario } from "../live-test-support.js";
 import { connectWebSocket } from "../ws-test-client.js";
 import type { ShapeDiff } from "./schema.js";
 import { findProviderQuotaExhaustion, providerQuotaExhaustedError } from "./providers.js";
+import { quotaCodeInCloseReason } from "../../../scripts/drift-quota.js";
 
 type Observation = { direction: "client" | "server"; event: LiveObject };
 function object(value: unknown): LiveObject {
@@ -254,7 +255,17 @@ export function liveProviderErrorFailure(event: LiveObject): Error {
   return new Error("OpenAI Live provider error; configured access or scenario unavailable");
 }
 
-export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<Observation[]> {
+const OPENAI_LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions";
+
+/**
+ * Run one Live mode against the provider. `endpoint` exists for tests: the
+ * upstream connector accepts a plain-text URL only for a loopback peer.
+ */
+export async function runLiveProvider(
+  mode: LiveMode,
+  apiKey: string,
+  endpoint: string = OPENAI_LIVE_SESSIONS_URL,
+): Promise<Observation[]> {
   if (providerRefused)
     throw refusalQuotaCode !== null
       ? providerQuotaExhaustedError("OpenAI Live", refusalQuotaCode)
@@ -265,7 +276,8 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
   let ws: WebSocketConnection | undefined,
     failure: Error | undefined,
     wireBytes = 0,
-    closed = false;
+    closed = false,
+    closeFrame: { code: number; reason: string } | undefined;
   let sentAudio = 0,
     streamingAt: number | undefined,
     sentClose = false,
@@ -296,7 +308,7 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
   const deadline = setTimeout(() => abort.abort(), 45_000);
   try {
     ws = await connectUpstreamWebSocket(
-      new URL("https://api.openai.com/v1/live/sessions"),
+      new URL(endpoint),
       { Authorization: `Bearer ${apiKey}` },
       {},
       abort.signal,
@@ -308,17 +320,28 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
         store("server", event, Buffer.byteLength(raw));
         if (event.type === "error") {
           providerRefused = true;
-          refusalQuotaCode = findProviderQuotaExhaustion([event]);
-          failure = liveProviderErrorFailure(event);
+          // The first cause wins: a later frame never replaces a recorded
+          // out-of-credit refusal with a generic one.
+          refusalQuotaCode ??= findProviderQuotaExhaustion([event]);
+          failure ??= liveProviderErrorFailure(event);
         }
       } catch {
-        failure = new Error("OpenAI Live malformed or oversized capture");
+        failure ??= new Error("OpenAI Live malformed or oversized capture");
       }
     });
     ws.on("error", () => {
-      failure = new Error("OpenAI Live transport failed");
+      failure ??= new Error("OpenAI Live transport failed");
     });
-    ws.on("close", () => {
+    ws.on("close", (code: number, reason: string) => {
+      // An out-of-credit session can end with only a close frame
+      // (1013 `insufficient_quota.credit_balance_exhausted`) and no `error` event.
+      const quotaCode = quotaCodeInCloseReason(String(reason ?? ""));
+      if (quotaCode !== null) {
+        providerRefused = true;
+        refusalQuotaCode ??= quotaCode;
+        failure ??= providerQuotaExhaustedError("OpenAI Live", quotaCode);
+      }
+      closeFrame ??= { code, reason: String(reason ?? "") };
       closed = true;
     });
     await send({ type: "session.start", event_id: "drift_start", session: configuration });
@@ -373,10 +396,15 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
           }
         }
       }
-      if (closed)
+      if (failure) throw failure;
+      if (closed) {
+        const frame = closeFrame
+          ? ` (close code ${closeFrame.code}${closeFrame.reason ? `: ${closeFrame.reason}` : ""})`
+          : "";
         throw new Error(
-          `OpenAI Live closed without terminal event; observed ${observations.filter((e) => e.direction === "server").length} messages`,
+          `OpenAI Live closed without terminal event; observed ${observations.filter((e) => e.direction === "server").length} messages${frame}`,
         );
+      }
       if (streamingAt !== undefined) {
         const elapsed = performance.now() - streamingAt;
         if (sentAudio < input.length && elapsed >= 200 + sentAudio / 48) {
@@ -397,6 +425,18 @@ export async function runLiveProvider(mode: LiveMode, apiKey: string): Promise<O
       `waitUntil timeout after 45000ms. Collected ${observations.filter((e) => e.direction === "server").length} messages: OpenAI Live session.closed`,
     );
   } catch (error) {
+    if (error instanceof UpstreamWebSocketRefusedError) {
+      // A refused upgrade names out-of-credit in its error envelope. Record it
+      // so the next Live mode reports the same cause without a paid connect.
+      const quotaCode = findProviderQuotaExhaustion([
+        { code: error.errorCode, type: error.errorType },
+      ]);
+      if (quotaCode !== null) {
+        providerRefused = true;
+        refusalQuotaCode ??= quotaCode;
+        throw providerQuotaExhaustedError("OpenAI Live", quotaCode, error.status);
+      }
+    }
     if (error instanceof Error && /HTTP (401|403|429)/.test(error.message)) providerRefused = true;
     if (error instanceof Error && error.message === "Upstream WebSocket upgrade timed out")
       throw new Error("waitUntil timeout after 15000ms. Collected 0 messages: OpenAI Live upgrade");

@@ -17,8 +17,11 @@
  *     of the same run, for the same key.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { createHash } from "node:crypto";
+import type { Duplex } from "node:stream";
 import {
   collectDriftEntries,
   computeExitCode,
@@ -30,9 +33,12 @@ import { parseTypedSSE } from "./drift/helpers.js";
 import {
   InfraError,
   PROVIDER_QUOTA_EXHAUSTED,
+  ProviderQuotaExhaustedError,
+  errorBodyEvents,
   findProviderQuotaExhaustion,
   providerQuotaExhaustedError,
   throwIfProviderQuotaExhausted,
+  throwIfProviderQuotaRefusal,
 } from "./drift/providers.js";
 import { liveProviderErrorFailure } from "./drift/live-scenarios.js";
 import { formatDriftReport, type ShapeDiff } from "./drift/schema.js";
@@ -97,6 +103,69 @@ describe("provider quota exhaustion — leg side", () => {
     expect(
       findProviderQuotaExhaustion([{ error: { type: "insufficient_quota", code: null } }]),
     ).toBe("insufficient_quota");
+  });
+
+  it("finds it in OpenAI's documented flat `error` event and in a lone `response.failed`", () => {
+    // The Responses streaming `error` event is flat: {type, code, message, param}.
+    expect(
+      findProviderQuotaExhaustion([
+        { type: "error", code: "insufficient_quota", message: "no credit", param: null },
+      ]),
+    ).toBe("insufficient_quota");
+    // A stream that sends only `response.failed` names it at response.error.code.
+    expect(
+      findProviderQuotaExhaustion([
+        {
+          type: "response.failed",
+          response: { status: "failed", error: { code: "credit_balance_exhausted" } },
+        },
+      ]),
+    ).toBe("credit_balance_exhausted");
+  });
+
+  it("errorBodyEvents: a JSON body is one event; a non-JSON 429 body is logged, not dropped silently", () => {
+    expect(errorBodyEvents('{"error":{"code":"insufficient_quota"}}', 429)).toEqual([
+      { error: { code: "insufficient_quota" } },
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(errorBodyEvents("<html>Too Many Requests</html>", 429)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("HTTP 429");
+      expect(String(warn.mock.calls[0][0])).toContain("<html>Too Many Requests</html>");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("an HTTP 429 refusal names quota from the WHOLE body, with the real status", () => {
+    // OpenAI pretty-prints its error body; a long message pushes the code past
+    // the 300-char cut that assertOk applies to its own error text.
+    const body = JSON.stringify(
+      {
+        error: {
+          message: "You exceeded your current quota. " + "Read the billing docs. ".repeat(20),
+          type: "insufficient_quota",
+          param: null,
+          code: "insufficient_quota",
+        },
+      },
+      null,
+      2,
+    );
+    expect(body.indexOf('"type": "insufficient_quota"')).toBeGreaterThan(300);
+    const err = thrownBy(() => throwIfProviderQuotaRefusal("OpenAI Embeddings", 429, body));
+    expect(err).toBeInstanceOf(ProviderQuotaExhaustedError);
+    expect((err as InfraError).status).toBe(429);
+    expect(parseProviderQuotaExhausted(asMessage(err))).toEqual({ code: "insufficient_quota" });
+    // A 429 that is a plain rate limit is not out of credit.
+    expect(() =>
+      throwIfProviderQuotaRefusal(
+        "OpenAI Embeddings",
+        429,
+        '{"error":{"type":"requests","code":"rate_limit_exceeded"}}',
+      ),
+    ).not.toThrow();
   });
 
   it("NEGATIVE CONTROL: a healthy provider stream has no quota code", () => {
@@ -174,6 +243,65 @@ describe("provider quota exhaustion — collector side", () => {
       });
       expect(t.providerQuotaExhausted).toEqual({ code: "credit_balance_exhausted" });
     }
+  });
+
+  it("an HTTP 429 insufficient_quota refusal from providers.ts is infra too", () => {
+    const err = thrownBy(() =>
+      throwIfProviderQuotaRefusal(
+        "OpenAI Embeddings",
+        429,
+        '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota",' +
+          '"param":null,"code":"insufficient_quota"}}',
+      ),
+    );
+    const collected = collectDriftEntries(
+      results([
+        failure("OpenAI Embeddings drift > embedding response shape matches", asMessage(err)),
+      ]) as never,
+    );
+    expect(collected.timeouts[0].providerQuotaExhausted).toEqual({ code: "insufficient_quota" });
+    expect(exitOf(collected)).toBe(6);
+  });
+
+  it("a Realtime REFUSAL close naming a quota code is quota, and keeps serverClose's contract", () => {
+    const message =
+      'WSClosedError: WebSocket closed by server during waitUntil: code=4001 reason="insufficient_quota". ' +
+      "Collected 0 messages";
+    const collected = collectDriftEntries(
+      results([failure("OpenAI Realtime API drift > refused", message)]) as never,
+    );
+    expect(collected.entries).toEqual([]);
+    expect(collected.timeouts).toHaveLength(1);
+    expect(collected.timeouts[0].providerQuotaExhausted).toEqual({ code: "insufficient_quota" });
+    // A refusal code is never recorded in serverClose (see TimeoutEntry).
+    expect(collected.timeouts[0].serverClose).toBeUndefined();
+    // A 1013 close whose reason is NOT a quota code is not out of credit.
+    expect(
+      parseProviderQuotaExhausted(
+        'WSClosedError: WebSocket closed by server during waitUntil: code=1013 reason="try_again_later". Collected 0 messages',
+      ),
+    ).toBeNull();
+  });
+
+  it("the second pass never quarantines a quota leg beside an unparseable sibling", () => {
+    // Only a run with an unparseable failure and zero drift entries runs the
+    // second pass; the quota leg must still be claimed by the exit-6 lane there.
+    const collected = collectDriftEntries(
+      results([
+        failure(
+          "OpenAI Responses API drift > streaming text event sequence and shapes match",
+          asMessage(thrownBy(() => throwIfProviderQuotaExhausted("OpenAI Responses", httpEvents))),
+        ),
+        failure("OpenAI Chat drift > bare assertion", "AssertionError: boom"),
+      ]) as never,
+    );
+    expect(collected.timeouts.map((t) => t.testName)).toEqual([
+      "OpenAI Responses API drift > streaming text event sequence and shapes match",
+    ]);
+    expect(collected.quarantine.map((q) => q.testName)).toEqual([
+      "OpenAI Chat drift > bare assertion",
+    ]);
+    expect(exitOf(collected)).toBe(5);
   });
 
   it("a real critical drift beside the quota legs still wins (exit 2)", () => {
@@ -323,4 +451,111 @@ describe("provider quota exhaustion — Slack summary", () => {
     expect(summary).toContain("*Classification:* real-drift");
     expect(summary).toContain("Provider quota exhausted — top up credit");
   });
+});
+
+describe("provider quota exhaustion — Live leg on the wire", () => {
+  // A loopback peer that answers the Live leg the way an out-of-credit OpenAI
+  // account can: a close frame alone, an error event followed by another error,
+  // or a refused upgrade. `runLiveProvider` keeps module state across modes (a
+  // refusal stops later modes from paying for a session), so each test loads a
+  // fresh copy of the module.
+  type PeerMode = "close1013" | "quotaThenOther" | "upgrade429";
+  const servers: Server[] = [];
+  const sockets: Duplex[] = [];
+  afterEach(async () => {
+    for (const socket of sockets.splice(0)) socket.destroy();
+    for (const server of servers.splice(0))
+      await new Promise<void>((done) => server.close(() => done()));
+  });
+
+  const frame = (opcode: number, payload: Buffer) =>
+    Buffer.concat([
+      payload.length < 126
+        ? Buffer.from([0x80 | opcode, payload.length])
+        : Buffer.from([0x80 | opcode, 126, payload.length >> 8, payload.length & 255]),
+      payload,
+    ]);
+  const text = (event: object) => frame(1, Buffer.from(JSON.stringify(event)));
+
+  async function peer(mode: PeerMode): Promise<{ url: string; connects: () => number }> {
+    let connects = 0;
+    const server = createServer();
+    server.on("upgrade", (req, socket) => {
+      connects++;
+      sockets.push(socket);
+      socket.on("error", () => {});
+      if (mode === "upgrade429") {
+        const body = JSON.stringify({
+          error: {
+            message: "You exceeded your current quota",
+            type: "insufficient_quota",
+            param: null,
+            code: "insufficient_quota",
+          },
+        });
+        socket.end(
+          `HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n` +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        );
+        return;
+      }
+      const accept = createHash("sha1")
+        .update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+        .digest("base64");
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+          `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+      );
+      socket.once("data", () => {
+        if (mode === "close1013") {
+          const reason = Buffer.from("insufficient_quota.credit_balance_exhausted");
+          socket.end(frame(8, Buffer.concat([Buffer.from([1013 >> 8, 1013 & 255]), reason])));
+        } else {
+          socket.write(
+            Buffer.concat([
+              text(realtimeErrorEvent as object),
+              text({ type: "error", error: { type: "invalid_request_error", code: "expired" } }),
+            ]),
+          );
+        }
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+    servers.push(server);
+    const { port } = server.address() as { port: number };
+    return { url: `http://127.0.0.1:${port}/v1/live/sessions`, connects: () => connects };
+  }
+
+  async function freshLive() {
+    vi.resetModules();
+    return import("./drift/live-scenarios.js");
+  }
+
+  it.each([
+    ["close1013", "credit_balance_exhausted", 0],
+    ["quotaThenOther", "credit_balance_exhausted", 0],
+    ["upgrade429", "insufficient_quota", 429],
+  ] as const)(
+    "%s: the leg names quota, and the next mode reports it without a paid connect",
+    async (mode, code, status) => {
+      const { runLiveProvider } = await freshLive();
+      const { url, connects } = await peer(mode);
+      const first = await runLiveProvider("client", "sk-test", url).then(
+        () => new Error("expected a failure"),
+        (err: Error) => err,
+      );
+      expect(first.message).toBe(
+        `INFRA_ERROR: OpenAI Live — ${PROVIDER_QUOTA_EXHAUSTED} (${code})`,
+      );
+      expect((first as InfraError).status).toBe(status);
+      const second = await runLiveProvider("managed", "sk-test", url).then(
+        () => new Error("expected a failure"),
+        (err: Error) => err,
+      );
+      expect(second.message).toBe(first.message);
+      expect(connects()).toBe(1);
+      expect(parseProviderQuotaExhausted(asMessage(second))).toEqual({ code });
+    },
+    20_000,
+  );
 });

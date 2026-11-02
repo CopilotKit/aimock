@@ -44,6 +44,13 @@ interface StreamResult {
  *   429       → rate-limited   (back off)
  *   5xx       → infra-transient (retry / alert ops)
  *   network   → no status field (instanceof check first)
+ *
+ * Out of credit is the {@link ProviderQuotaExhaustedError} subclass. Its
+ * `status` is still the provider's real HTTP status (429 when OpenAI refuses
+ * the request), or 0 when the quota error arrived in band on a stream or
+ * session the provider had already accepted. Classify it with `instanceof`
+ * (or the drift collector's marker), not by status: a 429 alone is a rate
+ * limit, not an empty account.
  */
 export class InfraError extends Error {
   readonly status: number;
@@ -141,18 +148,41 @@ export function providerQuotaExhaustedError(
  * so an `error` / `response.failed` event caused by billing is reported as
  * infra instead of as "real API emits event type error but mock does not".
  */
-export function throwIfProviderQuotaExhausted(provider: string, events: readonly unknown[]): void {
+export function throwIfProviderQuotaExhausted(
+  provider: string,
+  events: readonly unknown[],
+  status = 0,
+): void {
   const code = findProviderQuotaExhaustion(events);
-  if (code !== null) throw providerQuotaExhaustedError(provider, code);
+  if (code !== null) throw providerQuotaExhaustedError(provider, code, status);
 }
 
-/** Parse an HTTP error body for {@link throwIfProviderQuotaExhausted}; [] when not JSON. */
-export function errorBodyEvents(raw: string): unknown[] {
+/**
+ * Parse an HTTP error body for {@link throwIfProviderQuotaExhausted}; [] when
+ * it is not JSON. A 402/429 body that cannot be read is logged with its status,
+ * so a refusal whose quota code could not be checked shows in the run log.
+ */
+export function errorBodyEvents(raw: string, status: number): unknown[] {
   try {
     return [JSON.parse(raw)];
   } catch {
+    if (status === 402 || status === 429)
+      console.warn(
+        `Provider error body (HTTP ${status}) is not JSON; quota code not checked: ` +
+          JSON.stringify(raw.slice(0, 200)),
+      );
     return [];
   }
+}
+
+/**
+ * A refused HTTP request (status >= 400) whose body names a quota code is out
+ * of credit: throw the quota InfraError with the real status. Reads the WHOLE
+ * body, so a long error message can never push the code out of view.
+ */
+export function throwIfProviderQuotaRefusal(provider: string, status: number, raw: string): void {
+  if (status < 400) return;
+  throwIfProviderQuotaExhausted(provider, errorBodyEvents(raw, status), status);
 }
 
 /**
@@ -359,6 +389,8 @@ function redactUrl(url: string): string {
 
 function assertOk(raw: string, status: number, context: string, url?: string): void {
   if (status >= 400) {
+    // Out of credit is read from the WHOLE body, before the 300-char cut below.
+    throwIfProviderQuotaRefusal(context, status, raw);
     const urlSuffix = url ? ` (${redactUrl(url)})` : "";
     throw new InfraError(
       `${context}: API returned ${status}${urlSuffix}: ${raw.slice(0, 300)}`,
@@ -456,6 +488,8 @@ function withInfraErrorTag<T>(provider: string, fn: () => Promise<T>): Promise<T
     // finding — never re-tag it as an InfraError (that would poison the drift
     // baseline via exit-5 quarantine). Let it propagate for the leg to catch.
     if (err instanceof FalCanarySkip) throw err;
+    // Already the quota marker the collector reads; re-tagging would bury it.
+    if (err instanceof ProviderQuotaExhaustedError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     const status = err instanceof InfraError ? err.status : 0;
     throw new InfraError(`INFRA_ERROR: ${provider} — ${msg}`, status);

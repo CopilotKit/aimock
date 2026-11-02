@@ -39,7 +39,7 @@ import {
   isInfraSkip,
   isModelNotFound,
   throwIfProviderQuotaExhausted,
-  errorBodyEvents,
+  throwIfProviderQuotaRefusal,
   type LiveModelEntry,
   type ResolvedModel,
 } from "./providers.js";
@@ -374,6 +374,12 @@ async function exhaustionProviderWire(
       body: JSON.stringify(scenario.request),
       signal: controller.signal,
     });
+    if (response.status !== 200) {
+      // Read the refusal before asserting, so an out-of-credit 429 is named as
+      // infra instead of failing as "expected 429 to be 200".
+      raw = await response.text();
+      throwIfProviderQuotaRefusal("OpenAI Responses", response.status, raw);
+    }
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     if (!response.body) throw new Error("Missing Responses body");
@@ -686,8 +692,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     ]);
 
     // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
-    if (isInfraSkip(realRes.status))
-      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       // Retired/renamed model or a transient provider condition — honest skip.
       ctx.skip();
@@ -735,8 +740,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     ]);
 
     // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
-    if (isInfraSkip(realRes.status))
-      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -815,8 +819,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     ]);
 
     // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
-    if (isInfraSkip(realRes.status))
-      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -882,8 +885,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     ]);
 
     // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
-    if (isInfraSkip(realRes.status))
-      throwIfProviderQuotaExhausted("OpenAI Responses", errorBodyEvents(realRes.raw));
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -1193,6 +1195,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
         httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: true, tools }),
       ]);
 
+      // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+      throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
       if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
         ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
         return;
@@ -1214,6 +1218,12 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
         );
         return;
       }
+      // An out-of-credit account answers 200 and then sends `error` /
+      // `response.failed`. That is billing, not a failed tool run.
+      throwIfProviderQuotaExhausted(
+        "OpenAI Responses",
+        parsedReal.map((e) => e.data),
+      );
       const failure = realStreamFailure(parsedReal);
       if (failure) throw new Error(failure);
       // The real gpt-5 stream leads with a `reasoning` item; the mock fixture
@@ -1262,6 +1272,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
         httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: false, tools }),
       ]);
 
+      // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+      throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
       if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
         ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
         return;
@@ -1277,6 +1289,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
         ctx.skip(`real run ended incomplete (${JSON.stringify(real.incomplete_details ?? null)})`);
         return;
       }
+      throwIfProviderQuotaExhausted("OpenAI Responses", [real]);
       if (real.status === "failed" || (real.error !== undefined && real.error !== null)) {
         throw new Error(`real response ${String(real.status)}: ${JSON.stringify(real.error)}`);
       }
