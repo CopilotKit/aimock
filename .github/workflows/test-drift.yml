@@ -393,12 +393,14 @@ jobs:
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          # Ungraded legs, on EVERY exit that writes a report (2, 5, 6). Out of
-          # credit is infra, not drift and not silence, and it often comes with
-          # other failures: a critical diff (2) or a quarantine (5) must not hide
-          # it. Silent legs are named apart, so neither is reported as the other.
-          # An unreadable report is said out loud, never read as zero legs.
-          if [ "$EXIT_CODE" -eq 2 ] || [ "$EXIT_CODE" -eq 5 ] || [ "$EXIT_CODE" -eq 6 ]; then
+          # Ungraded legs, whenever the collector wrote a report, whatever the exit
+          # (exit 1, AG-UI skipped, writes one too). Out of credit is infra, not
+          # drift and not silence, and it often comes with other failures: a
+          # critical diff (2), a quarantine (5) or a skipped AG-UI check (1) must not
+          # hide it. Silent legs are named apart, so neither is reported as the
+          # other. An unreadable or missing report on 2/5/6 is said out loud, never
+          # read as zero legs.
+          if [ -f drift-report.json ] || [ "$EXIT_CODE" -eq 2 ] || [ "$EXIT_CODE" -eq 5 ] || [ "$EXIT_CODE" -eq 6 ]; then
             if LEG_COUNTS=$(jq -er '[([.timeouts[]? | select(.providerQuotaExhausted)] | length), ([.timeouts[]? | select(.providerQuotaExhausted | not)] | length)] | @tsv' drift-report.json); then
               read -r QUOTA_LEGS SILENT_LEGS <<< "$LEG_COUNTS"
               echo "quota_legs=$QUOTA_LEGS" >> "$GITHUB_OUTPUT"
@@ -977,9 +979,10 @@ jobs:
             BASE_EXIT=$?
             set -e
             cd "$GITHUB_WORKSPACE"
-            # Ungraded legs on any exit that writes a report (2, 5, 6): out of credit
-            # and silence are named apart. An unreadable report is said out loud.
-            if [ "$BASE_EXIT" -eq 2 ] || [ "$BASE_EXIT" -eq 5 ] || [ "$BASE_EXIT" -eq 6 ]; then
+            # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+            # AG-UI skipped, writes one too): out of credit and silence are named apart.
+            # An unreadable or missing report on 2/5/6 is said out loud.
+            if [ -f drift-report-base.json ] || [ "$BASE_EXIT" -eq 2 ] || [ "$BASE_EXIT" -eq 5 ] || [ "$BASE_EXIT" -eq 6 ]; then
               if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (base)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on main" else "::warning title=live-timeout (base)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on main" end' \
                 drift-report-base.json; then
                 echo "::error title=drift-report-unreadable (base)::Could not read timeouts from drift-report-base.json (collector exit $BASE_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
@@ -1049,9 +1052,10 @@ jobs:
             --observations-out drift-observations-head.json
           HEAD_EXIT=$?
           set -e
-          # Ungraded legs on any exit that writes a report (2, 5, 6): out of credit
-          # and silence are named apart. An unreadable report is said out loud.
-          if [ "$HEAD_EXIT" -eq 2 ] || [ "$HEAD_EXIT" -eq 5 ] || [ "$HEAD_EXIT" -eq 6 ]; then
+          # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+          # AG-UI skipped, writes one too): out of credit and silence are named apart.
+          # An unreadable or missing report on 2/5/6 is said out loud.
+          if [ -f drift-report-head.json ] || [ "$HEAD_EXIT" -eq 2 ] || [ "$HEAD_EXIT" -eq 5 ] || [ "$HEAD_EXIT" -eq 6 ]; then
             if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (head)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on the PR ref" else "::warning title=live-timeout (head)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on the PR ref" end' \
               drift-report-head.json; then
               echo "::error title=drift-report-unreadable (head)::Could not read timeouts from drift-report-head.json (collector exit $HEAD_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
