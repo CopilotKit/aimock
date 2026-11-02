@@ -352,16 +352,32 @@ export function __resetResolveLiveModelCache(): void {
 
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503]);
 
+/** The quota code in a JSON error body, or null (also when it is not JSON). */
+function quotaCodeInBody(raw: string): string | null {
+  try {
+    return findProviderQuotaExhaustion([JSON.parse(raw)]);
+  } catch {
+    return null;
+  }
+}
+
 async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const res = await fetch(url, init);
       if (RETRYABLE_STATUSES.has(res.status) && attempt < maxRetries - 1) {
+        const raw = await res.text(); // consume body to free socket
+        // Out of credit is permanent: hand the refusal back now, unretried.
+        if (res.status === 429 && quotaCodeInBody(raw) !== null)
+          return new Response(raw, {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          });
         console.warn(
           `Retry ${attempt + 1}/${maxRetries} after ${res.status} for ${url.slice(0, 80)}`,
         );
-        await res.text(); // consume body to free socket
         const backoff = Math.pow(2, attempt) * 1000;
         await new Promise((r) => setTimeout(r, backoff));
         continue;

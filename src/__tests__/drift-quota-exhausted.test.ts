@@ -38,6 +38,7 @@ import {
   ProviderQuotaExhaustedError,
   errorBodyEvents,
   findProviderQuotaExhaustion,
+  openaiEmbeddings,
   providerQuotaExhaustedError,
   throwIfProviderQuotaExhausted,
   throwIfProviderQuotaRefusal,
@@ -169,6 +170,46 @@ describe("provider quota exhaustion — leg side", () => {
       ),
     ).not.toThrow();
   });
+
+  it("an out-of-credit 429 is sent once, not retried; a rate-limit 429 is still retried", async () => {
+    const quota = JSON.stringify({
+      error: {
+        message: "You exceeded your current quota",
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+      },
+    });
+    const rateLimit = '{"error":{"type":"requests","code":"rate_limit_exceeded"}}';
+    const realFetch = globalThis.fetch;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const [body, calls] of [
+        [quota, 1],
+        [rateLimit, 3],
+      ] as const) {
+        let sent = 0;
+        globalThis.fetch = (async () => {
+          sent++;
+          return new Response(body, {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }) as typeof fetch;
+        const err = await openaiEmbeddings({ apiKey: "sk-test" }, "hi").then(
+          () => new Error("expected a failure"),
+          (error: Error) => error,
+        );
+        expect(sent).toBe(calls);
+        expect((err as InfraError).status).toBe(429);
+        expect(parseProviderQuotaExhausted(asMessage(err))).toEqual(
+          body === quota ? { code: "insufficient_quota" } : null,
+        );
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+      warn.mockRestore();
+    }
+  }, 20_000);
 
   it("NEGATIVE CONTROL: a healthy provider stream has no quota code", () => {
     const healthy = parseTypedSSE(fixture("openai-responses-k9-full-summary.sse")).map(
