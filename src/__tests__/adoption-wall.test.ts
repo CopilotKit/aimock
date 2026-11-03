@@ -161,7 +161,7 @@ describe("resolveDisplay", () => {
       "cacheplane/angular-agent-framework",
       "cortexkit/magic-context",
       "openstory-so/openstory",
-      "selfagency/opilot",
+      "voxslopuli/opilot",
       "SkillNerds/xskill",
       "ysansan98/ant-chat",
     ]) {
