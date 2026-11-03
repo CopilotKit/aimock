@@ -329,7 +329,9 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   },
   "openstory-so/openstory": { name: "OpenStory", url: "https://openstory.so" },
   "SkillNerds/xskill": { name: "xskill", url: "https://xskill.wiki" },
-  "selfagency/opilot": { name: "Opilot", url: "https://opilot.self.agency" },
+  // Moved from selfagency to the voxslopuli org; keyed by its current home so the
+  // avatar check resolves the owner id to the repo's actual owner.
+  "voxslopuli/opilot": { name: "Opilot", url: "https://opilot.self.agency" },
   // No homepage exists for either of these: cortexkit declares a Discord invite
   // and ant-chat declares nothing, and cortexkit.dev/.ai/.com do not resolve. A
   // repo URL is honest when there is no site; a bare GitHub login is just an
@@ -361,6 +363,7 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "affromero/flight-finder": { name: "Flight Finder", url: "https://flight-finder.org" },
   "alpic-ai/skybridge": { name: "Skybridge", url: "https://www.skybridge.tech" },
   "ackness/covel": { name: "Covel", url: "https://covel.cc" },
+  "CherryHQ/cherry-studio": { name: "Cherry Studio", url: "https://cherryai.com" },
 };
 
 /**
