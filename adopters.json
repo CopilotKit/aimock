@@ -1011,15 +1011,6 @@
       "missedRuns": 0
     },
     {
-      "repo": "selfagency/opilot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
       "repo": "sherhanfsl/copilot",
       "stars": 0,
       "isFork": false,
@@ -1196,6 +1187,15 @@
       "isFork": false,
       "channels": [
         "container"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "voxslopuli/opilot",
+      "stars": 0,
+      "isFork": false,
+      "channels": [
+        "package"
       ],
       "missedRuns": 0
     },
