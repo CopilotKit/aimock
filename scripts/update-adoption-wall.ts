@@ -361,6 +361,7 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "affromero/flight-finder": { name: "Flight Finder", url: "https://flight-finder.org" },
   "alpic-ai/skybridge": { name: "Skybridge", url: "https://www.skybridge.tech" },
   "ackness/covel": { name: "Covel", url: "https://covel.cc" },
+  "CherryHQ/cherry-studio": { name: "Cherry Studio", url: "https://cherryai.com" },
 };
 
 /**
