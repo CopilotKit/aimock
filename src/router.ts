@@ -457,6 +457,10 @@ export function matchFixtureDiagnostic(
           (reqEndpoint === "elevenlabs-voice-get" && (isJSONResponse(r) || isErrorResponse(r))) ||
           (reqEndpoint === "elevenlabs-voice-delete" &&
             (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-stt" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "byteplus-tts" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-audio-isolation" &&
+            (isAudioResponse(r) || isJSONResponse(r) || isErrorResponse(r))) ||
           (reqEndpoint === "transcription" && isTranscriptionResponse(r)) ||
           (reqEndpoint === "translation" && isTranscriptionResponse(r)) ||
           (reqEndpoint === "video" && isVideoResponse(r));

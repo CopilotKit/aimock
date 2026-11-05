@@ -77,6 +77,9 @@ export const ELEVENLABS_MUSIC_RE = /^\/v1\/music(?:\/(.+))?$/;
 export const ELEVENLABS_VOICE_DESIGN_PATH = "/v1/text-to-voice/design";
 export const ELEVENLABS_VOICE_CREATE_PATH = "/v1/text-to-voice";
 export const ELEVENLABS_VOICE_RE = /^\/v1\/voices\/([^/]+)$/;
+export const ELEVENLABS_STT_PATH = "/v1/speech-to-text";
+export const ELEVENLABS_AUDIO_ISOLATION_PATH = "/v1/audio-isolation";
+export const BYTEPLUS_TTS_PATH = "/api/v3/tts/create";
 export const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/(.+)$/;
 export const FAL_QUEUE_REQUESTS_RE = /^\/fal\/queue\/requests\/(.+)$/;
 export const FAL_RUN_RE = /^\/fal\/run\/(.+)$/;
@@ -539,6 +542,25 @@ export const ROUTE_DEFINITIONS: RouteDefinition[] = [
     examplePath: "/v1/music/generation",
     service: "elevenlabs",
     description: "ElevenLabs music sub-operation",
+  },
+  {
+    method: "POST",
+    path: ELEVENLABS_STT_PATH,
+    service: "elevenlabs",
+    description: "ElevenLabs speech to text (Scribe)",
+  },
+  {
+    method: "POST",
+    path: ELEVENLABS_AUDIO_ISOLATION_PATH,
+    service: "elevenlabs",
+    description: "ElevenLabs audio isolation",
+  },
+  // BytePlus Seed Speech
+  {
+    method: "POST",
+    path: BYTEPLUS_TTS_PATH,
+    service: "byteplus",
+    description: "BytePlus Seed Speech text-to-speech",
   },
   // fal.ai
   {

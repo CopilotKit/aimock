@@ -533,7 +533,7 @@ export async function proxyAndRecord(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     responsesTools?: ResponsesToolsMode;
   },
-  rawBody?: string,
+  rawBody?: string | Buffer,
   options?: ProxyOptions,
 ): Promise<ProxyOutcome> {
   const record = defaults.record;
@@ -985,7 +985,10 @@ export async function proxyAndRecord(
         request._endpointType === "elevenlabs-voice-design" ||
         request._endpointType === "elevenlabs-voice" ||
         request._endpointType === "elevenlabs-voice-get" ||
-        request._endpointType === "elevenlabs-voice-delete") &&
+        request._endpointType === "elevenlabs-voice-delete" ||
+        request._endpointType === "elevenlabs-stt" ||
+        request._endpointType === "elevenlabs-audio-isolation" ||
+        request._endpointType === "byteplus-tts") &&
       parsedResponse !== null
     ) {
       const obj = parsedResponse as Record<string, unknown>;
@@ -1223,7 +1226,7 @@ export function clampMaxBufferFrames(value: number | undefined): number {
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
-  body: string,
+  body: string | Buffer,
   clientRes?: http.ServerResponse,
   method: string = "POST",
   logger?: Logger,

@@ -97,6 +97,7 @@ import {
   resolveTestId,
   readBody,
   readBodyBufferBounded,
+  readBodyBuffer,
   RequestBodyTooLargeError,
   fixtureToolCallErrorCode,
   googleFixtureToolCallErrorDetails,
@@ -187,6 +188,7 @@ import {
   handleElevenLabsVoiceDelete,
   clearElevenLabsVoices,
 } from "./elevenlabs-voice.js";
+import { handleAudioPipeline, AUDIO_PIPELINE_MAX_BODY_BYTES } from "./audio-pipeline.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
 import { handleFal, falQueueStates, falWillHandle } from "./fal.js";
 import { handleOllama, handleOllamaGenerate, handleOllamaEmbeddings } from "./ollama.js";
@@ -299,6 +301,9 @@ import {
   ELEVENLABS_VOICE_DESIGN_PATH,
   ELEVENLABS_VOICE_CREATE_PATH,
   ELEVENLABS_VOICE_RE,
+  ELEVENLABS_STT_PATH,
+  ELEVENLABS_AUDIO_ISOLATION_PATH,
+  BYTEPLUS_TTS_PATH,
   FAL_QUEUE_SUBMIT_RE,
   FAL_QUEUE_REQUESTS_RE,
   FAL_RUN_RE,
@@ -4002,6 +4007,20 @@ async function startServer(
       return;
     }
 
+    // BytePlus Seed Speech TTS (voice.*.bytepluses.com). Same pre-rewrite
+    // band as the Ark video routes above, for the same reason.
+    if (pathname === BYTEPLUS_TTS_PATH && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const body = await readBodyBuffer(req, AUDIO_PIPELINE_MAX_BODY_BYTES);
+        ensureRawFixturePositions();
+        await handleAudioPipeline("byteplus-tts", req, res, body, fixtures, defaults, journal);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "byteplus-speech" });
+      }
+      return;
+    }
+
     // OpenRouter discovery endpoints. Dispatched BEFORE normalizeCompatPath
     // (which does not rewrite these — /models etc. are excluded from
     // COMPAT_SUFFIXES — so they would otherwise 404), mirroring the
@@ -5245,6 +5264,31 @@ async function startServer(
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, "sound-generation");
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
+      }
+      return;
+    }
+
+    // POST /v1/speech-to-text (Scribe) and /v1/audio-isolation — multipart,
+    // read as a Buffer so the audio bytes survive to the hash and the proxy.
+    if (
+      (pathname === ELEVENLABS_STT_PATH || pathname === ELEVENLABS_AUDIO_ISOLATION_PATH) &&
+      req.method === "POST"
+    ) {
+      setCorsHeaders(res);
+      try {
+        const body = await readBodyBuffer(req, AUDIO_PIPELINE_MAX_BODY_BYTES);
+        ensureRawFixturePositions();
+        await handleAudioPipeline(
+          pathname === ELEVENLABS_STT_PATH ? "elevenlabs-stt" : "elevenlabs-audio-isolation",
+          req,
+          res,
+          body,
+          fixtures,
+          defaults,
+          journal,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "elevenlabs-speech" });
       }
       return;
     }

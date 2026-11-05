@@ -379,7 +379,7 @@ interface FixtureFileEntry {
         sequenceIndex?: number;
         turnIndex?: number;
         hasToolResult?: boolean;
-        endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
+        endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "elevenlabs-stt" | "elevenlabs-audio-isolation" | "byteplus-tts" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
         context?: string;
     };
     // (undocumented)
@@ -467,7 +467,7 @@ interface FixtureMatch {
         dimensions?: unknown;
     };
     // (undocumented)
-    endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
+    endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "elevenlabs-stt" | "elevenlabs-audio-isolation" | "byteplus-tts" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
     hasToolResult?: boolean;
     // (undocumented)
     inputText?: string | RegExp;
@@ -1206,7 +1206,7 @@ interface RecordedTimings {
 }
 
 // @public (undocumented)
-type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus";
+type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus" | "byteplus-speech";
 
 // @public (undocumented)
 interface RerankResult {
