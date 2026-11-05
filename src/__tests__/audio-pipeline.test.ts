@@ -47,7 +47,7 @@ function seedBody(requestRefs = true): string {
 function scribeForm(bytes: Buffer): FormData {
   const form = new FormData();
   form.append("model_id", "scribe_v2");
-  form.append("file", new Blob([bytes], { type: "audio/wav" }), "take.wav");
+  form.append("file", new Blob([new Uint8Array(bytes)], { type: "audio/wav" }), "take.wav");
   form.append("language_code", "en");
   form.append("timestamps_granularity", "word");
   form.append("tag_audio_events", "false");
@@ -56,7 +56,7 @@ function scribeForm(bytes: Buffer): FormData {
 
 function isolationForm(bytes: Buffer): FormData {
   const form = new FormData();
-  form.append("audio", new Blob([bytes], { type: "audio/wav" }), "slice.wav");
+  form.append("audio", new Blob([new Uint8Array(bytes)], { type: "audio/wav" }), "slice.wav");
   return form;
 }
 
