@@ -445,10 +445,14 @@ jobs:
           FAL_KEY: ${{ secrets.FAL_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          # The pre-sync commit: drift-sync has already committed its edit, so the
+          # check reads the change set from base..working tree (a deprecation-only
+          # one skips the live re-collect, exactly as the in-process gate does).
+          BASE_SHA: ${{ steps.gitcfg.outputs.base_sha }}
           ASSERT_LOG: ${{ runner.temp }}/drift-sync-check.log
         run: |
           set +e
-          npx tsx scripts/drift-sync-check.ts 2>&1 | tee "${ASSERT_LOG}"
+          npx tsx scripts/drift-sync-check.ts --base "${BASE_SHA}" 2>&1 | tee "${ASSERT_LOG}"
           ASSERT_EXIT=${PIPESTATUS[0]}
           set -e
           REASON="$(grep '^reason=' "${ASSERT_LOG}" | tail -n1)"
@@ -458,7 +462,7 @@ jobs:
             echo "::error::drift-sync-check refused (exit ${ASSERT_EXIT}, reason=${REASON}) — not opening a PR"
             exit "$ASSERT_EXIT"
           fi
-          echo "drift-sync-check: sync verified data-only, pins intact, clean re-collect"
+          echo "drift-sync-check: passed (verdict above)"
 
       - name: Upload drift-sync-check log
         if: always()
