@@ -13,8 +13,11 @@
  *
  * No LLM, no model call — every assertion here is a plain data check.
  */
-import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import {
   isAllowedSyncFile,
@@ -34,6 +37,7 @@ import {
   deprecationOnlyOutcomes,
   recollectSkipReason,
   parseCliArgs,
+  realCliDeps,
   type CliDeps,
   type SyncCheckDeps,
   type CommandResult,
@@ -696,5 +700,162 @@ describe("parseCliArgs", () => {
   it("rejects anything else", () => {
     expect(() => parseCliArgs(["--base"])).toThrow(SyncCheckConfigError);
     expect(() => parseCliArgs(["--skip"])).toThrow(SyncCheckConfigError);
+  });
+});
+
+describe("deprecationOnlyOutcomes — an added line must be the writer's exact shape", () => {
+  it("is null when a deprecation line also carries code after the literal", () => {
+    const after = REAL_REGISTRY.replace(
+      "    // drift-sync appends recorded deprecations here.\n  ]),",
+      '    // drift-sync appends recorded deprecations here.\n    "gpt-x", ...(() => { return []; })(),\n  ]),',
+    );
+    expect(after).not.toBe(REAL_REGISTRY);
+    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)).toBeNull();
+  });
+
+  it("is null when one added line carries two members", () => {
+    const after = REAL_REGISTRY.replace(
+      "    // drift-sync appends recorded deprecations here.\n  ]),",
+      '    // drift-sync appends recorded deprecations here.\n    "gpt-x", "gpt-y",\n  ]),',
+    );
+    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)).toBeNull();
+  });
+
+  it("accepts the writer's own line, with or without a trailing comment", () => {
+    const after = REAL_REGISTRY.replace(
+      "    // drift-sync appends recorded deprecations here.\n  ]),",
+      '    // drift-sync appends recorded deprecations here.\n    "gpt-x",\n    "gpt-y", // DEPRECATED fixture\n  ]),',
+    );
+    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)?.map((o) => o.family)).toEqual([
+      "gpt-x",
+      "gpt-y",
+    ]);
+  });
+});
+
+describe("parseCliArgs — --base is a revision, never a git option", () => {
+  it("rejects a --base value that starts with '-'", () => {
+    expect(() => parseCliArgs(["--base", "--output=/nonexistent-drift-sync-check-dir/x"])).toThrow(
+      SyncCheckConfigError,
+    );
+    expect(() => parseCliArgs(["--base", "-p"])).toThrow(SyncCheckConfigError);
+  });
+
+  it("the CLI reports it as CONFIG_ERROR", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const code = runCli(() =>
+      realCliDeps(parseCliArgs(["--base", "--output=/nonexistent-drift-sync-check-dir/x"]).base),
+    );
+    expect(code).toBe(REASON_EXIT_CODE[SyncCheckReason.CONFIG_ERROR]);
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The REAL CLI wiring, against a temp git repo laid out like this one. The
+// workflow runs the check AFTER drift-sync committed, so every gate has to read
+// `<base>..HEAD` — `git status` alone is an empty diff there.
+// ---------------------------------------------------------------------------
+
+describe("realCliDeps(--base) against a committed sync (temp git repo)", () => {
+  const PIN_PATH = "src/__tests__/drift/logic-pin.test.ts";
+  const origCwd = process.cwd();
+  let repo = "";
+
+  const git = (...args: string[]): string =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        ...args,
+      ],
+      { cwd: repo, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+  const write = (rel: string, text: string): void => {
+    mkdirSync(dirname(join(repo, rel)), { recursive: true });
+    writeFileSync(join(repo, rel), text);
+  };
+  const commit = (msg: string): string => {
+    git("add", "-A");
+    git("commit", "-q", "-m", msg);
+    return git("rev-parse", "HEAD").trim();
+  };
+  /** Gates 1, 1b and the skip run for real; gate-2 and gate-3 are spies. */
+  const evaluate = (base: string) => {
+    const d = realCliDeps(base);
+    const recollectFn = vi.fn(liveFlakeReport);
+    const skip = d.recollectSkipReason();
+    const verdict = evaluateSyncCheck(
+      { ...d, runPinCheck: () => ({ ok: true, output: "" }), recollect: recollectFn },
+      skip !== null ? { skipRecollect: true, skipRecollectReason: skip } : {},
+    );
+    return { verdict, recollectFn, skip };
+  };
+
+  let base = "";
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "drift-sync-check-"));
+    git("init", "-q");
+    write(REGISTRY_PATH, REAL_REGISTRY);
+    write(PIN_PATH, REAL_PIN_FILE);
+    write("src/index.ts", "export {};\n");
+    base = commit("base");
+    process.chdir(repo);
+  });
+  afterEach(() => {
+    process.chdir(origCwd);
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("run 42286556743: a COMMITTED deprecation-only sync skips the live re-collect", () => {
+    write(REGISTRY_PATH, DEPRECATION_ONLY);
+    commit("sync");
+    const { verdict, recollectFn, skip } = evaluate(base);
+    expect(skip).toContain("no live drift surface reads deprecatedFamilies");
+    expect(recollectFn).not.toHaveBeenCalled();
+    expect(verdict.ok).toBe(true);
+    // Without the base the committed edit is invisible, so nothing is skipped.
+    expect(realCliDeps("HEAD").recollectSkipReason()).toBeNull();
+  });
+
+  it("gate-1 sees a COMMITTED off-allowlist file and refuses", () => {
+    write(REGISTRY_PATH, DEPRECATION_ONLY);
+    write("src/index.ts", "export const sneaky = 1;\n");
+    commit("sync");
+    const { verdict, recollectFn } = evaluate(base);
+    expect(verdict.reason).toBe(SyncCheckReason.OFF_ALLOWLIST_CHANGE);
+    expect(verdict.offendingFiles).toEqual(["src/index.ts"]);
+    expect(recollectFn).not.toHaveBeenCalled();
+  });
+
+  it("gate-1b judges a COMMITTED pin-file edit against the base, and refuses a non-pin edit", () => {
+    write(PIN_PATH, REAL_PIN_FILE + "\n// not a pin\n");
+    commit("sync");
+    expect(realCliDeps(base).readCommittedPinFile()).toBe(REAL_PIN_FILE);
+    const { verdict } = evaluate(base);
+    expect(verdict.reason).toBe(SyncCheckReason.PIN_FILE_NOT_A_MEMBERSHIP_REPIN);
+  });
+
+  it("a committed includeFamilies change still runs the live re-collect", () => {
+    write(REGISTRY_PATH, registryWith([{ set: "includeFamilies", family: "gpt-brand-new" }]));
+    commit("sync");
+    const { recollectFn, verdict } = evaluate(base);
+    expect(recollectFn).toHaveBeenCalledOnce();
+    expect(verdict.reason).toBe(SyncCheckReason.RESIDUAL_CRITICAL_DRIFT);
+  });
+
+  it("a base that is not a commit is a CONFIG ERROR", () => {
+    expect(() =>
+      realCliDeps("0000000000000000000000000000000000000000").recollectSkipReason(),
+    ).toThrow(SyncCheckConfigError);
   });
 });

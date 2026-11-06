@@ -340,12 +340,19 @@ const SYNC_PROVIDERS: readonly Provider[] = ["openai", "anthropic", "gemini"];
 export function deprecationOnlyOutcomes(before: string, after: string): FamilyOutcome[] | null {
   const outcomes: FamilyOutcome[] = [];
   const addedLines = new Set<number>();
+  const afterLines = after.split("\n");
   for (const provider of SYNC_PROVIDERS) {
     const was = familySetMemberLines(before, "deprecatedFamilies", provider);
     const now = familySetMemberLines(after, "deprecatedFamilies", provider);
     if (was === null || now === null) return null;
     for (const [family, line] of now) {
       if (was.has(family)) continue;
+      // The added line must be exactly the writer's shape — the literal, a comma,
+      // and at most a `//` comment (see addFamilyLiteralInSource). Anything else
+      // on it, including a second member, is code a re-collect might observe.
+      if (addedLines.has(line) || !isWriterDeprecationLine(afterLines[line] ?? "", family)) {
+        return null;
+      }
       outcomes.push({
         provider,
         family,
@@ -355,11 +362,17 @@ export function deprecationOnlyOutcomes(before: string, after: string): FamilyOu
       addedLines.add(line);
     }
   }
-  const rest = after
-    .split("\n")
-    .filter((_, i) => !addedLines.has(i))
-    .join("\n");
+  const rest = afterLines.filter((_, i) => !addedLines.has(i)).join("\n");
   return rest === before ? outcomes : null;
+}
+
+/** `<indent>"<family>",` with an optional ` // <comment>` — the only line drift-sync writes. */
+function isWriterDeprecationLine(line: string, family: string): boolean {
+  const literal = `${JSON.stringify(family)},`;
+  const body = line.trimStart();
+  if (!body.startsWith(literal)) return false;
+  const tail = body.slice(literal.length);
+  return tail === "" || tail.startsWith(" //");
 }
 
 /**
@@ -552,17 +565,41 @@ export function readCommittedFile(relPath: string, rev = "HEAD"): string {
   }
 }
 
-/** Every file that differs from `base`: committed since it, staged, unstaged or untracked. */
-export function changedFilesSince(base: string): string[] {
+/**
+ * Resolve `--base` to a commit SHA. Fail-closed: a value git could read as an
+ * OPTION (leading `-`, e.g. `--output=<path>`) or one that is not a commit is a
+ * config error, never a revision passed on to `git diff` / `git show`.
+ */
+export function resolveBase(base: string): string {
+  if (base === "" || base.startsWith("-")) {
+    throw new SyncCheckConfigError(
+      `--base must be a revision, not an option: ${JSON.stringify(base)}`,
+    );
+  }
+  try {
+    return execFileSync(
+      "git",
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", `${base}^{commit}`],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+  } catch (err: unknown) {
+    throw new SyncCheckConfigError(
+      `--base ${base} is not a commit (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+}
+
+/** Every file that differs from commit `baseSha`: committed since it, staged, unstaged or untracked. */
+export function changedFilesSince(baseSha: string): string[] {
   let committed: string;
   try {
-    committed = execFileSync("git", ["diff", "--name-only", "--no-renames", base], {
+    committed = execFileSync("git", ["diff", "--name-only", "--no-renames", baseSha, "--"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err: unknown) {
     throw new SyncCheckConfigError(
-      `Could not diff against --base ${base} (${err instanceof Error ? err.message : String(err)})`,
+      `Could not diff against --base ${baseSha} (${err instanceof Error ? err.message : String(err)})`,
     );
   }
   return [...new Set([...committed.split("\n").filter(Boolean), ...getChangedFiles()])].sort();
@@ -574,17 +611,25 @@ export interface CliDeps extends SyncCheckDeps {
   recollectSkipReason: () => string | null;
 }
 
+/**
+ * The real deps, with EVERY gate reading the change set against `base`. In the
+ * workflow drift-sync has already committed its edit, so `git status` (and a pin
+ * baseline at HEAD) would show gate-1 and gate-1b an empty diff to approve.
+ */
 export function realCliDeps(base: string): CliDeps {
+  const baseSha = resolveBase(base);
+  let changed: string[] | undefined;
+  const changedFiles = (): string[] => (changed ??= changedFilesSince(baseSha));
   return {
-    getChangedFiles,
-    readCommittedPinFile: () => readCommittedFile(LOGIC_PIN_TEST),
+    getChangedFiles: changedFiles,
+    readCommittedPinFile: () => readCommittedFile(LOGIC_PIN_TEST, baseSha),
     readWorkingPinFile: () => readFileSync(resolve(LOGIC_PIN_TEST), "utf-8"),
     runPinCheck: () => runPinCheck(),
     recollect: () => recollect(),
     recollectSkipReason: () =>
       recollectSkipReason(
-        changedFilesSince(base),
-        () => readCommittedFile(MODEL_REGISTRY_REL_PATH, base),
+        changedFiles(),
+        () => readCommittedFile(MODEL_REGISTRY_REL_PATH, baseSha),
         () => readFileSync(resolve(MODEL_REGISTRY_REL_PATH), "utf-8"),
       ),
   };
@@ -597,7 +642,9 @@ export function realCliDeps(base: string): CliDeps {
  */
 export function parseCliArgs(argv: readonly string[]): { base: string } {
   if (argv.length === 0) return { base: "HEAD" };
-  if (argv.length === 2 && argv[0] === "--base" && argv[1]) return { base: argv[1] };
+  if (argv.length === 2 && argv[0] === "--base" && argv[1] && !argv[1].startsWith("-")) {
+    return { base: argv[1] };
+  }
   throw new SyncCheckConfigError(
     `usage: drift-sync-check.ts [--base <rev>] (got: ${argv.join(" ")})`,
   );
