@@ -348,6 +348,10 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // text-generation drift. Same treatment as every other gpt-image-* family.
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    // 2026-11-04 image line (Drift Tests run 41978509138): the 2.6 point
+    // release of the same flare/sunburst pair. Image generation, not chat.
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
     "chatgpt-image-latest",
     // Bare chat alias — a moving alias (not a stable mocked family); matches the
     // *-latest exclude policy (chatgpt-image-latest, omni-moderation-latest, etc.)
@@ -547,6 +551,17 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-gemini-omni-1.1-flash-new-family.md.
     "gemini-omni-1.1-flash",
+    // Gemini Omni 1.2 Flash, first listed 2026-11-05 (Fix Drift run
+    // 42174168128): the stable successor to `gemini-omni-1.1-flash` on the same
+    // model card (`/docs/models/gemini-omni-flash`), which says 1.1 routes to
+    // 1.2 on 2026-12-03. Same category: video generation and editing. Input
+    // text/image/video, output video with native audio plus text. The text is
+    // a by-product of a video turn, not a chat turn, so the family is excluded
+    // like `gemini-nano-banana-2.1` (image AND text output) and not included.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/gemini-gemini-omni-1.2-flash-new-family.md.
+    "gemini-omni-1.2-flash",
     // Restricted EARLY-ACCESS (EAP) surface, not a GA tier. Google's own live
     // /models entry declares `displayName` AND `description` as
     // "[Confidential] Gemini 3.7 Flash Video Understanding EAP" — the only one

@@ -199,6 +199,12 @@ describe("gemini transcription + omni-video line is classified as EXCLUDED", () 
     ).toEqual([]);
   });
 
+  it("gemini-omni-1.2-flash is EXCLUDED, and is its own family", () => {
+    expect(normalizeModelFamily("gemini-omni-1.2-flash", "gemini")).toBe("gemini-omni-1.2-flash");
+    expect(isClassifiedFamily("gemini-omni-1.2-flash", "gemini")).toBe(true);
+    expect(unclassifiedFamilies(["gemini-omni-1.2-flash"], "gemini")).toEqual([]);
+  });
+
   it("neither transcribe key classifies the other, nor an unrelated extension", () => {
     // The two entries are distinct families; a `startsWith`-shaped classification
     // bug would let the shorter key classify the longer one (or vice versa) and

@@ -41,7 +41,7 @@ const nativeAuthExpected: ObservedResponse = {
 };
 // F4B observes the default permissive version behavior; F5 owns enforcement.
 const nativeCountRequest = {
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   messages: [{ role: "user", content: "abcd" }],
 };
 let nativeAuthServer: GoldenServer;
@@ -292,7 +292,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 // K9 has a separate explicitly modeled contract and native-trigger classification.
 const K5_CAPTURE_DIR = process.env.ANTHROPIC_K5_CAPTURE_DIR;
 const K5_REQUEST = {
-  model: "claude-sonnet-4-5-20250929",
+  model: "claude-sonnet-4-6",
   max_tokens: 32,
   messages: [
     {
@@ -548,8 +548,12 @@ describe.skipIf(!ANTHROPIC_API_KEY && !K5_CAPTURE_DIR)("Anthropic K5 exhaustion 
 // K9 is modeled/native-unverified (§11.4.1). These two bounded recurring
 // requests can report NOT_TRIGGERED only after validating complete native wire.
 const K9_CAPTURE_DIR = process.env.ANTHROPIC_K9_CAPTURE_DIR;
+// Pinned to claude-sonnet-4-6, not claude-sonnet-5-5: this request uses manual
+// extended thinking (`type: "enabled"` + `budget_tokens`), which Sonnet 5.5
+// rejects with a 400. Sonnet 5.5 also turns thinking on when the field is
+// omitted, which would add thinking blocks to the K5 and count probes above.
 const K9_REQUEST = {
-  model: "claude-sonnet-4-5-20250929",
+  model: "claude-sonnet-4-6",
   max_tokens: 1025,
   thinking: { type: "enabled", budget_tokens: 1024 },
   messages: [

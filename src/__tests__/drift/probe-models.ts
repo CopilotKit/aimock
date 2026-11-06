@@ -72,14 +72,11 @@ export const DRIFT_PROBE_MODELS: readonly DriftProbeModel[] = [
     model: "claude-haiku-4-5-20251001",
     source: "src/__tests__/drift/providers.ts",
   },
+  // The count, K5 and K9 probes. Dateless ids are pinned snapshots from 4.6 on,
+  // so one id covers what used to be an alias and a dated pin.
   {
     provider: "anthropic",
-    model: "claude-sonnet-4-5-20250929",
-    source: "src/__tests__/drift/anthropic.drift.ts",
-  },
-  {
-    provider: "anthropic",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-4-6",
     source: "src/__tests__/drift/anthropic.drift.ts",
   },
   // Gemini Developer API
