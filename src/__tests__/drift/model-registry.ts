@@ -348,6 +348,10 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // text-generation drift. Same treatment as every other gpt-image-* family.
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    // 2026-11-04 image line (Drift Tests run 41978509138): the 2.6 point
+    // release of the same flare/sunburst pair. Image generation, not chat.
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
     "chatgpt-image-latest",
     // Bare chat alias — a moving alias (not a stable mocked family); matches the
     // *-latest exclude policy (chatgpt-image-latest, omni-moderation-latest, etc.)
