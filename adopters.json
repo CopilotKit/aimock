@@ -523,16 +523,6 @@
       "firstSeen": "2026-11-09"
     },
     {
-      "repo": "apache/camel",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
       "repo": "App-netizen-arch/special-octo-chainsaw",
       "stars": 0,
       "isFork": false,
@@ -542,16 +532,6 @@
       ],
       "missedRuns": 0,
       "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "appwrite/appwrite",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
     },
     {
       "repo": "arcacomputer/openclaw-concentrateai",
@@ -1051,16 +1031,6 @@
       "firstSeen": "2026-10-26"
     },
     {
-      "repo": "codacy-open-source-projects-scans/camel",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
       "repo": "code-abdulrehman/agent-skills",
       "stars": 0,
       "isFork": false,
@@ -1536,16 +1506,6 @@
       "firstSeen": "2026-11-09"
     },
     {
-      "repo": "forest-town/camel-dependency-graph-standalone",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
       "repo": "fr4nkastro/openclaw-stable",
       "stars": 0,
       "isFork": false,
@@ -1768,18 +1728,6 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "hasanshahriar32/npm-supply-chain-research",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "npx"
       ],
       "missedRuns": 0,
       "firstSeen": "2026-11-09"
