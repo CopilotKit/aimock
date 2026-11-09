@@ -520,7 +520,31 @@ describe("runCli", () => {
 // ---------------------------------------------------------------------------
 
 const REGISTRY_PATH = "src/__tests__/drift/model-registry.ts";
-const REAL_REGISTRY = readFileSync(REGISTRY_PATH, "utf-8");
+/**
+ * The real registry with `deprecatedFamilies.openai` emptied back to its
+ * comment-only shape: the baseline every fixture below replays an openai
+ * deprecation run against. Read raw, the file stops being that baseline the
+ * morning drift-sync commits those same entries (PR #606 recorded exactly
+ * these 17), and the writer then — correctly — refuses to add a family twice.
+ * Throws rather than handing back a ledger that is still non-empty.
+ */
+function withEmptyOpenaiLedger(src: string): string {
+  const ledger = src.indexOf("export const deprecatedFamilies");
+  const open = src.indexOf('openai: familySet("openai", [', ledger);
+  const close = src.indexOf("\n  ]),", open);
+  if (ledger < 0 || open < 0 || close < 0) {
+    throw new Error("fixture: deprecatedFamilies.openai not found in the registry");
+  }
+  const body = src.slice(open, close).replace(/\n {4}"[^"\n]+", \/\/ DEPRECATED [^\n]*/g, "");
+  if (!body.endsWith("// drift-sync appends recorded deprecations here.")) {
+    throw new Error(
+      "fixture: deprecatedFamilies.openai holds something other than recorded deprecations",
+    );
+  }
+  return src.slice(0, open) + body + src.slice(close);
+}
+
+const BASE_REGISTRY = withEmptyOpenaiLedger(readFileSync(REGISTRY_PATH, "utf-8"));
 
 /** The 17 `deprecatedFamilies.openai` entries Fix Drift run 42286556743 committed. */
 const RUN_42286556743_DEPRECATIONS = [
@@ -547,7 +571,7 @@ const RUN_42286556743_DEPRECATIONS = [
 function registryWith(
   edits: { set: "includeFamilies" | "excludeFamilies" | "deprecatedFamilies"; family: string }[],
 ): string {
-  let text = REAL_REGISTRY;
+  let text = BASE_REGISTRY;
   for (const { set, family } of edits) {
     const out = addFamilyLiteralInSource(text, set, "openai", family, "fixture");
     if (!out.changed) throw new Error(`fixture: could not add ${family} to ${set}.openai`);
@@ -573,14 +597,14 @@ function liveFlakeReport(): DriftReport {
 function skipFor(changedFiles: string[], after: string): string | null {
   return recollectSkipReason(
     changedFiles,
-    () => REAL_REGISTRY,
+    () => BASE_REGISTRY,
     () => after,
   );
 }
 
 describe("deprecationOnlyOutcomes", () => {
   it("reads run 42286556743's 17 deprecations back out of the diff", () => {
-    const outcomes = deprecationOnlyOutcomes(REAL_REGISTRY, DEPRECATION_ONLY);
+    const outcomes = deprecationOnlyOutcomes(BASE_REGISTRY, DEPRECATION_ONLY);
     expect(outcomes?.map((o) => o.family)).toEqual(RUN_42286556743_DEPRECATIONS);
     expect(new Set(outcomes?.map((o) => o.action))).toEqual(new Set(["deprecation-recorded"]));
   });
@@ -590,12 +614,12 @@ describe("deprecationOnlyOutcomes", () => {
       { set: "deprecatedFamilies", family: "gpt-4" },
       { set: "includeFamilies", family: "gpt-brand-new" },
     ]);
-    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)).toBeNull();
+    expect(deprecationOnlyOutcomes(BASE_REGISTRY, after)).toBeNull();
   });
 
   it("is null when the diff removes a recorded deprecation", () => {
     const after = DEPRECATION_ONLY;
-    expect(deprecationOnlyOutcomes(after, REAL_REGISTRY)).toBeNull();
+    expect(deprecationOnlyOutcomes(after, BASE_REGISTRY)).toBeNull();
   });
 });
 
@@ -624,7 +648,7 @@ describe("recollectSkipReason — the CLI skips gate-3 exactly where drift-sync 
   });
 
   it("does NOT skip when nothing changed (and never reads the registry)", () => {
-    const read = vi.fn(() => REAL_REGISTRY);
+    const read = vi.fn(() => BASE_REGISTRY);
     expect(recollectSkipReason([], read, read)).toBeNull();
     expect(read).not.toHaveBeenCalled();
   });
@@ -705,28 +729,28 @@ describe("parseCliArgs", () => {
 
 describe("deprecationOnlyOutcomes — an added line must be the writer's exact shape", () => {
   it("is null when a deprecation line also carries code after the literal", () => {
-    const after = REAL_REGISTRY.replace(
+    const after = BASE_REGISTRY.replace(
       "    // drift-sync appends recorded deprecations here.\n  ]),",
       '    // drift-sync appends recorded deprecations here.\n    "gpt-x", ...(() => { return []; })(),\n  ]),',
     );
-    expect(after).not.toBe(REAL_REGISTRY);
-    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)).toBeNull();
+    expect(after).not.toBe(BASE_REGISTRY);
+    expect(deprecationOnlyOutcomes(BASE_REGISTRY, after)).toBeNull();
   });
 
   it("is null when one added line carries two members", () => {
-    const after = REAL_REGISTRY.replace(
+    const after = BASE_REGISTRY.replace(
       "    // drift-sync appends recorded deprecations here.\n  ]),",
       '    // drift-sync appends recorded deprecations here.\n    "gpt-x", "gpt-y",\n  ]),',
     );
-    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)).toBeNull();
+    expect(deprecationOnlyOutcomes(BASE_REGISTRY, after)).toBeNull();
   });
 
   it("accepts the writer's own line, with or without a trailing comment", () => {
-    const after = REAL_REGISTRY.replace(
+    const after = BASE_REGISTRY.replace(
       "    // drift-sync appends recorded deprecations here.\n  ]),",
       '    // drift-sync appends recorded deprecations here.\n    "gpt-x",\n    "gpt-y", // DEPRECATED fixture\n  ]),',
     );
-    expect(deprecationOnlyOutcomes(REAL_REGISTRY, after)?.map((o) => o.family)).toEqual([
+    expect(deprecationOnlyOutcomes(BASE_REGISTRY, after)?.map((o) => o.family)).toEqual([
       "gpt-x",
       "gpt-y",
     ]);
@@ -805,7 +829,7 @@ describe("realCliDeps(--base) against a committed sync (temp git repo)", () => {
   beforeEach(() => {
     repo = mkdtempSync(join(tmpdir(), "drift-sync-check-"));
     git("init", "-q");
-    write(REGISTRY_PATH, REAL_REGISTRY);
+    write(REGISTRY_PATH, BASE_REGISTRY);
     write(PIN_PATH, REAL_PIN_FILE);
     write("src/index.ts", "export {};\n");
     base = commit("base");

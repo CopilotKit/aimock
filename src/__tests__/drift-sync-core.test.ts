@@ -114,7 +114,7 @@ function fixtureRegistrySource(): string {
 }
 
 /**
- * `count` anthropic families that stand in for GENUINELY RETIRED ones: each is
+ * `count` families of `provider` that stand in for GENUINELY RETIRED ones: each is
  * classified INCLUDE, not forward-looking, and not already in the recorded
  * deprecation ledger — so the sync mirror's `missing` set really does report it.
  *
@@ -127,13 +127,13 @@ function fixtureRegistrySource(): string {
  * broke four tests across this file and the mirror-equivalence guard at once.
  * Throws loudly rather than letting a fixture go quietly vacuous.
  */
-function unrecordedAnthropicFamilies(count: number): string[] {
-  const usable = [...includeFamilies.anthropic].filter(
-    (f) => !deprecatedFamilies.anthropic.has(f) && !FORWARD_LOOKING_FAMILIES.anthropic.has(f),
+function unrecordedFamilies(provider: Provider, count: number): string[] {
+  const usable = [...includeFamilies[provider]].filter(
+    (f) => !deprecatedFamilies[provider].has(f) && !FORWARD_LOOKING_FAMILIES[provider].has(f),
   );
   if (usable.length < count) {
     throw new Error(
-      `need ${count} anthropic families that are neither forward-looking nor already recorded ` +
+      `need ${count} ${provider} families that are neither forward-looking nor already recorded ` +
         `as deprecated, but only ${usable.length} remain (${usable.join(", ")}). These fixtures ` +
         `need a family the deprecation detector will actually report; pick a different provider ` +
         `rather than deleting the assertion.`,
@@ -294,7 +294,7 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
   // missing from the same listing must still be proposed normally.
   it("a forward-looking family (claude-fable-5) absent from live is NEVER proposed for removal, while a genuinely-retired sibling still is", () => {
     const allAnthropic = [...includeFamilies.anthropic];
-    const [retired] = unrecordedAnthropicFamilies(1);
+    const [retired] = unrecordedFamilies("anthropic", 1);
     // Live listing omits BOTH claude-fable-5 (forward-looking, not launched)
     // AND a genuinely-retired stand-in.
     const liveFamilies = allAnthropic.filter((f) => f !== "claude-fable-5" && f !== retired);
@@ -759,7 +759,9 @@ describe("runDriftSyncCore", () => {
   it("a whole morning's worth of deprecations records in ONE run, still zero escalations", () => {
     // The production shape: Anthropic retired ten families at once. Every one
     // must land in the same mechanical run — not nine plus one escalation.
-    const absent = [...includeFamilies.openai].slice(0, 10);
+    // Derived (see `unrecordedFamilies`): a family the real ledger already
+    // records is, correctly, never reported missing again.
+    const absent = unrecordedFamilies("openai", 10);
     const { deps, registry } = makeFakeDeps({ isReferenced: (f) => f !== absent[0] });
     const outcome = runDriftSyncCore(
       [{ provider: "openai", liveModelIds: listingMissing(absent) }],
@@ -1187,11 +1189,13 @@ describe("runDriftSyncCore", () => {
             detail: 'Frozen data set "includeFamilies.openai" membership changed',
           };
     });
+    // Derived (see `unrecordedFamilies`), never hard-coded: a stand-in the real
+    // ledger already records is, correctly, never reported missing again.
+    const dropped = unrecordedFamilies("openai", 3);
     const { deps, notes, registry, revertFiles } = makeFakeDeps({
-      isReferenced: (family) => family !== "gpt-4o",
+      isReferenced: (family) => family !== dropped[0],
       runSyncCheck,
     });
-    const dropped = ["gpt-4o", "gpt-4", "gpt-4-turbo"].filter((f) => includeFamilies.openai.has(f));
     const survivors = [...includeFamilies.openai].filter((f) => !dropped.includes(f));
     const liveIds = [...survivors, ...survivors.map((f) => `${f}-2025-01-01`)];
 
