@@ -759,6 +759,20 @@ function locateFamilySetArray(
   return { elementLines, arrayEndLine, elementIndent };
 }
 
+/**
+ * `exportName[provider]`'s string-literal members, each mapped to the 0-based
+ * source line it sits on, or `null` when the array cannot be located. The same
+ * AST locator the writer edits through, exported so `drift-sync-check` can read a
+ * committed registry diff with it rather than a second parser.
+ */
+export function familySetMemberLines(
+  sourceText: string,
+  exportName: RegistrySetName,
+  provider: Provider,
+): ReadonlyMap<string, number> | null {
+  return locateFamilySetArray(sourceText, exportName, provider)?.elementLines ?? null;
+}
+
 export interface RegistryEditResult {
   changed: boolean;
   text: string;

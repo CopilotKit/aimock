@@ -10,10 +10,10 @@
   },
   "mastra-core-npm": {
     "url": "https://registry.npmjs.org/@mastra%2Fcore/latest",
-    "hash": "sha256:e3527de90125a9692bde4f68ced9eb900e462ade081bb465b11323813a566e5d",
+    "hash": "sha256:db443afb0cf5d3392b5e3d3226d99ed3288d2c038a6077a1a9171d6dd58d6127",
     "checks": {},
-    "version": "1.81.0",
-    "lastChanged": "2026-11-02"
+    "version": "1.82.0",
+    "lastChanged": "2026-11-09"
   },
   "mastra-docs-tool-mocks": {
     "url": "https://mastra.ai/docs/evals/experiments",
