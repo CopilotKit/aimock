@@ -57,7 +57,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-import { getChangedFiles } from "./drift-sync.js";
+import {
+  MODEL_REGISTRY_REL_PATH,
+  familySetMemberLines,
+  gate3SkipReason,
+  getChangedFiles,
+  type FamilyOutcome,
+  type Provider,
+} from "./drift-sync.js";
 import { LOGIC_PIN_REL_PATH, SYNC_REPINNABLE_KEYS, verifyPinFileEdit } from "./drift-pin-file.js";
 import type { DriftReport } from "./drift-types.js";
 
@@ -315,6 +322,78 @@ export function recollect(
 }
 
 // ---------------------------------------------------------------------------
+// (3a) When gate-3 cannot observe the edit — derived from the DIFF, not trusted.
+// ---------------------------------------------------------------------------
+
+const SYNC_PROVIDERS: readonly Provider[] = ["openai", "anthropic", "gemini"];
+
+/**
+ * Read a registry diff back into the `deprecation-recorded` outcomes that would
+ * have produced it, or `null` when the diff is anything else.
+ *
+ * `null` unless BOTH hold: every member added to a `deprecatedFamilies.<provider>`
+ * array sits on its own line, and deleting exactly those lines from `after`
+ * reproduces `before` byte for byte. So any other edit — an `includeFamilies` or
+ * `excludeFamilies` change, a removal, a touched rule — returns `null`, and the
+ * live re-collect runs.
+ */
+export function deprecationOnlyOutcomes(before: string, after: string): FamilyOutcome[] | null {
+  const outcomes: FamilyOutcome[] = [];
+  const addedLines = new Set<number>();
+  const afterLines = after.split("\n");
+  for (const provider of SYNC_PROVIDERS) {
+    const was = familySetMemberLines(before, "deprecatedFamilies", provider);
+    const now = familySetMemberLines(after, "deprecatedFamilies", provider);
+    if (was === null || now === null) return null;
+    for (const [family, line] of now) {
+      if (was.has(family)) continue;
+      // The added line must be exactly the writer's shape — the literal, a comma,
+      // and at most a `//` comment (see addFamilyLiteralInSource). Anything else
+      // on it, including a second member, is code a re-collect might observe.
+      if (addedLines.has(line) || !isWriterDeprecationLine(afterLines[line] ?? "", family)) {
+        return null;
+      }
+      outcomes.push({
+        provider,
+        family,
+        action: "deprecation-recorded",
+        detail: `recorded in deprecatedFamilies.${provider} (read from the diff)`,
+      });
+      addedLines.add(line);
+    }
+  }
+  const rest = afterLines.filter((_, i) => !addedLines.has(i)).join("\n");
+  return rest === before ? outcomes : null;
+}
+
+/** `<indent>"<family>",` with an optional ` // <comment>` — the only line drift-sync writes. */
+function isWriterDeprecationLine(line: string, family: string): boolean {
+  const literal = `${JSON.stringify(family)},`;
+  const body = line.trimStart();
+  if (!body.startsWith(literal)) return false;
+  const tail = body.slice(literal.length);
+  return tail === "" || tail.startsWith(" //");
+}
+
+/**
+ * Why gate-3 cannot observe this change set, or `null` when it must run. The
+ * answer is drift-sync's own {@link gate3SkipReason}, applied to outcomes this
+ * check re-derives from the diff (`changedFiles`, and the registry before and
+ * after) instead of taking drift-sync's word for them. Only a diff that touches
+ * `model-registry.ts` alone and only appends to `deprecatedFamilies` qualifies.
+ */
+export function recollectSkipReason(
+  changedFiles: readonly string[],
+  readRegistryBefore: () => string,
+  readRegistryAfter: () => string,
+): string | null {
+  if (changedFiles.length !== 1 || changedFiles[0] !== MODEL_REGISTRY_REL_PATH) return null;
+  const outcomes = deprecationOnlyOutcomes(readRegistryBefore(), readRegistryAfter());
+  if (outcomes === null || outcomes.length === 0) return null;
+  return gate3SkipReason(outcomes);
+}
+
+// ---------------------------------------------------------------------------
 // The check (composition of gates 1-3).
 // ---------------------------------------------------------------------------
 
@@ -472,33 +551,115 @@ export function evaluateSyncCheck(
  * gate has no baseline to judge the diff against and must refuse, never fall
  * back to "assume unchanged".
  */
-export function readCommittedFile(relPath: string): string {
+export function readCommittedFile(relPath: string, rev = "HEAD"): string {
   try {
-    return execFileSync("git", ["show", `HEAD:${relPath}`], {
+    return execFileSync("git", ["show", `${rev}:${relPath}`], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err: unknown) {
     throw new SyncCheckConfigError(
-      `Could not read ${relPath} at HEAD (${err instanceof Error ? err.message : String(err)}) — ` +
-        `gate-1 cannot verify the pin-file diff without its pre-sync baseline`,
+      `Could not read ${relPath} at ${rev} (${err instanceof Error ? err.message : String(err)}) — ` +
+        `the check cannot judge a diff without its pre-sync baseline`,
     );
   }
 }
 
-const REAL_DEPS: SyncCheckDeps = {
-  getChangedFiles,
-  readCommittedPinFile: () => readCommittedFile(LOGIC_PIN_TEST),
-  readWorkingPinFile: () => readFileSync(resolve(LOGIC_PIN_TEST), "utf-8"),
-  runPinCheck: () => runPinCheck(),
-  recollect: () => recollect(),
-};
+/**
+ * Resolve `--base` to a commit SHA. Fail-closed: a value git could read as an
+ * OPTION (leading `-`, e.g. `--output=<path>`) or one that is not a commit is a
+ * config error, never a revision passed on to `git diff` / `git show`.
+ */
+export function resolveBase(base: string): string {
+  if (base === "" || base.startsWith("-")) {
+    throw new SyncCheckConfigError(
+      `--base must be a revision, not an option: ${JSON.stringify(base)}`,
+    );
+  }
+  try {
+    return execFileSync(
+      "git",
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", `${base}^{commit}`],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+  } catch (err: unknown) {
+    throw new SyncCheckConfigError(
+      `--base ${base} is not a commit (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+}
+
+/** Every file that differs from commit `baseSha`: committed since it, staged, unstaged or untracked. */
+export function changedFilesSince(baseSha: string): string[] {
+  let committed: string;
+  try {
+    committed = execFileSync("git", ["diff", "--name-only", "--no-renames", baseSha, "--"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err: unknown) {
+    throw new SyncCheckConfigError(
+      `Could not diff against --base ${baseSha} (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  return [...new Set([...committed.split("\n").filter(Boolean), ...getChangedFiles()])].sort();
+}
+
+/** The CLI deps: the gates, plus the gate-3 skip derived from the diff against `base`. */
+export interface CliDeps extends SyncCheckDeps {
+  /** See {@link recollectSkipReason}. `null` runs the live re-collect. */
+  recollectSkipReason: () => string | null;
+}
+
+/**
+ * The real deps, with EVERY gate reading the change set against `base`. In the
+ * workflow drift-sync has already committed its edit, so `git status` (and a pin
+ * baseline at HEAD) would show gate-1 and gate-1b an empty diff to approve.
+ */
+export function realCliDeps(base: string): CliDeps {
+  const baseSha = resolveBase(base);
+  let changed: string[] | undefined;
+  const changedFiles = (): string[] => (changed ??= changedFilesSince(baseSha));
+  return {
+    getChangedFiles: changedFiles,
+    readCommittedPinFile: () => readCommittedFile(LOGIC_PIN_TEST, baseSha),
+    readWorkingPinFile: () => readFileSync(resolve(LOGIC_PIN_TEST), "utf-8"),
+    runPinCheck: () => runPinCheck(),
+    recollect: () => recollect(),
+    recollectSkipReason: () =>
+      recollectSkipReason(
+        changedFiles(),
+        () => readCommittedFile(MODEL_REGISTRY_REL_PATH, baseSha),
+        () => readFileSync(resolve(MODEL_REGISTRY_REL_PATH), "utf-8"),
+      ),
+  };
+}
+
+/**
+ * `--base <rev>`: the pre-sync commit. drift-sync COMMITS its edit before the
+ * workflow runs this check, so without it the diff against HEAD is empty and
+ * nothing can be derived from it. Defaults to HEAD (an uncommitted sync).
+ */
+export function parseCliArgs(argv: readonly string[]): { base: string } {
+  if (argv.length === 0) return { base: "HEAD" };
+  if (argv.length === 2 && argv[0] === "--base" && argv[1] && !argv[1].startsWith("-")) {
+    return { base: argv[1] };
+  }
+  throw new SyncCheckConfigError(
+    `usage: drift-sync-check.ts [--base <rev>] (got: ${argv.join(" ")})`,
+  );
+}
 
 /** Run the check against real deps, printing a machine-readable `reason=` line. */
-export function runCli(deps: SyncCheckDeps = REAL_DEPS): number {
+export function runCli(deps: CliDeps | (() => CliDeps)): number {
   let verdict: SyncCheckVerdict;
   try {
-    verdict = evaluateSyncCheck(deps);
+    const d = typeof deps === "function" ? deps() : deps;
+    const skipReason = d.recollectSkipReason();
+    verdict = evaluateSyncCheck(
+      d,
+      skipReason !== null ? { skipRecollect: true, skipRecollectReason: skipReason } : {},
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`CONFIG_ERROR: ${msg}`);
@@ -529,5 +690,5 @@ function isDirectRun(): boolean {
 }
 
 if (isDirectRun()) {
-  process.exit(runCli());
+  process.exit(runCli(() => realCliDeps(parseCliArgs(process.argv.slice(2)).base)));
 }

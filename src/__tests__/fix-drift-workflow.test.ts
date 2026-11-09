@@ -2369,7 +2369,15 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
       "the defense-in-depth re-assert is not gated on an ok-applied sync, so it " +
         "runs (and can fail the job) on runs that applied nothing",
     ).toBe("steps.sync.outputs.reason == 'ok-applied'");
-    expect(codeOf(assertStep)).toContain("npx tsx scripts/drift-sync-check.ts");
+    expect(codeOf(assertStep)).toContain(
+      'npx tsx scripts/drift-sync-check.ts --base "${BASE_SHA}"',
+    );
+    expect(
+      assertStep.env?.BASE_SHA,
+      "drift-sync has already COMMITTED its edit when this step runs, so without the " +
+        "pre-sync base the check sees an empty diff and cannot tell a deprecation-only " +
+        "sync (which no live surface observes) from any other",
+    ).toBe("${{ steps.gitcfg.outputs.base_sha }}");
   });
 
   it("the PR-open step is gated on reason == 'ok-applied', not on a verdict function", () => {
