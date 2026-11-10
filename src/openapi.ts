@@ -1442,6 +1442,65 @@ const COMPONENTS: Record<string, unknown> = {
       output_format: { type: "string" },
     },
   },
+  ScribeRequest: {
+    type: "object",
+    required: ["file"],
+    properties: {
+      model_id: { type: "string" },
+      file: { type: "string", format: "binary", description: "Audio file (multipart)" },
+      language_code: { type: "string" },
+      timestamps_granularity: { type: "string" },
+      tag_audio_events: { type: "string" },
+    },
+  },
+  ScribeResponse: {
+    type: "object",
+    properties: {
+      text: { type: "string" },
+      audio_duration_secs: { type: "number" },
+      words: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            type: { type: "string" },
+            text: { type: "string" },
+            start: { type: "number" },
+            end: { type: "number" },
+          },
+        },
+      },
+    },
+  },
+  AudioIsolationRequest: {
+    type: "object",
+    required: ["audio"],
+    properties: {
+      audio: { type: "string", format: "binary", description: "Audio file (multipart)" },
+    },
+  },
+  SeedSpeechRequest: {
+    type: "object",
+    required: ["text_prompt"],
+    properties: {
+      model: { type: "string" },
+      text_prompt: { type: "string" },
+      references: {
+        type: "array",
+        items: { type: "object", properties: { audio_data: { type: "string" } } },
+      },
+      audio_config: { type: "object" },
+    },
+  },
+  SeedSpeechResponse: {
+    type: "object",
+    properties: {
+      code: { type: "integer" },
+      message: { type: "string" },
+      audio: { type: "string", description: "Base64 audio" },
+      original_duration: { type: "number" },
+    },
+  },
   VoiceDesignRequest: {
     type: "object",
     required: ["voice_description"],
@@ -2779,6 +2838,18 @@ const SCHEMA_REFS: Record<string, OperationSchemas> = {
   "POST /v1/text-to-speech/{voice_id}": { request: "ElevenLabsTTSRequest", respContent: AUDIO },
   "POST /v1/music": { request: "ElevenLabsMusicRequest", respContent: AUDIO },
   "POST /v1/music/{subtype}": { request: "ElevenLabsMusicRequest", respContent: AUDIO },
+  "POST /v1/speech-to-text": {
+    request: "ScribeRequest",
+    reqContent: MULTIPART,
+    response: "ScribeResponse",
+  },
+  "POST /v1/audio-isolation": {
+    request: "AudioIsolationRequest",
+    reqContent: MULTIPART,
+    respContent: AUDIO,
+  },
+  // BytePlus Seed Speech
+  "POST /api/v3/tts/create": { request: "SeedSpeechRequest", response: "SeedSpeechResponse" },
   // fal.ai
   "POST /fal/queue/submit/{model}": {
     request: "FalQueueSubmitRequest",

@@ -252,6 +252,9 @@ export interface FixtureMatch {
     | "elevenlabs-voice"
     | "elevenlabs-voice-get"
     | "elevenlabs-voice-delete"
+    | "elevenlabs-stt"
+    | "elevenlabs-audio-isolation"
+    | "byteplus-tts"
     | "fal-audio"
     | "fal"
     | "realtime"
@@ -1271,6 +1274,9 @@ export interface FixtureFileEntry {
       | "elevenlabs-voice"
       | "elevenlabs-voice-get"
       | "elevenlabs-voice-delete"
+      | "elevenlabs-stt"
+      | "elevenlabs-audio-isolation"
+      | "byteplus-tts"
       | "fal-audio"
       | "fal"
       | "realtime"
@@ -1554,7 +1560,8 @@ export type RecordProviderKey =
   | "openrouter"
   | "veo"
   | "grok"
-  | "byteplus";
+  | "byteplus"
+  | "byteplus-speech";
 
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;

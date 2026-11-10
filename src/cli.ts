@@ -70,6 +70,7 @@ Options:
       --provider-cohere <url>     Upstream URL for Cohere
       --provider-openrouter <url> Upstream URL for OpenRouter (video record proxy)
       --provider-byteplus <url>   Upstream ORIGIN for BytePlus Ark (e.g. https://ark.ap-southeast.bytepluses.com — origin only, no /api/v3)
+      --provider-byteplus-speech <url>  Upstream ORIGIN for BytePlus Seed Speech (e.g. https://voice.ap-southeast-1.bytepluses.com)
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --max-proxy-buffer-bytes <n> Cap (bytes) on in-memory proxy-path buffer; full body still relayed (default: 67108864)
@@ -118,6 +119,7 @@ const { values } = parseArgs({
     "provider-cohere": { type: "string" },
     "provider-openrouter": { type: "string" },
     "provider-byteplus": { type: "string" },
+    "provider-byteplus-speech": { type: "string" },
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
     "max-proxy-buffer-bytes": { type: "string" },
@@ -325,6 +327,8 @@ if (values.record || values["proxy-only"]) {
   if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
   if (values["provider-openrouter"]) providers.openrouter = values["provider-openrouter"];
   if (values["provider-byteplus"]) providers.byteplus = values["provider-byteplus"];
+  if (values["provider-byteplus-speech"])
+    providers["byteplus-speech"] = values["provider-byteplus-speech"];
 
   if (Object.keys(providers).length === 0) {
     console.error(
@@ -378,6 +382,7 @@ if (values.record || values["proxy-only"]) {
       "provider-cohere",
       "provider-openrouter",
       "provider-byteplus",
+      "provider-byteplus-speech",
     ] as const
   ).filter((flag) => values[flag] !== undefined);
   if (droppedProviderFlags.length > 0) {

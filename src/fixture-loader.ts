@@ -1039,7 +1039,10 @@ function isErrorEndpointCompatible(req: ChatCompletionRequest): boolean {
     reqEndpoint === "elevenlabs-voice-design" ||
     reqEndpoint === "elevenlabs-voice" ||
     reqEndpoint === "elevenlabs-voice-get" ||
-    reqEndpoint === "elevenlabs-voice-delete"
+    reqEndpoint === "elevenlabs-voice-delete" ||
+    reqEndpoint === "elevenlabs-stt" ||
+    reqEndpoint === "elevenlabs-audio-isolation" ||
+    reqEndpoint === "byteplus-tts"
   );
 }
 

@@ -58,6 +58,8 @@ const PROVIDER_AUTH_SCHEMES: Partial<Record<RecordProviderKey, AuthScheme>> = {
   ollama: { kind: "bearer" }, // Ollama Cloud / bearer-gated Ollama servers
   // Anthropic.
   anthropic: { kind: "x-api-key" },
+  // BytePlus Seed Speech (voice.*.bytepluses.com) — X-Api-Key, unlike Ark's bearer.
+  "byteplus-speech": { kind: "x-api-key" },
   // Google (Gemini + Veo) use the x-goog-api-key header scheme.
   gemini: { kind: "x-goog-api-key" },
   "gemini-interactions": { kind: "x-goog-api-key" },
@@ -261,6 +263,8 @@ export function readProviderKeysFromEnv(
   if (env.AIMOCK_PROVIDER_COHERE_KEY) keys.cohere = env.AIMOCK_PROVIDER_COHERE_KEY;
   if (env.AIMOCK_PROVIDER_GROK_KEY) keys.grok = env.AIMOCK_PROVIDER_GROK_KEY;
   if (env.AIMOCK_PROVIDER_BYTEPLUS_KEY) keys.byteplus = env.AIMOCK_PROVIDER_BYTEPLUS_KEY;
+  if (env.AIMOCK_PROVIDER_BYTEPLUS_SPEECH_KEY)
+    keys["byteplus-speech"] = env.AIMOCK_PROVIDER_BYTEPLUS_SPEECH_KEY;
   if (env.AIMOCK_PROVIDER_OLLAMA_KEY) keys.ollama = env.AIMOCK_PROVIDER_OLLAMA_KEY;
   if (env.AIMOCK_PROVIDER_VEO_KEY) keys.veo = env.AIMOCK_PROVIDER_VEO_KEY;
   if (env.AIMOCK_PROVIDER_AZURE_KEY) keys.azure = env.AIMOCK_PROVIDER_AZURE_KEY;

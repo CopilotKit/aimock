@@ -1921,6 +1921,7 @@ describe("OpenAPI route catalog", () => {
       BEDROCK_CONVERSE_STREAM_RE: ["POST /model/{modelId}/converse-stream"],
       BEDROCK_INVOKE_RE: ["POST /model/{modelId}/invoke"],
       BEDROCK_STREAM_RE: ["POST /model/{modelId}/invoke-with-response-stream"],
+      BYTEPLUS_TTS_PATH: ["POST /api/v3/tts/create"],
       BYTEPLUS_VIDEO_STATUS_RE: [
         "GET /contents/generations/tasks/{id}",
         "GET /api/v3/contents/generations/tasks/{id}",
@@ -1932,7 +1933,9 @@ describe("OpenAPI route catalog", () => {
       COHERE_CHAT_PATH: ["POST /v2/chat"],
       COHERE_EMBED_PATH: ["POST /v2/embed"],
       COMPLETIONS_PATH: ["POST /v1/chat/completions"],
+      ELEVENLABS_AUDIO_ISOLATION_PATH: ["POST /v1/audio-isolation"],
       ELEVENLABS_MUSIC_RE: ["POST /v1/music", "POST /v1/music/{subtype}"],
+      ELEVENLABS_STT_PATH: ["POST /v1/speech-to-text"],
       ELEVENLABS_SOUND_GENERATION_PATH: ["POST /v1/sound-generation"],
       ELEVENLABS_TTS_RE: ["POST /v1/text-to-speech/{voice_id}"],
       ELEVENLABS_VOICE_CREATE_PATH: ["POST /v1/text-to-voice"],
