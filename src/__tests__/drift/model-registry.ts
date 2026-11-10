@@ -698,6 +698,23 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
 export const deprecatedFamilies: Record<Provider, Set<string>> = {
   openai: familySet("openai", [
     // drift-sync appends recorded deprecations here.
+    "gpt-3.5-turbo", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4-turbo", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4.1-nano", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5-chat-latest", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5-codex", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.1-chat-latest", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.1-codex", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.1-codex-max", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.1-codex-mini", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.2-chat-latest", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.2-codex", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5.3-chat-latest", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o1", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o1-pro", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o3-mini", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o4-mini", // DEPRECATED 2026-11-10 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
   ]),
   anthropic: familySet("anthropic", [
     // drift-sync appends recorded deprecations here.
