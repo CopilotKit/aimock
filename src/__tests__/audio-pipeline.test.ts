@@ -116,7 +116,7 @@ describe("voice pipeline record + replay (#600)", () => {
     expect(fixture.match.endpoint).toBe("byteplus-tts");
     expect(fixture.match.model).toBe("seed-audio-1");
     expect(fixture.match.userMessage).toMatch(
-      /^@Audio1 Hello there, traveller\.\n\[reference sha256:[0-9a-f]{16}\]$/,
+      /^@Audio1 Hello there, traveller\.\n\[reference sha256:[0-9a-f]{16}\]\n\[request sha256:[0-9a-f]{64}\]$/,
     );
     expect(fixture.response).toEqual({ json: payload, status: 200 });
 
@@ -223,6 +223,47 @@ describe("voice pipeline record + replay (#600)", () => {
       body: isolationForm(TAKE),
     });
     expect(res.status).toBe(503);
+  });
+
+  test("a recorded Seed fixture answers only an identical request, not a longer prompt or other references", async () => {
+    let take = 0;
+    const up = await createUpstream((c, res) => {
+      take += 1;
+      const req = JSON.parse(c.body.toString("utf8")) as { text_prompt: string };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ code: 0, audio: `take-${take}:${req.text_prompt}` }));
+    });
+    upstream = up.server;
+    const m = await recorder({ "byteplus-speech": up.url });
+
+    const send = async (text_prompt: string, refs?: string[]) => {
+      const res = await fetch(`${m.url}/api/v3/tts/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "seed-audio-1",
+          text_prompt,
+          ...(refs ? { references: refs.map((audio_data) => ({ audio_data })) } : {}),
+        }),
+      });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { audio: string }).audio;
+    };
+
+    // Record mode: each distinct request reaches upstream and gets its own take.
+    expect(await send("Hello")).toBe("take-1:Hello");
+    expect(await send("Hello there, traveller.")).toBe("take-2:Hello there, traveller.");
+    expect(await send("Hello", ["QUFBQQ=="])).toBe("take-3:Hello");
+    expect(await send("Hello", ["QkJCQg=="])).toBe("take-4:Hello");
+    expect(up.seen).toHaveLength(4);
+
+    // Replay: an exact repeat replays its own take, and nothing reaches upstream.
+    m.disableRecording();
+    expect(await send("Hello")).toBe("take-1:Hello");
+    expect(await send("Hello there, traveller.")).toBe("take-2:Hello there, traveller.");
+    expect(await send("Hello", ["QUFBQQ=="])).toBe("take-3:Hello");
+    expect(await send("Hello", ["QkJCQg=="])).toBe("take-4:Hello");
+    expect(up.seen).toHaveLength(4);
   });
 
   test("a hand-written fixture keyed on text_prompt alone matches a request with references", async () => {

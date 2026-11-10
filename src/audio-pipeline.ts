@@ -91,17 +91,26 @@ function extractKey(
     if (typeof parsed.text_prompt !== "string") {
       return { invalid: "Missing required parameter: 'text_prompt'" };
     }
+    const model = typeof parsed.model === "string" ? parsed.model : "";
     const refs = Array.isArray(parsed.references) ? parsed.references : [];
-    const refLines = refs.map((ref) => {
-      const data =
+    const refHashes = refs.map((ref) =>
+      sha256(
         isJsonObject(ref) && typeof ref.audio_data === "string"
           ? ref.audio_data
-          : JSON.stringify(ref);
-      return `\n[reference sha256:${sha256(data).slice(0, 16)}]`;
-    });
+          : JSON.stringify(ref),
+      ),
+    );
+    const refLines = refHashes.map((hash) => `\n[reference sha256:${hash.slice(0, 16)}]`);
+    // userMessage matching is a substring test, so a recorded key of just
+    // `text_prompt` + reference lines would also answer any longer prompt that
+    // contains it, or the same prompt with other references. End the key with
+    // a full sha256 over the whole request identity: like the Scribe and
+    // Isolation keys, a recorded key then only matches an identical request,
+    // while a hand-written fixture can still key on part of the prompt.
+    const requestHash = sha256(JSON.stringify([model, parsed.text_prompt, refHashes]));
     return {
-      model: typeof parsed.model === "string" ? parsed.model : "",
-      key: parsed.text_prompt + refLines.join(""),
+      model,
+      key: `${parsed.text_prompt}${refLines.join("")}\n[request sha256:${requestHash}]`,
     };
   }
 
