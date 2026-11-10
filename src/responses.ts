@@ -169,6 +169,19 @@ function extractTextContent(content: string | ResponsesContentPart[] | undefined
 }
 
 /**
+ * User item content. An item whose parts carry no text at all (only
+ * `input_image` / `input_file`) stays text-less (`null`) rather than `""`, so
+ * `userMessage` matching skips it and keys on the preceding prompt. Some SDKs
+ * (AG2's OpenAI Responses mapper) send one multimodal turn as a text item
+ * followed by an attachment-only item; the Chat Completions path already
+ * handles the same split this way.
+ */
+function extractUserContent(content: string | ResponsesContentPart[] | undefined): string | null {
+  if (Array.isArray(content) && !content.some((p) => p.type === "input_text")) return null;
+  return extractTextContent(content);
+}
+
+/**
  * A `custom_tool_call_output.output` is a string or a list of content parts
  * (`input_text` / `input_image` / `input_file`). Flatten a list to its
  * concatenated `input_text` text so text matchers such as
@@ -250,7 +263,7 @@ export function responsesInputToMessages(req: ResponsesRequest, extended = false
     if (item.role === "system" || item.role === "developer") {
       messages.push({ role: "system", content: extractTextContent(item.content) });
     } else if (item.role === "user") {
-      messages.push({ role: "user", content: extractTextContent(item.content) });
+      messages.push({ role: "user", content: extractUserContent(item.content) });
     } else if (item.role === "assistant") {
       messages.push({ role: "assistant", content: extractTextContent(item.content) });
     } else if (item.type === "function_call") {
