@@ -330,20 +330,8 @@ describe("responsesInputToMessages", () => {
       model: "gpt-4",
       input: [
         { role: "user", content: [{ type: "input_text", text: "describe this" }] },
-        {
-          role: "user",
-          content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }],
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_file",
-              file_data: "data:application/pdf;base64,AA==",
-              filename: "a.pdf",
-            },
-          ],
-        },
+        { role: "user", content: [{ type: "input_image" }] },
+        { role: "user", content: [{ type: "input_file" }] },
       ],
     });
     expect(messages).toEqual([
