@@ -322,6 +322,32 @@ describe("responsesInputToMessages", () => {
     });
     expect(messages).toEqual([{ role: "user", content: "hello" }]);
   });
+
+  it("leaves an attachment-only user item text-less (null), not an empty string", () => {
+    // A text-less message lets userMessage matching skip it and key on the
+    // preceding prompt, the same as an attachment-only Chat Completions message.
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "describe this" }] },
+        { role: "user", content: [{ type: "input_image" }] },
+        { role: "user", content: [{ type: "input_file" }] },
+      ],
+    });
+    expect(messages).toEqual([
+      { role: "user", content: "describe this" },
+      { role: "user", content: null },
+      { role: "user", content: null },
+    ]);
+  });
+
+  it("keeps an explicit empty input_text as an empty string", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [{ role: "user", content: [{ type: "input_text", text: "" }] }],
+    });
+    expect(messages).toEqual([{ role: "user", content: "" }]);
+  });
 });
 
 describe("responsesToCompletionRequest", () => {
@@ -996,6 +1022,55 @@ describe("responsesToCompletionRequest (tool filtering)", () => {
     // Only the "function" type tool should be included
     expect(result.tools).toHaveLength(1);
     expect(result.tools![0].function.name).toBe("real_tool");
+  });
+});
+
+describe("POST /v1/responses (prompt split from its attachment)", () => {
+  // Some SDKs (AG2's OpenAI Responses mapper) send one multimodal turn as a
+  // text-only user item FOLLOWED by an attachment-only user item.
+  const fixtures: Fixture[] = [
+    { match: { userMessage: "what is in this image" }, response: { content: "A logo." } },
+    { match: { userMessage: "what is in this pdf" }, response: { content: "A guide." } },
+  ];
+
+  it("matches the prompt when an image item follows it", async () => {
+    instance = await createServer(fixtures, { strict: true });
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      stream: false,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "what is in this image" }] },
+        {
+          role: "user",
+          content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }],
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("A logo.");
+  });
+
+  it("matches the prompt when a file item follows it", async () => {
+    instance = await createServer(fixtures, { strict: true });
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      stream: false,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "what is in this pdf" }] },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_file",
+              file_data: "data:application/pdf;base64,AA==",
+              filename: "a.pdf",
+            },
+          ],
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("A guide.");
   });
 });
 
