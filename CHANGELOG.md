@@ -6,6 +6,7 @@
 
 - A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
 - Record and replay native citations and annotations from real provider turns (#594)
+- Record and replay BytePlus Seed Speech TTS (`POST /api/v3/tts/create`, `--provider-byteplus-speech`), ElevenLabs Scribe (`POST /v1/speech-to-text`) and Audio Isolation (`POST /v1/audio-isolation`) (#600)
 
 ### Changed
 

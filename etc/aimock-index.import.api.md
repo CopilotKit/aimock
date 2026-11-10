@@ -2251,7 +2251,7 @@ export interface FixtureFileEntry {
         sequenceIndex?: number;
         turnIndex?: number;
         hasToolResult?: boolean;
-        endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
+        endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "elevenlabs-stt" | "elevenlabs-audio-isolation" | "byteplus-tts" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
         context?: string;
     };
     // (undocumented)
@@ -2388,7 +2388,7 @@ export interface FixtureMatch {
         dimensions?: unknown;
     };
     // (undocumented)
-    endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
+    endpoint?: "chat" | "image" | "speech" | "transcription" | "translation" | "video" | "embedding" | "audio-gen" | "elevenlabs-tts" | "elevenlabs-voice-design" | "elevenlabs-voice" | "elevenlabs-voice-get" | "elevenlabs-voice-delete" | "elevenlabs-stt" | "elevenlabs-audio-isolation" | "byteplus-tts" | "fal-audio" | "fal" | "realtime" | "realtime-transcription" | "realtime-translation" | "openai-live";
     hasToolResult?: boolean;
     // (undocumented)
     inputText?: string | RegExp;
@@ -4587,7 +4587,7 @@ export function proxyAndRecord(req: http$1.IncomingMessage, res: http$1.ServerRe
     logger: Logger;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     responsesTools?: ResponsesToolsMode;
-}, rawBody?: string, options?: ProxyOptions): Promise<ProxyOutcome>;
+}, rawBody?: string | Buffer, options?: ProxyOptions): Promise<ProxyOutcome>;
 
 // @public
 export function proxyAndRecordAGUI(req: http$1.IncomingMessage, res: http$1.ServerResponse, input: AGUIRunAgentInput, fixtures: AGUIFixture[], config: AGUIRecordConfig, logger: Logger, rawBody: string): Promise<number | false>;
@@ -4707,7 +4707,7 @@ interface RecorderHost {
 }
 
 // @public (undocumented)
-export type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus";
+export type RecordProviderKey = "openai" | "anthropic" | "gemini" | "gemini-interactions" | "vertexai" | "bedrock" | "azure" | "ollama" | "cohere" | "elevenlabs" | "fal" | "openrouter" | "veo" | "grok" | "byteplus" | "byteplus-speech";
 
 // @public (undocumented)
 export type RecordReplayLoadRule = (typeof RECORD_REPLAY_LOAD_RULES)[number];
