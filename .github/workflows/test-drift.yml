@@ -1283,11 +1283,19 @@ jobs:
             retain("Anthropic native authentication and version", "Anthropic vendor auth", "src/response/errors.ts", ["renderError"], auth, anthropicLocal);
 
             const gemini = receipt("vendor:gemini-auth", "gemini-native-auth");
-            const geminiBody = object(gemini.expected.body);
-            const geminiError = object(geminiBody.error);
-            if (gemini.expected.status !== 403 || geminiError.code !== 403 || geminiError.status !== "PERMISSION_DENIED" ||
-                geminiError.message !== "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API." ||
-                !exactKeys(geminiBody, ["error"]) || !exactKeys(geminiError, ["code", "message", "status"]))
+            // Google's gateway alternates between these two exact unauthenticated
+            // 403 bodies (both seen in live runs since 2026-11-09). Anything else fails.
+            const geminiGateway: ObservedResponse[] = [
+              { status: 403, body: { error: { code: 403, status: "PERMISSION_DENIED",
+                message: "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API." } } },
+              { status: 403, body: { error: { code: 403, status: "PERMISSION_DENIED", message: "Permission denied on the service.",
+                details: [
+                  { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_DENIED", domain: "googleapis.com",
+                    metadata: { service: "generativelanguage.googleapis.com" } },
+                  { "@type": "type.googleapis.com/google.rpc.LocalizedMessage", locale: "en-US", message: "Permission denied on the service." }
+                ] } } }
+            ];
+            if (!geminiGateway.some((shape) => isDeepStrictEqual(gemini.expected, shape)))
               throw new Error("Unexpected retained-policy Gemini gateway response");
             const geminiLocal = { status: 401, body: { error: { code: 401, message: "Invalid API key", status: "UNAUTHENTICATED" } } };
             assertion("vendor unauthenticated received status/body (evidence only)", "passed", "native provider Gemini vendor auth observation");

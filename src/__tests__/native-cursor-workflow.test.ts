@@ -308,3 +308,76 @@ it.each(["changed empty page", "changed comparison", "missing report diff", "ext
     expect(result.status).toBe(1);
   },
 );
+
+const geminiPermissionDenied = {
+  status: 403,
+  body: {
+    error: {
+      code: 403,
+      message: "Permission denied on the service.",
+      status: "PERMISSION_DENIED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          reason: "ACCESS_DENIED",
+          domain: "googleapis.com",
+          metadata: { service: "generativelanguage.googleapis.com" },
+        },
+        {
+          "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+          locale: "en-US",
+          message: "Permission denied on the service.",
+        },
+      ],
+    },
+  },
+};
+
+/** Live Gemini receipt (runs 42697621424, 42766538763) with its received report diffs. */
+function geminiCurrent(): Evidence {
+  const data = evidence();
+  data.observations.observations.find((row) => row.caseId === "vendor:gemini-auth")!.expected =
+    structuredClone(geminiPermissionDenied);
+  data.report.entries
+    .find((entry) => entry.provider === "Gemini native authentication")!
+    .diffs.unshift({
+      severity: "warning",
+      issue: "PROVIDER ADDED FIELD — in real API but not in SDK or mock",
+      path: "error.details",
+      expected: "<absent>",
+      real: "array<object { @type: string, reason: string, domain: string, ... +3 }>",
+      mock: "<absent>",
+      id: "error.details",
+    });
+  return data;
+}
+
+it.each(["scheduled", "delta"])(
+  "accepts Gemini's current unauthenticated 403 body in %s mode",
+  (mode) => {
+    const result = runGate(geminiCurrent(), mode);
+    expect(result.status, result.stderr).toBe(0);
+    if (mode === "delta") expect(result.stdout).toContain("Drift gate PASSED");
+    else expect(result.disposition?.effectiveExit).toBe(0);
+  },
+);
+
+it.each(["server error", "extra error key", "changed message"])(
+  "rejects an unexpected Gemini gateway response: %s",
+  (name) => {
+    const data = geminiCurrent();
+    const vendor = data.observations.observations.find(
+      (row) => row.caseId === "vendor:gemini-auth",
+    )!;
+    const error: Record<string, unknown> = vendor.expected.body.error!;
+    if (name === "server error") {
+      vendor.expected.status = 500;
+      error.code = 500;
+    }
+    if (name === "extra error key") error.unexpected = true;
+    if (name === "changed message") error.message = "Something else.";
+    const result = runGate(data, "delta");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unexpected retained-policy Gemini gateway response");
+  },
+);
