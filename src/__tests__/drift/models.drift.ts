@@ -1121,6 +1121,8 @@ describe("recorded /models family waves are classified", () => {
       "claude-sonnet-5-5",
       // 2026-10-08 wave: Haiku 5.5 point release
       "claude-haiku-5-5",
+      // 2026-11-10 wave (Fix Drift run 42768106181): Fable 5.2 point release
+      "claude-fable-5-2",
     ];
     expect(unclassifiedFamilies(anthropicLive, "anthropic")).toEqual([]);
   });

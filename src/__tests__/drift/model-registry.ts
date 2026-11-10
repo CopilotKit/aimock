@@ -216,6 +216,19 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/anthropic-claude-fable-5-1-new-family.md.
     "claude-fable-5-1",
+    // Claude Fable 5.2, first listed 2026-11-10 (Fix Drift run 42768106181,
+    // routed to needs-human PR #602). Point release of the already-included
+    // `claude-fable-5`, as `claude-fable-5-1` is. `claude-fable-5` is a strict
+    // prefix of it, so it must be enumerated; the negative controls in
+    // text-drift.test.ts prove a further point release is still reported.
+    //
+    // Classified by LINEAGE and a maintainer decision, NOT by a live probe: no
+    // probe was run. Not a voice/audio family, so no knownVoiceModelFamilies
+    // pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-fable-5-2-new-family.md.
+    "claude-fable-5-2",
     // Claude Opus 5.5, first listed 2026-09-23 (drift run 35827604040). Point
     // release of the already-included `claude-opus-5`, exactly as
     // `claude-opus-4-5` is of `claude-opus-4`. Every Claude family on

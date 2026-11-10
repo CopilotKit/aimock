@@ -315,7 +315,7 @@ describe("the 2026-09-05 model-family wave is classified", () => {
     // `toEqual([])` above is also what a neutered `unclassifiedFamilies` would
     // produce, and a prefix-shaped bug would look identical to a correct pass.
     expect(normalizeModelFamily("claude-fable-5-1", "anthropic")).toBe("claude-fable-5-1");
-    expect(unclassifiedFamilies(["claude-fable-5-2"], "anthropic")).toEqual(["claude-fable-5-2"]);
+    expect(unclassifiedFamilies(["claude-fable-5-3"], "anthropic")).toEqual(["claude-fable-5-3"]);
     expect(unclassifiedFamilies(["gpt-6"], "openai")).toEqual(["gpt-6"]);
     expect(unclassifiedFamilies(["gpt-6-astra-pro"], "openai")).toEqual(["gpt-6-astra-pro"]);
     expect(unclassifiedFamilies(["gemini-3.8-pro"], "gemini")).toEqual(["gemini-3.8-pro"]);
@@ -532,6 +532,41 @@ describe("the 2026-10-08 model-family wave is classified", () => {
     expect(normalizeModelFamily("claude-haiku-5-5", "anthropic")).toBe("claude-haiku-5-5");
     expect(unclassifiedFamilies(["claude-haiku-5"], "anthropic")).toEqual(["claude-haiku-5"]);
     expect(unclassifiedFamilies(["claude-haiku-5-6"], "anthropic")).toEqual(["claude-haiku-5-6"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 2026-11-10 wave — BEHAVIOURAL coverage of `claude-fable-5-2`, in the same
+// shape as the blocks above. Classified INCLUDE in model-registry.ts (evidence
+// beside the entry and in drift-proposals/).
+//
+// `claude-fable-5-2` is a prefix case like `claude-fable-5-1`: the included
+// `claude-fable-5` is a strict PREFIX of it, so the negative controls prove a
+// further point release is still reported rather than swallowed.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-11-10 model-family wave is classified", () => {
+  it("claude-fable-5-2 is INCLUDED in a /models-shaped payload", () => {
+    expect(isClassifiedFamily("claude-fable-5-2", "anthropic")).toBe(true);
+    expect(
+      unclassifiedFamilies(
+        [
+          "claude-fable-5", // the prefix sibling, already included
+          "claude-fable-5-1", // the previous Fable point release, already included
+          "claude-fable-5-2",
+          "claude-fable-5-2-20261109", // dated snapshot collapses onto the family
+        ],
+        "anthropic",
+      ),
+    ).toEqual([]);
+  });
+
+  it("the claude-fable-5-2 key does not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("claude-fable-5-2", "anthropic")).toBe("claude-fable-5-2");
+    expect(unclassifiedFamilies(["claude-fable-5-3"], "anthropic")).toEqual(["claude-fable-5-3"]);
+    expect(unclassifiedFamilies(["claude-fable-6"], "anthropic")).toEqual(["claude-fable-6"]);
   });
 });
 
