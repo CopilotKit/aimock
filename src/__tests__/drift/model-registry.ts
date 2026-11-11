@@ -590,6 +590,9 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-gemini-3.7-flash-video-understanding-eap-new-family.md.
     "gemini-3.7-flash-video-understanding-eap",
+    // Access-restricted (Fairwind cyber-defender program only), no GA yet; flip to include at GA like gemini-4-argon.
+    // Decision: EXCLUDE, recorded in drift-proposals/gemini-gemini-4-carbon-new-family.md.
+    "gemini-4-carbon",
     // Lyria 3.5, the GA tier of Google's music-generation line. Non-text
     // generative media, same category as the imagen-* / veo-* /
     // gemini-omni-1.1-flash entries.

@@ -476,7 +476,7 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "excludeFamilies.gemini": {
     members: () => [...excludeFamilies.gemini].sort(),
-    pin: "b2e054da76e4ea5424fc293b8207eedaee544b0a875e478235be00da2e368670",
+    pin: "47871d0731501dccdf5c8684444b5f5e981f541c128aeb2fa7738b8dcdab3d3f",
   },
   // The realtime canary's seed sets, previously pinned NOWHERE. An edit to
   // either one was invisible to every guard in the repo: adding a family to
