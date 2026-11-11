@@ -1,21 +1,20 @@
 # @copilotkit/aimock
 
-## [Unreleased]
+## [1.48.0] - 2026-11-10
 
 ### Added
 
 - A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
 - Record and replay native citations and annotations from real provider turns (#594)
-- Record and replay BytePlus Seed Speech TTS (`POST /api/v3/tts/create`, `--provider-byteplus-speech`), ElevenLabs Scribe (`POST /v1/speech-to-text`) and Audio Isolation (`POST /v1/audio-isolation`) (#600)
+- Record and replay BytePlus Seed Speech TTS, ElevenLabs Scribe and Audio Isolation (#601)
 
 ### Changed
 
-- `aimock-pytest` 0.7.1 now defaults to `@copilotkit/aimock` 1.47.0, which adds citations, generated
-  files, raw passthrough and client disconnect handling.
+- `aimock-pytest` 0.7.2 defaults to `@copilotkit/aimock` 1.48.0
 
 ### Fixed
 
-- A2A GetTask/CancelTask return the task as `result` (was `result.task`), matching the spec and SDK (#595)
+- A2A Get/CancelTask return task as `result`; split Responses attachment turns match (#595, #611)
 
 ## [1.47.0] - 2026-10-26
 
