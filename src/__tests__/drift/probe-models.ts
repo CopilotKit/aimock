@@ -43,7 +43,7 @@ export interface DriftProbeModel {
  * `/v1/models` `shutdown_date` of 2026-10-23 and has answered
  * `404 model_not_found` since.
  */
-export const OPENAI_K9_PROBE_MODEL = "gpt-5.6-terra";
+export const OPENAI_K9_PROBE_MODEL = "gpt-5.4-mini";
 
 export const DRIFT_PROBE_MODELS: readonly DriftProbeModel[] = [
   // OpenAI
