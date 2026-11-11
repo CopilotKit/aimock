@@ -975,7 +975,7 @@ const CUSTOM_TOOLS = [
 ];
 
 /** The only models the namespaced/custom tool legs may drive, in preference order. */
-const GPT5_TOOL_MODELS = ["gpt-5-mini", "gpt-5"];
+const GPT5_TOOL_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"];
 
 /** What the (single, memoized) listing call for the tool legs returned. */
 let toolsListing: { status: number; listed: number; bodyPreview?: string } | undefined;
@@ -1030,7 +1030,7 @@ async function resolveToolsModel(): Promise<{ model: string } | { skip: string }
   }
   throw new Error(
     `OpenAI /v1/models lists ${l.listed} models but none of ${GPT5_TOOL_MODELS.join(", ")}: ` +
-      `the ids were retired or renamed (update GPT5_TOOL_MODELS) or the key lost gpt-5 access. ` +
+      `the ids were retired or renamed (update GPT5_TOOL_MODELS) or the key lost gpt-5.6 access. ` +
       `Namespaced and custom tool drift is NOT being checked until this is fixed.`,
   );
 }
