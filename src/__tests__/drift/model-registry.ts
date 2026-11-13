@@ -324,6 +324,24 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/gemini-gemini-4-argon-new-family.md.
     "gemini-4-argon",
+    // Gemini 4 Hydrogen, first listed 2026-11-13 (Drift Tests run 43376684576,
+    // routed to needs-human PR #616). Google calls it a short-term GA release
+    // with no allowlist. Classified on the live listing plus a LIVE PROBE, not
+    // on the name, exactly as its sibling `gemini-4-argon`.
+    //
+    // Listing (2026-11-13): `displayName` and `description` both "Gemini 4
+    // Hydrogen", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]` (set-identical to `gemini-4-argon`);
+    // `inputTokenLimit: 1048576`; `thinking: true`. No `bidiGenerateContent`,
+    // `embedContent` or `predict`. A plain text generateContent call returned
+    // 200 with a text part, `finishReason: "STOP"` and `candidatesTokensDetails`
+    // `modality: "TEXT"`, the same shape as `gemini-4-argon` probed in the same
+    // run. Not a voice/audio family, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-hydrogen-new-family.md.
+    "gemini-4-hydrogen",
   ]),
 };
 

@@ -627,3 +627,30 @@ describe("the 2026-10-26 model-family wave is classified", () => {
     expect(unclassifiedFamilies(["gpt-6.1-terra-tts"], "openai")).toEqual(["gpt-6.1-terra-tts"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The 2026-11-13 wave — BEHAVIOURAL coverage of `gemini-4-hydrogen` (INCLUDE),
+// in the same shape as the blocks above. Evidence sits beside the entry in
+// model-registry.ts and in drift-proposals/.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-11-13 model-family wave is classified", () => {
+  it("gemini-4-hydrogen is INCLUDED in a /models-shaped payload", () => {
+    expect(includeFamilies.gemini.has("gemini-4-hydrogen")).toBe(true);
+    expect(isClassifiedFamily("gemini-4-hydrogen", "gemini")).toBe(true);
+    expect(excludeFamilies.gemini.has("gemini-4-hydrogen")).toBe(false);
+    expect(
+      unclassifiedFamilies(["gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"], "gemini"),
+    ).toEqual([]);
+  });
+
+  it("the new key does not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("gemini-4-hydrogen", "gemini")).toBe("gemini-4-hydrogen");
+    expect(unclassifiedFamilies(["gemini-4-helium"], "gemini")).toEqual(["gemini-4-helium"]);
+    expect(unclassifiedFamilies(["gemini-4-hydrogen-tts"], "gemini")).toEqual([
+      "gemini-4-hydrogen-tts",
+    ]);
+  });
+});
