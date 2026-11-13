@@ -464,7 +464,7 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "includeFamilies.gemini": {
     members: () => [...includeFamilies.gemini].sort(),
-    pin: "2ce8c83885ba1e223277251e7185db0d159ab43ed6d0c68487fbce0d7b7e13cc",
+    pin: "7d064a63b596cd0d586f62d47c2d33aa664e095ebc57a3ce87060c2ad4b55213",
   },
   "excludeFamilies.openai": {
     members: () => [...excludeFamilies.openai].sort(),

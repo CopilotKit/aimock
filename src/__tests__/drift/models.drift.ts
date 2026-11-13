@@ -1146,6 +1146,8 @@ describe("recorded /models family waves are classified", () => {
       "gemini-3.7-flash",
       // 2026-10-14 wave (run 38523200980): Gemini 4 Argon, probe-verified text chat
       "gemini-4-argon",
+      // 2026-11-13 wave (run 43376684576): Gemini 4 Hydrogen, probe-verified text chat
+      "gemini-4-hydrogen",
       // Restricted EAP surface — explicit exclude (text-capable, but pre-GA)
       "gemini-3.7-flash-video-understanding-eap",
       // Preview text tiers — auto-excluded by the -preview pattern rule
