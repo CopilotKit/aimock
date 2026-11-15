@@ -527,22 +527,10 @@ async function assertUncitedRecording(
   );
   const saved = plain.getFixtures()[0].response as Json;
   expect(saved.blocks).toBeUndefined();
-  if (provider === "responses" && !captureStream) {
-    // The pinned recorder saves unrecognized uncited Responses JSON as an error fixture.
-    expect(saved.error).toMatchObject({ type: "proxy_error" });
-    const replay = await fetch(`${plain.url}/v1/responses`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", input: "cited answer", stream: replayStream }),
-    });
-    expect(replay.status).toBe(saved.status);
-    expect((await replay.json()).error).toMatchObject({ type: "proxy_error" });
-  } else {
-    expect(saved.content).toBe("ordinary answer");
-    expect(visible((await request(plain, provider, replayStream)).body, provider)).toEqual(
-      expected([{ type: "text", text: "ordinary answer" }], provider),
-    );
-  }
+  expect(saved.content).toBe("ordinary answer");
+  expect(visible((await request(plain, provider, replayStream)).body, provider)).toEqual(
+    expected([{ type: "text", text: "ordinary answer" }], provider),
+  );
 }
 
 describe("native citation fixtures", () => {
@@ -2837,7 +2825,7 @@ describe("a cited recording is the uncited recording plus its citations", () => 
       ],
     });
     const plain = saved(await recorded("responses", message([]), false));
-    expect(plain.error).toMatchObject({ type: "proxy_error" });
+    expect(plain).toEqual({ content: "fact" });
     const server = await recorded("responses", message(["opaque", 7, null]), false, false, logger);
     expect(saved(server)).toEqual(plain);
     expect(warn.mock.calls.flat().join("\n")).toContain(
