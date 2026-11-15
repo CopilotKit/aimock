@@ -513,6 +513,17 @@ export class LLMock {
     return this.url;
   }
 
+  /**
+   * The seed behind this run's chaos verdicts. Print it from a failing test and
+   * pass it back as `chaos.seed` to get the same faults on the next run.
+   */
+  get chaosSeed(): string {
+    if (!this.serverInstance) {
+      throw new Error("Server not started");
+    }
+    return this.serverInstance.chaosSeed;
+  }
+
   get port(): number {
     const parsed = new URL(this.url); // this.url throws if not started
     if (!parsed.port) {

@@ -42,7 +42,7 @@ import { writeEventStream } from "./aws-event-stream.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Converse request types ─────────────────────────────────────────────────
@@ -749,25 +749,25 @@ export async function handleConverse(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1066,25 +1066,25 @@ export async function handleConverseStream(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1223,6 +1223,7 @@ export async function handleConverseStream(
     const completed = await writeEventStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
+      jitterSource: chaosJitterFor(req),
       recordedTimings: fixture.recordedTimings,
       replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
       signal: interruption?.signal,
@@ -1268,6 +1269,7 @@ export async function handleConverseStream(
     const completed = await writeEventStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
+      jitterSource: chaosJitterFor(req),
       recordedTimings: fixture.recordedTimings,
       replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
       signal: interruption?.signal,
@@ -1314,6 +1316,7 @@ export async function handleConverseStream(
     const completed = await writeEventStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
+      jitterSource: chaosJitterFor(req),
       recordedTimings: fixture.recordedTimings,
       replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
       signal: interruption?.signal,

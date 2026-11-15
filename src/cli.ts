@@ -54,6 +54,7 @@ Options:
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
+      --chaos-seed <seed>   Seed making chaos decisions reproducible
       AIMOCK_API_KEYS  Comma-separated inbound test API keys (environment only)
       --help                Show this help message
 `.trim();
@@ -94,6 +95,7 @@ const { values } = parseArgs({
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
+    "chaos-seed": { type: "string" },
     "journal-max": { type: "string", default: "1000" },
     "fixture-counts-max": { type: "string", default: "500" },
     help: { type: "boolean", default: false },
@@ -216,8 +218,14 @@ let chaos: ChaosConfig | undefined;
   const dropStr = values["chaos-drop"];
   const malformedStr = values["chaos-malformed"];
   const disconnectStr = values["chaos-disconnect"];
+  const seedStr = values["chaos-seed"];
 
-  if (dropStr !== undefined || malformedStr !== undefined || disconnectStr !== undefined) {
+  if (
+    dropStr !== undefined ||
+    malformedStr !== undefined ||
+    disconnectStr !== undefined ||
+    seedStr !== undefined
+  ) {
     chaos = {};
     if (dropStr !== undefined) {
       const val = parseFloat(dropStr);
@@ -242,6 +250,12 @@ let chaos: ChaosConfig | undefined;
         process.exit(1);
       }
       chaos.disconnectRate = val;
+    }
+    // Passed on as written. Normalizing a number, refusing a seed that could
+    // not be reported back and standing in a generated one are the
+    // randomizer's job, and it does the same for a fixture's seed.
+    if (seedStr !== undefined) {
+      chaos.seed = seedStr;
     }
   }
 }

@@ -18,7 +18,7 @@
 import { crc32 } from "node:zlib";
 import type * as http from "node:http";
 import type { StreamingProfile, RecordedTimings } from "./types.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { delay, calculateDelay, type JitterSource } from "./sse-writer.js";
 
 // ─── Header encoding ────────────────────────────────────────────────────────
 
@@ -121,6 +121,7 @@ export async function writeEventStream(
   options?: {
     latency?: number;
     streamingProfile?: StreamingProfile;
+    jitterSource?: JitterSource;
     recordedTimings?: RecordedTimings;
     replaySpeed?: number;
     signal?: AbortSignal;
@@ -140,7 +141,14 @@ export async function writeEventStream(
 
   let chunkIndex = 0;
   for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) {
       await delay(chunkDelay, signal);
     }

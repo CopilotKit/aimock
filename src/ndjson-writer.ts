@@ -7,11 +7,12 @@
 
 import type * as http from "node:http";
 import type { StreamingProfile, RecordedTimings } from "./types.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { delay, calculateDelay, type JitterSource } from "./sse-writer.js";
 
 export interface NDJSONStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
+  jitterSource?: JitterSource;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
   signal?: AbortSignal;
@@ -37,7 +38,14 @@ export async function writeNDJSONStream(
 
   let chunkIndex = 0;
   for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) {
       await delay(chunkDelay, signal);
     }

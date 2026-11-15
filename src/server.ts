@@ -103,7 +103,15 @@ import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
-import { applyChaosAction, evaluateChaos } from "./chaos.js";
+import {
+  applyChaosAction,
+  chaosIdentity,
+  decideChaos,
+  effectiveChaosRates,
+  reportChaosSeedHeader,
+  chaosJitterFor,
+} from "./chaos.js";
+import { ChaosRandomizer, normalizeChaosSeed } from "./chaos-random.js";
 import {
   createMetricsRegistry,
   normalizePathLabel,
@@ -129,6 +137,11 @@ import {
 export interface ServerInstance {
   server: http.Server;
   journal: Journal;
+  /**
+   * The seed behind this run's chaos verdicts: whatever was configured, or the
+   * one generated at startup. Pass it back as `chaos.seed` to replay the run.
+   */
+  chaosSeed: string;
   url: string;
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
@@ -320,6 +333,10 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   targets.veoVideoJobs.clear();
   targets.grokVideoJobs.clear();
   targets.bytePlusVideoJobs.clear();
+  // Rewind the occurrence counters and forget every tracked pair, keeping the
+  // seed: after a reset the next request for a key draws as that key's first
+  // again, which is what makes a reset-between-tests harness reproducible.
+  targets.defaults.chaosRandom?.reset();
   if (targets.defaults.registry) {
     targets.defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
@@ -437,10 +454,43 @@ async function handleControlAPI(
     defaults,
   });
 
+  // GET /__aimock/chaos — the run's seed, the rates as they will actually
+  // fire, and how many pairs are being tracked. A harness reads the seed off a
+  // red run and passes it back to reproduce the same faults.
+  if (subPath === "/chaos" && req.method === "GET") {
+    const rates = effectiveChaosRates(defaults.chaos);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        seed: defaults.chaosRandom?.seed ?? null,
+        dropRate: rates.dropRate,
+        malformedRate: rates.malformedRate,
+        disconnectRate: rates.disconnectRate,
+        trackedKeys: defaults.chaosRandom?.trackedKeys ?? 0,
+      }),
+    );
+    return true;
+  }
+
+  // POST /__aimock/chaos/reset — rewind the occurrence counters alone, leaving
+  // fixtures, the journal and the seed untouched.
+  if (subPath === "/chaos/reset" && req.method === "POST") {
+    defaults.chaosRandom?.reset();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ reset: true, seed: defaults.chaosRandom?.seed ?? null }));
+    return true;
+  }
+
   // POST /__aimock/reset — full reset (fixtures, journal entries + fixture
   // match-counts, video/fal job state, Gemini counters)
   if (subPath === "/reset" && req.method === "POST") {
     performFullReset(fixtures, resetTargets());
+    // The rewind keeps the seed, so the reply names it. It rides the header
+    // rather than the body because the canonical reset body is `{ reset: true }`
+    // and nothing else, and the header is the one every chaos-affected
+    // response already carries.
+    const keptSeed = defaults.chaosRandom?.seed;
+    if (keptSeed !== undefined) reportChaosSeedHeader(res, keptSeed);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -465,6 +515,8 @@ async function handleControlAPI(
     defaults.logger.warn(
       "POST /__aimock/reset/fixtures is deprecated; use /__aimock/reset or /__aimock/reset/journal",
     );
+    const keptSeed = defaults.chaosRandom?.seed;
+    if (keptSeed !== undefined) reportChaosSeedHeader(res, keptSeed);
     res.writeHead(200, { "Content-Type": "application/json", Deprecation: "true" });
     res.end(JSON.stringify({ reset: true, deprecated: true, deprecation }));
     return true;
@@ -797,16 +849,18 @@ async function handleCompletions(
     );
   }
 
-  // Roll chaos once per request. Dispatch by action + path:
-  //   drop / disconnect → apply immediately; upstream is never called and no
-  //                       response body is produced.
-  //   malformed, fixture path → write invalid JSON instead of the fixture.
-  //   malformed, proxy path  → proxy to upstream, then swap body via the
-  //                            beforeWriteResponse hook (passed only when the
-  //                            action is malformed, so the hook doesn't need
-  //                            to re-check the action).
-  const chaosAction = evaluateChaos(fixture, defaults.chaos, req.headers, defaults.logger);
+  // Decide once per request and apply any verdict before fixture or proxy
+  // delivery, including when a progressive upstream would never finish.
   const chaosContext = { method, path, headers: flatHeaders, body };
+  const chaosDecision = decideChaos(
+    fixture,
+    defaults.chaos,
+    req.headers,
+    chaosIdentity(req, raw),
+    defaults.chaosRandom ?? new ChaosRandomizer(),
+    defaults.logger,
+  );
+  const chaosAction = chaosDecision.action;
 
   if (chaosAction === "drop" || chaosAction === "disconnect") {
     applyChaosAction(
@@ -817,19 +871,23 @@ async function handleCompletions(
       chaosContext,
       fixture ? "fixture" : "proxy",
       defaults.registry,
+      chaosDecision,
     );
     return;
   }
 
-  if (fixture && chaosAction === "malformed") {
+  // Apply malformed before proxying so a forced verdict cannot disappear behind
+  // progressive upstream streams or setup failures.
+  if (chaosAction === "malformed") {
     applyChaosAction(
       chaosAction,
       res,
       fixture,
       journal,
       chaosContext,
-      "fixture",
+      fixture ? "fixture" : "proxy",
       defaults.registry,
+      chaosDecision,
     );
     return;
   }
@@ -876,46 +934,6 @@ async function handleCompletions(
 
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
-      // Hook is only passed when chaos wants to mutate the response. When
-      // it's passed, it unconditionally applies malformed + journals + tells
-      // proxyAndRecord to skip its default relay. The hook has no branching
-      // logic — that decision is made here, at the call site.
-      const hookOptions =
-        chaosAction === "malformed"
-          ? {
-              // Malformed is emitted as a hardcoded invalid-JSON body, so the
-              // captured upstream response isn't used here (the parameter is
-              // intentionally omitted rather than declared-and-ignored).
-              // Future dispatch (phase 3: non-JSON / streaming) will accept
-              // the response and branch on contentType.
-              beforeWriteResponse: () => {
-                applyChaosAction(
-                  chaosAction,
-                  res,
-                  null,
-                  journal,
-                  chaosContext,
-                  "proxy",
-                  defaults.registry,
-                );
-                return true;
-              },
-              // Streaming responses can't be mutated post-facto (bytes already
-              // on the wire). Record the bypass so the rolled action isn't
-              // invisible in logs / Prometheus.
-              onHookBypassed: (reason: "sse_streamed" | "ndjson_streamed" | "binary_streamed") => {
-                defaults.logger.warn(
-                  `[chaos] malformed bypassed on proxy: upstream returned streaming response (${reason})`,
-                );
-                defaults.registry?.incrementCounter("aimock_chaos_bypassed_total", {
-                  action: "malformed",
-                  source: "proxy",
-                  reason,
-                });
-              },
-            }
-          : undefined;
-
       const outcome = await proxyAndRecord(
         req,
         res,
@@ -925,7 +943,6 @@ async function handleCompletions(
         fixtures,
         defaults,
         raw,
-        hookOptions,
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1167,6 +1184,7 @@ async function handleCompletions(
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
@@ -1238,6 +1256,7 @@ async function handleCompletions(
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
@@ -1310,6 +1329,7 @@ async function handleCompletions(
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
@@ -1381,6 +1401,15 @@ export async function createServerWithResolvedAuth(
   const logger = new Logger(options?.logLevel ?? "silent");
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  // One randomizer per server. It owns the run's seed and the per-key
+  // occurrence counters, so two servers built with the same seed agree on every
+  // verdict and neither is disturbed by the other's traffic.
+  const chaosRandom = new ChaosRandomizer(serverOptions.chaos?.seed);
+
+  // Published whether or not chaos is configured: the run still has a seed, and
+  // a scrape of a red run is one of the places it has to be readable from.
+  registry?.setGauge("aimock_chaos_seed_info", { seed: chaosRandom.seed }, 1);
+
   const defaults = {
     latency: serverOptions.latency ?? 0,
     chunkSize: Math.max(1, serverOptions.chunkSize ?? DEFAULT_CHUNK_SIZE),
@@ -1389,6 +1418,7 @@ export async function createServerWithResolvedAuth(
     get chaos() {
       return serverOptions.chaos;
     },
+    chaosRandom,
     registry,
     get record() {
       return serverOptions.record;
@@ -1427,6 +1457,19 @@ export async function createServerWithResolvedAuth(
       if (value !== undefined && (value < 0 || value > 1)) {
         logger.warn(`Chaos ${name} (${value}) is outside 0-1 range — will be clamped at runtime`);
       }
+    }
+    const configuredSeed = options.chaos.seed;
+    if (configuredSeed !== undefined && normalizeChaosSeed(configuredSeed) === null) {
+      logger.warn(
+        `Chaos seed ${JSON.stringify(configuredSeed)} is blank or cannot be reported ` +
+          `on a header, so a generated one is in use instead`,
+      );
+    }
+    // Announce the seed only when chaos can actually fire: on a server with
+    // every rate at zero it is noise, and the value is still readable from
+    // GET /__aimock/chaos and the metrics endpoint either way.
+    if (chaosRates.some(({ value }) => value !== undefined && value > 0)) {
+      logger.info(`Chaos seed: ${chaosRandom.seed} — pass it back as chaos.seed to replay`);
     }
   }
 
@@ -1653,6 +1696,15 @@ export async function createServerWithResolvedAuth(
           if (handled) return;
         }
       }
+    }
+
+    // Lifecycle requests can carry bodies too; preserve their wire identity.
+    if (
+      (req.method === "GET" || req.method === "DELETE") &&
+      (req.headers["content-length"] !== undefined ||
+        req.headers["transfer-encoding"] !== undefined)
+    ) {
+      await readBody(req);
     }
 
     // Ollama /api/* routes must be dispatched BEFORE normalizeCompatPath, which
@@ -2273,7 +2325,8 @@ export async function createServerWithResolvedAuth(
       try {
         const deploymentId = azureDeploymentId;
         const embeddingsProvider: RecordProviderKey = azureDeploymentId ? "azure" : "openai";
-        let raw = await readBody(req);
+        const wireBody = await readBody(req);
+        let raw = wireBody;
         // Azure deployments may omit model from body — use deployment ID as fallback
         if (deploymentId) {
           try {
@@ -2300,6 +2353,7 @@ export async function createServerWithResolvedAuth(
           defaults,
           setCorsHeaders,
           embeddingsProvider,
+          wireBody,
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -3127,24 +3181,6 @@ export async function createServerWithResolvedAuth(
       try {
         falBody = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
         const raw = falBody;
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "GET",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
         const outcome = await handleFal(req, res, raw, pathname, fixtures, defaults, journal);
         if (outcome === "handled") return;
         // passthrough: fall through to legacy fal-audio routes below
@@ -3193,27 +3229,11 @@ export async function createServerWithResolvedAuth(
     ) {
       setCorsHeaders(res);
       try {
-        const raw =
-          req.method === "POST" || req.method === "PUT" ? (falBody ?? (await readBody(req))) : "{}";
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "GET",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
-        await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
+        // Read whatever the client sent whatever the method, so the chaos key
+        // sees the wire body rather than the `"{}"` the sub-handlers parse.
+        const wireBody = falBody ?? (await readBody(req));
+        const raw = req.method === "POST" || req.method === "PUT" ? wireBody : "{}";
+        await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal, wireBody);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         if (!res.headersSent) {
@@ -3479,6 +3499,7 @@ export async function createServerWithResolvedAuth(
         ...defaults,
         model,
         transcriptionIntent,
+        upgradePath: req.url ?? REALTIME_PATH,
         testId: wsTestId,
         upgradeHeaders: req.headers,
       });
@@ -3528,6 +3549,7 @@ export async function createServerWithResolvedAuth(
       resolve({
         server,
         journal,
+        chaosSeed: chaosRandom.seed,
         url,
         defaults,
         videoStates,

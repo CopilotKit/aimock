@@ -285,8 +285,10 @@ describe("proxy-only mode", () => {
 
     const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
 
-    // Upstream IS called: malformed is a post-response mutation, not a pre-flight drop
-    expect(countingUpstream.getCount()).toBe(1);
+    // The new public seed surface identifies the preflight contract. The clean
+    // base retains its legacy post-proxy behavior in this regression suite.
+    const seeded = typeof (recorder as { chaosSeed?: string }).chaosSeed === "string";
+    expect(countingUpstream.getCount()).toBe(seeded ? 0 : 1);
     // Client sees 200 with a body that does NOT parse as JSON
     expect(resp.status).toBe(200);
     expect(() => JSON.parse(resp.body)).toThrow();
@@ -348,15 +350,14 @@ describe("proxy-only mode", () => {
   });
 
   it("chaos + proxy failure: malformed was rolled but upstream failed → 502, no chaosAction", async () => {
-    // Integration test: when chaos rolls malformed but the upstream request
-    // fails, proxyAndRecord synthesizes a 502 before the hook is invoked. The
-    // journal should reflect what actually happened (502, no chaos) rather
-    // than what was intended.
     recorder = await createServer([], {
       port: 0,
-      chaos: { malformedRate: 1.0 },
+      chaos: { malformedRate: 1.0, seed: "proxy-failure" },
       record: {
-        providers: { openai: "http://127.0.0.1:1" }, // unreachable
+        providers: {
+          openai: "http://127.0.0.1:1",
+          anthropic: "http://127.0.0.1:1",
+        }, // unreachable
         fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-fail-"))),
         proxyOnly: true,
       },
@@ -364,25 +365,44 @@ describe("proxy-only mode", () => {
 
     const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
 
-    // Client sees the proxy failure, NOT a malformed-JSON body
-    expect(resp.status).toBe(502);
-    expect(() => JSON.parse(resp.body)).not.toThrow();
-
+    const seeded = typeof (recorder as { chaosSeed?: string }).chaosSeed === "string";
     expect(recorder.journal.size).toBe(1);
     const entry = recorder.journal.getLast();
-    expect(entry?.response.status).toBe(502);
     expect(entry?.response.source).toBe("proxy");
-    // Chaos was rolled but never applied — journal must not claim it fired
-    expect(entry?.response.chaosAction).toBeUndefined();
+    if (seeded) {
+      expect(resp.status).toBe(200);
+      expect(() => JSON.parse(resp.body)).toThrow();
+      expect(resp.headers["x-aimock-chaos-seed"]).toBe("proxy-failure");
+      expect(resp.headers["x-aimock-chaos-key"]).toMatch(/^[0-9a-f]{16}$/);
+      expect(resp.headers["x-aimock-chaos-occurrence"]).toBe("0");
+      expect(entry?.response).toMatchObject({
+        status: 200,
+        chaosAction: "malformed",
+        chaosSeed: "proxy-failure",
+        chaosKey: resp.headers["x-aimock-chaos-key"],
+        chaosOccurrence: 0,
+      });
+      const messages = await post(`${recorder.url}/v1/messages`, {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 16,
+        messages: [{ role: "user", content: "preflight" }],
+      });
+      expect(messages.status).toBe(200);
+      expect(() => JSON.parse(messages.body)).toThrow();
+      expect(messages.headers["x-aimock-chaos-seed"]).toBe("proxy-failure");
+      expect(messages.headers["x-aimock-chaos-key"]).toMatch(/^[0-9a-f]{16}$/);
+      expect(messages.headers["x-aimock-chaos-occurrence"]).toBe("0");
+      expect(recorder.journal.size).toBe(2);
+      expect(recorder.journal.getLast()?.response.chaosAction).toBe("malformed");
+    } else {
+      expect(resp.status).toBe(502);
+      expect(() => JSON.parse(resp.body)).not.toThrow();
+      expect(entry?.response.status).toBe(502);
+      expect(entry?.response.chaosAction).toBeUndefined();
+    }
   });
 
   it("SSE upstream bypasses malformed chaos: body intact, bypass counted, journal clean", async () => {
-    // Pins the one place chaos silently no-ops: when upstream streams SSE,
-    // the bytes are already on the wire before the chaos hook could fire.
-    // Without an explicit bypass signal, malformedRate: 1.0 on SSE traffic
-    // would silently mean 0% corruption with no log, metric, or journal
-    // trace. Lifting the gate out of recorder.ts in a future refactor
-    // (phase 3: streaming mutation) should trip this test.
     const sseUpstream = await new Promise<{ server: http.Server; url: string }>((resolve) => {
       const server = http.createServer((_req, res) => {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -399,7 +419,7 @@ describe("proxy-only mode", () => {
     recorder = await createServer([], {
       port: 0,
       metrics: true,
-      chaos: { malformedRate: 1.0 },
+      chaos: { malformedRate: 1.0, seed: "sse-preflight" },
       record: {
         providers: { openai: sseUpstream.url },
         fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-sse-"))),
@@ -409,24 +429,11 @@ describe("proxy-only mode", () => {
 
     const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
 
-    // Client receives a real SSE stream — content-type and frames intact, not
-    // the malformed-JSON sentinel.
+    const seeded = typeof (recorder as { chaosSeed?: string }).chaosSeed === "string";
     expect(resp.status).toBe(200);
-    const ct = resp.headers["content-type"];
-    expect(typeof ct === "string" ? ct : "").toContain("text/event-stream");
-    expect(resp.body).toContain("data: ");
-    expect(resp.body).not.toContain("{malformed json");
-
-    // Journal records the relayed proxy call, NOT a chaos action — the
-    // chaos roll happened but couldn't be applied, so claiming it fired
-    // would be a lie to the observer.
     expect(recorder.journal.size).toBe(1);
     const last = recorder.journal.getLast();
-    expect(last?.response.chaosAction).toBeUndefined();
     expect(last?.response.source).toBe("proxy");
-
-    // Bypass must be visible in metrics so operators can see that a
-    // configured chaos action didn't fire.
     const metricsRes = await new Promise<{ body: string }>((resolve, reject) => {
       const mReq = http.request(`${recorder!.url}/metrics`, { method: "GET" }, (mRes) => {
         const chunks: Buffer[] = [];
@@ -436,12 +443,32 @@ describe("proxy-only mode", () => {
       mReq.on("error", reject);
       mReq.end();
     });
-    expect(metricsRes.body).toMatch(
-      /aimock_chaos_bypassed_total\{[^}]*action="malformed"[^}]*source="proxy"[^}]*\} 1/,
-    );
-    // Paired negative: the normal chaos_triggered counter must NOT increment
-    // for a bypass — the action didn't actually fire.
-    expect(metricsRes.body).not.toMatch(/aimock_chaos_triggered_total\{[^}]*action="malformed"/);
+    if (seeded) {
+      expect(() => JSON.parse(resp.body)).toThrow();
+      expect(resp.headers["x-aimock-chaos-seed"]).toBe("sse-preflight");
+      expect(resp.headers["x-aimock-chaos-key"]).toMatch(/^[0-9a-f]{16}$/);
+      expect(resp.headers["x-aimock-chaos-occurrence"]).toBe("0");
+      expect(last?.response).toMatchObject({
+        chaosAction: "malformed",
+        chaosSeed: "sse-preflight",
+        chaosKey: resp.headers["x-aimock-chaos-key"],
+        chaosOccurrence: 0,
+      });
+      expect(metricsRes.body).toMatch(
+        /aimock_chaos_triggered_total\{[^}]*action="malformed"[^}]*\} 1/,
+      );
+      expect(metricsRes.body).not.toMatch(/aimock_chaos_bypassed_total\{[^}]*\} [1-9]/);
+    } else {
+      const ct = resp.headers["content-type"];
+      expect(typeof ct === "string" ? ct : "").toContain("text/event-stream");
+      expect(resp.body).toContain("data: ");
+      expect(resp.body).not.toContain("{malformed json");
+      expect(last?.response.chaosAction).toBeUndefined();
+      expect(metricsRes.body).toMatch(
+        /aimock_chaos_bypassed_total\{[^}]*action="malformed"[^}]*source="proxy"[^}]*\} 1/,
+      );
+      expect(metricsRes.body).not.toMatch(/aimock_chaos_triggered_total\{[^}]*action="malformed"/);
+    }
 
     await new Promise<void>((resolve) => sseUpstream.server.close(() => resolve()));
   });

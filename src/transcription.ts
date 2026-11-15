@@ -16,7 +16,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { calculateDelay, delay, writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { createInterruptionSignal } from "./interruption.js";
 
@@ -125,20 +125,20 @@ export async function handleTranscription(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -292,6 +292,7 @@ export async function handleTranscription(
         latency,
         fixture.recordedTimings,
         replaySpeed,
+        chaosJitterFor(req),
       );
       if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
       if (interruption?.signal.aborted) break;

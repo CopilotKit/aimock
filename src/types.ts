@@ -3,6 +3,7 @@ import type * as net from "node:net";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
+import type { ChaosRandomizer } from "./chaos-random.js";
 
 // aimock type definitions — shared across all provider adapters and the fixture router.
 
@@ -537,6 +538,13 @@ export interface ChaosConfig {
   dropRate?: number;
   malformedRate?: number;
   disconnectRate?: number;
+  /**
+   * Seed for the draws that decide whether an action fires. Omit and the
+   * server generates one per run, reports it, and logs it; pass the reported
+   * value back to replay that run's faults exactly. Numbers are accepted for
+   * the sake of config files and are normalized to their decimal strings.
+   */
+  seed?: string | number;
 }
 
 export type ChaosAction = "drop" | "malformed" | "disconnect";
@@ -770,6 +778,14 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;
+    /**
+     * The three coordinates that produced `chaosAction`, recorded so a failure
+     * seen in a log can be replayed without guessing. Present exactly when
+     * `chaosAction` is.
+     */
+    chaosSeed?: string;
+    chaosKey?: string;
+    chaosOccurrence?: number;
     /** When the X-AIMock-Strict header overrode the server default. */
     strictOverride?: boolean;
   };
@@ -1174,6 +1190,12 @@ export interface HandlerDefaults {
   replaySpeed: number;
   logger: Logger;
   chaos?: ChaosConfig;
+  /**
+   * The server's deterministic randomness. Absent when a handler is driven
+   * directly in a unit test, in which case chaos falls back to a throwaway
+   * randomizer (a fresh seed per decision, i.e. the historical behaviour).
+   */
+  chaosRandom?: ChaosRandomizer;
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;

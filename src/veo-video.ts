@@ -23,7 +23,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { applyChaos, chaosIdentity } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
@@ -322,6 +322,8 @@ export async function handleVeoVideoCreate(
             : "internal",
       defaults.registry,
       defaults.logger,
+      defaults.chaosRandom,
+      chaosIdentity(req, raw),
     )
   )
     return;
@@ -498,6 +500,8 @@ export async function handleVeoVideoStatus(
       "internal",
       defaults.registry,
       defaults.logger,
+      defaults.chaosRandom,
+      chaosIdentity(req),
     )
   )
     return;

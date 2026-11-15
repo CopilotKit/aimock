@@ -48,7 +48,7 @@ import { writeNDJSONStream } from "./ndjson-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Ollama request types ────────────────────────────────────────────────────
@@ -710,25 +710,25 @@ export async function handleOllama(
     logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -874,6 +874,7 @@ export async function handleOllama(
       const completed = await writeNDJSONStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -924,6 +925,7 @@ export async function handleOllama(
       const completed = await writeNDJSONStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -980,6 +982,7 @@ export async function handleOllama(
       const completed = await writeNDJSONStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1100,25 +1103,25 @@ export async function handleOllamaGenerate(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1257,6 +1260,7 @@ export async function handleOllamaGenerate(
       const completed = await writeNDJSONStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1439,25 +1443,25 @@ export async function handleOllamaEmbeddings(
     logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: syntheticReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);

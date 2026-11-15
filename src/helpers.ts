@@ -1229,10 +1229,38 @@ export function buildContentWithToolCallsCompletion(
 
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/**
+ * Where `readBody` leaves the bytes it decoded, keyed by the request it read
+ * them from. A WeakMap rather than a property on the request: nothing is added
+ * to an object the rest of the server passes around, and an entry disappears
+ * with the request that owns it.
+ */
+const rawBodies = new WeakMap<http.IncomingMessage, Buffer>();
+
+/**
+ * The body exactly as it arrived, for a request whose body has been read.
+ *
+ * `readBody` resolves to a UTF-8 string, which is the right shape for JSON but
+ * lossy for multipart and binary payloads: bytes outside UTF-8 decode to the
+ * replacement character, so two different uploads can collapse into one string.
+ * A consumer that uses the payload as an identity rather than parsing it needs
+ * the bytes themselves.
+ */
+export function rawBodyBytes(req: http.IncomingMessage): Buffer | undefined {
+  return rawBodies.get(req);
+}
+
 export function readBody(
   req: http.IncomingMessage,
   maxBytes: number = DEFAULT_MAX_BODY_BYTES,
 ): Promise<string> {
+  const cached = rawBodies.get(req);
+  if (cached) {
+    if (cached.length > maxBytes) {
+      return Promise.reject(new Error(`Request body exceeded size limit of ${maxBytes} bytes`));
+    }
+    return Promise.resolve(cached.toString());
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -1251,7 +1279,9 @@ export function readBody(
     req.on("end", () => {
       if (!settled) {
         settled = true;
-        resolve(Buffer.concat(chunks).toString());
+        const raw = Buffer.concat(chunks);
+        rawBodies.set(req, raw);
+        resolve(raw.toString());
       }
     });
     req.on("error", (err) => {

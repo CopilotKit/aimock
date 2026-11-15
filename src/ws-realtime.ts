@@ -6,8 +6,9 @@
  * individual WebSocket text frames.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, type Hash } from "node:crypto";
 import type {
+  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
@@ -31,14 +32,49 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { delay, calculateDelay, createJitterSource, type JitterSource } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { WebSocketConnection } from "./ws-framing.js";
+import { decideChaos } from "./chaos.js";
+import { canonicalJSON, type ChaosRandomizer } from "./chaos-random.js";
 
 /** Generate a Realtime-API-style ID with underscore separator (e.g. event_xxx, item_xxx). */
 function realtimeId(prefix: string): string {
   return `${prefix}_${randomBytes(12).toString("base64url")}`;
+}
+
+// Keep wire identity separate from mutable session/router projections. A
+// rolling digest retains the complete client-event history without retaining
+// audio payloads or growing a second copy of a long conversation in memory.
+const realtimeWire = new WeakMap<WebSocketConnection, { path: string; events: Hash }>();
+
+function realtimeJitterSource(
+  defaults: {
+    chaos?: ChaosConfig;
+    chaosRandom?: ChaosRandomizer;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    logger: Logger;
+  },
+  fixture: Fixture | null,
+  ws: WebSocketConnection,
+): JitterSource | undefined {
+  const wire = realtimeWire.get(ws);
+  if (!defaults.chaosRandom || !wire) return undefined;
+  const decision = decideChaos(
+    fixture,
+    defaults.chaos,
+    defaults.upgradeHeaders,
+    {
+      method: "WS",
+      path: wire.path,
+      body: { kind: "realtime-events", sha256: wire.events.copy().digest("hex") },
+    },
+    defaults.chaosRandom,
+    defaults.logger,
+    true,
+  );
+  return createJitterSource(decision.seed, decision.key);
 }
 
 // ─── Realtime protocol types ────────────────────────────────────────────────
@@ -462,10 +498,15 @@ export function handleWebSocketRealtime(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    upgradePath?: string;
     transcriptionIntent?: boolean;
   },
 ): void {
   const { logger } = defaults;
+  realtimeWire.set(ws, {
+    path: defaults.upgradePath ?? "/v1/realtime",
+    events: createHash("sha256"),
+  });
   const sessionId = realtimeId("sess");
 
   const isBeta = defaults.upgradeHeaders?.["openai-beta"]
@@ -563,6 +604,15 @@ async function processMessage(
     );
     return;
   }
+
+  // Snapshot each accepted JSON value before routing adds generated item IDs,
+  // context headers, default fields, or applies request transforms. Length
+  // framing makes event boundaries unambiguous; JSON key order is irrelevant.
+  const wireEvent = canonicalJSON(parsed);
+  realtimeWire
+    .get(ws)
+    ?.events.update(`${Buffer.byteLength(wireEvent)}:`)
+    .update(wireEvent);
 
   const msgType = parsed.type;
 
@@ -982,6 +1032,7 @@ async function emitLiveTranscriptionEvents(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const jitterSource = realtimeJitterSource(defaults, fixture, ws);
   const interruption = createInterruptionSignal(fixture);
   let chunkIndex = 0;
   for (let index = 0; index < transcript.length; index += chunkSize) {
@@ -991,6 +1042,7 @@ async function emitLiveTranscriptionEvents(
       latency,
       fixture.recordedTimings,
       replaySpeed,
+      jitterSource,
     );
     if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
     if (interruption?.signal.aborted || ws.isClosed) {
@@ -1110,6 +1162,8 @@ async function handleResponseCreate(
     defaults.requestTransform,
   );
   const responseId = realtimeId("resp");
+
+  const jitterSource = fixture ? realtimeJitterSource(defaults, fixture, ws) : undefined;
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
@@ -1270,6 +1324,7 @@ async function handleResponseCreate(
         isBeta,
         conversationItems,
         journalEntry,
+        jitterSource,
       );
       return;
     }
@@ -1354,10 +1409,11 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(
         eventIndex,
-        undefined,
+        fixture.streamingProfile,
         latency,
         recordedTimings,
         replaySpeed,
+        jitterSource,
       );
       if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
       if (interruption?.signal.aborted) {
@@ -1522,10 +1578,11 @@ async function handleResponseCreate(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          undefined,
+          fixture.streamingProfile,
           latency,
           recordedTimings,
           replaySpeed,
+          jitterSource,
         );
         if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
         if (interruption?.signal.aborted) {
@@ -1742,10 +1799,11 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(
         eventIndex,
-        undefined,
+        fixture.streamingProfile,
         latency,
         recordedTimings,
         replaySpeed,
+        jitterSource,
       );
       if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
       if (interruption?.signal.aborted) {
@@ -1949,10 +2007,11 @@ async function handleResponseCreate(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          undefined,
+          fixture.streamingProfile,
           latency,
           recordedTimings,
           replaySpeed,
+          jitterSource,
         );
         if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
         if (interruption?.signal.aborted) {
@@ -2112,6 +2171,7 @@ async function streamRealtimeBlocks(
   isBeta: boolean,
   conversationItems: RealtimeItem[],
   journalEntry: JournalEntry,
+  jitterSource?: JitterSource,
 ): Promise<void> {
   // response.created
   sendEvent(
@@ -2194,10 +2254,11 @@ async function streamRealtimeBlocks(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          undefined,
+          fixture.streamingProfile,
           latency,
           recordedTimings,
           replaySpeed,
+          jitterSource,
         );
         if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
         if (interruption?.signal.aborted) {
@@ -2332,10 +2393,11 @@ async function streamRealtimeBlocks(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          undefined,
+          fixture.streamingProfile,
           latency,
           recordedTimings,
           replaySpeed,
+          jitterSource,
         );
         if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
         if (interruption?.signal.aborted) {

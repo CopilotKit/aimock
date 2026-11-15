@@ -21,7 +21,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { extractBoundary, extractFormField } from "./transcription.js";
 
@@ -148,20 +148,20 @@ export async function handleImages(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -382,20 +382,20 @@ export async function handleImageEdit(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -568,20 +568,20 @@ export async function handleImageVariations(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);

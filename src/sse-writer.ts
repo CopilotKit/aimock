@@ -1,5 +1,10 @@
 import type * as http from "node:http";
 import type { SSEChunk, StreamingProfile, RecordedTimings } from "./types.js";
+import type { JitterSource } from "./chaos-random.js";
+
+// Re-exported here because this is the module whose options take it.
+export { createJitterSource } from "./chaos-random.js";
+export type { JitterSource } from "./chaos-random.js";
 
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0 || signal?.aborted) return Promise.resolve();
@@ -23,6 +28,12 @@ export interface StreamOptions {
   replaySpeed?: number;
   signal?: AbortSignal;
   onChunkSent?: () => void;
+  /**
+   * Supplies the per-chunk jitter draw. Omit and jitter falls back to
+   * `Math.random()`, which is unreproducible; pass the server's seeded source
+   * and a stream's timing becomes a function of the seed.
+   */
+  jitterSource?: JitterSource;
   /** When set, emitted as the final chunk before [DONE] (OpenAI stream_options.include_usage). */
   usageChunk?: SSEChunk;
   /**
@@ -44,6 +55,7 @@ export function calculateDelay(
   fallbackLatency?: number,
   recordedTimings?: RecordedTimings,
   replaySpeed?: number,
+  jitterSource?: JitterSource,
 ): number {
   const speed = replaySpeed ?? 1.0;
   let delayMs: number;
@@ -61,7 +73,8 @@ export function calculateDelay(
     }
     // Jitter only applies when the delay came from ttft/tps, not fallback
     if (fromProfile && profile.jitter && profile.jitter > 0) {
-      delayMs *= 1 + (Math.random() * 2 - 1) * profile.jitter;
+      const draw = jitterSource ? jitterSource(chunkIndex) : Math.random();
+      delayMs *= 1 + (draw * 2 - 1) * profile.jitter;
       if (delayMs < 0) delayMs = 0;
     }
   } else if (recordedTimings) {
@@ -116,7 +129,14 @@ export async function writeSSEStream(
 
   let chunkIndex = 0;
   for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) {
       await delay(chunkDelay, signal);
     }

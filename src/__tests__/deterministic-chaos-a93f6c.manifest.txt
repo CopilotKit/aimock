@@ -1,0 +1,88 @@
+chaos seed reporting > reports the configured seed and the effective rates
+chaos seed reporting > reports zeroed rates and a seed when nothing is configured
+chaos seed reporting > reports a generated seed when none was configured
+chaos seed reporting > replays an unseeded run from the seed it reported
+chaos seed reporting > exposes the same seed on the server instance as the control endpoint
+chaos seed reporting > exposes a generated seed on the server instance too
+chaos seed reporting > exposes a configured seed on the programmatic mock
+chaos seed reporting > exposes a generated seed on the programmatic mock
+chaos seed reporting > counts the keys it is tracking
+chaos seed reporting > publishes the seed on the metrics endpoint
+chaos seed reporting > publishes the seed even when no chaos is configured
+chaos seed reporting > announces the coordinates on an affected response and not on a clean one
+chaos seed reporting > puts the seed, key and occurrence on a dropped response
+chaos seed reporting > puts the seed, key and occurrence on a malformed response
+chaos seed reporting > records the seed, key and occurrence in the journal entry
+chaos seed reporting > records all three coordinates for a disconnect, which cannot carry headers
+chaos seed reporting > leaves the journal free of every coordinate when nothing fired
+reproducibility > two servers with the same seed produce the same outcome sequence
+reproducibility > repeats the same sequence after a chaos reset
+reproducibility > different seeds diverge while each stays reproducible
+reproducibility > all three action kinds are reproducible together
+reproducibility > the chaos reset rewinds the sequence and keeps the seed
+reproducibility > the chaos reset clears the tracked-key count
+reproducibility > the full reset rewinds the chaos sequence and clears the count
+reproducibility > the full reset announces the seed it kept
+reproducibility > clearing only the journal does not rewind, but a chaos reset does
+order independence > interleaving two keys does not change either key's sequence
+order independence > an unrelated key inserted mid-run does not shift the run
+order independence > two keys get distinct sequences, each reproducible on its own
+order independence > concurrent requests for one key still cover each occurrence exactly once
+order independence > a key's occurrence keeps counting however many other keys arrive
+stream independence > raising dropRate does not change which requests come back malformed
+stream independence > enabling disconnect does not change the drop pattern
+stream independence > malformed at rate 1 leaves no request untouched, reproducibly
+stream independence > draws each kind from its own stream, not one shared draw
+stream independence > prefers malformed over disconnect when both would fire
+stream independence > prefers drop over both of the others when all three would fire
+rate independence > raising dropRate only ever adds drops
+rate independence > raising malformedRate only ever adds malformed responses without perturbing disconnect draws
+rate independence > raising disconnectRate only ever adds disconnects without perturbing malformed draws
+rate independence > is monotone across four rates at once
+rate independence > drop rate 0 never fires and 1 always fires, still under a seed
+rate independence > disconnect rate 0 never fires and 1 always fires
+rate independence > an out-of-range rate is clamped, not wrapped
+rate independence > a rate change does not disturb another key's verdicts
+rate independence > a drop rate supplied by header draws from the same stream
+rate independence > a malformed rate supplied by header draws from the same stream
+rate independence > a disconnect rate supplied by header draws from the same stream
+chaos key derivation > ignores JSON key order in the body
+chaos key derivation > treats a different body as a different key
+chaos key derivation > varies with the query string
+chaos key derivation > ignores unrelated headers
+chaos key derivation > ignores a header the router folds into the body before matching
+chaos key derivation > keys the body as it was sent, not as a handler narrows it
+chaos key derivation > groups requests with different bodies under an explicit key
+chaos key derivation > splits otherwise identical requests under different explicit keys
+chaos key derivation > ignores a blank explicit key and keys off the request
+chaos key derivation > an explicit key changes the verdict sequence, not just the label
+seed precedence > the request header overrides the server seed
+seed precedence > a header seed makes two differently seeded servers agree
+seed precedence > a fixture seed overrides the server seed
+seed precedence > numeric server and fixture seeds are normalized to decimal strings
+seed precedence > the header seed beats the fixture seed
+seed precedence > blank seeds fall through at every precedence level
+seed precedence > an overridden seed keeps its own occurrence sequence
+seed precedence > counts a seed override as its own tracked key
+provider endpoints > seeds chaos on the embeddings endpoint
+provider endpoints > seeds chaos on the messages endpoint
+provider endpoints > seeds chaos on the image generation endpoint
+provider endpoints > seeds a malformed response on a provider endpoint
+provider endpoints > honours a header seed on a provider endpoint
+provider endpoints > replays a fractional run across every provider family after a rewind
+provider endpoints > seeds chaos the same way on every provider family and route alias
+provider endpoints > seeds chaos on the transcription endpoint, keyed by the multipart body
+provider endpoints > keys each endpoint separately
+provider endpoints > reproduces a mixed-endpoint run from the seed
+injectable stream jitter > uses the supplied draw instead of Math.random
+injectable stream jitter > passes the chunk index to the source
+injectable stream jitter > applies the same band to the first chunk's ttft
+injectable stream jitter > divides by the replay speed after jittering
+injectable stream jitter > ignores the source when jitter is not configured
+injectable stream jitter > ignores the source for a delay that did not come from the profile
+injectable stream jitter > is unreproducible without a source and reproducible with one
+injectable stream jitter > exposes a seeded source that is pure in its seed and key
+injectable stream jitter > draws jitter inside the unit interval
+injectable stream jitter > varies the seeded source by chunk index
+injectable stream jitter > varies the seeded source by seed
+injectable stream jitter > varies the seeded source by key

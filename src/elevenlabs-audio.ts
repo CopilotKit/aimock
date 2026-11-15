@@ -19,7 +19,7 @@ import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { proxyAndRecord } from "./recorder.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity } from "./chaos.js";
 
 export async function handleElevenLabsTTS(
   req: http.IncomingMessage,
@@ -107,20 +107,20 @@ export async function handleElevenLabsTTS(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, body),
+  );
+  if (chaos.handled) return;
 
   // No fixture match
   if (!fixture) {
@@ -367,20 +367,20 @@ export async function handleElevenLabsAudio(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, body),
+  );
+  if (chaos.handled) return;
 
   // No fixture match
   if (!fixture) {

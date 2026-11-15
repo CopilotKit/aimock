@@ -24,7 +24,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { applyChaos, chaosIdentity, prepareChaos } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
@@ -415,6 +415,8 @@ export async function handleOpenRouterVideoStatus(
       "internal",
       defaults.registry,
       defaults.logger,
+      defaults.chaosRandom,
+      chaosIdentity(req),
     )
   )
     return;
@@ -560,20 +562,22 @@ export async function handleOpenRouterVideoContent(
   const path = req.url ?? `/api/v1/videos/${jobId}/content`;
   const method = req.method ?? "GET";
 
-  if (
-    applyChaos(
-      res,
-      null,
-      defaults.chaos,
-      req.headers,
-      journal,
-      { method, path, headers: flattenHeaders(req.headers), body: null },
-      "internal",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const testId = getTestId(req);
+  const job = jobs.get(`${testId}:${jobId}`);
+  const chaos = prepareChaos(
+    res,
+    null,
+    defaults.chaos,
+    req.headers,
+    journal,
+    { method, path, headers: flattenHeaders(req.headers), body: null },
+    job?.kind === "record" ? "proxy" : "internal",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req),
+  );
+  if (chaos.handled) return;
 
   // The real endpoint requires Bearer auth even though the unsigned URL is
   // otherwise self-contained — the @openrouter/sdk fetches it with the key.
@@ -595,9 +599,6 @@ export async function handleOpenRouterVideoContent(
     );
     return;
   }
-
-  const testId = getTestId(req);
-  const job = jobs.get(`${testId}:${jobId}`);
 
   if (!job) {
     journal.add({
@@ -1198,6 +1199,8 @@ export async function handleOpenRouterVideoModels(
       "internal",
       defaults.registry,
       defaults.logger,
+      defaults.chaosRandom,
+      chaosIdentity(req),
     )
   )
     return;
@@ -1498,6 +1501,8 @@ export async function handleOpenRouterVideoCreate(
             : "internal",
       defaults.registry,
       defaults.logger,
+      defaults.chaosRandom,
+      chaosIdentity(req, raw),
     )
   )
     return;

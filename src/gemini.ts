@@ -41,11 +41,11 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
+import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
@@ -697,6 +697,7 @@ function buildGeminiAudioStreamChunks(
 interface GeminiStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
+  jitterSource?: JitterSource;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
   signal?: AbortSignal;
@@ -723,7 +724,14 @@ async function writeGeminiSSEStream(
 
   let chunkIndex = 0;
   for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) await delay(chunkDelay, signal);
     if (signal?.aborted) return false;
     if (res.writableEnded) return true;
@@ -811,25 +819,25 @@ export async function handleGemini(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -964,6 +972,7 @@ export async function handleGemini(
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed,
         signal: interruption?.signal,
@@ -1024,6 +1033,7 @@ export async function handleGemini(
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed,
         signal: interruption?.signal,
@@ -1074,6 +1084,7 @@ export async function handleGemini(
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed,
         signal: interruption?.signal,
@@ -1125,6 +1136,7 @@ export async function handleGemini(
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed,
         signal: interruption?.signal,

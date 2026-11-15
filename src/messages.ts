@@ -40,11 +40,11 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
+import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 /**
@@ -1159,6 +1159,7 @@ function buildClaudeContentWithToolCallsResponse(
 interface ClaudeStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
+  jitterSource?: JitterSource;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
   signal?: AbortSignal;
@@ -1185,7 +1186,14 @@ async function writeClaudeSSEStream(
 
   let chunkIndex = 0;
   for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) await delay(chunkDelay, signal);
     if (signal?.aborted) return false;
     if (res.writableEnded) return true;
@@ -1306,25 +1314,25 @@ export async function handleMessages(
     );
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: req.url ?? "/v1/messages",
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1497,6 +1505,7 @@ export async function handleMessages(
       const completed = await writeClaudeSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1567,6 +1576,7 @@ export async function handleMessages(
       const completed = await writeClaudeSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1639,6 +1649,7 @@ export async function handleMessages(
       const completed = await writeClaudeSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,

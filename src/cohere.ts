@@ -45,11 +45,11 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
+import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Cohere v2 Chat request types ───────────────────────────────────────────
@@ -856,6 +856,7 @@ function buildCohereContentWithToolCallsStreamEvents(
 interface CohereStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
+  jitterSource?: JitterSource;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
   signal?: AbortSignal;
@@ -882,7 +883,14 @@ async function writeCohereSSEStream(
 
   let chunkIndex = 0;
   for (const event of events) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      profile,
+      latency,
+      recordedTimings,
+      replaySpeed,
+      opts.jitterSource,
+    );
     if (chunkDelay > 0) await delay(chunkDelay, signal);
     if (signal?.aborted) return false;
     if (res.writableEnded) return true;
@@ -1004,25 +1012,25 @@ export async function handleCohere(
     logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: req.url ?? "/v2/chat",
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/chat",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1169,6 +1177,7 @@ export async function handleCohere(
       const completed = await writeCohereSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1221,6 +1230,7 @@ export async function handleCohere(
       const completed = await writeCohereSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1274,6 +1284,7 @@ export async function handleCohere(
       const completed = await writeCohereSSEStream(res, events, {
         latency,
         streamingProfile: fixture.streamingProfile,
+        jitterSource: chaosJitterFor(req),
         recordedTimings: fixture.recordedTimings,
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         signal: interruption?.signal,
@@ -1439,25 +1450,25 @@ export async function handleCohereEmbed(
     logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: req.url ?? "/v2/embed",
-        headers: flattenHeaders(req.headers),
-        body: syntheticReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, raw),
+  );
+  if (chaos.handled) return;
 
   // Determine requested embedding types (default to float)
   const embeddingTypes =

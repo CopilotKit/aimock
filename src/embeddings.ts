@@ -31,7 +31,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos } from "./chaos.js";
+import { prepareChaos, chaosIdentity } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Embeddings API request types ──────────────────────────────────────────
@@ -55,6 +55,13 @@ export async function handleEmbeddings(
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
   providerKey: RecordProviderKey = "openai",
+  /**
+   * The payload exactly as the client sent it, when the caller had to rewrite
+   * `raw` before dispatching. Azure deployments may omit `model`, which the
+   * router fills in from the deployment id; that is a routing addition and must
+   * not reach the chaos key, or two genuinely different bodies collide.
+   */
+  wireBody: string = raw,
 ): Promise<void> {
   const { logger } = defaults;
   setCorsHeaders(res);
@@ -140,25 +147,25 @@ export async function handleEmbeddings(
     logger.debug(`No fixture matched for request`);
   }
 
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
-        headers: flattenHeaders(req.headers),
-        body: syntheticReq,
-      },
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      defaults.logger,
-    )
-  )
-    return;
+  const chaos = prepareChaos(
+    res,
+    fixture,
+    defaults.chaos,
+    req.headers,
+    journal,
+    {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+    },
+    fixture ? "fixture" : "proxy",
+    defaults.registry,
+    defaults.logger,
+    defaults.chaosRandom,
+    chaosIdentity(req, wireBody),
+  );
+  if (chaos.handled) return;
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);
