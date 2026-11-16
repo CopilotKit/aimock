@@ -1,43 +1,1388 @@
 {
-  "lastScan": "2026-11-16T17:02:35.503Z",
+  "generatedAt": "2026-11-16T17:35:23.074310Z",
   "adopters": [
     {
-      "repo": "12345ZXY2222/ttse",
-      "stars": 0,
+      "repo": "openclaw/openclaw",
+      "stars": 394583,
       "isFork": false,
       "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+        "package",
+        "symbol"
+      ]
     },
     {
-      "repo": "12345ZXY2222/ttse-anon",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "256robson/BOT-Abacus",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "2710-bhushan/Generative-AI-Projects",
-      "stars": 0,
+      "repo": "Shubhamsaboo/awesome-llm-apps",
+      "stars": 144860,
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
+      ]
+    },
+    {
+      "repo": "CherryHQ/cherry-studio",
+      "stars": 53564,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ComposioHQ/composio",
+      "stars": 31109,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "karakeep-app/karakeep",
+      "stars": 30611,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "mastra-ai/mastra",
+      "stars": 29546,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ag-ui-protocol/ag-ui",
+      "stars": 18668,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "octelium/octelium",
+      "stars": 4192,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "TanStack/ai",
+      "stars": 3361,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Checkmk/checkmk",
+      "stars": 2648,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "cortexkit/magic-context",
+      "stars": 2523,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "atomicstrata/llm-wiki-compiler",
+      "stars": 2264,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "alpic-ai/skybridge",
+      "stars": 2194,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Zoo-Code-Org/Zoo-Code",
+      "stars": 2122,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "SimonSchubert/LinuxCommandLibrary",
+      "stars": 2120,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "liveloveapp/hashbrown",
+      "stars": 734,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "openstory-so/openstory",
+      "stars": 726,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "pixtuoid/pixtuoid",
+      "stars": 568,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "botiverse/oar",
+      "stars": 549,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "cortexkit/aft",
+      "stars": 344,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "thushan/olla",
+      "stars": 338,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "streetsidesoftware/cspell-dicts",
+      "stars": 293,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "mattermost/mattermost-plugin-agents",
+      "stars": 257,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "affromero/flight-finder",
+      "stars": 188,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ngophatneknha/ai-engineering-hub",
+      "stars": 186,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "cacheplane/threadplane",
+      "stars": 184,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "tercumantanumut/selene",
+      "stars": 174,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "supabitapp/supaterm-legacy",
+      "stars": 171,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "BodhiSearch/BodhiApp",
+      "stars": 138,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "TIGER-AI-Lab/LongBanana",
+      "stars": 134,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "SkillNerds/xskill",
+      "stars": 129,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "miantiao-me/github-stars",
+      "stars": 119,
+      "isFork": false,
+      "channels": [
+        "package",
+        "container",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "testomatio/explorbot",
+      "stars": 105,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "marieai/marie-ai",
+      "stars": 98,
+      "isFork": false,
+      "channels": [
+        "container",
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "voxslopuli/opilot",
+      "stars": 96,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "ackness/covel",
+      "stars": 71,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "agentskillexchange/skills",
+      "stars": 65,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "EmberAGI/arbitrum-vibekit",
+      "stars": 53,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ysansan98/ant-chat",
+      "stars": 48,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "deepnote/vscode-deepnote",
+      "stars": 47,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "orka-agents/orka",
+      "stars": 47,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "CharlesHoskinson/dancesWithClaws",
+      "stars": 39,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "idarpansharma/Advanced-AI-ML-Projects",
+      "stars": 33,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "recomposesh/recompose",
+      "stars": 31,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "answerLoops/answerLoops",
+      "stars": 28,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "openclaw-easy/openclaw-easy-desktop",
+      "stars": 27,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "aiappsgbb/kratos-agent",
+      "stars": 26,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Pro-GenAI/Agent-RT",
+      "stars": 25,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "apinizer/testnizer",
+      "stars": 20,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "gabrielmoreira/agent-skills-mirror",
+      "stars": 20,
+      "isFork": false,
+      "channels": [
+        "package",
+        "container",
+        "npx"
+      ]
+    },
+    {
+      "repo": "stefanhoelzl/codehydra",
+      "stars": 20,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "azents/azents",
+      "stars": 16,
+      "isFork": false,
+      "channels": [
+        "container",
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "prompt-edu/prompt",
+      "stars": 13,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "ranst91/remote-skills",
+      "stars": 13,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "reclear-io/llmref",
+      "stars": 13,
+      "isFork": false,
+      "channels": [
+        "container",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "shuowu/pi-tree",
+      "stars": 12,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "Tirth1107/open-claw-repo",
+      "stars": 12,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "bgrgicak/Roomy",
+      "stars": 11,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Nox-HQ/nox",
+      "stars": 11,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "wixette/clawnotes",
+      "stars": 11,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "argus-code-scanning/argus-codescan-mcp",
+      "stars": 10,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "chinhanxt/NaN-EcoNet",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "package",
+        "container",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "jessefreeman/ai-for-dev",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "container",
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "knap-ai/knapsack_desktop",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "phaseoteam/Phaseo",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "portofcontext/agent-voyager-project",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "wenrizc/AI-Multi-Window-Chat",
+      "stars": 9,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "jerelvelarde/generative-ui-london-hackathon-starter",
+      "stars": 8,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "ZDStudios/AIOS",
+      "stars": 8,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "barockok/slaude",
+      "stars": 7,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "borealBytes/my-farm-advisor",
+      "stars": 7,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "jerelvelarde/functional-copilots",
+      "stars": 7,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "AdilShamim8/Uni",
+      "stars": 6,
+      "isFork": false,
+      "channels": [
+        "symbol",
+        "package"
+      ]
+    },
+    {
+      "repo": "adudley78/mcp-audit",
+      "stars": 6,
+      "isFork": false,
+      "channels": [
+        "package",
+        "npx"
+      ]
+    },
+    {
+      "repo": "DrishtantKaushal/AwesomeClaudeCodeMods",
+      "stars": 6,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Montte-erp/montte-nx",
+      "stars": 6,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "areguig/petit-poucet",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ArlindNocaj/copilot-sdk-ag-ui-frontend-demo",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "galElmalah/claude-mods",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "hamchowderr/mastra-chat-kit",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "mattbutlerengineering/ai-tooling",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "sshkeda/nudge",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "umyunsang/UMMAYA",
+      "stars": 5,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "absolutepraya/marka",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "cianfhoghlaim/cianfhoghlaim",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "DrOlu/SuperAgent",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "enclawed/enclawed-oss",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "lawrence3699/agent-skills-corpus",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Threx-code/cordon",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "Vivswan/copilot-env",
+      "stars": 4,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "hamchowderr/foreman",
+      "stars": 3,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "lxdlam/pi-bifrost-provider",
+      "stars": 3,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "Adityavanjre/Project-K",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ArnavSingh76533/openclaw-for-telethon",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "brikkoAI/brikko-studio",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "codespar/codespar-core",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "devSejung/platformclaw",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ElanvitalAI/elanous",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "hamchowderr/braynee",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "Houssam2510/rempart",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "htl-leo-novedu/novedu-app",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "mezberg/ai_home_designer",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "morzan1001/Dependency-Control",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "mushfiqP/openclaw-android-assistant-f",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "MustafaYamin/Personal-AI-FTE",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "salilvnair/daakia",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "saya-ashen/Chrona",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Shards-foundation/shardsclaw",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "Shards-foundation/ShardsOpenBot",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "tomoasleep/herdr-symphony",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "waylon256yhw/effect-tavern",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "xuboboo/zmuse",
+      "stars": 2,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "2710-bhushan/Generative-AI-Projects",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "akhkim/adminbot",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "npx"
+      ]
+    },
+    {
+      "repo": "amoai-tech/ipixai",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "ash-5824/meridian",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "chenxingqiang/TrustClaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "daniprol/pyox-agents",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "devrahulmaida-sketch/J.A.R.V.I.S",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "djshababkhan/awesome-llm-apps",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "Eskyee/agentbot-ios",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "everest-an/hypercode",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "ExSiAM001/OpenClawAi",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "general-intelligence-systems/ag-ui",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "GoatInAHat/PaperVizAgent",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "GoatInAHat/toolfactory",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
+    },
+    {
+      "repo": "GSM2017PMK-OSV/main-trunk",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "symbol",
+        "package"
+      ]
+    },
+    {
+      "repo": "hi-ogawa/acpella",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "issues"
+      ]
+    },
+    {
+      "repo": "IBRAHIM102005/Open_Claw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "JEROME-PRAKASH-L/openclaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Juanqu261/agentic_dev",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "KeepOak/Branch-Agent",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "kodjobaah/moda-interact-workspace",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "container",
+        "npx"
+      ]
+    },
+    {
+      "repo": "liuda1999/Quiet-Core-bot",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "lorcan35/TinkerClaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "miyataken999/aicorps",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "mockagents/mockagents",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Near-One/nomadic-ironclaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "niroopn2005-art/vertex-ai",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "omars3c/DONNA",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "promisingcoder/marketingclaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Rikinshah787/opensource-muse",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "rophy/opencode-rc",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "royans/slopwatch",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx"
+      ]
+    },
+    {
+      "repo": "sarahcodeswell/sarahsbooks",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "shumengya/sproutai-extension",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Singularityszn/pubmax",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Suaiii/Ease_claw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Supadoopa/clawdbot",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package"
+      ]
+    },
+    {
+      "repo": "syxscott/PaleoClaw",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "tanaabased/openclaw-agent-system",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "tothedarktowercame/futon0",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "container",
+        "npx"
+      ]
+    },
+    {
+      "repo": "Tuvren/framework",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package",
+        "symbol"
+      ]
+    },
+    {
+      "repo": "Ugbot/london-A2UI",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
+    },
+    {
+      "repo": "voxslopuli/agentsy",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "package",
+        "symbol",
+        "npx"
+      ]
+    },
+    {
+      "repo": "xiaoland/Beluna",
+      "stars": 1,
+      "isFork": false,
+      "channels": [
+        "npx",
+        "package"
+      ]
     },
     {
       "repo": "2dotd/form-filling",
@@ -45,9 +1390,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "3022667993/xianfeng",
@@ -56,8 +1399,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "aadityakumarsah/hermes",
@@ -66,9 +1408,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "Aafff623/github-idea-project",
@@ -76,19 +1416,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
-    },
-    {
-      "repo": "abacusai/abacusai-bot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "AbdAlnaserTech/Awesome-LLM-Apps",
@@ -96,9 +1424,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
+      ]
     },
     {
       "repo": "AbhiGomra/claw",
@@ -107,8 +1433,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "Abhiram-pro/openmuse-custom_inference",
@@ -117,49 +1442,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
-    },
-    {
-      "repo": "abnershang/openclaw-zenmux-multiprotocol-provider",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "absolutepraya/marka",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "ackness/covel",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
-    },
-    {
-      "repo": "adamrussell91-hash/life-hub",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "AdemBenAbdallah/openstory-tanstack-cloudflare-template",
@@ -168,70 +1451,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Adityavanjre/Project-K",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "adkshishir/openchat",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "adudley78/mcp-audit",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "affromero/flight-finder",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "ag-ui-protocol/ag-ui",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Agent-Pattern-Labs/sparse-kernel",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "agentpolicyspecification/aps-typescript",
@@ -239,33 +1459,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "agentskillexchange/skills",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
-    },
-    {
-      "repo": "aiappsgbb/kratos-agent",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
     },
     {
       "repo": "AIstar007/Dynamic_UI_with_Voice_Integration",
@@ -273,39 +1467,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "AkaraChen/fakellm",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "akhkim/adminbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "akhkim/openclaw-adminbot-lab",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "AkshayReddyGujjula/Google-A2UI-Hackathon",
@@ -313,9 +1475,15 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
+    },
+    {
+      "repo": "AlanSmithDev/ma-copilotkit",
+      "stars": 0,
+      "isFork": false,
+      "channels": [
+        "container"
+      ]
     },
     {
       "repo": "alexander-zuev/riposte",
@@ -324,37 +1492,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "alexanderop/aobot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "algal/openclaw-emacs-tools",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "alpic-ai/skybridge",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
+      ]
     },
     {
       "repo": "alpoxdev/openbot",
@@ -363,18 +1501,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "amirjundi/hsma",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "AmirulAndalib/Vilvona-AI",
@@ -383,9 +1510,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "amjadiqbal/tanstack-ai-rag",
@@ -394,9 +1519,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "amjadiqbal/tanstack-ai-sdk-bridge",
@@ -405,9 +1528,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "amo-tech-ai/ipix",
@@ -415,19 +1536,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "amoai-tech/ipixai",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "amstaff666/openclaw-30754",
@@ -436,8 +1545,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "andrei-ignat-AI/COS.ai",
@@ -445,9 +1553,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "aniruddhaadak80/herclew",
@@ -456,18 +1562,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ankitucr/Artificial-Intelligence",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "Anmol-Baranwal/aimock-testing",
@@ -476,9 +1571,7 @@
       "channels": [
         "npx",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
+      ]
     },
     {
       "repo": "ansu86d/copilotkit-llm-mock",
@@ -486,20 +1579,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14"
-    },
-    {
-      "repo": "answerLoops/answerLoops",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "anthonykewl20/opzava",
@@ -508,19 +1588,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "Anubis-studios/Bot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "App-netizen-arch/special-octo-chainsaw",
@@ -529,51 +1597,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "arcacomputer/openclaw-concentrateai",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "areguig/petit-poucet",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Aristotlev/ZEUS-FRAMEWORK",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ArlindNocaj/copilot-sdk-ag-ui-frontend-demo",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
+      ]
     },
     {
       "repo": "Army161/mastra",
@@ -582,20 +1606,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "ArnavSingh76533/openclaw-for-telethon",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "ArnavSingh76533/openclaw-telethon",
@@ -604,20 +1615,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "ash-5824/meridian",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "astrobotcat/astrobot-recettes",
@@ -626,19 +1624,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "atomicstrata/llm-wiki-compiler",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "AXT224/openmuse",
@@ -647,9 +1633,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
+      ]
     },
     {
       "repo": "ayushozha/blackbox-economy",
@@ -657,40 +1641,25 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "azents/azents",
+      "repo": "baisakib534-hue/openbot-standalone",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "container",
-        "npx",
+        "symbol",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "barockok/slaude",
+      "repo": "baisakib534-hue/opencure",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "batu-0101/Beyond-Open-Claw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
+        "symbol",
         "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "benewende-dev/outtio",
@@ -698,28 +1667,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "bgrgicak/Roomy",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "bigbrid2023/gooddog-v4",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "boctavian2014-ux/C-A-V-A-L-Studio",
@@ -727,50 +1675,16 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "BodhiSearch/BodhiApp",
+      "repo": "Bokanovskii/grogu-openclaw",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "borealBytes/my-farm-advisor",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
+        "symbol",
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "botiverse/oar",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-07"
-    },
-    {
-      "repo": "brikkoAI/brikko-studio",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "bryanunitek/UniCORE.OpenClaw",
@@ -779,9 +1693,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "bryanunitek/UniSaaS.UniCORE.OpenClaw",
@@ -790,9 +1702,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "bullishoptionstrat-hub/GMG-vs1",
@@ -801,17 +1711,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "bullishoptionstrat-hub/miro",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "bullishoptionstrat-hub/Open-Claw-all-skills",
@@ -820,9 +1720,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "bullishoptionstrat-hub/Quantum-Edge-Flows-Vs1",
@@ -831,45 +1729,16 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "bullishoptionstrat-hub/Quantum-Options-Flow-06-14",
+      "repo": "canquedehuiyi-cpu/xiongbaowork",
       "stars": 0,
       "isFork": false,
       "channels": [
+        "symbol",
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cacheplane/angular-agent-framework",
-      "channels": [
-        "adopter-display"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-16T17:02:35.503Z"
-    },
-    {
-      "repo": "cacheplane/dawnai",
-      "channels": [
-        "adopter-display"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-16T17:02:35.503Z"
-    },
-    {
-      "repo": "cacheplane/threadplane",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14"
+      ]
     },
     {
       "repo": "cberguno/OpenBot",
@@ -878,9 +1747,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
+      ]
     },
     {
       "repo": "chaineasy-ai/alice-agent",
@@ -889,8 +1756,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "ChamanPrakashKanth/potatoclaw",
@@ -899,112 +1765,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "CharlesHoskinson/dancesWithClaws",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "chbo297/openclaw-infoflow",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Checkmk/checkmk",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "chenxi0yu/openclaw-x",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "chenxingqiang/TrustClaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "CherryHQ/cherry-studio",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-02"
-    },
-    {
-      "repo": "Chethan616/Dex",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "chinhanxt/NaN-EcoNet",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "ChisaAlter/ChisaBot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-26"
-    },
-    {
-      "repo": "cianfhoghlaim/cianfhoghlaim",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
+      ]
     },
     {
       "repo": "cjcrist/notebooklm-lite",
@@ -1012,9 +1773,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "clyphy/entwinement",
@@ -1023,18 +1782,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "clyphy/Human-AI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "cndoit18/dsh-forge",
@@ -1042,9 +1790,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
+      ]
     },
     {
       "repo": "code-abdulrehman/agent-skills",
@@ -1053,39 +1799,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "codespar/codespar-core",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ComposioHQ/composio",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "con-golias/workings",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "Conte777/mermaid-inline",
@@ -1094,9 +1808,7 @@
       "channels": [
         "package",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "corbitsdev/workbench",
@@ -1106,9 +1818,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "corovcam/Universal-Object-Mapping",
@@ -1117,18 +1827,7 @@
       "channels": [
         "container",
         "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cortexkit/aft",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "cortexkit/broca",
@@ -1136,20 +1835,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "cortexkit/magic-context",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "cosmic-hydra/accesstwin",
@@ -1158,8 +1844,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "cprice-ping/AG-UI-Travel-Agent",
@@ -1167,9 +1852,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "CrimsonSithria/agentos",
@@ -1179,8 +1862,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "dalet4/hermes",
@@ -1189,8 +1871,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "damianlevy1987-prog/pi-test",
@@ -1201,29 +1882,7 @@
         "container",
         "symbol",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "daniprol/pyox-agents",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "deb538/AGUI-A2UI-ADK",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "DeclanErice/LLMBasedTripAssistant",
@@ -1231,19 +1890,15 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "deepnote/vscode-deepnote",
+      "repo": "Designersss/ai-agents-work",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
+        "issues"
+      ]
     },
     {
       "repo": "Deva-me-AI/genie-openclaw",
@@ -1251,28 +1906,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "devrahulmaida-sketch/J.A.R.V.I.S",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "devSejung/platformclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "dinwun450/FIFA-World-Cup-2026-App-with-Copilotkit",
@@ -1280,9 +1914,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
     },
     {
       "repo": "DivayJainDJ/Cape-clone",
@@ -1291,18 +1923,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "djshababkhan/awesome-llm-apps",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
     },
     {
       "repo": "drexc/Andy-Agent",
@@ -1311,44 +1932,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "DrishtantKaushal/AwesomeClaudeCodeMods",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "DrOlu/SuperAgent",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "ElanvitalAI/elanous",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "eliezeraugust0/OpenClaw",
@@ -1356,9 +1940,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "Elogic360/imClaw",
@@ -1367,19 +1949,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "EmberAGI/arbitrum-vibekit",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14"
+      ]
     },
     {
       "repo": "empireX8/ai-companion",
@@ -1387,28 +1957,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "enclawed/enclawed-oss",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Eskyee/agentbot-ios",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "EsrakFahim/my-ag-ui-app",
@@ -1416,9 +1965,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "evanholmes/megaphone",
@@ -1426,20 +1973,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "everest-an/hypercode",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "EvoLinkAI/patrickfanella-openclaw",
@@ -1447,9 +1981,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "EvoLinkAI/sparse-kernel",
@@ -1457,29 +1989,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "ExSiAM001/OpenAiClaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "ExSiAM001/OpenClawAi",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "felipevisu/POC",
@@ -1487,9 +1997,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "ferro269/awesome-llm-apps-IMPORT-",
@@ -1497,18 +2005,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "FishRaposo/kiwi-code",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "FlyingWHR/tashan",
@@ -1517,9 +2014,7 @@
       "channels": [
         "package",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "fr4nkastro/openclaw-stable",
@@ -1527,8 +2022,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "frankhli843/gemmahermes",
@@ -1536,8 +2030,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "FreeRikato/docs",
@@ -1546,9 +2039,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "fulgidus/senso",
@@ -1559,8 +2050,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "funnysubaru/openclaw-vendor",
@@ -1568,20 +2058,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "gabrielmoreira/agent-skills-mirror",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "gagan114662/openbot",
@@ -1590,30 +2067,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-07"
-    },
-    {
-      "repo": "galElmalah/claude-mods",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "galElmalah/claude-queue-plugin",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-28"
+      ]
     },
     {
       "repo": "garysilas/glowing-succotash",
@@ -1622,19 +2076,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "general-intelligence-systems/ag-ui",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "gmorel/claude-code-signal-only-ui",
@@ -1643,30 +2085,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "GoatInAHat/PaperVizAgent",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "GoatInAHat/toolfactory",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "Gokhulnath/harness-xray",
@@ -1675,18 +2094,7 @@
       "channels": [
         "package",
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "greench-ai/FirstNexus",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "greench-ai/GreenchClaw",
@@ -1694,48 +2102,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "greench-ai/nexisclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "hamchowderr/braynee",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "hamchowderr/foreman",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "hamchowderr/mastra-chat-kit",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14"
+      ]
     },
     {
       "repo": "harshpatil110/genesis-intentguard",
@@ -1744,18 +2111,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Hetgandhi25/ai-whatsapp-propertybot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "Hieuej147/job-PhuQuoc",
@@ -1763,67 +2119,16 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "hkqxhy/trae_ai_work",
+      "repo": "hythevc/helix-newco-agent",
       "stars": 0,
       "isFork": false,
       "channels": [
+        "symbol",
         "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "holmart/openclow",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "Houssam2510/rempart",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "htl-leo-novedu/novedu-app",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
-    },
-    {
-      "repo": "IBRAHIM102005/Open_Claw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "idarpansharma/Advanced-AI-ML-Projects",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "InaKara/agents-skills",
@@ -1832,17 +2137,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "inevitablegs/InsightHireWithAI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "infosiragpt-ops/SiraGPT-APP",
@@ -1851,36 +2146,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Innei/haklex",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "integrallis/rankcli",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "IntelliSoins/IntelliSoins-agent",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "iskhakovt/cogmo",
@@ -1889,8 +2155,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "itamarterra/SOLPI",
@@ -1899,8 +2164,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "itsmejay80/keepsake",
@@ -1908,9 +2172,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
+      ]
     },
     {
       "repo": "ixtalishgirl/openbot-copilotkit",
@@ -1919,20 +2181,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "izmailov-labs/franca",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "jaggadhaliwal/fenix-os-agenticsquad",
@@ -1940,9 +2189,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
     },
     {
       "repo": "jakubzika/i-love-moms",
@@ -1950,38 +2197,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "jannosiilbek/jann0z-claude-plugins",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "jason-allen-oneal/openclaw-benchmark-mirror",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "jayamitkatariya/free-grokbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "jeevithg090/Steward",
@@ -1991,9 +2207,7 @@
         "package",
         "symbol",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "jerelvelarde/angular-research-copilot",
@@ -2002,8 +2216,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "jerelvelarde/copilotkit-engineering-map",
@@ -2012,8 +2225,7 @@
       "channels": [
         "container",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "jerelvelarde/cpk-pm-demo",
@@ -2023,51 +2235,7 @@
         "container",
         "npx",
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "jerelvelarde/functional-copilots",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "jerelvelarde/generative-ui-london-hackathon-starter",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "JEROME-PRAKASH-L/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "jessefreeman/ai-for-dev",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container",
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "jin2005-issues/OpenClaw-Android",
@@ -2076,8 +2244,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "johnfink8/mise",
@@ -2085,28 +2252,15 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "joshmrtn/openclaw-bridge",
+      "repo": "jolearningusa/llm-courses",
       "stars": 0,
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "Juanqu261/agentic_dev",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "junshanxu/openclaw",
@@ -2114,9 +2268,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "jvkassi/synelia-bot",
@@ -2125,9 +2277,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
+      ]
     },
     {
       "repo": "JY-1019/ClawWorks",
@@ -2136,9 +2286,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "jzhang202505/openclaw_copy",
@@ -2146,27 +2294,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "karaabd23-crypto/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "karakeep-app/karakeep",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
+      ]
     },
     {
       "repo": "Karimarouchi/MEDIANET_PFE-",
@@ -2174,20 +2302,7 @@
       "isFork": false,
       "channels": [
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "KeepOak/Branch-Agent",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "kendoriddy/plugiq-agentforce",
@@ -2196,20 +2311,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "Kevin-Zhouu/jevclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "kevin272/openclaww",
@@ -2218,28 +2320,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "kevinhamza/Devin-4.0",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "kevinmichaelchen/effect-coffee-shop",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "klaaay/weekly-gen",
@@ -2248,9 +2329,7 @@
       "channels": [
         "package",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "KMiya84377/techbookfest21-frontend",
@@ -2258,18 +2337,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "knap-ai/knapsack_desktop",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "kodjobaah/moda-interact-background",
@@ -2280,21 +2348,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
-    },
-    {
-      "repo": "kodjobaah/moda-interact-workspace",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "koraussie7/-AI-agent",
@@ -2302,18 +2356,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "koshaji/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "KrishnaAsati16/AI-Financial-Coach-Agent",
@@ -2321,29 +2364,15 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "kwaveai/kwave-chat",
+      "repo": "kvnloo/OpenDots",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "l49227554-byte/Openclaw-",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+        "issues"
+      ]
     },
     {
       "repo": "labri-progress/what-are-they-doing",
@@ -2352,29 +2381,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "lawrence3699/agent-skills-corpus",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "leon36000/OPSYS-AI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "lhwen686/approval-plugins-openclaw-snapshots",
@@ -2383,9 +2390,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "lif3ng/copilotkit-docs-cn",
@@ -2395,48 +2400,15 @@
         "package",
         "container",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
-      "repo": "LIghtJUNction/cortexfs",
+      "repo": "Lillecarl/pyterm",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "liuda1999/Quiet-Core-bot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "liveloveapp/hashbrown",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "lorcan35/TinkerClaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+        "issues"
+      ]
     },
     {
       "repo": "Love-Gwen2025/openclaw-dev-custom",
@@ -2444,8 +2416,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "lumesky-me/MORPHEUS",
@@ -2454,19 +2425,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "lxdlam/pi-bifrost-provider",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "lyeeen/my-openclaw",
@@ -2475,8 +2434,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "lzy18001500226/MoSim",
@@ -2485,8 +2443,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "maceip/zode-agent",
@@ -2495,9 +2452,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "MadonnaMat/intellivault",
@@ -2506,18 +2461,7 @@
       "channels": [
         "container",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "MahaoAlex/onyxclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "majunbao/learn",
@@ -2526,9 +2470,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "maloyan/sleeper-channels",
@@ -2537,61 +2479,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "marieai/marie-ai",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container",
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "marxbiotech/moltbot-app",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "mastra-ai/mastra",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "mattbutlerengineering/ai-tooling",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "mattermost/mattermost-plugin-agents",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
+      ]
     },
     {
       "repo": "McNull/omp-bifrost-provider",
@@ -2600,19 +2488,7 @@
       "channels": [
         "package",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "mezberg/ai_home_designer",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "mhamza-usman/MindBridge",
@@ -2620,22 +2496,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
-    },
-    {
-      "repo": "miantiao-me/github-stars",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "michaelslain/bismuth",
@@ -2644,8 +2505,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "Mikehutu/copilot-studio-briefkit",
@@ -2654,9 +2514,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "mittai17/zovyx",
@@ -2665,122 +2523,25 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "miyataken999/aicorps",
+      "repo": "MMMustafakamran/copilotkit-antigravity-react",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "MMMustafakamran/Antigravity-React",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "mockagents/mockagents",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "Montte-erp/montte-nx",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "morzan1001/Dependency-Control",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "MoyuTeams/GuoSSHell",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "MriBoyd/ansam-v0.1",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "mrshllpaul1/openclaw1",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
+        "container",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "Murkin1980/murat-project-engineer",
+      "repo": "MMMustafakamran/heap-ntg1",
       "stars": 0,
       "isFork": false,
       "channels": [
+        "container",
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "MustafaYamin/Personal-AI-FTE",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "mxmzb/example-app-web-component",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "nairadityasunil/task-manager",
@@ -2788,9 +2549,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "nareinnprs-create/ORBO",
@@ -2799,9 +2558,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
+      ]
     },
     {
       "repo": "Nathasan1410/ARKA",
@@ -2810,48 +2567,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Near-One/nomadic-ironclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
-    },
-    {
-      "repo": "ngophatneknha/ai-engineering-hub",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "ngpestelos-mirrors/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "ngpestelos/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "nilsenm/siraGPT",
@@ -2860,18 +2576,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "niroopn2005-art/vertex-ai",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "nkootstra/tapas",
@@ -2880,18 +2585,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Nox-HQ/nox",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "ntutangyun/openclaw",
@@ -2900,8 +2594,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "nubjs/build-jail-corpus",
@@ -2910,19 +2603,7 @@
       "channels": [
         "package",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "octelium/octelium",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-07"
+      ]
     },
     {
       "repo": "OfirGavish/NinjaClaw-Open",
@@ -2931,18 +2612,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ofri-peretz/burgee",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "okrbest/okrbest-plugin-agents",
@@ -2950,30 +2620,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "omarcelomoro/openclaw-backup",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "omars3c/DONNA",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "OpenBox-AI/openbox-copilotkit-sdk",
@@ -2981,58 +2628,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "openclaw-easy/openclaw-easy-desktop",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "openclaw/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "openstory-so/openstory",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "orka-agents/orka",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
-    },
-    {
-      "repo": "p-sree-sai-pavan/P.A.R.K.E.R",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+      ]
     },
     {
       "repo": "P1R4N351/astroclaw",
@@ -3041,8 +2637,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "Parth-Singla-123/Unified-Chat-Search",
@@ -3050,49 +2645,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "pascalwilbrink/ag-ui-workshop",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "PatrickFanella/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "phaseoteam/Phaseo",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "pixtuoid/pixtuoid",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "podhmo/llm-wiki-compiler",
@@ -3101,8 +2654,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "poppacks/openclaw",
@@ -3111,19 +2663,15 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
-      "repo": "portofcontext/agent-voyager-project",
+      "repo": "pragyanfyi/unfold",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+        "issues"
+      ]
     },
     {
       "repo": "Prasanth595/OpenBot-mirror",
@@ -3132,9 +2680,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "prismalens/gh-workflows",
@@ -3142,9 +2688,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "prismalens/prismalens",
@@ -3153,41 +2697,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Pro-GenAI/Agent-RT",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "promisingcoder/marketingclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "prompt-edu/prompt",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "pvbang/nexus",
@@ -3196,8 +2706,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "pylabharatreddy/Agentic-AI",
@@ -3205,9 +2714,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "qw457812/copilotkit-langgraph-fastapi",
@@ -3215,42 +2722,17 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
-      "repo": "ranst91/remote-skills",
+      "repo": "RandomCodeSpace/unified-agent-manager",
       "stars": 0,
       "isFork": false,
       "channels": [
         "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "reclear-io/llmref",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container",
         "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "recomposesh/recompose",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "Reeti05Agarwal/Agentic_AI",
@@ -3258,9 +2740,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-19"
+      ]
     },
     {
       "repo": "Remi-537/awesome-llm-apps",
@@ -3268,9 +2748,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "RESousa01/bmad-runtime-dev",
@@ -3279,39 +2757,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Rikinshah787/opensource-muse",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "rjtruitt/armament",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "rophy/opencode-rc",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "roundup-app/roundup",
@@ -3319,29 +2765,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "royans/slopwatch",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "rudofopelomi-cell/10h",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "ruinosus/foundry-assured",
@@ -3350,8 +2774,7 @@
       "channels": [
         "npx",
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "Ruthvik219/AI-Financial-coach-Agent",
@@ -3359,29 +2782,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "saadshahd/roundup",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-19"
-    },
-    {
-      "repo": "sai-ctruong/awesome-llm-apps",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "Sakthivel-P-cse/CODEX",
@@ -3392,50 +2793,7 @@
         "container",
         "symbol",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "salilvnair/daakia",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "sarahcodeswell/livewellproject",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "sarahcodeswell/sarahsbooks",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "saya-ashen/Chrona",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "seasonmac/Full-Scene-Agents",
@@ -3444,8 +2802,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "seek4coherence/Zoo-Code",
@@ -3455,26 +2812,15 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "selfagency/agentsy",
+      "repo": "seigwen/DualTran-extension",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "selfagency/opilot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
+        "issues"
+      ]
     },
     {
       "repo": "Sentura-Inc/Sentura-Platform",
@@ -3483,9 +2829,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "sethum-VS/V0-Agent",
@@ -3494,38 +2838,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "shadabchow-ui/claw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "Shards-foundation/shardsclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Shards-foundation/ShardsOpenBot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "sherhanfsl/copilot",
@@ -3536,40 +2849,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "Shubhamsaboo/awesome-llm-apps",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
-    },
-    {
-      "repo": "shumengya/sproutai-extension",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "shuowu/pi-tree",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "sievepub-2000/octocode",
@@ -3578,28 +2858,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "sifatbhatia/veyra",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "SimonSchubert/LinuxCommandLibrary",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "singhrahul7988/Jenny-AI-bookmarker",
@@ -3607,29 +2866,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "Singularityszn/pubmax",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "SkillNerds/xskill",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "SkrOYC/langchain-middlewares-callbacks-ts",
@@ -3637,18 +2874,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "snarkipus/openclaw-local",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "SouvikJoy/clover-platform",
@@ -3658,98 +2884,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "sshkeda/nudge",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "stefanhoelzl/codehydra",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "stevewow/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "storyclaw-official/storyclaw-assistant",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "streetsidesoftware/cspell-dicts",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Suaiii/Ease_claw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "supabitapp/supaterm",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-07"
-    },
-    {
-      "repo": "supabitapp/supaterm-legacy",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
-    },
-    {
-      "repo": "Supadoopa/clawdbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "SuperGokou/hyclaw",
@@ -3758,8 +2893,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "SuperGokou/personalclaw",
@@ -3768,41 +2902,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "syxscott/PaleoClaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "tanaabased/openclaw-agent-system",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14"
-    },
-    {
-      "repo": "TanStack/ai",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "TayoAki/RPGCRM2",
@@ -3811,19 +2911,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "technicalpickles/a2a-experiments",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "Teju63/financial-coach-agent",
@@ -3831,29 +2919,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "tercumantanumut/selene",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "testomatio/explorbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "thomascfoley-stack/carvis-web",
@@ -3861,58 +2927,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-28"
-    },
-    {
-      "repo": "Threx-code/cordon",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "thushan/olla",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
-    },
-    {
-      "repo": "TIGER-AI-Lab/LongBanana",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Tirth1107/open-claw-repo",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tmoody1973/air-check",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "tmoody1973/openbot",
@@ -3922,9 +2937,7 @@
         "npx",
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "tom0930/AutoAgent-TW",
@@ -3933,18 +2946,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tomoasleep/herdr-symphony",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "tomoasleep/ruboty-ai_agent",
@@ -3952,9 +2954,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "tomoasleep/tinyagent",
@@ -3963,31 +2963,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tothedarktowercame/futon0",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Tuvren/framework",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "tylaujjapan0/openclaw",
@@ -3995,38 +2971,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tylerbrevard/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-21"
-    },
-    {
-      "repo": "Ugbot/london-A2UI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "umyunsang/UMMAYA",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-08-31"
+      ]
     },
     {
       "repo": "uniscrolliabrain-cloud/agente",
@@ -4035,9 +2980,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "unprofessional/openclaw-archive",
@@ -4045,8 +2988,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "utpalmv/awesome-llm-apps",
@@ -4054,9 +2996,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "valentiin123/openclaw-ios-glass",
@@ -4064,52 +3004,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "vignesh2027/Vilvona-AI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "Vivswan/copilot-env",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "voxslopuli/agentsy",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "voxslopuli/opilot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "W3JDev/hermes-platform",
@@ -4118,18 +3013,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-12"
-    },
-    {
-      "repo": "wangqianCAI/OBI",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "wangzh6859/openclaw1",
@@ -4137,30 +3021,15 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
-      "repo": "waylon256yhw/effect-tavern",
+      "repo": "Weiyuan305/RentAppartment-Agent",
       "stars": 0,
       "isFork": false,
       "channels": [
-        "package",
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "wenrizc/AI-Multi-Window-Chat",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+        "package"
+      ]
     },
     {
       "repo": "whbjzzwjxq/ghav",
@@ -4168,20 +3037,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "wixette/clawnotes",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "wongcallum/atomi-userscripts",
@@ -4190,28 +3046,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "wuv-dreamguide/openclaw",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1
-    },
-    {
-      "repo": "xiaoland/Beluna",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "XidianNSS/openclaw-sqlite",
@@ -4220,18 +3055,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "xmoxmo/openclaw-bncr-channel",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "npx",
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "xnightsky/x-agent-suite",
@@ -4239,20 +3063,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "xuboboo/zmuse",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "xzyozi/second-brain",
@@ -4260,9 +3071,7 @@
       "isFork": false,
       "channels": [
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "YashSensei/Kirito-bot",
@@ -4271,9 +3080,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-26"
+      ]
     },
     {
       "repo": "yashthakur1/Karakeep_16",
@@ -4281,9 +3088,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
+      ]
     },
     {
       "repo": "yashthakur1/karakeepa",
@@ -4291,18 +3096,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "ysansan98/ant-chat",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "yufanwang07/goodclaw",
@@ -4311,9 +3105,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "Yvan-dev401/learning-content",
@@ -4321,9 +3113,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
+      ]
     },
     {
       "repo": "zain22972/Model_Pulse-",
@@ -4331,18 +3121,7 @@
       "isFork": false,
       "channels": [
         "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-10-04"
-    },
-    {
-      "repo": "zapabob/clawdbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "zcuss/zcusclaw",
@@ -4351,18 +3130,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ZDStudios/AIOS",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "zerozero0onezero-max/Pandora-to-go",
@@ -4370,19 +3138,7 @@
       "isFork": false,
       "channels": [
         "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Zeus-Center/Zeus",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 1,
-      "firstSeen": "2026-09-21"
+      ]
     },
     {
       "repo": "zhaogongchengsi/holix-ai",
@@ -4391,8 +3147,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "zhexulong/magic-context-airp",
@@ -4402,19 +3157,7 @@
         "package",
         "symbol",
         "npx"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-11-09"
-    },
-    {
-      "repo": "Zoo-Code-Org/Zoo-Code",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
+      ]
     },
     {
       "repo": "zweihku/openclaw",
@@ -4423,8 +3166,7 @@
       "channels": [
         "package",
         "symbol"
-      ],
-      "missedRuns": 0
+      ]
     }
   ]
 }
