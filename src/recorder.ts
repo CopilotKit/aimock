@@ -2061,6 +2061,14 @@ function buildFixtureResponse(
     const shaped =
       responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
     const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (
+      !shaped.content &&
+      !hasTools &&
+      ![...(shaped.blocks ?? []), ...(shaped.responsesBlocks ?? [])].some(hasNativeCitations)
+    ) {
+      logger?.warn("Responses JSON collapse produced empty content — fixture may be incomplete");
+    }
     return {
       ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
       ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),

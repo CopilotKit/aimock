@@ -172,6 +172,44 @@ describe("recorder: non-streamed OpenAI Responses bodies", () => {
     });
   }
 
+  const emptyTurns: Array<[string, Json[]]> = [
+    [
+      "a refusal-only message",
+      [{ type: "message", role: "assistant", content: [{ type: "refusal", refusal: "No." }] }],
+    ],
+    [
+      "a web_search_call-only reply",
+      [{ type: "web_search_call", id: "ws_1", status: "completed" }],
+    ],
+  ];
+  for (const [name, output] of emptyTurns) {
+    it(`warns when ${name} collapses to nothing`, async () => {
+      const { fixturePath, fixtures, warnings } = await record(
+        JSON.stringify({ object: "response", status: "completed", output }),
+        "application/json",
+      );
+      try {
+        expect(fixtures).toHaveLength(1);
+        expect(fixtures[0].response).toMatchObject({ content: "" });
+        expect(warnings).toContain("Responses JSON collapse produced empty content");
+      } finally {
+        fs.rmSync(fixturePath, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("does not warn when a reply has content", async () => {
+    const { fixturePath, warnings } = await record(
+      JSON.stringify({ object: "response", output: [message("Hello")] }),
+      "application/json",
+    );
+    try {
+      expect(warnings).not.toContain("produced empty content");
+    } finally {
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
   it("does not claim to save anything in proxy-only mode", async () => {
     const { fixturePath, fixtures, warnings } = await record(
       JSON.stringify({ unknown: true }),
