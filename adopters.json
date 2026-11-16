@@ -1,5 +1,5 @@
 {
-  "lastScan": "2026-11-09",
+  "lastScan": "2026-11-16T17:02:35.503Z",
   "adopters": [
     {
       "repo": "12345ZXY2222/ttse",
@@ -842,6 +842,22 @@
         "package"
       ],
       "missedRuns": 0
+    },
+    {
+      "repo": "cacheplane/angular-agent-framework",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-11-16T17:02:35.503Z"
+    },
+    {
+      "repo": "cacheplane/dawnai",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-11-16T17:02:35.503Z"
     },
     {
       "repo": "cacheplane/threadplane",
@@ -1915,7 +1931,7 @@
         "npx",
         "package"
       ],
-      "missedRuns": 0,
+      "missedRuns": 1,
       "firstSeen": "2026-10-04"
     },
     {
@@ -2140,7 +2156,7 @@
       "channels": [
         "package"
       ],
-      "missedRuns": 0
+      "missedRuns": 1
     },
     {
       "repo": "karakeep-app/karakeep",
@@ -3408,7 +3424,7 @@
         "symbol",
         "npx"
       ],
-      "missedRuns": 0,
+      "missedRuns": 1,
       "firstSeen": "2026-11-09"
     },
     {
