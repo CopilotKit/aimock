@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Fixed
+
+- Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#615)
+
 ## [1.48.0] - 2026-11-10
 
 ### Added

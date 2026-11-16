@@ -969,9 +969,7 @@ export async function proxyAndRecord(
       parsedResponse = JSON.parse(upstreamBody);
     } catch (parseErr) {
       const msg = parseErr instanceof Error ? parseErr.message : "unknown";
-      defaults.logger.warn(
-        `Upstream response is not valid JSON (${msg}) — saving as error fixture`,
-      );
+      defaults.logger.warn(`Upstream response is not valid JSON (${msg})`);
     }
     // Modern Ollama embeddings retain distinct batch vectors and usage metadata.
     // fal.ai and ElevenLabs Voice Design/create/get/delete return arbitrary JSON shapes
@@ -1791,7 +1789,7 @@ function buildFixtureResponse(
         // return a valid-looking zero-dimension embedding — log it and fall
         // through to the generic error fixture so the loss is diagnosable.
         logger?.warn(
-          `Could not decode base64 embedding (byteLength=${buf.byteLength} is not a positive multiple of 4) — saving as error fixture`,
+          `Could not decode base64 embedding (byteLength=${buf.byteLength} is not a positive multiple of 4)`,
         );
       } else {
         // Uint8Array constructor copies Buffer data to a fresh ArrayBuffer at offset 0,
@@ -2052,41 +2050,38 @@ function buildFixtureResponse(
     }
   }
 
-  // OpenAI Responses: { output: [...] }. Recognized only for a turn that
-  // records native citation metadata; an uncited body, including one whose
-  // citation entries were all dropped, keeps the error fallback below, as
-  // before citations. It is collapsed as the stream of the same turn, so both
-  // recordings of one turn are made by one collapse, with the same warnings.
+  // responses
   if (Array.isArray(obj.output)) {
     const collapsed = collapseResponsesJSON(obj);
-    if (!collapsed.blocks?.some(hasNativeCitations)) {
-      if (collapsed.citationNote) {
-        logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
-      }
-    } else {
-      logCollapseWarnings(
-        logger,
-        collapsed,
-        "Responses JSON body exceeded the collapse limit — response may be truncated",
-      );
-      // Shape it as the stream recorder shapes the same turn.
-      const shaped =
-        responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
-      const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
-      return {
-        ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
-        ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
-        ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
-        ...(shaped.responsesBlocks
-          ? { responsesBlocks: shaped.responsesBlocks }
-          : shaped.blocks
-            ? { blocks: shaped.blocks }
-            : {}),
-        ...(shaped.reasoning ? { reasoning: shaped.reasoning } : {}),
-        ...(shaped.webSearches?.length ? { webSearches: shaped.webSearches } : {}),
-        ...(shaped.usage ? { usage: shaped.usage } : {}),
-      };
+    logCollapseWarnings(
+      logger,
+      collapsed,
+      "Responses JSON body exceeded the collapse limit — response may be truncated",
+    );
+    const shaped =
+      responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
+    const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (
+      !shaped.content &&
+      !hasTools &&
+      ![...(shaped.blocks ?? []), ...(shaped.responsesBlocks ?? [])].some(hasNativeCitations)
+    ) {
+      logger?.warn("Responses JSON collapse produced empty content — fixture may be incomplete");
     }
+    return {
+      ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
+      ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
+      ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
+      ...(shaped.responsesBlocks
+        ? { responsesBlocks: shaped.responsesBlocks }
+        : shaped.blocks
+          ? { blocks: shaped.blocks }
+          : {}),
+      ...(shaped.reasoning ? { reasoning: shaped.reasoning } : {}),
+      ...(shaped.webSearches?.length ? { webSearches: shaped.webSearches } : {}),
+      ...(shaped.usage ? { usage: shaped.usage } : {}),
+    };
   }
 
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
@@ -2527,11 +2522,9 @@ function buildFixtureResponse(
     return { ...(capturedUsage ? { usage: capturedUsage } : {}), content: obj.response };
   }
 
-  // Fallback: unknown format — save as error. Log the observed top-level shape
-  // so an unrecognized/new provider response is diagnosable instead of silently
-  // becoming an opaque error fixture.
+  // unrecognized
   logger?.warn(
-    `Could not detect response format from upstream (status=${status}) — saving as error fixture; top-level keys: [${Object.keys(
+    `Could not detect response format from upstream (status=${status}); top-level keys: [${Object.keys(
       obj,
     ).join(", ")}]`,
   );
