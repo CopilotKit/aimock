@@ -364,6 +364,10 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "alpic-ai/skybridge": { name: "Skybridge", url: "https://www.skybridge.tech" },
   "ackness/covel": { name: "Covel", url: "https://covel.cc" },
   "CherryHQ/cherry-studio": { name: "Cherry Studio", url: "https://cherryai.com" },
+  "Checkmk/checkmk": { name: "Checkmk", url: "https://checkmk.com/" },
+  "pixtuoid/pixtuoid": { name: "Pixtuoid", url: "https://pixtuoid.dev" },
+  "orka-agents/orka": { name: "Orka", url: "https://orka-agents.github.io/orka/" },
+  "Innei/haklex": { name: "Haklex", url: "https://haklex.innei.dev" },
 };
 
 /**
@@ -415,16 +419,28 @@ export const STAR_FLOOR = 40;
  * suppressed something, so this never becomes a filter nobody remembers exists.
  */
 export const EXCLUDED_ADOPTERS: Record<string, string> = {
+  "abacusai/abacusai-bot":
+    "Not an aimock user: the only occurrence is a mention in docs/rewrite/PLAN.md, a planning document. No package.json declares it and no source, test or config references it.",
   "AdemBenAbdallah/openstory-tanstack-cloudflare-template":
     'Self-described derivative: README opens "A hands-on learning template derived from the MIT-licensed OpenStory project". openstory-so/openstory is the original and is already on the wall.',
   "CrimsonSithria/agentos":
     "Copy of rivet-dev/agentos: same README banner and same homepage (agentos-sdk.dev) as the original, on a personal account with 2 followers. Not a GitHub fork, so the fork filter cannot see it.",
+  "miantiao-me/github-stars":
+    "Not an aimock user: an auto-generated list of the owner's starred repos, and the only occurrence is stars/CopilotKit/aimock.md, the generated entry for starring aimock. A star is not usage.",
+  "ngophatneknha/ai-engineering-hub":
+    "Copied content, not usage: every occurrence is under curated-courses/awesome-llm-apps/, copied from Shubhamsaboo/awesome-llm-apps, which is already on the wall. Personal learning hub; not a GitHub fork.",
   "podhmo/llm-wiki-compiler":
     'Self-declared copy: README\'s first line is "Personal fork of https://github.com/atomicstrata/llm-wiki-compiler — do not merge". atomicstrata/llm-wiki-compiler is the original and is already on the wall.',
   "rivet-dev/agentos":
     "Not an aimock user: the ONLY two occurrences in the repo are pnpm-lock.yaml entries, and they are TRANSITIVE (@copilotkit/llmock@1.7.1 depends on @copilotkit/aimock@1.7.0). No package.json declares it and no source, test, config or doc references it. A lockfile mention is not usage.",
   "seek4coherence/Zoo-Code":
     'Self-declared copy: repo description is "Fork of Zoo-Code for PR: Remote Access WebUI + Discord Bot". Zoo-Code-Org/Zoo-Code is the original and is already on the wall.',
+  "SimonSchubert/LinuxCommandLibrary":
+    "Not an aimock user: a Linux command reference that documents the aimock CLI (assets/commands/aimock.md and its index). Documenting a command is not using it.",
+  "streetsidesoftware/cspell-dicts":
+    "Not an aimock user: aimock appears only as a word in the npm spelling dictionary (dictionaries/npm), one package name among thousands. A dictionary entry is not usage.",
+  "TIGER-AI-Lab/LongBanana":
+    "Vendored copy, not usage: the only occurrence is openclaw-runtime/package.json, a vendored openclaw package. openclaw/openclaw is the original and is already on the wall.",
   "tylaujjapan0/openclaw":
     "Verbatim re-push of openclaw/openclaw: README is openclaw's README including its hot-linked logo. Throwaway account (3 repos, 0 followers). Not a GitHub fork.",
   "unprofessional/openclaw-archive":
