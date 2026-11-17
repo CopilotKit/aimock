@@ -5,6 +5,7 @@
 ### Fixed
 
 - Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#615)
+- Record empty non-streamed Anthropic, Gemini and Ollama turns as empty content, not `proxy_error`
 
 ## [1.48.0] - 2026-11-10
 
