@@ -31,7 +31,13 @@ import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
 import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
-import { getTestId, slugifyTestId, slugifyContext, hasMintedRequestId } from "./helpers.js";
+import {
+  getTestId,
+  slugifyTestId,
+  slugifyContext,
+  hasMintedRequestId,
+  isPlainObject,
+} from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 import { captureUsage } from "./response/usage/recording.js";
 import { renderError } from "./response/errors.js";
@@ -2100,7 +2106,7 @@ function buildFixtureResponse(
   }
 
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
-  if (Array.isArray(obj.content) && obj.content.length > 0) {
+  if (Array.isArray(obj.content) && (obj.content.length > 0 || obj.type === "message")) {
     const capturedUsage = captureUsage({
       ...captureContext,
       family: "anthropic",
@@ -2112,17 +2118,12 @@ function buildFixtureResponse(
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
-    // Raw `redacted_thinking` block presence drives reasoning-bearing
-    // classification below (mirrors how `thinkingBlocks` keys on PRESENCE, not
-    // surviving payload). A turn whose redacted blocks all carry empty `data`
-    // is constructible upstream and must NOT fall through to the error fallback.
-    const redactedBlocks = blocks.filter((b) => b.type === "redacted_thinking");
     // A `redacted_thinking` block carries its encrypted reasoning in an opaque
     // `data` string; collect the SURVIVING (non-empty) payloads in content-array
     // order for the persisted fixture so the recorded turn round-trips its
     // redacted blocks (mirrors the streaming collapse path; see
     // capturedRedactedData for the non-empty rule — empty-data blocks are dropped
-    // from the payload, but still count toward classification via redactedBlocks).
+    // from the payload).
     const redactedThinking = blocks
       .map((b) => capturedRedactedData(b))
       .filter((data): data is string => data !== undefined);
@@ -2207,130 +2208,117 @@ function buildFixtureResponse(
         ...citedSpread,
       };
     }
-    // Thinking-only / redacted-only response (no text, no tool calls). A turn can
-    // carry only thinking blocks (even ones whose plaintext is empty but which
-    // bear a real signature) or only redacted_thinking blocks (even ones whose
-    // `data` is empty and thus dropped from the persisted payload), so key on the
-    // PRESENCE of those RAW blocks — not the truthiness of the joined thinking text
-    // nor the post-filter `redactedThinking` array — and produce a normal
-    // empty-content fixture rather than falling through to the error fallback
-    // below. This matches the streaming path, which classifies on content
-    // emptiness for the same logical turn. (Per the persistence contract, a bare
-    // signature with empty reasoning is still dropped via
-    // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
-    // redactedThinking field.) A cited turn whose only text is empty (its
-    // citations are the payload) is complete too, as on the streaming path.
-    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0 || "blocks" in citedSpread) {
-      return {
-        ...usageSpread,
-        content: "",
-        ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
-        ...reasoningSignatureSpread,
-        ...redactedThinkingSpread,
-        ...citedSpread,
-      };
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (!citedSpread.blocks) {
+      logger?.warn("Anthropic JSON collapse produced empty content — fixture may be incomplete");
     }
+    return {
+      ...usageSpread,
+      content: "",
+      ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+      ...reasoningSignatureSpread,
+      ...redactedThinkingSpread,
+      ...citedSpread,
+    };
   }
 
   // Gemini: { candidates: [{ content: { parts: [{ text: "..." }] } }] }
-  if (Array.isArray(obj.candidates) && obj.candidates.length > 0) {
-    const candidate = obj.candidates[0] as Record<string, unknown>;
-    const content = candidate.content as Record<string, unknown> | undefined;
-    if (content && Array.isArray(content.parts)) {
-      const capturedUsage = captureUsage({
-        ...captureContext,
-        family: "gemini",
-        stage: "nonstream",
-        observation: obj,
-      });
-      const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
-      const parts = content.parts as Array<Record<string, unknown>>;
+  if (Array.isArray(obj.candidates) || isPlainObject(obj.promptFeedback)) {
+    const candidate = (obj.candidates as unknown[] | undefined)?.[0];
+    const content = isPlainObject(candidate) ? candidate.content : undefined;
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "gemini",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
+    const parts: Array<Record<string, unknown>> =
+      isPlainObject(content) && Array.isArray(content.parts) ? content.parts : [];
 
-      // Audio inlineData parts take priority over text. Key on the PRESENCE of
-      // `inlineData.data` rather than solely on the mimeType: an audio part can
-      // arrive with a missing or unexpected mimeType, and filtering strictly on
-      // an `audio/` prefix would then drop a part that genuinely carries audio
-      // bytes, producing an empty b64Json. A NON-audio mimeType (e.g. `image/`)
-      // still routes elsewhere, so image inlineData is not misclassified — only
-      // an explicit `audio/` prefix OR a missing/blank mimeType counts as audio.
-      const audioParts = parts.filter((p: Record<string, unknown>) => {
-        const inline = p.inlineData as Record<string, unknown> | undefined;
-        if (
-          inline === undefined ||
-          inline === null ||
-          typeof inline.data !== "string" ||
-          inline.data.length === 0
-        ) {
-          return false;
-        }
-        const mt = inline.mimeType;
-        if (typeof mt === "string" && mt.length > 0) {
-          return mt.startsWith("audio/");
-        }
-        // Missing/blank mimeType but data present → treat as audio.
-        return true;
-      });
-      if (audioParts.length > 0) {
-        const inlineData = audioParts[0].inlineData as Record<string, unknown>;
-        return {
-          ...usageSpread,
-          audio: {
-            b64Json: String(inlineData.data ?? ""),
-            contentType:
-              typeof inlineData.mimeType === "string" && inlineData.mimeType.length > 0
-                ? inlineData.mimeType
-                : "audio/mpeg",
-          },
-        };
+    // Audio inlineData parts take priority over text. Key on the PRESENCE of
+    // `inlineData.data` rather than solely on the mimeType: an audio part can
+    // arrive with a missing or unexpected mimeType, and filtering strictly on
+    // an `audio/` prefix would then drop a part that genuinely carries audio
+    // bytes, producing an empty b64Json. A NON-audio mimeType (e.g. `image/`)
+    // still routes elsewhere, so image inlineData is not misclassified — only
+    // an explicit `audio/` prefix OR a missing/blank mimeType counts as audio.
+    const audioParts = parts.filter((p: Record<string, unknown>) => {
+      const inline = p.inlineData as Record<string, unknown> | undefined;
+      if (
+        inline === undefined ||
+        inline === null ||
+        typeof inline.data !== "string" ||
+        inline.data.length === 0
+      ) {
+        return false;
       }
-
-      const fnCallParts = parts.filter((p) => p.functionCall);
-      const textParts = parts.filter((p) => typeof p.text === "string" && !p.thought);
-      const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
-      const hasToolCalls = fnCallParts.length > 0;
-      const joinedText = textParts.map((p) => String(p.text ?? "")).join("");
-      const hasContent = joinedText.length > 0;
-      const geminiReasoning =
-        thoughtParts.length > 0
-          ? thoughtParts.map((p) => String(p.text ?? "")).join("")
-          : undefined;
-
-      if (hasToolCalls) {
-        const toolCalls: ToolCall[] = fnCallParts.map((p) => {
-          const fc = p.functionCall as Record<string, unknown>;
-          return {
-            name: String(fc.name),
-            arguments: toToolCallArguments(fc.args),
-          };
-        });
-        if (hasContent) {
-          return {
-            ...usageSpread,
-            content: joinedText,
-            toolCalls,
-            ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
-          };
-        }
-        return {
-          ...usageSpread,
-          toolCalls,
-          ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
-        };
+      const mt = inline.mimeType;
+      if (typeof mt === "string" && mt.length > 0) {
+        return mt.startsWith("audio/");
       }
+      // Missing/blank mimeType but data present → treat as audio.
+      return true;
+    });
+    if (audioParts.length > 0) {
+      const inlineData = audioParts[0].inlineData as Record<string, unknown>;
+      return {
+        ...usageSpread,
+        audio: {
+          b64Json: String(inlineData.data ?? ""),
+          contentType:
+            typeof inlineData.mimeType === "string" && inlineData.mimeType.length > 0
+              ? inlineData.mimeType
+              : "audio/mpeg",
+        },
+      };
+    }
+
+    const fnCallParts = parts.filter((p) => p.functionCall);
+    const textParts = parts.filter((p) => typeof p.text === "string" && !p.thought);
+    const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
+    const hasToolCalls = fnCallParts.length > 0;
+    const joinedText = textParts.map((p) => String(p.text ?? "")).join("");
+    const hasContent = joinedText.length > 0;
+    const geminiReasoning =
+      thoughtParts.length > 0 ? thoughtParts.map((p) => String(p.text ?? "")).join("") : undefined;
+
+    if (hasToolCalls) {
+      const toolCalls: ToolCall[] = fnCallParts.map((p) => {
+        const fc = p.functionCall as Record<string, unknown>;
+        return {
+          name: String(fc.name),
+          arguments: toToolCallArguments(fc.args),
+        };
+      });
       if (hasContent) {
         return {
           ...usageSpread,
           content: joinedText,
+          toolCalls,
           ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
         };
       }
-      // Recognized Gemini shape but empty content
       return {
         ...usageSpread,
-        content: "",
+        toolCalls,
         ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
       };
     }
+    if (hasContent) {
+      return {
+        ...usageSpread,
+        content: joinedText,
+        ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+      };
+    }
+    // Recognized Gemini shape but empty content
+    logger?.warn("Gemini JSON collapse produced empty content — fixture may be incomplete");
+    return {
+      ...usageSpread,
+      content: "",
+      ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+    };
   }
 
   // Bedrock Converse: { output: { message: { role, content: [{ text }, { toolUse }] } } }
@@ -2513,6 +2501,10 @@ function buildFixtureResponse(
     }
     if (hasOllamaContent) {
       return { ...usageSpread, content: msg.content as string };
+    }
+    if (msg.content === "" && typeof obj.done === "boolean") {
+      logger?.warn("Ollama JSON collapse produced empty content — fixture may be incomplete");
+      return { ...usageSpread, content: "" };
     }
     // Ollama message with content array (like Cohere)
     if (Array.isArray(msg.content) && msg.content.length > 0) {
