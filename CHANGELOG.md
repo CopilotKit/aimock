@@ -1,12 +1,16 @@
 # @copilotkit/aimock
 
-## [Unreleased]
+## [1.48.1] - 2026-11-20
+
+### Changed
+
+- `aimock-pytest` 0.7.3 defaults to `@copilotkit/aimock` 1.48.1
 
 ### Fixed
 
-- Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#615)
-- Record Gemini `embedContent` and Cohere v2 `embed` replies as embedding fixtures, not `proxy_error` (#624)
-- Record empty non-streamed Anthropic, Gemini and Ollama turns as empty content, not `proxy_error` (#623)
+- Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#619)
+- Record Gemini `embedContent` and Cohere v2 `embed` replies as embeddings, not `proxy_error` (#624)
+- Record empty non-streamed Anthropic, Gemini and Ollama replies as empty, not `proxy_error` (#623)
 
 ## [1.48.0] - 2026-11-10
 
