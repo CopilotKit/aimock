@@ -1042,6 +1042,9 @@ describe("recorded /models family waves are classified", () => {
       "gpt-6.1-sol",
       // gpt-6.1-terra (2026-10-26 wave, drift run 40422235776; probe-verified text chat)
       "gpt-6.1-terra",
+      // gpt-6.2 point releases (2026-11-17 wave, drift run 44249205468; probe-verified text chat)
+      "gpt-6.2-astra",
+      "gpt-6.2-sol",
       // o-series reasoning
       "o1",
       "o1-pro",
@@ -1081,6 +1084,7 @@ describe("recorded /models family waves are classified", () => {
       "sora-2-pro",
       // voice / full-duplex live (realtime-canary domain, excluded here)
       "gpt-live-1",
+      "gpt-live-1.1", // 2026-11-19 wave (drift run 44685766665)
       "omni-moderation",
       "omni-moderation-latest",
       // bare chat alias (fixture-vs-live gap: present in live /models, was absent
@@ -1148,6 +1152,8 @@ describe("recorded /models family waves are classified", () => {
       "gemini-4-argon",
       // 2026-11-13 wave (run 43376684576): Gemini 4 Hydrogen, probe-verified text chat
       "gemini-4-hydrogen",
+      // 2026-11-18 wave (run 44470085876): Gemini 4 Neon, probe-verified text chat
+      "gemini-4-neon",
       // Restricted EAP surface — explicit exclude (text-capable, but pre-GA)
       "gemini-3.7-flash-video-understanding-eap",
       // Preview text tiers — auto-excluded by the -preview pattern rule

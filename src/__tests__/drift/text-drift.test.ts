@@ -496,7 +496,7 @@ describe("the 2026-09-24..30 model-family wave is classified", () => {
     expect(normalizeModelFamily("gpt-6.1-sol", "openai")).toBe("gpt-6.1-sol");
     expect(normalizeModelFamily("claude-sonnet-5-5", "anthropic")).toBe("claude-sonnet-5-5");
     expect(unclassifiedFamilies(["gpt-6.1-luna"], "openai")).toEqual(["gpt-6.1-luna"]);
-    expect(unclassifiedFamilies(["gpt-6.2-sol"], "openai")).toEqual(["gpt-6.2-sol"]);
+    expect(unclassifiedFamilies(["gpt-6.3-sol"], "openai")).toEqual(["gpt-6.3-sol"]);
     expect(unclassifiedFamilies(["claude-sonnet-5-6"], "anthropic")).toEqual(["claude-sonnet-5-6"]);
     expect(unclassifiedFamilies(["gemini-3.8-pro-tts"], "gemini")).toEqual(["gemini-3.8-pro-tts"]);
   });
@@ -594,7 +594,7 @@ describe("the 2026-10-14..18 model-family waves are classified", () => {
     // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
     // neutered `unclassifiedFamilies` would produce.
     expect(normalizeModelFamily("gemini-4-argon", "gemini")).toBe("gemini-4-argon");
-    expect(unclassifiedFamilies(["gemini-4-neon"], "gemini")).toEqual(["gemini-4-neon"]);
+    expect(unclassifiedFamilies(["gemini-4-xenon"], "gemini")).toEqual(["gemini-4-xenon"]);
     expect(unclassifiedFamilies(["gemini-4-argon-tts"], "gemini")).toEqual(["gemini-4-argon-tts"]);
     expect(normalizeModelFamily("aurora-blue-alpha", "openai")).toBe("aurora-blue-alpha");
     expect(unclassifiedFamilies(["aurora-blue"], "openai")).toEqual(["aurora-blue"]);
@@ -652,5 +652,50 @@ describe("the 2026-11-13 model-family wave is classified", () => {
     expect(unclassifiedFamilies(["gemini-4-hydrogen-tts"], "gemini")).toEqual([
       "gemini-4-hydrogen-tts",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 2026-11-17..19 waves — BEHAVIOURAL coverage of `gpt-6.2-astra`,
+// `gpt-6.2-sol` and `gemini-4-neon` (INCLUDE), in the same shape as the blocks
+// above. Evidence sits beside each entry in model-registry.ts and in
+// drift-proposals/.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-11-17..19 model-family waves are classified", () => {
+  it("gpt-6.2-astra and gpt-6.2-sol are INCLUDED in a /models-shaped payload", () => {
+    for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) {
+      expect(includeFamilies.openai.has(id)).toBe(true);
+      expect(isClassifiedFamily(id, "openai")).toBe(true);
+      expect(excludeFamilies.openai.has(id)).toBe(false);
+    }
+    expect(
+      unclassifiedFamilies(
+        ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"],
+        "openai",
+      ),
+    ).toEqual([]);
+  });
+
+  it("gemini-4-neon is INCLUDED in a /models-shaped payload", () => {
+    expect(includeFamilies.gemini.has("gemini-4-neon")).toBe(true);
+    expect(isClassifiedFamily("gemini-4-neon", "gemini")).toBe(true);
+    expect(excludeFamilies.gemini.has("gemini-4-neon")).toBe(false);
+    expect(
+      unclassifiedFamilies(["gemini-4-argon", "gemini-4-hydrogen", "gemini-4-neon"], "gemini"),
+    ).toEqual([]);
+  });
+
+  it("the new keys do not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("gpt-6.2-astra", "openai")).toBe("gpt-6.2-astra");
+    expect(normalizeModelFamily("gpt-6.2-sol", "openai")).toBe("gpt-6.2-sol");
+    expect(unclassifiedFamilies(["gpt-6.2-terra"], "openai")).toEqual(["gpt-6.2-terra"]);
+    expect(unclassifiedFamilies(["gpt-6.3-sol"], "openai")).toEqual(["gpt-6.3-sol"]);
+    expect(unclassifiedFamilies(["gpt-6.2-astra-tts"], "openai")).toEqual(["gpt-6.2-astra-tts"]);
+    expect(normalizeModelFamily("gemini-4-neon", "gemini")).toBe("gemini-4-neon");
+    expect(unclassifiedFamilies(["gemini-4-xenon"], "gemini")).toEqual(["gemini-4-xenon"]);
+    expect(unclassifiedFamilies(["gemini-4-neon-tts"], "gemini")).toEqual(["gemini-4-neon-tts"]);
   });
 });
