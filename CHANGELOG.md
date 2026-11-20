@@ -5,6 +5,7 @@
 ### Fixed
 
 - Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#615)
+- Record Gemini `embedContent` and Cohere v2 `embed` replies as embedding fixtures, not `proxy_error` (#624)
 
 ## [1.48.0] - 2026-11-10
 
