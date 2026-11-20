@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -29,7 +29,10 @@ async function listen(handler: http.RequestListener): Promise<http.Server> {
 const urlOf = (server: http.Server) =>
   `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
-async function record({ provider, pathname, body, contentType }: Upstream) {
+async function record(
+  { provider, pathname, body, contentType }: Upstream,
+  logger: Logger = new Logger("silent"),
+) {
   const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-empty-turns-"));
   const upstream = await listen((_req, res) => {
     res.writeHead(200, { "Content-Type": contentType });
@@ -48,7 +51,7 @@ async function record({ provider, pathname, body, contentType }: Upstream) {
         [],
         {
           record: { providers: { [provider]: urlOf(upstream) }, fixturePath },
-          logger: new Logger("silent"),
+          logger,
         },
         Buffer.concat(chunks).toString(),
       );
@@ -170,5 +173,64 @@ describe("recorder: empty non-streamed turns record like their streamed twin", (
 
   it("Ollama chat reply cut at the length limit with empty content", async () => {
     await expectParity(ollama("application/json"), ollama("application/x-ndjson"));
+  });
+});
+
+describe("recorder: an empty non-streamed turn warns like the streamed path", () => {
+  async function warningsFor(upstream: Upstream) {
+    const logger = new Logger("silent");
+    const warn = vi.spyOn(logger, "warn");
+    const recorded = await record(upstream, logger);
+    return { recorded, warnings: warn.mock.calls.flat().join("\n") };
+  }
+
+  const pauseTurn: Upstream = {
+    ...anthropic([]),
+    body: JSON.stringify({
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      model: "claude",
+      content: [
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "q" } },
+        { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] },
+      ],
+      stop_reason: "pause_turn",
+      usage: anthropicUsage,
+    }),
+  };
+  const safety = { candidates: [{ finishReason: "SAFETY", safetyRatings: [] }] };
+  const cases: Array<[string, Upstream, string]> = [
+    ["an Anthropic reply with no content blocks", anthropic([]), "Anthropic"],
+    ["an Anthropic pause_turn with only server tool blocks", pauseTurn, "Anthropic"],
+    ["a Gemini candidate blocked for SAFETY", gemini(safety, "application/json"), "Gemini"],
+    ["an empty Ollama chat reply", ollama("application/json"), "Ollama"],
+  ];
+
+  for (const [name, upstream, provider] of cases) {
+    it(`warns when ${name} collapses to nothing`, async () => {
+      const { recorded, warnings } = await warningsFor(upstream);
+      expect(recorded.content).toBe("");
+      expect(warnings).toContain(
+        `${provider} JSON collapse produced empty content — fixture may be incomplete`,
+      );
+    });
+  }
+
+  it("does not warn for a cited Anthropic empty-text turn", async () => {
+    const citation = {
+      type: "char_location",
+      file_id: null,
+      document_index: 0,
+      document_title: null,
+      cited_text: "fact",
+      start_char_index: 0,
+      end_char_index: 4,
+    };
+    const block = { type: "text", text: "", citations: [citation] };
+    const { recorded, warnings } = await warningsFor(anthropic([block]));
+    expect(recorded.content).toBe("");
+    expect(recorded.blocks).toEqual([block]);
+    expect(warnings).not.toContain("empty content");
   });
 });

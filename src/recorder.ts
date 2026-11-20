@@ -2193,6 +2193,10 @@ function buildFixtureResponse(
         ...citedSpread,
       };
     }
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (!citedSpread.blocks) {
+      logger?.warn("Anthropic JSON collapse produced empty content — fixture may be incomplete");
+    }
     return {
       ...usageSpread,
       content: "",
@@ -2294,6 +2298,7 @@ function buildFixtureResponse(
       };
     }
     // Recognized Gemini shape but empty content
+    logger?.warn("Gemini JSON collapse produced empty content — fixture may be incomplete");
     return {
       ...usageSpread,
       content: "",
@@ -2483,6 +2488,7 @@ function buildFixtureResponse(
       return { ...usageSpread, content: msg.content as string };
     }
     if (msg.content === "" && typeof obj.done === "boolean") {
+      logger?.warn("Ollama JSON collapse produced empty content — fixture may be incomplete");
       return { ...usageSpread, content: "" };
     }
     // Ollama message with content array (like Cohere)
