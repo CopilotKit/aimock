@@ -103,6 +103,12 @@ const knownVoiceModelFamilies = new Set(
     // observed and is not classified, so it remains this canary's live
     // negative control.
     "gpt-live-1",
+    // `gpt-live-1.1` (a point release of the same line; the `.1`
+    // version token keeps it a separate family) is ALSO in
+    // `excludeFamilies.openai`, for the same disjoint-surface reason.
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-gpt-live-1.1-new-family.md.
+    "gpt-live-1.1",
     "whisper-1",
     // Legacy preview models (may still appear)
     "gpt-4o-realtime-preview",

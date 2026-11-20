@@ -161,6 +161,28 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/openai-gpt-6.1-terra-new-family.md.
     "gpt-6.1-terra",
+    // gpt-6.2 point releases of the included `gpt-6-astra` and `gpt-6.1-sol`
+    // lines. Both were first flagged by Drift Tests run 44249205468
+    // (2026-11-17, 10:09 PM PST) and routed to needs-human PR #625. The
+    // normalizer keeps the `.2` version token, so each is its own family and
+    // must be enumerated.
+    //
+    // Classified on a LIVE PROBE (2026-11-20, drift-live-pr run 44799305557),
+    // not on lineage alone. `GET /v1/models/<id>` returns only `id` / `object` /
+    // `created` / `owned_by: "system"` / `shutdown_date: null`, the same shape
+    // as `gpt-6.1-sol`. A minimal /v1/chat/completions call to each returned
+    // 200, `object: "chat.completion"`, `finish_reason: "stop"` and a real
+    // assistant text turn, and /v1/responses returned 200, `status:
+    // "completed"` with an `output_text` part: the same shape `gpt-6.1-sol`
+    // returned in the same run. No name token places them in an excluded
+    // cluster, and they are not voice/audio families, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6.2-astra-new-family.md and
+    // drift-proposals/openai-gpt-6.2-sol-new-family.md.
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     // Codex line (coding chat; text output)
     "gpt-5-codex",
     "gpt-5.1-codex",
@@ -342,6 +364,25 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/gemini-gemini-4-hydrogen-new-family.md.
     "gemini-4-hydrogen",
+    // Gemini 4 Neon, first flagged 2026-11-18 (Drift Tests run 44470085876,
+    // routed to needs-human PR #625). Classified on the live listing plus a
+    // LIVE PROBE, not on the name, exactly as its siblings `gemini-4-argon` and
+    // `gemini-4-hydrogen`.
+    //
+    // Listing (2026-11-20): `displayName` and `description` both "Gemini 4
+    // Neon", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]` (set-identical to `gemini-4-hydrogen`);
+    // `inputTokenLimit: 1048576`; `thinking: true`. No `bidiGenerateContent`,
+    // `embedContent` or `predict`. A plain text generateContent call returned
+    // 200 with a text part, `finishReason: "STOP"` and `candidatesTokensDetails`
+    // `modality: "TEXT"`, the same shape as `gemini-4-hydrogen` probed in the
+    // same run (drift-live-pr run 44799305557). Not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-neon-new-family.md.
+    "gemini-4-neon",
   ]),
 };
 
@@ -456,6 +497,21 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/openai-gpt-live-1-new-family.md.
     "gpt-live-1",
+    // Point release of the same full-duplex voice line (`created` 2026-11-17),
+    // first flagged by Drift Tests run 44685766665 (2026-11-19, 10:09 PM PST) and
+    // routed to needs-human PR #625. The normalizer keeps the `.1` version
+    // token, so it does not collapse onto `gpt-live-1` and must be enumerated.
+    // `GET /v1/models/gpt-live-1.1` returns the bare `id` / `object` /
+    // `created` / `owned_by: "system"` / `shutdown_date: null` shape. Same
+    // reading as `gpt-live-1` above: a classification for the `/models`
+    // listing only, not a claim that aimock mocks it.
+    //
+    // PAIRED ENTRY: also in `knownVoiceModelFamilies` (voice-models.ts), for the
+    // same disjoint-surface reason as `gpt-live-1`.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-gpt-live-1.1-new-family.md.
+    "gpt-live-1.1",
     // Pre-GA `-alpha` codenames. The Drift Tests run on 2026-10-18 (run
     // 39103216353) saw all three on the live listing. By the next run they were
     // gone, and on 2026-10-20 `GET /v1/models/<id>` and /v1/chat/completions

@@ -2997,11 +2997,10 @@
               "inputText": "a7 request"
             },
             "response": {
-              "error": {
-                "message": "Could not detect response format from upstream",
-                "type": "proxy_error"
-              },
-              "status": 200
+              "embedding": [
+                0.1,
+                0.2
+              ]
             }
           }
         ]
@@ -3089,11 +3088,10 @@
               "inputText": "a7 request"
             },
             "response": {
-              "error": {
-                "message": "Could not detect response format from upstream",
-                "type": "proxy_error"
-              },
-              "status": 200
+              "embedding": [
+                0.1,
+                0.2
+              ]
             }
           }
         ]

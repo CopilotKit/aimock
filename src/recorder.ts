@@ -1981,6 +1981,21 @@ function buildFixtureResponse(
     return { embedding: obj.embedding as number[] };
   }
 
+  // gemini
+  const geminiEmbedding = obj.embedding as Record<string, unknown> | null | undefined;
+  if (typeof geminiEmbedding === "object" && Array.isArray(geminiEmbedding?.values)) {
+    return { embedding: geminiEmbedding.values as number[] };
+  }
+
+  // cohere
+  if (typeof obj.embeddings === "object" && obj.embeddings !== null) {
+    const byType = obj.embeddings as Record<string, unknown>;
+    const vector = [byType.float, ...Object.values(byType)]
+      .map((vectors) => (Array.isArray(vectors) ? vectors[0] : undefined))
+      .find(Array.isArray);
+    if (vector) return { embedding: vector as number[] };
+  }
+
   // OpenAI chat completion: { choices: [{ message: { content, tool_calls } }] }
   if (Array.isArray(obj.choices) && obj.choices.length > 0) {
     const choice = obj.choices[0] as Record<string, unknown>;
