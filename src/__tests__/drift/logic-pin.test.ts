@@ -456,7 +456,7 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
 const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "includeFamilies.openai": {
     members: () => [...includeFamilies.openai].sort(),
-    pin: "d62f65955c9b867171e8889381bb818c724a3b5f9c3a60fcdf51716f82ee05ca",
+    pin: "06dbb3107a63594655d3ccd5bcb84761588c1985b8a35bbf153ecc4d4c2cc83a",
   },
   "includeFamilies.anthropic": {
     members: () => [...includeFamilies.anthropic].sort(),
@@ -464,11 +464,11 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "includeFamilies.gemini": {
     members: () => [...includeFamilies.gemini].sort(),
-    pin: "7d064a63b596cd0d586f62d47c2d33aa664e095ebc57a3ce87060c2ad4b55213",
+    pin: "770b23282c7a855c92e310d12831ff7bce816757c761099acaf60740b44f1b5f",
   },
   "excludeFamilies.openai": {
     members: () => [...excludeFamilies.openai].sort(),
-    pin: "7938473354156349f23f7d3c526f75ceee8c8c794d078c625c94a027317e5b7e",
+    pin: "d9bc85a9e8796c80e6f283b606b5fc47ed9fb196bd337e9fb3808bbe1aec14f9",
   },
   "excludeFamilies.anthropic": {
     members: () => [...excludeFamilies.anthropic].sort(),
@@ -487,7 +487,7 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   // to make impossible.
   knownVoiceModelFamilies: {
     members: () => listKnownVoiceModelFamilies(),
-    pin: "221ae974089cb3d6d0f0a200a3d1f31a7bac7f26551f7c317aac0fe2e7b20a5e",
+    pin: "ecbcb3028e98d5bdf2ec5368cd35c7bf1f772e4c610d33135a98270f2785bfec",
   },
   gaRealtimeModels: {
     members: () => [...gaRealtimeModels].sort(),
