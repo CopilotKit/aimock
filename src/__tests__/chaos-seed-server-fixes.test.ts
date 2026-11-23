@@ -15,8 +15,11 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
 import { LLMock } from "../llmock.js";
+import { chaosKeyFor } from "../chaos-random.js";
 import type { Fixture, MockServerOptions } from "../types.js";
 
+const SEED_HEADER = "x-aimock-chaos-seed";
+const KEY_HEADER = "x-aimock-chaos-key";
 const OCCURRENCE_HEADER = "x-aimock-chaos-occurrence";
 
 const FIXTURES: Fixture[] = [
@@ -172,5 +175,49 @@ describe("LLMock.setChaos / clearChaos rewind seeded counters", () => {
     mock.clearChaos();
     mock.setChaos({ dropRate: 1, seed: "api" });
     expect(await occurrence(mock.url, "alpha")).toBe("0");
+  });
+});
+
+describe("fal chaos gates key by the parsed body", () => {
+  const ORDER_A = JSON.stringify({ prompt: "hello", seed: 1 });
+  const ORDER_B = '{ "seed": 1,\n  "prompt": "hello" }';
+
+  async function falKey(
+    url: string,
+    method: string,
+    path: string,
+    body: string | null,
+    headers: Record<string, string>,
+  ): Promise<string> {
+    const probe = await rawRequest(`${url}${path}`, method, body, headers);
+    expect(probe.status).toBe(500);
+    expect(probe.headers[SEED_HEADER]).toBe("fal");
+    return String(probe.headers[KEY_HEADER]);
+  }
+
+  it("the x-fal-target-host gate gives one key to the same JSON in any key order", async () => {
+    const url = await start({ chaos: { dropRate: 1, seed: "fal" } });
+    const path = "/fal/fal-ai/flux/requests/missing-id/cancel";
+    const headers = { "x-fal-target-host": "queue.fal.run" };
+    const a = await falKey(url, "PUT", path, ORDER_A, headers);
+    const b = await falKey(url, "PUT", path, ORDER_B, headers);
+    expect(b).toBe(a);
+    expect(a).toBe(chaosKeyFor({ method: "PUT", path, body: { prompt: "hello", seed: 1 } }));
+  });
+
+  it("the queue-requests gate gives one key to the same JSON in any key order", async () => {
+    const url = await start({ chaos: { dropRate: 1, seed: "fal" } });
+    const path = "/fal/queue/requests/missing-id/cancel";
+    const a = await falKey(url, "PUT", path, ORDER_A, {});
+    const b = await falKey(url, "PUT", path, ORDER_B, {});
+    expect(b).toBe(a);
+    expect(a).toBe(chaosKeyFor({ method: "PUT", path, body: { prompt: "hello", seed: 1 } }));
+  });
+
+  it("the queue-requests gate keys a bodiless GET as bodiless", async () => {
+    const url = await start({ chaos: { dropRate: 1, seed: "fal" } });
+    const path = "/fal/queue/requests/missing-id/status";
+    const key = await falKey(url, "GET", path, null, {});
+    expect(key).toBe(chaosKeyFor({ method: "GET", path, body: undefined }));
   });
 });

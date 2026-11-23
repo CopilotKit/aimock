@@ -714,6 +714,21 @@ function rewindChaosOccurrences(defaults: HandlerDefaults, scopeId: string): voi
   else clearChaosOccurrences(defaults.chaosByTestId, scopeId);
 }
 
+/**
+ * The body a fal chaos gate keys a seeded verdict by: the PARSED body, like
+ * every other route, so the same JSON with a different key order or
+ * whitespace is one key. An empty body is bodiless (`undefined`). A body that
+ * is not JSON keeps its raw text, so it still gets a stable key of its own.
+ */
+function falChaosBody(raw: string): unknown {
+  if (raw === "") return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
 /** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
 const MCP_FAKES_PARAMS = new Set(["testId", "context", "mount"]);
 
@@ -5532,11 +5547,12 @@ async function startServer(
             );
             return;
           }
-          // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+          // Keys a SEEDED verdict by this request (method, raw target, parsed body);
+          // unused unseeded.
           setRequestChaosIdentity({
             method: req.method ?? "GET",
             path: req.url ?? pathname,
-            body: raw === "" ? undefined : raw,
+            body: falChaosBody(raw),
           });
           const chaosAction = evaluateChaos(
             null,
@@ -5638,11 +5654,13 @@ async function startServer(
           );
           return;
         }
-        // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+        // Keys a SEEDED verdict by this request (method, raw target, parsed body);
+        // unused unseeded. A GET has no body: `raw` is a stand-in `"{}"` for
+        // `handleFalQueue`, so it is keyed as bodiless, like every other route.
         setRequestChaosIdentity({
           method: req.method ?? "GET",
           path: req.url ?? pathname,
-          body: raw === "" ? undefined : raw,
+          body: req.method === "POST" || req.method === "PUT" ? falChaosBody(raw) : undefined,
         });
         const chaosAction = evaluateChaos(
           null,
