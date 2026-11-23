@@ -9,7 +9,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { execFile, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerInstance } from "../server.js";
@@ -172,16 +172,21 @@ describe("seeded chaos: reproducibility", () => {
   });
 
   it("raising one rate does not reshuffle which requests another rate picks", async () => {
+    // dropRate is rolled BEFORE malformedRate, so raising it is what would move
+    // the malformed draws if the kinds shared one draw stream per request.
     const low = await start({ chaos: { malformedRate: 0.3, seed: "streams" } });
     const high = await start({
-      chaos: { malformedRate: 0.3, disconnectRate: 0.5, seed: "streams" },
+      chaos: { dropRate: 0.5, malformedRate: 0.3, seed: "streams" },
     });
     const lowRun = await run(low, SEQUENCE);
     const highRun = await run(high, SEQUENCE);
-    // malformed is checked before disconnect, so every malformed verdict stays put.
-    lowRun.forEach((outcome, i) => {
-      if (outcome === "malformed") expect(highRun[i]).toBe("malformed");
-    });
+    // On every request the drop spared, the malformed verdict is the same in both runs.
+    const spared = highRun.flatMap((outcome, i) => (outcome === "drop" ? [] : [i]));
+    expect(spared.map((i) => highRun[i])).toEqual(spared.map((i) => lowRun[i]));
+    // Not vacuous: some requests were dropped, and some spared ones were malformed.
+    expect(highRun).toContain("drop");
+    expect(spared.map((i) => lowRun[i])).toContain("malformed");
+    expect(spared.map((i) => lowRun[i])).toContain("ok");
   });
 });
 
@@ -222,9 +227,20 @@ describe("seeded chaos: seed sources", () => {
 
   it("the runtime control rejects an unusable seed with 400", async () => {
     const url = await start();
-    for (const seed of ["", "   ", "has space", true, {}, Number.NaN]) {
+    // JSON has no NaN or Infinity (`JSON.stringify(NaN)` is "null"), so null is
+    // the value a non-finite number reaches the control as.
+    for (const seed of ["", "   ", "has space", true, {}, null]) {
       const res = await controlChaos(url, "POST", { dropRate: 1, seed });
       expect(res.status, JSON.stringify(seed)).toBe(400);
+    }
+  });
+
+  it("ignores a non-finite numeric server seed and stays unseeded", async () => {
+    for (const seed of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const url = await start({ chaos: { dropRate: 1, seed }, logLevel: "silent" });
+      const probe = await chat(url, "alpha");
+      expect(probe.outcome, String(seed)).toBe("drop");
+      expect(probe.headers[SEED_HEADER], String(seed)).toBeUndefined();
     }
   });
 });
@@ -340,18 +356,17 @@ describe("seeded chaos: other provider surfaces", () => {
 });
 
 describe("seeded chaos: streaming jitter", () => {
-  it("a seeded stream draws its jitter from the seed, not Math.random", async () => {
-    const fixtures: Fixture[] = [
-      {
-        match: { userMessage: "stream" },
-        response: { content: "abcdefghijklmnopqrstuvwxyz" },
-        chunkSize: 2,
-        streamingProfile: { ttft: 1, tps: 1000, jitter: 0.5 },
-      },
-    ];
-    const url = await start({ chaos: { seed: "jitter" } }, fixtures);
-    const random = vi.spyOn(Math, "random");
-    const probe = await rawRequest(
+  const STREAM_FIXTURES: Fixture[] = [
+    {
+      match: { userMessage: "stream" },
+      response: { content: "abcdefghijklmnopqrstuvwxyz" },
+      chunkSize: 2,
+      streamingProfile: { ttft: 1, tps: 1000, jitter: 0.5 },
+    },
+  ];
+
+  function stream(url: string): Promise<Probe> {
+    return rawRequest(
       `${url}/v1/chat/completions`,
       "POST",
       JSON.stringify({
@@ -360,9 +375,55 @@ describe("seeded chaos: streaming jitter", () => {
         messages: [{ role: "user", content: "stream" }],
       }),
     );
+  }
+
+  /**
+   * The jittered per-chunk delays of one streamed request, read from the timers
+   * it schedules. The base delay is 1 ms and jitter scales it by [0.5, 1.5), so
+   * the jittered delays are the fractional ones; the server's own timers use
+   * whole milliseconds.
+   */
+  async function jitteredDelays(url: string): Promise<number[]> {
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const probe = await stream(url);
+      expect(probe.status).toBe(200);
+      expect(probe.body).toContain("[DONE]");
+      return timers.mock.calls
+        .map((call) => call[1])
+        .filter((ms): ms is number => typeof ms === "number" && !Number.isInteger(ms));
+    } finally {
+      timers.mockRestore();
+    }
+  }
+
+  it("a seeded stream draws its jitter from the seed, not Math.random", async () => {
+    const url = await start({ chaos: { seed: "jitter" } }, STREAM_FIXTURES);
+    const random = vi.spyOn(Math, "random");
+    const probe = await stream(url);
     expect(probe.status).toBe(200);
     expect(probe.body).toContain("[DONE]");
     expect(random).not.toHaveBeenCalled();
+  });
+
+  it("the same seed replays the same jitter delays; a different seed changes them", async () => {
+    const a = await jitteredDelays(await start({ chaos: { seed: "jitter" } }, STREAM_FIXTURES));
+    const b = await jitteredDelays(await start({ chaos: { seed: "jitter" } }, STREAM_FIXTURES));
+    const c = await jitteredDelays(await start({ chaos: { seed: "other" } }, STREAM_FIXTURES));
+    // 13 chunks of 2 characters, each delayed once.
+    expect(a.length).toBeGreaterThanOrEqual(13);
+    expect(b).toEqual(a);
+    expect(c).toHaveLength(a.length);
+    expect(c).not.toEqual(a);
+  });
+
+  it("an unseeded stream still draws its jitter from Math.random", async () => {
+    const url = await start({}, STREAM_FIXTURES);
+    const random = vi.spyOn(Math, "random");
+    const probe = await stream(url);
+    expect(probe.status).toBe(200);
+    expect(probe.body).toContain("[DONE]");
+    expect(random).toHaveBeenCalled();
   });
 });
 
@@ -399,15 +460,37 @@ describe("unseeded chaos is unchanged", () => {
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
+const CLI_SOURCE = resolve(__dirname, "../cli.ts");
+
+/**
+ * This test exercises the BUILT CLI, and `pnpm test` does not build (CI runs
+ * `pnpm build` first). A missing or stale dist is reported as a failure rather
+ * than skipped, so the test cannot pass by not running.
+ */
+function assertBuiltCliIsCurrent(): void {
+  if (!existsSync(CLI_PATH)) {
+    throw new Error(`dist/cli.js is missing — run \`pnpm build\` before this test.`);
+  }
+  if (statSync(CLI_PATH).mtimeMs < statSync(CLI_SOURCE).mtimeMs) {
+    throw new Error(
+      `dist/cli.js was built before src/cli.ts was last edited — run \`pnpm build\`. ` +
+        `This test exercises the built artifact, so its result would describe the stale ` +
+        `build rather than the current source.`,
+    );
+  }
+}
+
+/** Same start budget as the other CLI tests (`waitForOutput(/listening on/i, 5000)`). */
+const CLI_START_TIMEOUT_MS = 5_000;
 
 function spawnCli(args: string[]): Promise<{ url: string; child: ChildProcess }> {
   return new Promise((resolveStart, reject) => {
-    const child = execFile("node", [CLI_PATH, ...args]);
+    const child = execFile(process.execPath, [CLI_PATH, ...args]);
     let out = "";
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`CLI did not start: ${out}`));
-    }, 10_000);
+    }, CLI_START_TIMEOUT_MS);
     const onData = (d: Buffer | string) => {
       out += String(d);
       const m = /listening on (http:\/\/\S+)/.exec(out);
@@ -425,8 +508,9 @@ function spawnCli(args: string[]): Promise<{ url: string; child: ChildProcess }>
   });
 }
 
-describe.skipIf(!existsSync(CLI_PATH))("seeded chaos: --chaos-seed", () => {
+describe("seeded chaos: --chaos-seed", () => {
   it("two CLI servers started with the same --chaos-seed replay the same verdicts", async () => {
+    assertBuiltCliIsCurrent();
     const dir = mkdtempSync(join(tmpdir(), "chaos-seed-cli-"));
     const children: ChildProcess[] = [];
     try {
