@@ -26,6 +26,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import type { Logger } from "./logger.js";
 
 /** Per-request seed override. Also sent back on a seeded chaos hit. */
 export const CHAOS_SEED_HEADER = "x-aimock-chaos-seed";
@@ -196,13 +197,30 @@ export function createJitterSource(seed: string, key: string): JitterSource {
  * Counters are namespaced by testId, so two tests that run in parallel on one
  * server keep independent sequences, and one test's chaos reset does not
  * rewind another's.
+ *
+ * Both fallbacks are logged when a logger is given: an invalid `max` (the
+ * default cap applies instead), and an eviction at the cap. The eviction
+ * warning is once per burst: it fires on the first eviction, then stays quiet
+ * until a clear takes the registry below its cap again, so a server pinned at
+ * the cap does not log on every request.
  */
 export class ChaosOccurrenceRegistry {
   private readonly counts = new Map<string, { scope: string; count: number }>();
   readonly max: number;
+  private readonly logger: Logger | undefined;
+  private evictionWarned = false;
 
-  constructor(max: number = DEFAULT_CHAOS_KEYS_MAX) {
-    this.max = Number.isInteger(max) && max > 0 ? max : DEFAULT_CHAOS_KEYS_MAX;
+  constructor(max: number = DEFAULT_CHAOS_KEYS_MAX, logger?: Logger) {
+    this.logger = logger;
+    if (Number.isInteger(max) && max > 0) {
+      this.max = max;
+    } else {
+      this.max = DEFAULT_CHAOS_KEYS_MAX;
+      logger?.warn(
+        `[chaos] invalid chaosKeysMax ${JSON.stringify(max)} — must be a positive integer; ` +
+          `using the default of ${DEFAULT_CHAOS_KEYS_MAX}`,
+      );
+    }
   }
 
   /** Take the next occurrence for (scope, seed, key): 0 the first time, then 1, 2, ... */
@@ -214,6 +232,15 @@ export class ChaosOccurrenceRegistry {
     else if (this.counts.size >= this.max) {
       const oldest = this.counts.keys().next();
       if (!oldest.done) this.counts.delete(oldest.value);
+      if (!this.evictionWarned) {
+        this.evictionWarned = true;
+        this.logger?.warn(
+          `[chaos] seeded chaos key cap reached (chaosKeysMax=${this.max}): evicting the least ` +
+            `recently used key, which restarts at occurrence 0 if seen again. Raise ` +
+            `chaosKeysMax to keep more keys. Further evictions are not logged until the ` +
+            `counters are cleared.`,
+        );
+      }
     }
     this.counts.set(id, { scope, count: occurrence + 1 });
     return occurrence;
@@ -234,11 +261,18 @@ export class ChaosOccurrenceRegistry {
     for (const [id, entry] of this.counts) {
       if (drop(entry.scope)) this.counts.delete(id);
     }
+    this.rearmEvictionWarning();
   }
 
   /** Drop every counter. */
   clear(): void {
     this.counts.clear();
+    this.rearmEvictionWarning();
+  }
+
+  /** A registry back below its cap has ended an eviction burst; the next one is logged. */
+  private rearmEvictionWarning(): void {
+    if (this.counts.size < this.max) this.evictionWarned = false;
   }
 }
 

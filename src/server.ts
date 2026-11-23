@@ -3120,7 +3120,12 @@ async function startServer(
   const chaosByTestId = new Map<string, ChaosConfig>();
   // Seeded chaos occurrence counters, bounded by `chaosKeysMax` (LRU). Unseeded
   // chaos never touches it. See `ChaosOccurrenceRegistry`.
-  registerChaosOccurrences(chaosByTestId, new ChaosOccurrenceRegistry(options?.chaosKeysMax));
+  // An invalid `chaosKeysMax` and an eviction at the cap are warned through the
+  // server logger.
+  registerChaosOccurrences(
+    chaosByTestId,
+    new ChaosOccurrenceRegistry(options?.chaosKeysMax, logger),
+  );
   let misbehaviorBaseline: MisbehaviorConfig | undefined;
   const misbehavior: MisbehaviorScope = {
     byTestId: new Map(),

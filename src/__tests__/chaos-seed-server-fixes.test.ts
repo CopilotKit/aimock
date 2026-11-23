@@ -245,3 +245,28 @@ describe("CORS exposes the seeded chaos headers", () => {
     expect(ok.headers["access-control-expose-headers"]).toBe("X-Total-Count, X-Request-Id");
   });
 });
+
+describe("chaos key registry fallbacks are logged", () => {
+  it("warns when chaosKeysMax is invalid and falls back to the default", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await start({ logLevel: "warn", chaosKeysMax: 0 });
+    const lines = warn.mock.calls.map((c) => c.join(" "));
+    expect(lines.some((l) => l.includes("chaosKeysMax") && l.includes("10000"))).toBe(true);
+  });
+
+  it("warns once when the key cap evicts a key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const url = await start({
+      logLevel: "warn",
+      chaos: { dropRate: 1, seed: "cap" },
+      chaosKeysMax: 1,
+    });
+    expect(await occurrence(url, "alpha")).toBe("0");
+    expect(await occurrence(url, "beta")).toBe("0"); // evicts alpha
+    expect(await occurrence(url, "gamma")).toBe("0"); // evicts beta
+    const evictions = warn.mock.calls
+      .map((c) => c.join(" "))
+      .filter((l) => l.includes("chaosKeysMax") && l.includes("evict"));
+    expect(evictions).toHaveLength(1);
+  });
+});
