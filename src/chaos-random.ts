@@ -30,7 +30,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DEFAULT_TEST_ID } from "./constants.js";
-import type { Logger } from "./logger.js";
+import { Logger } from "./logger.js";
 
 /** Per-request seed override. Also sent back on a seeded chaos hit. */
 export const CHAOS_SEED_HEADER = "x-aimock-chaos-seed";
@@ -342,8 +342,16 @@ export class ChaosOccurrenceRegistry {
  * The registry for callers that pass a plain `ChaosConfig` (or a scope no
  * server registered): embedders calling `evaluateChaos` directly. Bounded like
  * every server's registry. Rewound by {@link resetChaosOccurrences}.
+ *
+ * There is no server logger here, and the caller's logger does not reach a
+ * process-wide registry, so it gets its own warn-level `Logger`: the cap
+ * eviction warning prints through `console.warn` with the `[aimock]` prefix,
+ * once per burst like a server registry's, instead of evicting silently.
  */
-export const fallbackChaosOccurrences = new ChaosOccurrenceRegistry();
+export const fallbackChaosOccurrences = new ChaosOccurrenceRegistry(
+  DEFAULT_CHAOS_KEYS_MAX,
+  new Logger("warn"),
+);
 
 /**
  * Rewind the seeded occurrence counters that callers WITHOUT a server count in:

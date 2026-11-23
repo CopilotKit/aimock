@@ -131,3 +131,28 @@ describe("seeded verdict outside a request scope", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe("fallback occurrence registry eviction", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("warns once per burst when it evicts at its cap", async () => {
+    vi.resetModules();
+    const { fallbackChaosOccurrences, resetChaosOccurrences } = await import("../chaos-random.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const capNotes = () =>
+      warn.mock.calls.filter((c) => c.map(String).join(" ").includes("key cap reached"));
+    const max = fallbackChaosOccurrences.max;
+    for (let i = 0; i < max; i++) fallbackChaosOccurrences.next("t", "s", `k${i}`);
+    expect(capNotes()).toHaveLength(0);
+    fallbackChaosOccurrences.next("t", "s", "over-1");
+    fallbackChaosOccurrences.next("t", "s", "over-2");
+    expect(capNotes()).toHaveLength(1);
+    resetChaosOccurrences();
+    for (let i = 0; i <= max; i++) fallbackChaosOccurrences.next("t", "s", `r${i}`);
+    expect(capNotes()).toHaveLength(2);
+    resetChaosOccurrences();
+  });
+});
