@@ -5982,6 +5982,12 @@ async function startServer(
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
       handleWebSocketRealtime(ws, fixtures, journal, {
         ...defaults,
+        // Read per turn, not snapshotted at connect by the spread above, so a
+        // socket opened before `POST /__aimock/reset` or an untagged
+        // `DELETE /__aimock/chaos` sees the chaos in effect now.
+        get chaos() {
+          return defaults.chaos;
+        },
         model,
         transcriptionIntent,
         testId: wsTestId,

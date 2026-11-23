@@ -207,6 +207,30 @@ describe("seeded chaos over WebSocket: ?testId= resolves the test's seed", () =>
   });
 });
 
+// ─── Finding 2: reset reaches an open socket ────────────────────────────────
+
+describe("seeded chaos over WebSocket: reset reaches an open socket", () => {
+  it("POST /__aimock/reset clears an untagged seed override for a socket opened before it", async () => {
+    const url = await start([TRANSCRIPTION_FIXTURE]);
+    expect(await control(url, "POST", "/__aimock/chaos", { seed: "stale" })).toBe(200);
+    const ws = await connect(url, "/v1/realtime?intent=transcription");
+    await waitFor(ws, (m) => m.type === "session.created");
+
+    expect(await control(url, "POST", "/__aimock/reset", undefined)).toBe(200);
+    // A full reset empties the fixtures too; put the transcription fixture back.
+    expect(
+      await control(url, "POST", "/__aimock/fixtures", {
+        fixtures: [TRANSCRIPTION_FIXTURE],
+      }),
+    ).toBe(200);
+
+    const after = await capture(() => transcriptionTurn(ws));
+    expect(after.delays.length).toBeGreaterThan(0);
+    // Unseeded again: jitter is back on Math.random.
+    expect(after.random).toBeGreaterThan(0);
+  });
+});
+
 // ─── Finding 3: jitter on the WebSocket transports ──────────────────────────
 //
 // Live transcription is the one WebSocket turn that applies a fixture
