@@ -1209,8 +1209,10 @@ async function handleControlAPI(
   }
 
   // POST /__aimock/chaos — replace the server chaos config at runtime (no
-  // restart). Accepts any subset of dropRate/malformedRate/disconnectRate as
-  // numbers in [0, 1]; `{}` means explicitly no chaos. Unknown fields and
+  // restart). Accepts any subset of the rates (numbers in [0, 1]), `latencyMs`
+  // and `seed` (a finite number or a string, normalized like every other seed;
+  // installing it rewinds the scope's seeded occurrence counters, so the same
+  // seed replays); `{}` means explicitly no chaos. Unknown fields and
   // out-of-range values are rejected with 400.
   //
   // SCOPED to the caller's testId (`X-Test-Id`, else `?testId=`), like every

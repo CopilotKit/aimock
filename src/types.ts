@@ -874,9 +874,10 @@ export interface RecordedTimings {
 /**
  * Probabilistic (and one deterministic) fault injection knobs.
  *
- * VALIDATION — ONE policy, whatever the source. Each field is a finite number
- * in its range: the rates in [0, 1], `latencyMs` in [0, 30000]. A value outside
- * it, or one that is not a number at all (`"0.5abc"`, `"Infinity"`, `NaN`), is
+ * VALIDATION — ONE policy, whatever the source. Each numeric field is a finite
+ * number in its range: the rates in [0, 1], `latencyMs` in [0, 30000]. `seed`
+ * is a finite number or a string (see the field). A value outside its range,
+ * or one that is not a number at all (`"0.5abc"`, `"Infinity"`, `NaN`), is
  * REJECTED, never clamped — silent clamping substitutes a fault rate nobody
  * asked for and hides the misconfiguration that produced it.
  *
@@ -913,9 +914,10 @@ export interface ChaosConfig {
    * many times that request was seen before, so the same seed and the same
    * requests give the same faults on a fresh server, and unrelated requests do
    * not shift each other. Same precedence as the rates (header >
-   * fixture > server). A number is used as its decimal string; a string must be
-   * 1-128 visible ASCII characters without spaces or commas. Streaming jitter on a seeded
-   * request is drawn from the seed too.
+   * fixture > server). A number is used as `String(value)` (so `42` and `"42"`
+   * are one seed). A string is trimmed, then must be 1-128 visible ASCII
+   * characters; it must not contain spaces or commas. Streaming jitter on a
+   * seeded request is drawn from the seed too, where streaming jitter applies.
    */
   seed?: string | number;
 }

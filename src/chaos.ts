@@ -11,6 +11,13 @@
  * sets. The server level is itself scoped per `X-Test-Id`, and that scope lookup
  * is a SELECTION, not a merge: a per-testId override replaces the server-wide
  * baseline wholesale. See `ChaosScope` in types.ts.
+ *
+ * Seeds: with no seed configured, every roll is `Math.random()`, exactly as
+ * before. With a seed (`chaos.seed`, `--chaos-seed`, the `x-aimock-chaos-seed`
+ * header or `POST /__aimock/chaos`, same precedence as the rates) each roll is
+ * a pure function of the seed, the request's identity key, the action kind and
+ * the key's occurrence, so a run replays. The seeded randomness lives in
+ * `chaos-random.ts`.
  */
 
 import type * as http from "node:http";
@@ -39,6 +46,7 @@ import {
   chaosOccurrencesFor,
   createJitterSource,
   fallbackChaosOccurrences,
+  MAX_CHAOS_SEED_LENGTH,
   currentChaosIdentity,
   currentChaosOrigin,
   normalizeChaosSeed,
@@ -65,8 +73,8 @@ function occurrencesFor(serverDefaults: ChaosDefaults | undefined): ChaosOccurre
 /**
  * Narrow the server-defaults argument. The discrimination is STRUCTURAL: a
  * `ChaosConfig` only ever carries the fault fields (`dropRate`,
- * `malformedRate`, `rateLimitRate`, `disconnectRate`, `latencyMs`), so the
- * presence of a `base` / `byTestId` key means a `ChaosScope`.
+ * `malformedRate`, `rateLimitRate`, `disconnectRate`, `latencyMs`) and
+ * `seed`, so the presence of a `base` / `byTestId` key means a `ChaosScope`.
  *
  * Both members are optional, so `{}` satisfies BOTH types and is reported here
  * as a config, not a scope. That is not a bug to route around: an empty scope
@@ -128,6 +136,10 @@ function resolveScopedDefaults(
  * Exported for the two surfaces that live in other modules (`src/server.ts`'s
  * control API, `src/cli.ts`'s flag parsing); in-module callers go through
  * {@link parseChaosField} too.
+ *
+ * `seed` is NOT in this table: it is not a number in a range. Every source
+ * validates it through `normalizeChaosSeed` (`chaos-random.ts`) instead, with
+ * the same reject-never-substitute policy.
  */
 export const CHAOS_FIELDS = {
   dropRate: { header: "x-aimock-chaos-drop", max: 1, integer: false },
@@ -450,7 +462,7 @@ function warnRejectedSeed(source: ChaosSource, raw: unknown, logger?: Logger): v
   if (alreadyWarned(source, "seed", raw, logger)) return;
   logger.warn(
     `[chaos] ${source.label}: rejected seed ${JSON.stringify(raw)} — must be a finite number or ` +
-      `1-128 visible ASCII characters without spaces or commas; ignoring it`,
+      `1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas; ignoring it`,
   );
 }
 
@@ -799,7 +811,11 @@ export async function awaitChaosLatency(
 /**
  * Evaluate chaos config and return the triggered action, or null if none.
  *
- * THE RATES DO NOT ROLL INDEPENDENTLY. Each is a separate `Math.random()` draw
+ * Each draw is `Math.random()` when no seed is set. When a seed is set, each
+ * draw comes from the seeded source instead (see `decideChaos` below). The
+ * order and the first-hit-wins rule below are the same in both cases.
+ *
+ * THE RATES DO NOT ROLL INDEPENDENTLY. Each is a separate draw
  * taken in a fixed order — drop → malformed → rateLimit → disconnect — and the
  * first draw that hits returns immediately, so the ones after it are never
  * rolled at all. A rate is therefore the probability that ITS draw hits GIVEN
@@ -836,10 +852,12 @@ export function evaluateChaos(
  * the ones documented above. `identity` (method, raw URL and parsed body)
  * gives the key: passed in by `applyChaos`, or recorded for the request by a
  * split gate in `src/server.ts` (`setRequestChaosIdentity`); without either the
- * key is derived from `url` alone. The
+ * key is the key of a bodiless `GET` of `url` (`{ method: "", path: url,
+ * body: undefined }`, and an empty method keys as `GET`). The
  * occurrence counter is per server, per testId, per seed and per key (see
- * `ChaosOccurrenceRegistry`). A seeded request also records its jitter source
- * for the stream writers.
+ * `ChaosOccurrenceRegistry`). A seeded call consumes one occurrence even when
+ * every rate is 0 or unset: the occurrence is taken before any rate is read.
+ * A seeded request also records its jitter source for the stream writers.
  */
 function decideChaos(
   fixture: Fixture | null,
@@ -892,8 +910,10 @@ function decideChaos(
 
 /**
  * Async chaos entrypoint: awaits the deterministic latency delay (when
- * configured) BEFORE rolling terminal actions. Returns true when a terminal
- * action fired (caller returns early), false to proceed.
+ * configured) BEFORE rolling terminal actions. Returns a
+ * {@link ChaosAsyncOutcome}: `"handled"` when a terminal action fired,
+ * `"unwritable"` when the response was gone after the delay (the caller
+ * returns early on both), or `false` to proceed.
  *
  * This is the ONLY entrypoint that honours `latencyMs`, so it is the one every
  * route handler must use: `src/__tests__/chaos-async-call-sites.test.ts` fails

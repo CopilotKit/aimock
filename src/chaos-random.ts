@@ -1,8 +1,12 @@
 /**
  * Seeded randomness for chaos verdicts and streaming jitter.
  *
- * Without a seed, chaos rolls `Math.random()` exactly as it always has and
- * nothing in this module is touched. With a seed (`chaos.seed`,
+ * Without a seed, every chaos draw and every jitter draw is `Math.random()`,
+ * exactly as before: no key is hashed, no occurrence is counted and no seeded
+ * state is recorded. The module is still entered (the server opens a request
+ * scope and records the request identity, and an unseeded verdict clears any
+ * seeded state left in its scope), but none of that changes an unseeded
+ * verdict or its timing. With a seed (`chaos.seed`,
  * `--chaos-seed`, the `x-aimock-chaos-seed` header or `POST /__aimock/chaos`),
  * every draw is a pure function of four inputs:
  *
@@ -55,9 +59,20 @@ const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
 /**
- * Field separator for hash material: the ASCII unit separator. A seed cannot
- * contain it (see {@link normalizeChaosSeed}) and JSON escapes it, so the
- * fields of one hash input cannot overlap.
+ * Field separator for hash material: the ASCII unit separator (U+001F). Each
+ * hash input has at most ONE field that can contain it, so the fields of one
+ * input cannot overlap: reading the separators from both ends finds every
+ * boundary.
+ *
+ *   - Request key (`method`, `path`, `body`): an HTTP method is a token and
+ *     cannot contain it; the body is canonical JSON (a non-JSON body is
+ *     encoded as a JSON string), which escapes it, or the bare token
+ *     `absent`. Only the path, between them, can.
+ *   - Draw (`seed`, `kind`, `key`, `occurrence`): a seed cannot contain it
+ *     (see {@link normalizeChaosSeed}); the kind is a fixed word, the key is
+ *     hex and the occurrence is a number.
+ *   - Occurrence counter id (`testId`, `seed`, `key`): only the testId can
+ *     contain it (a `?testId=%1F`), and it is the first field.
  */
 const SEP = "\u001f";
 
@@ -103,9 +118,11 @@ function hex32(word: number): string {
 }
 
 /**
- * JSON with object keys sorted at every depth, so two bodies that differ only
- * in key order get one key. Array order is kept. `undefined` (no body) is a
- * bare token that no JSON value can render as.
+ * JSON with object keys sorted at every depth, so two PARSED bodies that differ
+ * only in key order get one key. Array order is kept. A string body (raw text
+ * that did not parse as JSON) is encoded as one JSON string, so its key order
+ * and whitespace do count. `undefined` (no body) is a bare token that no JSON
+ * value can render as.
  */
 function canonicalJSON(value: unknown): string {
   if (value === undefined) return "absent";
@@ -129,7 +146,13 @@ export interface ChaosRequestIdentity {
   method: string;
   /** The request target. Pass the raw URL (query string included) when there is one. */
   path: string;
-  /** The parsed request body, or `undefined` for a bodiless request. */
+  /**
+   * The PARSED request body, or `undefined` for a bodiless request. Every
+   * server route passes the parsed JSON, so key order and whitespace do not
+   * change the key. A body that is not JSON is passed as its raw text, which
+   * is keyed as that exact string: key order and whitespace inside it DO
+   * change the key.
+   */
   body: unknown;
 }
 
@@ -151,11 +174,12 @@ export function chaosDraw(seed: string, key: string, kind: string, occurrence: n
 
 /**
  * The canonical string form of a seed, or `undefined` when the value is not a
- * usable seed. A finite number becomes its decimal string, so `42` and `"42"`
- * are one seed. A string is trimmed and must then be 1 to
- * {@link MAX_CHAOS_SEED_LENGTH} visible ASCII characters (no spaces, no
- * commas), so it can always be reported back in a response header unchanged
- * and replayed through the `x-aimock-chaos-seed` request header unchanged.
+ * usable seed. A finite number becomes `String(value)`, so `42` and `"42"`
+ * are one seed. That is JavaScript's number form, not always a plain decimal:
+ * `1e21` becomes `"1e+21"` and `0.0000001` becomes `"1e-7"`. A string is
+ * trimmed and must then be 1 to {@link MAX_CHAOS_SEED_LENGTH} visible ASCII
+ * characters (no spaces, no commas), so it can always be reported back in a
+ * response header unchanged and replayed through the `x-aimock-chaos-seed` request header unchanged.
  */
 export function normalizeChaosSeed(value: unknown): string | undefined {
   let text: string;
@@ -175,8 +199,10 @@ export function normalizeChaosSeed(value: unknown): string | undefined {
 export type JitterSource = (chunkIndex: number) => number;
 
 /**
- * Jitter for one request, on its seed and key. Occurrence is not part of it:
- * the same request streams with the same pacing every time.
+ * Jitter for one request, on its seed and key. The draw is indexed by the
+ * chunk index, passed where `chaosDraw` takes an occurrence; the request's
+ * occurrence is not part of it, so the same request streams with the same
+ * pacing every time.
  */
 export function createJitterSource(seed: string, key: string): JitterSource {
   return (chunkIndex: number) => chaosDraw(seed, key, "jitter", chunkIndex);
@@ -351,9 +377,11 @@ export function clearBaselineChaosOccurrences(byTestId: ReadonlyMap<string, unkn
  * Per-request seeded-chaos state that has to reach code the chaos roll does
  * not call directly: the stream writers that compute jitter, and the chaos
  * action that reports the verdict's origin. Entered once per HTTP request by
- * the server (`runInChaosRequestScope`); written only when the request
- * resolved a seed, so an unseeded request leaves it empty, its jitter stays on
- * `Math.random()` and its chaos response carries nothing new.
+ * the server (`runInChaosRequestScope`). The request identity is recorded for
+ * every request that reaches a split gate, seeded or not. The origin and the
+ * jitter source are written only when the request resolved a seed, and an
+ * unseeded verdict clears them, so an unseeded request has neither: its jitter
+ * stays on `Math.random()` and its chaos response carries nothing new.
  */
 interface ChaosRequestState {
   identity?: ChaosRequestIdentity;
