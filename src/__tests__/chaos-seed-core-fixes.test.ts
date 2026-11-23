@@ -134,9 +134,27 @@ describe("finding 1: a reported seed replays byte-for-byte through the seed head
 
   it("a seed header carrying a comma is not silently shortened", async () => {
     const warnings = captureWarnings();
-    const url = await start({ chaos: { dropRate: 1 }, logLevel: "warn" });
-    await chat(url, { [SEED_HEADER]: "run,7" });
+    const instance = await createServer(structuredClone(FIXTURES), {
+      port: 0,
+      chaos: { dropRate: 1 },
+      logLevel: "warn",
+    });
+    servers.push(instance);
+    const reply = await chat(instance.url, { [SEED_HEADER]: "run,7" });
+    // The comma separates repeated values: the warning names the conflict...
     expect(warnings.join("\n")).toMatch(/x-aimock-chaos-seed.*conflicting values/);
+    // ...and the seed actually used is the first value, reported as such.
+    expect(reply.status).toBe(500);
+    expect(reply.headers[SEED_HEADER]).toBe("run");
+    expect(instance.journal.getAll().at(-1)?.response).toMatchObject({
+      chaosAction: "drop",
+      chaosSeed: "run",
+    });
+    // It is the very verdict a plain `run` header gives.
+    const plain = await chat(await start({ chaos: { dropRate: 1 } }), { [SEED_HEADER]: "run" });
+    expect(plain.headers[SEED_HEADER]).toBe("run");
+    expect(plain.headers[KEY_HEADER]).toBe(reply.headers[KEY_HEADER]);
+    expect(plain.headers[OCCURRENCE_HEADER]).toBe(reply.headers[OCCURRENCE_HEADER]);
   });
 
   it("a repeated seed header with conflicting values warns and uses the first", async () => {
@@ -178,14 +196,16 @@ describe("finding 2: an unseeded verdict never inherits a seeded origin", () => 
     const journal = new Journal();
     let jitterAfter: unknown = "unset";
     let originAfter: unknown = "unset";
+    let originBefore: unknown = "unset";
+    let applied: unknown = "unset";
     let randomCalls = -1;
     const reply = await serveOnce((req, res) => {
       // A seeded verdict that does not fire: it records origin and jitter in the scope.
       const seededResolved: ChaosConfig = { seed: "seeded-earlier", dropRate: 0.000001 };
       evaluateChaos(null, undefined, req.headers, undefined, req.url, seededResolved);
-      expect(currentChaosOrigin()).toBeDefined();
+      originBefore = currentChaosOrigin();
       const random = vi.spyOn(Math, "random");
-      const applied = applyChaos(
+      applied = applyChaos(
         res,
         null,
         undefined,
@@ -202,8 +222,11 @@ describe("finding 2: an unseeded verdict never inherits a seeded origin", () => 
       random.mockRestore();
       jitterAfter = currentChaosJitter();
       originAfter = currentChaosOrigin();
-      expect(applied).toBe(true);
     });
+    // Asserted after the request completes: a failed expect inside the handler
+    // would leave the response unwritten and the test hanging.
+    expect(originBefore).toBeDefined();
+    expect(applied).toBe(true);
     expect(reply.status).toBe(500);
     expect(reply.headers[SEED_HEADER]).toBeUndefined();
     expect(reply.headers[KEY_HEADER]).toBeUndefined();
@@ -220,15 +243,15 @@ describe("finding 2: an unseeded verdict never inherits a seeded origin", () => 
 
   it("split gate: seeded then unseeded evaluateChaos, then applyChaosAction, reports no seed", async () => {
     const journal = new Journal();
+    let action: ChaosAction | null | "unset" = "unset";
     const reply = await serveOnce((req, res) => {
       evaluateChaos(null, undefined, req.headers, undefined, req.url, {
         seed: "seeded-earlier",
         dropRate: 0.000001,
       });
-      const action = evaluateChaos(null, undefined, req.headers, undefined, req.url, {
+      action = evaluateChaos(null, undefined, req.headers, undefined, req.url, {
         dropRate: 1,
       });
-      expect(action).toBe("drop");
       applyChaosAction(
         action as ChaosAction,
         res,
@@ -240,6 +263,7 @@ describe("finding 2: an unseeded verdict never inherits a seeded origin", () => 
         undefined,
       );
     });
+    expect(action).toBe("drop");
     expect(reply.status).toBe(500);
     expect(reply.headers[SEED_HEADER]).toBeUndefined();
     expect(journal.getAll()[0]?.response).not.toHaveProperty("chaosSeed");
@@ -253,13 +277,22 @@ describe("finding 3: direct callers can reset the seeded occurrence counters", (
     return out;
   }
 
-  it("resetChaosOccurrences rewinds a direct caller's seeded sequence", () => {
-    const defaults: ChaosConfig = { seed: "direct-caller", dropRate: 0.5 };
+  it("resetChaosOccurrences rewinds a direct caller's seeded sequence to occurrence 0", () => {
+    // A seed no other test uses, so its counter starts at occurrence 0 here.
+    const defaults: ChaosConfig = { seed: "direct-caller-rewind", dropRate: 0.5 };
+    const fromZero = sequence(defaults); // occurrences 0..39
+    const advanced = sequence(defaults); // occurrences 40..79: the counter moved on
+    expect(advanced).not.toEqual(fromZero);
     resetChaosOccurrences();
-    const first = sequence(defaults);
+    expect(sequence(defaults)).toEqual(fromZero); // back at occurrence 0
+  });
+
+  it("resetChaosOccurrences leaves a server's own counters alone", async () => {
+    const url = await start({ chaos: { seed: "server-owned", dropRate: 1 } });
+    expect((await chat(url)).headers[OCCURRENCE_HEADER]).toBe("0");
+    expect((await chat(url)).headers[OCCURRENCE_HEADER]).toBe("1");
     resetChaosOccurrences();
-    const second = sequence(defaults);
-    expect(second).toEqual(first);
+    expect((await chat(url)).headers[OCCURRENCE_HEADER]).toBe("2");
   });
 
   it("is published from the package barrel", () => {

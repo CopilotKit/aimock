@@ -9,11 +9,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { execFile, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerInstance } from "../server.js";
 import type { ChaosConfig, Fixture, MockServerOptions } from "../types.js";
+import { assertBuiltCliIsCurrent } from "./helpers/built-cli.js";
 
 const SEED_HEADER = "x-aimock-chaos-seed";
 const KEY_HEADER = "x-aimock-chaos-key";
@@ -106,6 +107,15 @@ async function run(
   const out: Outcome[] = [];
   for (const m of messages) out.push((await chat(url, m, headers)).outcome);
   return out;
+}
+
+/** Every line the servers' loggers printed through console.warn. */
+function captureWarnings(): string[] {
+  const lines: string[] = [];
+  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+  return lines;
 }
 
 const RATES: ChaosConfig = {
@@ -235,12 +245,16 @@ describe("seeded chaos: seed sources", () => {
     }
   });
 
-  it("ignores a non-finite numeric server seed and stays unseeded", async () => {
+  it("ignores a non-finite numeric server seed, warns, and stays unseeded", async () => {
+    const warnings = captureWarnings();
     for (const seed of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      const url = await start({ chaos: { dropRate: 1, seed }, logLevel: "silent" });
+      warnings.length = 0;
+      const url = await start({ chaos: { dropRate: 1, seed }, logLevel: "warn" });
       const probe = await chat(url, "alpha");
       expect(probe.outcome, String(seed)).toBe("drop");
       expect(probe.headers[SEED_HEADER], String(seed)).toBeUndefined();
+      const rejected = warnings.filter((w) => /\[chaos\] .*rejected seed/.test(w));
+      expect(rejected, String(seed)).toHaveLength(1);
     }
   });
 });
@@ -285,6 +299,26 @@ describe("seeded chaos: the occurrence registry", () => {
     expect(await occurrence("gamma")).toBe("0"); // evicts beta, the LRU key
     expect(await occurrence("alpha")).toBe("2"); // alpha survived
     expect(await occurrence("beta")).toBe("0"); // beta was evicted and restarts
+  });
+
+  it("the key-cap eviction warning fires once per burst, and again after a reset", async () => {
+    const warnings = captureWarnings();
+    const url = await start({
+      chaos: { dropRate: 1, seed: "cap-warn" },
+      chaosKeysMax: 2,
+      logLevel: "warn",
+    });
+    const evictions = () => warnings.filter((w) => w.includes("key cap reached")).length;
+    const fill = async () => {
+      for (const m of ["alpha", "beta", "gamma", "noise"]) {
+        expect((await chat(url, m)).outcome).toBe("drop");
+      }
+    };
+    await fill(); // gamma and noise each evict; only the first eviction warns
+    expect(evictions()).toBe(1);
+    expect((await rawRequest(`${url}/__aimock/reset`, "POST", null)).status).toBe(200);
+    await fill(); // the reset emptied the registry, so this burst warns again
+    expect(evictions()).toBe(2);
   });
 });
 
@@ -417,13 +451,22 @@ describe("seeded chaos: streaming jitter", () => {
     expect(c).not.toEqual(a);
   });
 
-  it("an unseeded stream still draws its jitter from Math.random", async () => {
+  it("an unseeded stream's jitter varies from run to run", async () => {
     const url = await start({}, STREAM_FIXTURES);
-    const random = vi.spyOn(Math, "random");
-    const probe = await stream(url);
-    expect(probe.status).toBe(200);
-    expect(probe.body).toContain("[DONE]");
-    expect(random).toHaveBeenCalled();
+    const a = await jitteredDelays(url);
+    const b = await jitteredDelays(url);
+    expect(a.length).toBeGreaterThanOrEqual(13);
+    expect(b).toHaveLength(a.length);
+    expect(b).not.toEqual(a);
+  });
+
+  it("an unseeded stream's jitter delays are its Math.random draws", async () => {
+    const url = await start({}, STREAM_FIXTURES);
+    // A 1 ms base delay with jitter 0.5 becomes 1 * (1 + (draw * 2 - 1) * 0.5) = 0.5 + draw.
+    vi.spyOn(Math, "random").mockReturnValue(0.3);
+    const delays = await jitteredDelays(url);
+    expect(delays.length).toBeGreaterThanOrEqual(13);
+    for (const ms of delays) expect(ms).toBeCloseTo(0.8, 10);
   });
 });
 
@@ -449,37 +492,22 @@ describe("unseeded chaos is unchanged", () => {
 
   it("still decides through Math.random, one draw per configured rate", async () => {
     const url = await start({ chaos: { dropRate: 0.5, malformedRate: 0.5 } });
-    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const random = vi.spyOn(Math, "random");
+    random.mockReturnValue(0.99);
     expect((await chat(url, "alpha")).outcome).toBe("ok");
-    expect(random).toHaveBeenCalledTimes(2);
     random.mockReturnValue(0);
     expect((await chat(url, "alpha")).outcome).toBe("drop");
+    // The drop roll misses and the malformed roll hits: each rate takes its own
+    // draw, in order, rather than sharing one.
+    random.mockReset();
+    random.mockReturnValueOnce(0.99).mockReturnValue(0);
+    expect((await chat(url, "alpha")).outcome).toBe("malformed");
   });
 });
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
-const CLI_SOURCE = resolve(__dirname, "../cli.ts");
-
-/**
- * This test exercises the BUILT CLI, and `pnpm test` does not build (CI runs
- * `pnpm build` first). A missing or stale dist is reported as a failure rather
- * than skipped, so the test cannot pass by not running.
- */
-function assertBuiltCliIsCurrent(): void {
-  if (!existsSync(CLI_PATH)) {
-    throw new Error(`dist/cli.js is missing — run \`pnpm build\` before this test.`);
-  }
-  if (statSync(CLI_PATH).mtimeMs < statSync(CLI_SOURCE).mtimeMs) {
-    throw new Error(
-      `dist/cli.js was built before src/cli.ts was last edited — run \`pnpm build\`. ` +
-        `This test exercises the built artifact, so its result would describe the stale ` +
-        `build rather than the current source.`,
-    );
-  }
-}
-
 /** Same start budget as the other CLI tests (`waitForOutput(/listening on/i, 5000)`). */
 const CLI_START_TIMEOUT_MS = 5_000;
 
@@ -510,7 +538,7 @@ function spawnCli(args: string[]): Promise<{ url: string; child: ChildProcess }>
 
 describe("seeded chaos: --chaos-seed", () => {
   it("two CLI servers started with the same --chaos-seed replay the same verdicts", async () => {
-    assertBuiltCliIsCurrent();
+    assertBuiltCliIsCurrent(CLI_PATH);
     const dir = mkdtempSync(join(tmpdir(), "chaos-seed-cli-"));
     const children: ChildProcess[] = [];
     try {
@@ -533,4 +561,40 @@ describe("seeded chaos: --chaos-seed", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+describe("seeded chaos: CLI flag validation", () => {
+  function runToExit(args: string[]): Promise<{ code: number | null; stderr: string }> {
+    return new Promise((done, fail) => {
+      const child = execFile(process.execPath, [CLI_PATH, ...args]);
+      let stderr = "";
+      const timer = setTimeout(() => {
+        child.removeAllListeners("close");
+        child.kill("SIGKILL");
+        fail(new Error(`CLI did not exit: ${stderr}`));
+      }, CLI_START_TIMEOUT_MS);
+      child.stderr?.on("data", (d) => (stderr += String(d)));
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        done({ code, stderr });
+      });
+    });
+  }
+
+  it.each([
+    ["--chaos-seed", "has space", /Invalid chaos-seed: has space/],
+    ["--chaos-seed", "run,7", /Invalid chaos-seed: run,7/],
+    ["--chaos-keys-max", "0", /Invalid chaos-keys-max: 0/],
+    ["--chaos-keys-max", "2.5", /Invalid chaos-keys-max: 2\.5/],
+  ])(
+    "%s %j exits non-zero with a message",
+    async (flag, value, message) => {
+      assertBuiltCliIsCurrent(CLI_PATH);
+      const { code, stderr } = await runToExit(["--port", "0", flag, value]);
+      expect(code).not.toBe(0);
+      expect(code).not.toBeNull();
+      expect(stderr).toMatch(message);
+    },
+    20_000,
+  );
 });
