@@ -38,6 +38,7 @@ import {
   chaosKeyFor,
   chaosOccurrencesFor,
   createJitterSource,
+  fallbackChaosOccurrences,
   currentChaosIdentity,
   currentChaosOrigin,
   normalizeChaosSeed,
@@ -53,19 +54,12 @@ interface ChaosDecision {
   origin?: ChaosOrigin;
 }
 
-/**
- * The registry for callers that pass a plain `ChaosConfig` (or a scope no
- * server registered): embedders calling `evaluateChaos` directly. Bounded like
- * every server's registry.
- */
-const fallbackOccurrences = new ChaosOccurrenceRegistry();
-
 /** The occurrence registry a seeded verdict counts in (see `registerChaosOccurrences`). */
 function occurrencesFor(serverDefaults: ChaosDefaults | undefined): ChaosOccurrenceRegistry {
   if (serverDefaults && isChaosScope(serverDefaults) && serverDefaults.byTestId) {
-    return chaosOccurrencesFor(serverDefaults.byTestId) ?? fallbackOccurrences;
+    return chaosOccurrencesFor(serverDefaults.byTestId) ?? fallbackChaosOccurrences;
   }
-  return fallbackOccurrences;
+  return fallbackChaosOccurrences;
 }
 
 /**

@@ -13,7 +13,13 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { createServer, type ServerInstance } from "../server.js";
 import { evaluateChaos, applyChaos, applyChaosAction } from "../chaos.js";
-import { currentChaosJitter, currentChaosOrigin, runInChaosRequestScope } from "../chaos-random.js";
+import { resetChaosOccurrences as resetFromBarrel } from "../index.js";
+import {
+  currentChaosJitter,
+  currentChaosOrigin,
+  resetChaosOccurrences,
+  runInChaosRequestScope,
+} from "../chaos-random.js";
 import { Journal } from "../journal.js";
 import type { ChaosAction, ChaosConfig, Fixture, MockServerOptions } from "../types.js";
 
@@ -236,5 +242,27 @@ describe("finding 2: an unseeded verdict never inherits a seeded origin", () => 
     expect(reply.status).toBe(500);
     expect(reply.headers[SEED_HEADER]).toBeUndefined();
     expect(journal.getAll()[0]?.response).not.toHaveProperty("chaosSeed");
+  });
+});
+
+describe("finding 3: direct callers can reset the seeded occurrence counters", () => {
+  function sequence(defaults: ChaosConfig, n = 40): (ChaosAction | null)[] {
+    const out: (ChaosAction | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(evaluateChaos(null, defaults, {}, undefined, "/direct"));
+    return out;
+  }
+
+  it("resetChaosOccurrences rewinds a direct caller's seeded sequence", () => {
+    const defaults: ChaosConfig = { seed: "direct-caller", dropRate: 0.5 };
+    resetChaosOccurrences();
+    const first = sequence(defaults);
+    resetChaosOccurrences();
+    const second = sequence(defaults);
+    expect(second).toEqual(first);
+  });
+
+  it("is published from the package barrel", () => {
+    expect(typeof resetFromBarrel).toBe("function");
+    expect(resetFromBarrel).toBe(resetChaosOccurrences);
   });
 });

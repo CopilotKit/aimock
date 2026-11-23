@@ -4750,6 +4750,9 @@ export interface RerankResult {
 }
 
 // @public
+export function resetChaosOccurrences(): void;
+
+// @public
 export function resolveChaosLatencyMs(fixture: Fixture | null, serverDefaults?: ChaosDefaults, rawHeaders?: http$1.IncomingHttpHeaders, logger?: Logger, url?: string, resolved?: ChaosConfig): number;
 
 // @internal (undocumented)

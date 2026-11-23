@@ -237,6 +237,27 @@ export class ChaosOccurrenceRegistry {
 }
 
 /**
+ * The registry for callers that pass a plain `ChaosConfig` (or a scope no
+ * server registered): embedders calling `evaluateChaos` directly. Bounded like
+ * every server's registry. Rewound by {@link resetChaosOccurrences}.
+ */
+export const fallbackChaosOccurrences = new ChaosOccurrenceRegistry();
+
+/**
+ * Rewind the seeded occurrence counters that callers WITHOUT a server count in:
+ * an embedder calling `evaluateChaos` (or the deprecated `applyChaos`) with a
+ * plain `ChaosConfig` that carries a seed. After a reset the next seeded call
+ * for a key starts again at occurrence 0, so a fresh run replays the same
+ * verdicts. A server's own counters are not touched: its reset and `POST
+ * /__aimock/chaos` rewind those (see {@link clearChaosOccurrences}), and
+ * clearing this process-wide registry from one server's reset would rewind
+ * every other embedder's sequence.
+ */
+export function resetChaosOccurrences(): void {
+  fallbackChaosOccurrences.clear();
+}
+
+/**
  * Occurrence registries, one per server, keyed by the server's chaos
  * `byTestId` map: the one object a server's `ChaosScope` always carries, and
  * stable for the server's life. Keyed this way so the registry reaches the
