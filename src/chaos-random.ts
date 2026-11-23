@@ -418,6 +418,16 @@ export function clearBaselineChaosOccurrences(byTestId: ReadonlyMap<string, unkn
  */
 interface ChaosRequestState {
   identity?: ChaosRequestIdentity;
+  /**
+   * The request body text exactly as the client sent it, recorded by
+   * `readBody` (`src/helpers.ts`) the first time the request's body is read.
+   * A seeded key is built from this, not from the body a handler hands the
+   * chaos roll, which is often the TRANSLATED request carrying internal fields
+   * (`_endpointType`, and `_context` copied from the `X-AIMock-Context`
+   * header). Absent when the body was not read as text (no body read yet, a
+   * multipart upload, or a binary route): the handler's body is used then.
+   */
+  clientBody?: string;
   jitter?: JitterSource;
   origin?: ChaosOrigin;
 }
@@ -437,6 +447,43 @@ export function runInChaosRequestScope<T>(fn: () => T): T {
 export function setRequestChaosIdentity(identity: ChaosRequestIdentity): void {
   const state = chaosRequestScope.getStore();
   if (state) state.identity = identity;
+}
+
+/**
+ * Record the body text the client sent for the request being served. The
+ * FIRST call wins: a later `readBody` in the same request (for example of an
+ * upstream response) cannot replace it. A no-op outside a request scope.
+ */
+export function recordRequestChaosBody(raw: string): void {
+  const state = chaosRequestScope.getStore();
+  if (state && state.clientBody === undefined) state.clientBody = raw;
+}
+
+/** The client body text recorded for the request being served, or `undefined`. */
+export function currentChaosClientBody(): string | undefined {
+  return chaosRequestScope.getStore()?.clientBody;
+}
+
+/**
+ * The identity a seeded key is built from. The body is the client's own body
+ * text when one was recorded ({@link recordRequestChaosBody}), so the key
+ * depends on what the client sent and never on the handler's translation of
+ * it or on headers copied into it. Otherwise it is the body the caller passed,
+ * with its top-level `_`-prefixed internal fields left out for the same reason.
+ */
+export function chaosKeyIdentity(identity: ChaosRequestIdentity): ChaosRequestIdentity {
+  const clientBody = currentChaosClientBody();
+  if (clientBody !== undefined) {
+    return { method: identity.method, path: identity.path, ...chaosBodyFromRaw(clientBody) };
+  }
+  const { body } = identity;
+  if (identity.rawText === true || body === null || typeof body !== "object") return identity;
+  if (Array.isArray(body)) return identity;
+  const record = body as Record<string, unknown>;
+  if (!Object.keys(record).some((k) => k.startsWith("_"))) return identity;
+  const clean: Record<string, unknown> = {};
+  for (const k of Object.keys(record)) if (!k.startsWith("_")) clean[k] = record[k];
+  return { method: identity.method, path: identity.path, body: clean };
 }
 
 /** The identity recorded for the request being served, or `undefined`. */

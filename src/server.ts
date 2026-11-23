@@ -2108,7 +2108,8 @@ async function handleCompletions(
     );
     return;
   }
-  // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+  // Keys a SEEDED verdict by this request (method, raw target and, via the recorded
+  // client body, what the client sent — not `body`, the translated request); unused unseeded.
   setRequestChaosIdentity({ method, path: req.url ?? path, body });
   const chaosAction = evaluateChaos(
     fixture,

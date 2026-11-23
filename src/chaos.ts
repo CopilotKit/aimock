@@ -43,6 +43,7 @@ import {
   ChaosOccurrenceRegistry,
   chaosDraw,
   chaosKeyFor,
+  chaosKeyIdentity,
   chaosOccurrencesFor,
   createJitterSource,
   fallbackChaosOccurrences,
@@ -853,7 +854,10 @@ export function evaluateChaos(
  * gives the key: passed in by `applyChaos`, or recorded for the request by a
  * split gate in `src/server.ts` (`setRequestChaosIdentity`); without either the
  * key is the key of a bodiless `GET` of `url` (`{ method: "", path: url,
- * body: undefined }`, and an empty method keys as `GET`). The
+ * body: undefined }`, and an empty method keys as `GET`). Whichever it is, its
+ * body is then replaced by the body text the CLIENT sent, when `readBody`
+ * recorded one (`chaosKeyIdentity`), so the key never depends on a handler's
+ * translated request or on headers copied into it. The
  * occurrence counter is per server, per testId, per seed and per key (see
  * `ChaosOccurrenceRegistry`). A seeded call consumes one occurrence even when
  * every rate is 0 or unset: the occurrence is taken before any rate is read.
@@ -882,7 +886,9 @@ function decideChaos(
       : readSeed(config.seed, { label: "resolved chaos config" }, logger);
   if (seed !== undefined) {
     const key = chaosKeyFor(
-      identity ?? currentChaosIdentity() ?? { method: "", path: url ?? "", body: undefined },
+      chaosKeyIdentity(
+        identity ?? currentChaosIdentity() ?? { method: "", path: url ?? "", body: undefined },
+      ),
     );
     const scope = resolveTestId(rawHeaders ?? {}, url);
     const occurrence = occurrencesFor(serverDefaults).next(scope, seed, key);
@@ -1038,7 +1044,9 @@ export function applyChaos(
   resolved?: ChaosConfig,
 ): boolean {
   // The identity a seeded verdict is keyed by: the raw request target (query
-  // string included) and the body the handler parsed. Unused when unseeded.
+  // string included) and the handler's body, which `chaosKeyIdentity` replaces
+  // with the client's own body text when one was recorded. A `null` journal
+  // body means "no body". Unused when unseeded.
   const identity: ChaosRequestIdentity = {
     method: context.method,
     path: requestUrl ?? context.path,

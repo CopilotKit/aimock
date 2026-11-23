@@ -11,6 +11,7 @@ import { renderError } from "./response/errors.js";
 import type { IncomingHttpHeaders } from "node:http";
 import { DEFAULT_TEST_ID, MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { cutText } from "./echo-text.js";
+import { recordRequestChaosBody } from "./chaos-random.js";
 import { build, fixed, msg, quote, type MessageValue } from "./message-text.js";
 import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
@@ -3131,7 +3132,17 @@ export function readBody(
   req: http.IncomingMessage,
   maxBytes: number = DEFAULT_MAX_BODY_BYTES,
 ): Promise<string> {
-  return readBodyBuffer(req, maxBytes).then((buf) => buf.toString());
+  return readBodyBuffer(req, maxBytes).then((buf) => {
+    const text = buf.toString();
+    // A seeded chaos key is built from the body the CLIENT sent. Only a server
+    // request (it has a method) is recorded, and not a multipart upload, whose
+    // random boundary would make the key differ on every send.
+    const contentType = req.headers["content-type"] ?? "";
+    if (typeof req.method === "string" && !/^\s*multipart\//i.test(contentType)) {
+      recordRequestChaosBody(text);
+    }
+    return text;
+  });
 }
 
 // ─── Pattern matching ─────────────────────────────────────────────────────
