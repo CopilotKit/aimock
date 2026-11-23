@@ -3156,14 +3156,21 @@ async function startServer(
     // empty one, so the construction-time chaos config is always recoverable
     // (that is what `POST /__aimock/reset` does). `POST {}` still installs a
     // real, empty override: "explicitly no chaos".
+    //
+    // Rewinds the seeded counters like the HTTP control does (`LLMock.setChaos`
+    // and `clearChaos` write through here): a full clear rewinds every scope,
+    // and a baseline change rewinds every scope that inherits the baseline, so
+    // setting the same seed again replays the run.
     set chaos(value: ChaosDefaults | undefined) {
       if (value === undefined) {
         chaosByTestId.clear();
+        clearChaosOccurrences(chaosByTestId);
         return;
       }
       const base = isChaosScope(value) ? value.base : value;
       if (base === undefined) chaosByTestId.delete(DEFAULT_TEST_ID);
       else chaosByTestId.set(DEFAULT_TEST_ID, base);
+      clearBaselineChaosOccurrences(chaosByTestId);
     },
     registry,
     get record() {

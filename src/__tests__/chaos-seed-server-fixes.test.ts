@@ -14,6 +14,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
+import { LLMock } from "../llmock.js";
 import type { Fixture, MockServerOptions } from "../types.js";
 
 const OCCURRENCE_HEADER = "x-aimock-chaos-occurrence";
@@ -31,12 +32,14 @@ interface Probe {
 }
 
 const servers: ServerInstance[] = [];
+const mocks: LLMock[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
     servers.splice(0).map((s) => new Promise<void>((done) => s.server.close(() => done()))),
   );
+  await Promise.all(mocks.splice(0).map((m) => m.stop()));
 });
 
 async function start(options: MockServerOptions = {}): Promise<string> {
@@ -139,5 +142,35 @@ describe("untagged chaos control rewinds every scope that inherits the baseline"
     expect(await occurrence(url, "alpha", T2)).toBe("1");
     await control(url, "DELETE");
     expect(await occurrence(url, "alpha", T2)).toBe("2");
+  });
+});
+
+describe("LLMock.setChaos / clearChaos rewind seeded counters", () => {
+  async function startMock(): Promise<LLMock> {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixtures(structuredClone(FIXTURES));
+    await mock.start();
+    mocks.push(mock);
+    return mock;
+  }
+
+  it("calling setChaos again with the same seed replays the sequence", async () => {
+    const mock = await startMock();
+    mock.setChaos({ dropRate: 1, seed: "api" });
+    expect(await occurrence(mock.url, "alpha")).toBe("0");
+    expect(await occurrence(mock.url, "alpha", T1)).toBe("0");
+    expect(await occurrence(mock.url, "alpha")).toBe("1");
+    mock.setChaos({ dropRate: 1, seed: "api" });
+    expect(await occurrence(mock.url, "alpha")).toBe("0");
+    expect(await occurrence(mock.url, "alpha", T1)).toBe("0");
+  });
+
+  it("clearChaos then setChaos with the same seed replays the sequence", async () => {
+    const mock = await startMock();
+    mock.setChaos({ dropRate: 1, seed: "api" });
+    expect(await occurrence(mock.url, "alpha")).toBe("0");
+    mock.clearChaos();
+    mock.setChaos({ dropRate: 1, seed: "api" });
+    expect(await occurrence(mock.url, "alpha")).toBe("0");
   });
 });
