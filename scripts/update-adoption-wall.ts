@@ -425,6 +425,8 @@ export const EXCLUDED_ADOPTERS: Record<string, string> = {
     'Self-described derivative: README opens "A hands-on learning template derived from the MIT-licensed OpenStory project". openstory-so/openstory is the original and is already on the wall.',
   "CrimsonSithria/agentos":
     "Copy of rivet-dev/agentos: same README banner and same homepage (agentos-sdk.dev) as the original, on a personal account with 2 followers. Not a GitHub fork, so the fork filter cannot see it.",
+  "idarpansharma/Advanced-AI-ML-Projects":
+    "Copied content, not usage: every occurrence is under generative_interfaces/, byte-identical copies of Shubhamsaboo/awesome-llm-apps's generative_ui_agents/ projects, which is already on the wall. Personal collection; not a GitHub fork.",
   "miantiao-me/github-stars":
     "Not an aimock user: an auto-generated list of the owner's starred repos, and the only occurrence is stars/CopilotKit/aimock.md, the generated entry for starring aimock. A star is not usage.",
   "ngophatneknha/ai-engineering-hub":
