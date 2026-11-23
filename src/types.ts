@@ -1,9 +1,11 @@
+import type { MisbehaviorSummary } from "./misbehavior.js";
 import type * as http from "node:http";
 import type * as net from "node:net";
 import type { Journal } from "./journal.js";
+import type { LiveFixtureResponse, LiveOptions } from "./live-types.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
-import type { ChaosRandomizer } from "./chaos-random.js";
+import type { McpFakeAddOrigin, McpFakeAddResult } from "./mcp-fakes.js";
 
 // aimock type definitions — shared across all provider adapters and the fixture router.
 
@@ -18,6 +20,23 @@ export interface Mountable {
   setJournal?(journal: Journal): void;
   setBaseUrl?(url: string): void;
   setRegistry?(registry: MetricsRegistry): void;
+  /**
+   * MCP fakes. A mount "is an MCPMock" for fakes if and only if it
+   * implements `addMcpFakes`. Always appends. `origin` picks the entry-id
+   * source and its counter: `file` keeps each block's `source` (`@<k>` load
+   * counter); `code` / `control-api` is one run-time addition (`code#<n>` /
+   * `control-api#<n>`). Returns the shadowed-entry warnings with the real
+   * entry ids. When any block is bad, or the input holds no blocks, throws one
+   * `FixtureLoadError` (an `McpFakesAddError` carrying every error found and
+   * the warnings) and adds nothing.
+   */
+  addMcpFakes?(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult;
+  /** Unload every fake on this mount. The entry-id counters are kept. */
+  clearMcpFakes?(): void;
+  /** Reset fake consumption state for one test id, or for all when omitted. */
+  resetScenarioState?(testId?: string): void;
+  /** Hands an MCP mount a `Logger`. Nothing in the server calls it. */
+  setLogger?(logger: Logger): void;
 }
 
 export interface ContentPart {
@@ -31,13 +50,37 @@ export interface ChatMessage {
   content: string | ContentPart[] | null;
   name?: string;
   tool_calls?: ToolCallMessage[];
+  /**
+   * OpenAI Responses `custom_tool_call` history items. Set only when the
+   * server runs with `responsesTools: "extended"`; the default ignores
+   * custom tool call history, as earlier releases did.
+   */
+  custom_tool_calls?: CustomToolCallMessage[];
   tool_call_id?: string;
 }
 
 export interface ToolCallMessage {
   id: string;
   type: "function";
+  /**
+   * OpenAI Responses namespace of the called tool. Set only with
+   * `responsesTools: "extended"`, when the history item had one.
+   */
+  namespace?: string;
   function: { name: string; arguments: string };
+}
+
+/**
+ * An OpenAI Responses `custom_tool_call` history item, normalized for fixture
+ * matching. Produced only with `responsesTools: "extended"`.
+ */
+export interface CustomToolCallMessage {
+  id: string;
+  type: "custom";
+  name: string;
+  /** Free-text input of the call ("" when the history item had none). */
+  input: string;
+  namespace?: string;
 }
 
 export interface ChatCompletionRequest {
@@ -78,6 +121,13 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   tools?: ToolDefinition[];
+  /**
+   * OpenAI Responses `custom` tools offered by the request (top level, inside
+   * a `namespace` tool, or in an `additional_tools` / `tool_search_output`
+   * input item). Set only with `responsesTools: "extended"`; `toolName`
+   * matches these as well as `tools`.
+   */
+  customTools?: CustomToolDefinition[];
   tool_choice?: string | object;
   response_format?: { type: string; [key: string]: unknown };
   /** Embedding input text, set by the embeddings handler for fixture matching. */
@@ -97,9 +147,32 @@ export interface ChatCompletionRequest {
   [key: string]: unknown;
 }
 
+/**
+ * aimock's normalized request function tool. The OpenAI Responses adapter
+ * keeps only top-level `function` tools here by default. With
+ * `responsesTools: "extended"` it also adds the function tools inside a
+ * `namespace` tool (with `namespace` set) and those from `additional_tools` /
+ * `tool_search_output` input items.
+ */
 export interface ToolDefinition {
   type: "function";
   function: { name: string; description?: string; parameters?: object };
+  /** OpenAI Responses namespace the tool was offered in (extended mode only). */
+  namespace?: string;
+}
+
+/**
+ * An OpenAI Responses `custom` (freeform) tool offered by a request. See
+ * {@link ChatCompletionRequest.customTools}.
+ */
+export interface CustomToolDefinition {
+  type: "custom";
+  name: string;
+  description?: string;
+  /** OpenAI Responses namespace the tool was offered in, when inside a `namespace` tool. */
+  namespace?: string;
+  /** Custom-tool input format (grammar or text), carried verbatim. */
+  format?: unknown;
 }
 
 // Fixture matching
@@ -122,6 +195,17 @@ export interface FixtureMatch {
    */
   systemMessage?: string | string[] | RegExp;
   inputText?: string | RegExp;
+  /**
+   * Exact embedding operation, input shape and requested dimensions. Recordings
+   * set this to keep batches and widths distinct across Ollama and OpenAI wire
+   * formats. Omit this field for broad fixtures. Values preserve the wire JSON,
+   * including invalid arguments when recording an upstream error response.
+   */
+  embeddingRequest?: {
+    operation: "/api/embed" | "/api/embeddings" | "/v1/embeddings";
+    input: unknown;
+    dimensions?: unknown;
+  };
   toolCallId?: string;
   /**
    * Substring matched against the text content of the LAST message when that
@@ -132,6 +216,13 @@ export interface FixtureMatch {
    */
   toolResultContains?: string;
   toolName?: string;
+  /**
+   * Exact OpenAI Responses tool namespace. Alone, it matches when any offered
+   * tool sits in this namespace; with `toolName`, a single offered tool must
+   * carry both the name and the namespace. Applies only when the server runs
+   * with `responsesTools: "extended"`; otherwise it is ignored, as in 1.44.0.
+   */
+  toolNamespace?: string;
   model?: string | RegExp;
   responseFormat?: string;
   predicate?: (req: ChatCompletionRequest) => boolean;
@@ -157,15 +248,93 @@ export interface FixtureMatch {
     | "embedding"
     | "audio-gen"
     | "elevenlabs-tts"
+    | "elevenlabs-voice-design"
+    | "elevenlabs-voice"
+    | "elevenlabs-voice-get"
+    | "elevenlabs-voice-delete"
+    | "elevenlabs-stt"
+    | "elevenlabs-audio-isolation"
+    | "byteplus-tts"
     | "fal-audio"
     | "fal"
     | "realtime"
     | "realtime-transcription"
-    | "realtime-translation";
+    | "realtime-translation"
+    | "openai-live";
   context?: string;
 }
 
 // Fixture response types
+
+/**
+ * A web source citation attached to a text response. Served as `url_citation`
+ * annotations on OpenAI Responses (`output_text.annotations`) and Chat
+ * Completions (`message.annotations` / `delta.annotations`), as
+ * `web_search_result_location` citations on Anthropic text blocks, and as
+ * Gemini `groundingMetadata` (`groundingChunks` + `groundingSupports`).
+ */
+export interface FixtureUrlCitation {
+  /**
+   * Optional discriminator; a citation without `type` is a URL citation. A
+   * citation that also sets file citation fields (`fileId`, `filename`,
+   * `index`) is rejected: set `type: "file"` or remove the stray fields.
+   */
+  type?: "url";
+  url: string;
+  title?: string;
+  /**
+   * Offsets of the cited span, as UTF-16 string indices (JavaScript string
+   * positions) into the joined text of all the response's text blocks. Chat
+   * Completions, Anthropic, Gemini and Responses read them the same way;
+   * Gemini converts them to the UTF-8 byte offsets its wire carries. Default
+   * to the whole text.
+   */
+  startIndex?: number;
+  endIndex?: number;
+}
+
+/**
+ * A citation of an uploaded file, served as a `file_citation` annotation on
+ * OpenAI Responses (`output_text.annotations`, streamed through
+ * `response.output_text.annotation.added`). Chat Completions, Anthropic
+ * Messages and Gemini have no file-citation wire shape, so they skip it and
+ * serve only the fixture's URL citations.
+ */
+export interface FixtureFileCitation {
+  type: "file";
+  /** Wire `file_id`, e.g. `file-abc123`. */
+  fileId: string;
+  /** Wire `filename` of the cited file. */
+  filename: string;
+  /**
+   * Character position cited: a UTF-16 string index into the joined text of
+   * all the response's text blocks; defaults to the end of the text. The wire
+   * `index` is not this value: the annotation goes on the `output_text` whose
+   * text holds the position, and its `index` counts from the start of that
+   * `output_text`.
+   */
+  index?: number;
+}
+
+/** A source citation attached to a text response: a web page or an uploaded file. */
+export type FixtureCitation = FixtureUrlCitation | FixtureFileCitation;
+
+/**
+ * A model-generated file (e.g. an inline image). Served on Gemini as
+ * `inlineData` parts and on the OpenAI Responses API as
+ * `image_generation_call` output items (`image/*` files only; another
+ * `mimeType` is rejected). Chat Completions (OpenAI, Azure OpenAI, OpenRouter
+ * and BytePlus ModelArk) and Anthropic Messages cannot carry one and reject
+ * the request. Every rejection is a coded 500,
+ * `aimock_unsupported_generated_file`, sent before any content. Every other
+ * wire (Bedrock, Cohere, Ollama, Gemini Interactions and the rest) drops
+ * `files` without an error.
+ */
+export interface FixtureGeneratedFile {
+  mimeType: string;
+  /** Base64-encoded file bytes. */
+  data: string;
+}
 
 /**
  * Fields that override auto-generated envelope values in the built response.
@@ -178,14 +347,31 @@ export interface FixtureMatch {
  * When total_tokens (or provider equivalent) is omitted, it is auto-computed
  * from the component fields.
  *
- * Provider support: seven fields are common (id, created, model, usage,
- * systemFingerprint, finishReason, role); provider and nativeFinishReason are
- * OpenRouter-only and ignored elsewhere. OpenAI Chat honors the seven common
- * fields; OpenRouter additionally honors provider/nativeFinishReason; Responses
- * API (5: no role, systemFingerprint); Claude (5: no created,
- * systemFingerprint); Gemini (2: only finishReason, usage).
+ * Provider support: seven envelope fields are common (id, created, model,
+ * usage, systemFingerprint, finishReason, role); provider and
+ * nativeFinishReason are OpenRouter-only and ignored elsewhere; `citations`
+ * and `files` are content fields (see their docs). OpenAI Chat honors the
+ * seven common fields plus `citations` (it rejects `files`); OpenRouter
+ * additionally honors provider/nativeFinishReason; Responses API honors five
+ * common fields (no role, systemFingerprint) plus optional phase, `citations`
+ * and `files`; Claude honors five (no created, systemFingerprint) plus
+ * `citations` (it rejects `files`); Gemini honors two (only finishReason,
+ * usage) plus `citations` and `files`.
  */
 export interface ResponseOverrides {
+  /**
+   * Model-generated files emitted before the response text and tool calls.
+   * Served on Gemini and the OpenAI Responses API (`image/*` only); Chat
+   * Completions and Anthropic Messages reject them; every other wire drops
+   * them without an error (see {@link FixtureGeneratedFile}).
+   */
+  files?: FixtureGeneratedFile[];
+  /**
+   * Source citations for the response text (OpenAI Responses, Chat Completions, Anthropic, Gemini).
+   * File citations are served on OpenAI Responses only; the other three skip them.
+   * Every other wire ignores `citations`.
+   */
+  citations?: FixtureCitation[];
   id?: string;
   created?: number;
   model?: string;
@@ -244,12 +430,26 @@ export interface ResponseOverrides {
      * through verbatim onto the emitted `usage` object. The load-time validator
      * still requires extra scalars to be numbers (see fixture-loader.ts), so a
      * typo'd field is caught rather than silently emitted as a string.
+     *
+     * Anthropic Messages and Bedrock invoke accept cache_read_input_tokens and
+     * cache_creation_input_tokens here. cache_creation accepts a number
+     * (unrendered) or an object with ephemeral_5m_input_tokens and
+     * ephemeral_1h_input_tokens. Missing object members render as zero in final
+     * and message_start usage; message_delta emits only the flat cache fields.
+     * Record mode preserves Anthropic token counts and cache usage for replay.
      */
     [key: string]: unknown;
   };
   systemFingerprint?: string;
   finishReason?: string;
   role?: string;
+  /**
+   * OpenAI Responses message phase (HTTP and WebSocket). Applied to each
+   * emitted assistant message, never to reasoning or tool-call items. Omitted
+   * unless supplied; aimock does not infer a phase from content or stop reason.
+   * Ignored by other providers.
+   */
+  phase?: "commentary" | "final_answer";
   /**
    * OpenRouter top-level `provider` override. When omitted, OpenRouter-shaped
    * responses default it to the author segment of the winning model slug
@@ -294,7 +494,36 @@ export interface ToolCall {
   name: string;
   arguments: string;
   id?: string;
+  /**
+   * OpenAI Responses API only: emitted as `function_call.namespace` when the
+   * server runs with `responsesTools: "extended"`. Ignored otherwise, and by
+   * every other wire.
+   */
+  namespace?: string;
 }
+
+/**
+ * An OpenAI Responses custom (freeform) tool call, emitted as a
+ * `custom_tool_call` item. Fixtures carry it in `customToolCalls` (or as a
+ * `customToolCall` block in `responsesBlocks`). Only the Responses API (HTTP
+ * and WebSocket) can serve it; every other wire rejects it with
+ * `UnsupportedToolCallError`.
+ */
+export interface CustomToolCall {
+  type: "custom";
+  name: string;
+  /** Free-text input. Never parsed, never stringified. */
+  input: string;
+  id?: string;
+  /** OpenAI Responses API only: emitted as `custom_tool_call.namespace`. */
+  namespace?: string;
+}
+
+/**
+ * A tool call the OpenAI Responses API serves: a function call (from
+ * `toolCalls`) or a custom tool call (from `customToolCalls`).
+ */
+export type FixtureToolCall = (ToolCall & { type?: undefined }) | CustomToolCall;
 
 /**
  * A single ordered streaming block for a {@link ContentWithToolCallsResponse}.
@@ -307,11 +536,40 @@ export interface ToolCall {
  * optional `id`).
  */
 export type FixtureBlock =
-  | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; arguments: string; id?: string };
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+      /**
+       * OpenAI Responses API only: `true` serves this text as a further
+       * `output_text` part of the message item opened by the preceding text
+       * block, as recorded from a multi-part upstream message. Other providers
+       * ignore it.
+       */
+      continuesMessage?: boolean;
+    }
+  | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string };
+
+/**
+ * An ordered block for {@link ContentWithToolCallsResponse.responsesBlocks}:
+ * a {@link FixtureBlock}, or a `customToolCall` block that mirrors
+ * {@link CustomToolCall} (`name` + free-text `input`, optional `id` and
+ * `namespace`). Only the OpenAI Responses API serves `responsesBlocks`.
+ */
+export type ResponsesFixtureBlock =
+  | FixtureBlock
+  | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface ToolCallResponse extends ResponseOverrides {
   toolCalls: ToolCall[];
+  /**
+   * OpenAI Responses custom tool calls, emitted after `toolCalls`. A turn with
+   * only custom calls sets `toolCalls: []`. Every other wire rejects a fixture
+   * with a non-empty `customToolCalls` (`UnsupportedToolCallError`). Applies
+   * only with `responsesTools: "extended"`; otherwise it is ignored.
+   */
+  customToolCalls?: CustomToolCall[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -334,6 +592,8 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
   content?: string;
   /** See {@link ContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
   toolCalls?: ToolCall[];
+  /** OpenAI Responses custom tool calls; see {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: CustomToolCall[];
   /**
    * Optional ordered streaming blocks. When present, builders stream these in
    * array order (tool-first / interleaved); when absent, the legacy
@@ -342,6 +602,14 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
    * response even without `content`/`toolCalls` (see those fields above).
    */
   blocks?: FixtureBlock[];
+  /**
+   * OpenAI Responses only: ordered blocks that may include `customToolCall`
+   * blocks. On the Responses API they replace `blocks`; a fixture may not set
+   * both. Every other wire rejects a `customToolCall` block here
+   * (`UnsupportedToolCallError`) and otherwise ignores this field. Applies
+   * only with `responsesTools: "extended"`; otherwise it is ignored.
+   */
+  responsesBlocks?: ResponsesFixtureBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -406,6 +674,27 @@ export interface ImageResponse {
 // guards, because the optional companion fields below make these shapes
 // structurally overlap (an AudioResponse with `toolCalls`/`content` would also
 // satisfy those guards otherwise).
+export interface VoiceDesignPreview {
+  generated_voice_id: string;
+  // Optional like its siblings below: `voiceDesignToJson` substitutes `""`
+  // when it is absent, so requiring it here made that documented fallback
+  // unreachable from TypeScript.
+  audio_base_64?: string;
+  media_type?: string;
+  duration_secs?: number;
+  language?: string | null;
+}
+
+/**
+ * Convenience shape for `LLMock.onElevenLabsVoiceDesign`. Stored as a
+ * {@link RawJSONResponse} wrapping `{ previews, text }` — the ElevenLabs
+ * `/v1/text-to-voice/design` envelope.
+ */
+export interface VoiceDesignResponse {
+  previews: VoiceDesignPreview[];
+  text?: string;
+}
+
 export interface AudioResponse {
   audio: string | { b64Json: string; contentType?: string };
   format?: string;
@@ -468,6 +757,49 @@ export interface RawJSONResponse extends ResponseOverrides {
   billableUnits?: number;
 }
 
+/**
+ * Pass-through LLM response. aimock sends `events` (streaming) or `json`
+ * (non-streaming) as written, adding only the named wire's framing. No
+ * overrides, reasoning gating, provider shaping or drift checks apply.
+ */
+export interface RawResponse {
+  /**
+   * The passthrough body for one wire: `events` for a streaming request,
+   * `json` for a non-streaming one, plus optional `status`, `headers` and
+   * (`openai-chat` only) `done`. The router offers the fixture only to the
+   * handler for `wire`. Checked at load (`validateFixtures`) and again when
+   * served; a fixture that fails when served gets a 500 with the code
+   * `aimock_raw_fixture_invalid`.
+   */
+  raw: {
+    /**
+     * The wire these events belong to. The router skips the fixture on every
+     * other wire; a factory that returns it for another wire gets a 500.
+     */
+    wire: RawWireId;
+    /** Streamed body: one entry per frame, each framed per `wire`. */
+    events?: Record<string, unknown>[];
+    /** Non-streaming body, sent as `JSON.stringify(json)`. */
+    json?: unknown;
+    /** HTTP status. Default 200. */
+    status?: number;
+    /**
+     * Extra response headers. Without a Content-Type here, a stream gets the
+     * wire's own type and a non-streaming reply gets `application/json`.
+     */
+    headers?: Record<string, string>;
+    /** `openai-chat` only: send the terminal `data: [DONE]`. Default true. */
+    done?: boolean;
+  };
+}
+
+/**
+ * The wires a {@link RawResponse} can target: every HTTP LLM wire. Ollama has
+ * two: `ollama` is `/api/chat` and `ollama-generate` is `/api/generate`, whose
+ * frames have a different shape.
+ */
+export type RawWireId = Exclude<WireId, "openai-realtime" | "gemini-live"> | "ollama-generate";
+
 export type FixtureResponse =
   | TextResponse
   | ToolCallResponse
@@ -478,7 +810,9 @@ export type FixtureResponse =
   | AudioResponse
   | TranscriptionResponse
   | VideoResponse
-  | RawJSONResponse;
+  | RawJSONResponse
+  | RawResponse
+  | LiveFixtureResponse;
 
 // GA Realtime session types
 
@@ -528,26 +862,104 @@ export interface RecordedTimings {
 /**
  * Probabilistic chaos injection rates.
  *
- * Rates are evaluated sequentially per request — drop → malformed → disconnect
- * — and the first hit wins. Consequently malformedRate is conditional on drop
- * not firing, and disconnectRate is conditional on neither drop nor malformed
- * firing. A config of `{ dropRate: 0.5, malformedRate: 0.5 }` yields a ~25 %
- * effective malformed rate, not 50 %.
+ * Rates are evaluated sequentially per request — drop → malformed → rateLimit
+ * → disconnect — as four separate draws in that order, and the first draw that
+ * hits wins and short-circuits the rest. Each rate is therefore the probability
+ * that its OWN draw hits GIVEN that no earlier rate fired, not the share of
+ * requests that end in that fault; only `dropRate`, first in the chain, is
+ * unconditional. A config of `{ dropRate: 0.5, malformedRate: 0.5 }` yields a
+ * ~25 % effective malformed rate, not 50 %, and the same compounding applies to
+ * `{ dropRate: 0.5, rateLimitRate: 0.5 }` (~25 % rate limits).
+ */
+/**
+ * Probabilistic (and one deterministic) fault injection knobs.
+ *
+ * VALIDATION — ONE policy, whatever the source. Each field is a finite number
+ * in its range: the rates in [0, 1], `latencyMs` in [0, 30000]. A value outside
+ * it, or one that is not a number at all (`"0.5abc"`, `"Infinity"`, `NaN`), is
+ * REJECTED, never clamped — silent clamping substitutes a fault rate nobody
+ * asked for and hides the misconfiguration that produced it.
+ *
+ * Rejection is reported in the loudest way each source allows, and the three
+ * agree: `POST /__aimock/chaos` answers 400, the `--chaos-*` CLI flags refuse
+ * to start, and a per-request header or a fixture/server value is refused with
+ * a `[chaos]` warning and left unset so the next level of precedence (header >
+ * fixture > server) applies.
  */
 export interface ChaosConfig {
   dropRate?: number;
   malformedRate?: number;
   disconnectRate?: number;
   /**
-   * Seed for the draws that decide whether an action fires. Omit and the
-   * server generates one per run, reports it, and logs it; pass the reported
-   * value back to replay that run's faults exactly. Numbers are accepted for
-   * the sake of config files and are normalized to their decimal strings.
+   * Deterministic delay (ms) injected before the request is handled.
+   * Applied when > 0 — header > fixture > server precedence, same as rates.
+   * Unlike rates it is not probabilistic: a set latency always fires so
+   * timeout/retry suites get a stable signal. Must be in [0, 30000]; a value
+   * outside that range is rejected, not clamped (see above).
    */
-  seed?: string | number;
+  latencyMs?: number;
+  /**
+   * Chance of a 429 rate-limit rejection with `Retry-After`, CONDITIONAL on
+   * neither `dropRate` nor `malformedRate` having fired first: it is the third
+   * draw in the drop → malformed → rateLimit → disconnect order, and the first
+   * hit wins. Paired with a 0.5 `dropRate` a 0.5 `rateLimitRate` produces ~25 %
+   * rate limits, not 50 % (see the interface docstring above).
+   */
+  rateLimitRate?: number;
 }
 
-export type ChaosAction = "drop" | "malformed" | "disconnect";
+/**
+ * Server-level chaos as the handlers see it: a baseline plus per-`X-Test-Id`
+ * overrides installed at runtime via `POST /__aimock/chaos`.
+ *
+ * Chaos is the LAST link in the precedence chain (request headers > fixture >
+ * server), and this makes that last link test-scoped, the way every other
+ * mutable axis in aimock is (fixture match-counts, video job maps). Under the
+ * shipped topology — one shared `aimock` process serving a parallel suite — a
+ * purely global switch would mean one test's chaos failing every other test.
+ *
+ * Scoping is by testId on BOTH sides: the traffic being evaluated and the
+ * control request that installed the override. Both resolve the tag the way
+ * `getTestId` does — the `X-Test-Id` header, else `?testId=` in the query
+ * string — so a harness that can only tag one of those two ways still lands in
+ * the same scope on both sides, and the two can never silently disagree.
+ */
+export interface ChaosScope {
+  /** Server-wide baseline: the construction config, or the untagged override. */
+  base?: ChaosConfig;
+  /**
+   * Per-testId overrides, consulted INSTEAD OF `base` — never merged over it.
+   *
+   * An installed override REPLACES the baseline wholesale for that testId: a
+   * server started with `--chaos-latency 500` whose test `t1` installs
+   * `{ dropRate: 1 }` gives `t1` traffic a drop and NO latency, because
+   * `latencyMs` is not restated. To keep a baseline field, restate it in the
+   * override body.
+   *
+   * Replacement — not a field-wise merge — is deliberate, and it is what makes
+   * `POST /__aimock/chaos {}` ("explicitly no chaos for my test") different
+   * from `DELETE /__aimock/chaos` ("forget I said anything, fall back to the
+   * baseline"). Under a merge, `POST {}` would be a no-op and that distinction
+   * would collapse. It also matches the untagged case, where an override
+   * likewise replaces the construction-time config rather than layering on it.
+   *
+   * The two chain links ABOVE this one — fixture chaos over server chaos, and
+   * request headers over both — DO merge field-wise (see `resolveChaosConfig`).
+   * Only the scope lookup replaces, because it selects a config rather than
+   * refining one. `GET /__aimock/chaos` with the same testId always reports the
+   * config actually in effect for that scope, so the replacement is auditable.
+   */
+  byTestId?: ReadonlyMap<string, ChaosConfig>;
+}
+
+/**
+ * What `evaluateChaos` / `applyChaos` accept as server defaults. A plain
+ * `ChaosConfig` still works (it is what external callers pass); the server
+ * itself passes a `ChaosScope`.
+ */
+export type ChaosDefaults = ChaosConfig | ChaosScope;
+
+export type ChaosAction = "drop" | "malformed" | "rateLimit" | "disconnect";
 
 // Response factory — allows dynamic fixture responses based on the incoming request
 
@@ -556,6 +968,71 @@ export type ResponseFactory = (
 ) => FixtureResponse | Promise<FixtureResponse>;
 
 // Fixture
+
+/** Provider wire identifiers, independent of endpoint response families. */
+export type WireId =
+  | "openai-chat"
+  | "openai-responses"
+  | "openai-realtime"
+  | "anthropic"
+  | "bedrock-invoke"
+  | "bedrock-converse"
+  | "gemini"
+  | "gemini-live"
+  | "gemini-interactions"
+  | "cohere"
+  | "ollama";
+
+interface MisbehaviorCommon {
+  rate?: number;
+  times?: number;
+  tool?: string;
+  providers?: WireId[];
+}
+
+export type MisbehaviorFault = MisbehaviorCommon &
+  (
+    | { fault: "tool-args-invalid-json"; style?: "truncated" | "trailing-comma" | "single-quotes" }
+    | {
+        fault: "tool-args-schema-violation";
+        violation?:
+          | "missing-required"
+          | "wrong-type"
+          | "extra-property"
+          | "enum-mismatch"
+          | "not-object";
+        property?: string;
+      }
+    | { fault: "tool-unknown-name"; name?: string }
+    | { fault: "tool-call-id-duplicate" }
+    | { fault: "stop-length-mid-tool"; at?: number }
+    | { fault: "empty-response" }
+    | { fault: "refusal"; message?: string; category?: string | null }
+    | { fault: "content-filter" }
+    | { fault: "reasoning-only"; reasoning?: string }
+  );
+
+export type MisbehaviorFaultId = MisbehaviorFault["fault"];
+export interface MisbehaviorConfig {
+  seed?: number | "random";
+  faults: MisbehaviorFault[];
+}
+
+export interface MisbehaviorCounterKey {
+  testId: string;
+  sourceKey: string;
+  entryIndex: number;
+}
+export interface MisbehaviorCounters {
+  getFiringCount(key: MisbehaviorCounterKey): number;
+  nextOrdinal(key: MisbehaviorCounterKey): number;
+  recordFiring(key: MisbehaviorCounterKey): void;
+  clearMisbehaviorCounters(testId?: string): void;
+}
+export interface MisbehaviorScope {
+  baseline?: MisbehaviorConfig;
+  byTestId: Map<string, MisbehaviorConfig>;
+}
 
 export interface Fixture {
   match: FixtureMatch;
@@ -567,6 +1044,7 @@ export interface Fixture {
   streamingProfile?: StreamingProfile;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /**
    * Opt into OpenRouter's `: OPENROUTER PROCESSING` SSE keepalive comment
@@ -575,6 +1053,31 @@ export interface Fixture {
    * this exercises that path. No effect on non-streaming or OpenAI responses.
    */
   openRouterProcessing?: boolean;
+  /**
+   * Opt into `streamingProfile` / `recordedTimings` timing on this fixture's
+   * non-streaming (`stream: false`) OpenAI chat completion replies (default OFF).
+   * When enabled, the single JSON reply waits about as long as the streamed
+   * reply would. Without it, non-streaming replies return immediately. Bare
+   * `latency` never delays non-streaming replies. Other providers ignore it; to
+   * delay them too, use {@link Fixture.nonStreamingTimingAllProviders}.
+   */
+  nonStreamingTiming?: boolean;
+  /**
+   * Opt into `streamingProfile` / `recordedTimings` timing on this fixture's
+   * non-streaming (`stream: false`) replies on these providers (default OFF):
+   * OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, Gemini and
+   * Vertex AI `generateContent`, Gemini Interactions, Cohere v2 chat, Bedrock
+   * InvokeModel and Converse, Ollama `/api/chat` and `/api/generate`, and
+   * OpenRouter chat completions (`/api/v1/chat/completions`), which is served
+   * as OpenAI Chat Completions, so `nonStreamingTiming` also delays it.
+   * Audio transcription replies are not delayed. The delay is the same as
+   * {@link Fixture.nonStreamingTiming} gives on OpenAI Chat Completions: the
+   * single JSON reply waits about as long as the streamed reply would. It
+   * needs a `streamingProfile` or `recordedTimings`. Bare `latency` never delays
+   * non-streaming replies, and error replies are never delayed. Setting it to
+   * `false` does not turn off `nonStreamingTiming: true`.
+   */
+  nonStreamingTimingAllProviders?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
@@ -602,6 +1105,19 @@ export interface FixtureFileToolCall {
   /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
   arguments: string | Record<string, unknown> | unknown[];
   id?: string;
+  /** OpenAI Responses namespace; see {@link ToolCall.namespace}. */
+  namespace?: string;
+}
+
+/** On-disk counterpart of {@link CustomToolCall} (`customToolCalls` entries). */
+export interface FixtureFileCustomToolCall {
+  /** Optional in a file: every `customToolCalls` entry is a custom call. */
+  type?: "custom";
+  name: string;
+  /** Free-text input, never parsed or stringified. */
+  input: string;
+  id?: string;
+  namespace?: string;
 }
 
 /**
@@ -611,17 +1127,37 @@ export interface FixtureFileToolCall {
  * runtime string form. Normalizes to a {@link FixtureBlock}.
  */
 export type FixtureFileBlock =
-  | { type: "text"; text: string }
+  | {
+      type: "text";
+      text: string;
+      annotations?: Record<string, unknown>[];
+      citations?: Record<string, unknown>[];
+      /**
+       * OpenAI Responses API only: `true` serves this text as a further
+       * `output_text` part of the message item opened by the preceding text
+       * block, as recorded from a multi-part upstream message. Other providers
+       * ignore it.
+       */
+      continuesMessage?: boolean;
+    }
   | {
       type: "toolCall";
       name: string;
       /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
       arguments: string | Record<string, unknown> | unknown[];
       id?: string;
+      namespace?: string;
     };
+
+/** On-disk counterpart of {@link ResponsesFixtureBlock} (`responsesBlocks` entries). */
+export type FixtureFileResponsesBlock =
+  | FixtureFileBlock
+  | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
+  /** See {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: FixtureFileCustomToolCall[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -651,6 +1187,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
   content?: string | Record<string, unknown> | unknown[];
   /** See {@link FixtureFileContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
   toolCalls?: FixtureFileToolCall[];
+  /** See {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: FixtureFileCustomToolCall[];
   /**
    * Optional ordered streaming blocks (mirrors the in-memory
    * {@link ContentWithToolCallsResponse.blocks}). When present, builders stream
@@ -661,6 +1199,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
    * `blocks` array alone makes this a first-class blocks-only fixture.
    */
   blocks?: FixtureFileBlock[];
+  /** See {@link ContentWithToolCallsResponse.responsesBlocks}. */
+  responsesBlocks?: FixtureFileResponsesBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -679,7 +1219,9 @@ export type FixtureFileResponse =
   | AudioResponse
   | TranscriptionResponse
   | VideoResponse
-  | RawJSONResponse;
+  | RawJSONResponse
+  | RawResponse
+  | LiveFixtureResponse;
 
 export interface FixtureFile {
   fixtures: FixtureFileEntry[];
@@ -695,6 +1237,8 @@ export interface FixtureFileEntry {
      */
     systemMessage?: string | string[];
     inputText?: string;
+    /** Mirrors the exact embedding request match in FixtureMatch. */
+    embeddingRequest?: FixtureMatch["embeddingRequest"];
     toolCallId?: string;
     /**
      * Substring matched against the last tool-result message's text content.
@@ -702,6 +1246,8 @@ export interface FixtureFileEntry {
      */
     toolResultContains?: string;
     toolName?: string;
+    /** Mirrors the runtime FixtureMatch.toolNamespace. */
+    toolNamespace?: string;
     model?: string;
     responseFormat?: string;
     sequenceIndex?: number;
@@ -724,11 +1270,19 @@ export interface FixtureFileEntry {
       | "embedding"
       | "audio-gen"
       | "elevenlabs-tts"
+      | "elevenlabs-voice-design"
+      | "elevenlabs-voice"
+      | "elevenlabs-voice-get"
+      | "elevenlabs-voice-delete"
+      | "elevenlabs-stt"
+      | "elevenlabs-audio-isolation"
+      | "byteplus-tts"
       | "fal-audio"
       | "fal"
       | "realtime"
       | "realtime-transcription"
-      | "realtime-translation";
+      | "realtime-translation"
+      | "openai-live";
     context?: string;
     // predicate not supported in JSON files
   };
@@ -740,9 +1294,14 @@ export interface FixtureFileEntry {
   streamingProfile?: StreamingProfile;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /** See {@link Fixture.openRouterProcessing}. */
   openRouterProcessing?: boolean;
+  /** See {@link Fixture.nonStreamingTiming}. */
+  nonStreamingTiming?: boolean;
+  /** See {@link Fixture.nonStreamingTimingAllProviders}. */
+  nonStreamingTimingAllProviders?: boolean;
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
@@ -751,17 +1310,49 @@ export interface FixtureFileEntry {
 
 // Request journal
 
+/**
+ * A recorded request body.
+ *
+ * Most journal entries carry a chat-completion request, but every service
+ * journals through one entry type and several of them record a body that is
+ * not one: the fine-tuning create payload is recorded verbatim so the journal
+ * reports what the caller actually sent, and the journal's own size cap
+ * substitutes a truncation marker for an oversized body. Neither shape has a
+ * `model`/`messages` pair, so typing the field as `ChatCompletionRequest`
+ * alone forces those writers through a cast that claims fields that are not
+ * there — the second member exists so they do not have to lie.
+ *
+ * TypeScript collapses the two for ASSIGNMENT (`ChatCompletionRequest` has an
+ * index signature, so it is itself a `Record<string, unknown>`); the union is
+ * kept two-membered because it is what the field means, not because it narrows
+ * anything. For READING, treat the body as opaque JSON — that is already how
+ * every consumer uses it (the journal cap re-serializes it, `GET
+ * /__aimock/journal` hands it back) — and property-check before reaching for a
+ * chat-request field.
+ */
+export type JournalBody = ChatCompletionRequest | Record<string, unknown>;
+
 export interface JournalEntry {
   id: string;
   timestamp: number;
   method: string;
   path: string;
   headers: Record<string, string>;
-  body: ChatCompletionRequest | null;
+  body: JournalBody | null;
   service?: string;
+  /**
+   * Resolved test id of an MCP request (`"__default__"` when none), for an
+   * MCP mount to set. Journal test-id filtering does not read it: it
+   * re-derives the id from the headers and path (`journalEntryTestId`).
+   */
+  testId?: string;
+  /** Resolved context of an MCP request, `null` when none; for an MCP mount to set. */
+  context?: string | null;
   response: {
     status: number;
     fixture: Fixture | null;
+    /** For an MCP mount to set on `tools/call` entries a fake answered or failed. */
+    mcpFake?: { id: string | null; outcome: McpFakeOutcome };
     /**
      * What was going to serve this request. "fixture" = a fixture matched (or
      * would have, before chaos intervened). "proxy" = no fixture matched and
@@ -770,24 +1361,32 @@ export interface JournalEntry {
      * configured proxy: chaos-path entries (e.g. chaos on the OpenRouter
      * video lifecycle endpoints; in REPLAY mode their normal 200/400/401/404
      * entries omit source, while record-mode 200s on those endpoints carry
-     * source:"proxy") AND the OpenRouter video models listing synthesized as
-     * the fallback after a FAILED proxy attempt. Absent when the distinction
-     * doesn't apply (e.g. 404/503 fallback where nothing was going to serve).
+     * source:"proxy"), the OpenRouter video models listing synthesized as the
+     * fallback after a FAILED proxy attempt, and the services whose responses
+     * are synthesized outright — every fine-tuning entry carries it, success
+     * and error alike, since that store is aimock's own and no fixture or
+     * proxy ever serves it. Absent when the distinction doesn't apply
+     * (e.g. 404/503 fallback where nothing was going to serve).
      */
     source?: "fixture" | "proxy" | "internal";
     interrupted?: boolean;
     interruptReason?: string;
-    chaosAction?: ChaosAction;
     /**
-     * The three coordinates that produced `chaosAction`, recorded so a failure
-     * seen in a log can be replayed without guessing. Present exactly when
-     * `chaosAction` is.
+     * The error message of a failed request, set in two cases:
+     * - The request failed before any content was sent, and `status` is 500:
+     *   a fixture tool-call error (HTTP or WebSocket), or any builder error on
+     *   the WebSocket Responses transport.
+     * - The handler crashed AFTER the response completed. The client received
+     *   `status` in full, so this is not an interruption.
      */
-    chaosSeed?: string;
-    chaosKey?: string;
-    chaosOccurrence?: number;
+    error?: string;
+    chaosAction?: ChaosAction;
+    /** Full prepared fault output; interrupted delivery is recorded separately above. */
+    misbehavior?: MisbehaviorSummary;
     /** When the X-AIMock-Strict header overrode the server default. */
     strictOverride?: boolean;
+    /** MR8 / MR11 / MR14: why a forwarded MCP record-mode message was not recorded. */
+    recordSkipped?: string;
   };
 }
 
@@ -855,11 +1454,32 @@ export interface SSEChoice {
   native_finish_reason?: string | null;
 }
 
+/** OpenRouter text reasoning detail, paired with the same logical reasoning text. */
+export interface ReasoningTextDetail {
+  type: "reasoning.text";
+  text: string;
+  format: "unknown";
+  index: number;
+}
+
 export interface SSEDelta {
   role?: string;
   content?: string | null;
+  reasoning?: string;
+  reasoning_details?: ReasoningTextDetail[];
   reasoning_content?: string;
   tool_calls?: SSEToolCallDelta[];
+  /**
+   * Fixture URL `citations`, sent once on their own chunk just before the
+   * finish chunk: after the content chunks and after any tool-call chunks.
+   */
+  annotations?: ChatCompletionAnnotation[];
+}
+
+/** A Chat Completions `url_citation` annotation (`message.annotations` / `delta.annotations`). */
+export interface ChatCompletionAnnotation {
+  type: "url_citation";
+  url_citation: { url: string; title: string; start_index: number; end_index: number };
 }
 
 export interface SSEToolCallDelta {
@@ -907,6 +1527,7 @@ export interface ChatCompletionMessage {
   role: string;
   content: string | null;
   refusal: string | null;
+  reasoning_details?: ReasoningTextDetail[];
   reasoning_content?: string;
   /**
    * OpenRouter emits `reasoning` (null when absent) on the response message.
@@ -915,6 +1536,11 @@ export interface ChatCompletionMessage {
    */
   reasoning?: string | null;
   tool_calls?: ToolCallMessage[];
+  /**
+   * Fixture URL `citations`; omitted when the fixture sets none, or only file
+   * citations (Chat Completions has no `file_citation` annotation).
+   */
+  annotations?: ChatCompletionAnnotation[];
 }
 
 // Server options
@@ -934,7 +1560,8 @@ export type RecordProviderKey =
   | "openrouter"
   | "veo"
   | "grok"
-  | "byteplus";
+  | "byteplus"
+  | "byteplus-speech";
 
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
@@ -1051,7 +1678,30 @@ export interface FalRecordConfig {
   timeoutMs?: number;
 }
 
+/** See {@link MockServerOptions.responsesTools}. */
+export type ResponsesToolsMode = "legacy" | "extended";
+
+export interface AimockPolicy {
+  /** Reject requests missing a provider's required headers. Default "off"; independent of strict. */
+  requiredHeaders?: "off" | "enforce";
+  /**
+   * Inbound-auth 401 body. Default "legacy" keeps the 1.45 body on every route:
+   * `{"error":{"message","type":"authentication_error","code":"invalid_api_key"}}`.
+   * "native" returns provider-native bodies on Anthropic Messages/count_tokens and
+   * Gemini/Vertex routes. WebSocket upgrade rejections always use the legacy body.
+   */
+  authErrors?: "legacy" | "native";
+  /**
+   * Shared `GET /v1/models` list body format. Default "legacy" keeps the 1.45
+   * OpenAI-format list for every request. "native" returns the Anthropic-format list
+   * when the request sends `anthropic-version`, or `x-api-key` without `Authorization`.
+   * `GET /v1/models/{id}` and the Gemini catalog routes always select by request.
+   */
+  modelCatalog?: "legacy" | "native";
+}
+
 export interface MockServerOptions {
+  live?: LiveOptions;
   /** Optional inbound test-client access keys. Omit to preserve permissive behavior. */
   auth?: ApiKeyAuthConfig;
   port?: number;
@@ -1061,11 +1711,53 @@ export interface MockServerOptions {
   replaySpeed?: number;
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "warn" | "info" | "debug";
+  /**
+   * Opt in to model misbehavior. Without it, the `misbehavior` option, a
+   * fixture's `misbehavior` key and the `X-AIMock-Misbehavior` header are
+   * ignored, as in 1.44.0. CLI: `--misbehavior`.
+   *
+   * When on, addFixture, addFixtures and prependFixture store a per-addition
+   * copy, so getFixtures()[i] is the copy. findByFixture, the match-count APIs
+   * and journal entry.response.fixture still name the caller's object. A field
+   * assigned on that object later (for example `fixture.response = ...`) has no
+   * effect; add the fixture again. When off, the caller's object is stored.
+   */
+  enableMisbehavior?: boolean;
+  /** Server-wide misbehavior baseline; read only with `enableMisbehavior: true`. */
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /** Enable Prometheus-compatible /metrics endpoint. */
   metrics?: boolean;
   /** Strict mode: return 503 instead of 404 when no fixture matches. */
   strict?: boolean;
+  /** Optional request policy. Invalid entries warn and are ignored. */
+  policy?: AimockPolicy;
+  /**
+   * Reject fixture tool calls whose `arguments` are not valid JSON instead of
+   * serving them as `{}`. Off by default (the 1.44.0 behavior). When on, wires
+   * that carry arguments as an object (Anthropic and Bedrock non-streaming,
+   * Converse non-streaming, Gemini, Vertex AI, Gemini Interactions
+   * non-streaming, Gemini Live, Ollama) answer 500 `aimock_invalid_tool_arguments`
+   * (Gemini Live: an error frame), and wires that carry them as a string
+   * (Cohere and the streaming Anthropic, Bedrock, Converse and Gemini
+   * Interactions paths) serve the authored text unchanged.
+   */
+  strictToolArguments?: boolean;
+  /**
+   * OpenAI Responses tool handling. `"legacy"` (the default) matches,
+   * counts and journals Responses requests exactly as earlier releases did:
+   * only top-level function tools are visible, custom tool call history is not
+   * counted, and a `namespace` on a `toolCalls` entry or `toolCall` block is
+   * not emitted. `"extended"` makes namespaced, custom and `additional_tools`
+   * / `tool_search_output` tools visible to `toolName` and predicates, counts
+   * custom tool call rounds for `turnIndex` / `hasToolResult` / `toolCallId`,
+   * emits fixture namespaces, applies `match.toolNamespace`,
+   * `customToolCalls` and `responsesBlocks` (which `"legacy"` ignores), and
+   * makes the recorder keep namespaces and custom tool calls. The mode is
+   * fixed when the server starts; changing `responsesTools` on the options
+   * object after `createServer` or `LLMock.start()` is unsupported.
+   */
+  responsesTools?: ResponsesToolsMode;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
   /**
@@ -1185,20 +1877,32 @@ export interface FalQueueConfig {
 // Handler defaults — the common shape passed from server.ts to every handler
 
 export interface HandlerDefaults {
+  /** Present only when misbehavior is enabled; without it no fault is planned. */
+  misbehavior?: MisbehaviorScope;
+  misbehaviorCounters?: MisbehaviorCounters;
   latency: number;
   chunkSize: number;
   replaySpeed: number;
   logger: Logger;
-  chaos?: ChaosConfig;
   /**
-   * The server's deterministic randomness. Absent when a handler is driven
-   * directly in a unit test, in which case chaos falls back to a throwaway
-   * randomizer (a fresh seed per decision, i.e. the historical behaviour).
+   * Reads resolve to a `ChaosScope` on a real server (baseline + per-testId
+   * overrides); assigning `undefined` drops every runtime override.
    */
-  chaosRandom?: ChaosRandomizer;
+  chaos?: ChaosDefaults;
+  /**
+   * Live per-testId chaos overrides, owned by the server instance so the
+   * control API can install one without reaching through the getter.
+   */
+  chaosByTestId?: Map<string, ChaosConfig>;
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;
+  /** See {@link MockServerOptions.policy}. Request headers override each valid key. */
+  policy?: AimockPolicy;
+  /** See {@link MockServerOptions.strictToolArguments}. */
+  strictToolArguments?: boolean;
+  /** See {@link MockServerOptions.responsesTools}. Absent means `"legacy"`. */
+  responsesTools?: ResponsesToolsMode;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   falQueue?: FalQueueConfig;
   openRouterVideo?: FalQueueConfig;
@@ -1213,3 +1917,223 @@ export interface HandlerDefaults {
    */
   bytePlusVideo?: FalQueueConfig;
 }
+
+// MCP fakes — scenario-scoped MCP tool fakes in fixture files (`mcpFakes`)
+
+/**
+ * Block scope: `"shared"`, or exact test id and/or context (at least one;
+ * `{}` is not a scope). Readonly: validated scopes are frozen.
+ */
+export type McpFakeScope =
+  | "shared"
+  | Readonly<{ testId: string; context?: string }>
+  | Readonly<{ testId?: string; context: string }>;
+
+/**
+ * `T` with every nested property and array read-only: the type of a value the
+ * MCP fakes store deep-freezes before it hands it out.
+ */
+export type McpFakeDeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends object
+    ? { readonly [K in keyof T]: McpFakeDeepReadonly<T[K]> }
+    : T;
+
+/** MCP `Annotations` on a content block. */
+export interface McpFakeAnnotations {
+  audience?: Array<"user" | "assistant">;
+  /** From 0 (least) to 1 (most important). */
+  priority?: number;
+  /** RFC 3339 date-time with seconds and a `Z` or `±hh:mm` offset. */
+  lastModified?: string;
+}
+
+/** MCP `Icon` on a `resource_link` content block. */
+export interface McpFakeIcon {
+  src: string;
+  mimeType?: string;
+  sizes?: string[];
+  theme?: "light" | "dark";
+}
+
+/** MCP `TextResourceContents` / `BlobResourceContents`: exactly one of `text` / `blob`. */
+export type McpFakeResourceContents = {
+  uri: string;
+  mimeType?: string;
+  _meta?: Record<string, unknown>;
+} & ({ text: string; blob?: never } | { blob: string; text?: never });
+
+type McpFakeContentCommon = {
+  annotations?: McpFakeAnnotations;
+  _meta?: Record<string, unknown>;
+};
+
+/** One MCP content block of a tool result (`ContentBlock`); `data` and `blob` are base64. */
+export type McpFakeContentBlock = McpFakeContentCommon &
+  (
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+    | { type: "audio"; data: string; mimeType: string }
+    | {
+        type: "resource_link";
+        uri: string;
+        name: string;
+        title?: string;
+        description?: string;
+        mimeType?: string;
+        size?: number;
+        icons?: McpFakeIcon[];
+      }
+    | { type: "resource"; resource: McpFakeResourceContents }
+  );
+
+/** A full MCP `CallToolResult`, served unchanged. No other keys. */
+export interface McpFakeFullResult {
+  content: McpFakeContentBlock[];
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+/**
+ * Structured data: any JSON object without the `CallToolResult`
+ * keys, served as text plus `structuredContent`.
+ */
+export type McpFakeStructuredResult = Record<string, unknown> & {
+  content?: never;
+  isError?: never;
+  structuredContent?: never;
+  _meta?: never;
+};
+
+/**
+ * A call entry's `result` value. Validation also checks what the type cannot
+ * say: base64 `data` / `blob`, `priority` from 0 to 1, the `lastModified`
+ * format, and plain JSON throughout. Unknown keys inside a content item are
+ * allowed and served as given.
+ */
+export type McpFakeResult =
+  | string
+  | McpFakeContentBlock[]
+  | McpFakeFullResult
+  | McpFakeStructuredResult;
+
+/** How a call entry matches: exactly one of `args` / `anyArgs`. */
+export type McpFakeCallMatch =
+  | { args: Record<string, unknown>; anyArgs?: never }
+  | { anyArgs: true; args?: never };
+
+/** What a call entry answers: exactly one of `result` / `error`. */
+export type McpFakeCallAnswer =
+  | { result: McpFakeResult; error?: never }
+  | { error: string; result?: never };
+
+/** One ordered answer for a tool. */
+export type McpFakeCall = McpFakeCallMatch &
+  McpFakeCallAnswer & {
+    id?: string;
+    /** FA3: the notifications the upstream sent on the call's stream before the response. */
+    notifications?: McpFakeNotification[];
+    /** FA4: the recorded response time in ms (a number >= 0). */
+    durationMs?: number;
+  };
+
+/** One faked tool in a block. */
+export interface McpFakeTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  calls: McpFakeCall[];
+}
+
+/** One `mcpFakes` block. */
+export interface McpFakeBlock {
+  scope: McpFakeScope;
+  mount?: string;
+  undeclaredTools?: McpFakeUndeclaredPolicy;
+  tools: McpFakeTool[];
+  /** FA1: the recorded `tools/list` (MCP `Tool` objects, kept verbatim). */
+  list?: Record<string, unknown>[];
+  /** FA2: provenance of a recording. Never used for matching. */
+  recorded?: McpFakeRecorded;
+  /** FA5: `"recorded"` (default) plays FA3/FA4 timing; `"immediate"` ignores it. */
+  timing?: "recorded" | "immediate";
+}
+
+/** FA2 `recorded`: where and when a block was recorded. */
+export interface McpFakeRecorded {
+  /** The upstream origin only. */
+  upstream: string;
+  protocolVersion: string;
+  serverInfo?: Record<string, unknown>;
+  aimockVersion: string;
+  /** ISO 8601 date-time with seconds and an offset. */
+  at: string;
+}
+
+/** MR1 `MCPMock.enableRecording` options. */
+export interface McpRecordConfig {
+  upstream: string;
+  fixturePath?: string;
+  proxyOnly?: boolean;
+  maxRecordBufferBytes?: number;
+  /** MR14 `"Name: value"`; env AIMOCK_MCP_UPSTREAM_AUTH (AM6). */
+  upstreamAuth?: string;
+  /** S2 (d); env AIMOCK_RECORD_SECRET_VALUES (newline-separated). */
+  secretValues?: string[];
+  /** MR5 (b): the server's strict default; X-AIMock-Strict still overrides per request. */
+  strict?: boolean;
+}
+
+/** FA3: one recorded notification of a call entry. */
+export interface McpFakeNotification {
+  atMs: number;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export type McpFakeUndeclaredPolicy = "allow" | "deny";
+
+/**
+ * The resolved identity of one MCP request: test id, context and undeclared
+ * override, each from the request or else from the session.
+ * `null` means "not supplied". The identity shape the fake store's matching
+ * methods take (`applicable`, `selectTier`, `claim`, `policy`, `declaredTools`,
+ * `listTools`).
+ */
+export interface McpFakeIdentity {
+  testId: string | null;
+  context: string | null;
+  undeclared: McpFakeUndeclaredPolicy | null;
+}
+
+/**
+ * One raw block as a loader hands it off, before validation. `source` is the
+ * entry-id source string; `blockIndex` is `null` when `mcpFakes` is a single object.
+ */
+export interface McpFakeSource {
+  source: string;
+  blockIndex: number | null;
+  raw: unknown;
+}
+
+/**
+ * `response.mcpFake.outcome` on a `tools/call` journal entry. `evicted`:
+ * the request's test id lost its consumption state to the FIFO test-id cap.
+ */
+export type McpFakeOutcome = "answered" | "mismatch" | "exhausted" | "not_declared" | "evicted";
+
+/**
+ * JSON-RPC error codes of the four fake failures, keyed by
+ * `error.data.aimock.code`. `-31010` and `-31011` sit outside the JSON-RPC
+ * reserved range. `MCP_FAKE_EVICTED` is for a lookup of a declared tool by a
+ * test id whose state the FIFO test-id cap evicted, until it is reset.
+ */
+export const MCP_FAKE_ERROR_CODES = {
+  MCP_FAKE_NOT_DECLARED: -32602,
+  MCP_FAKE_MISMATCH: -32602,
+  MCP_FAKE_EXHAUSTED: -31010,
+  MCP_FAKE_EVICTED: -31011,
+} as const;
+
+export type McpFakeErrorCode = keyof typeof MCP_FAKE_ERROR_CODES;

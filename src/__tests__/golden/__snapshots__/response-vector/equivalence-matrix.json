@@ -1,0 +1,529 @@
+[
+  {
+    "request": {
+      "id": "mounted-non-object-null",
+      "method": "POST",
+      "path": "/vector/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "null"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#0>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/vector/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "4"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "mounted-non-object-array",
+      "method": "POST",
+      "path": "/vector/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "[]"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#1>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/vector/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "2"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "mounted-non-object-scalar",
+      "method": "POST",
+      "path": "/vector/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "\"vector scalar\""
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#2>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/vector/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "15"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "mounted-native-query",
+      "method": "POST",
+      "path": "/vector/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"vector\":[1,0],\"topK\":1}"
+    },
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-length": "35",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"matches\":[{\"id\":\"v1\",\"score\":1}]}"
+    },
+    "entries": [
+      {
+        "id": "req-<#3>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/vector/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "25"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "# TYPE aimock_vector_requests_total counter\naimock_vector_requests_total{operation=\"query\",provider=\"pinecone\"} 1\n",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "mounted-malformed-json",
+      "method": "POST",
+      "path": "/vector/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"vector\":"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"error\":\"Malformed JSON body: Unexpected end of JSON input\"}"
+    },
+    "entries": [
+      {
+        "id": "req-<#4>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/vector/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "10"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "# TYPE aimock_vector_requests_total counter\naimock_vector_requests_total{operation=\"query\",provider=\"pinecone\"} 1\n",
+    "metricsAfter": "# TYPE aimock_vector_requests_total counter\naimock_vector_requests_total{operation=\"query\",provider=\"pinecone\"} 1\n",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "standalone-non-object-null",
+      "method": "POST",
+      "path": "/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "null"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#5>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "4"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "standalone-non-object-array",
+      "method": "POST",
+      "path": "/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "[]"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#6>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "2"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "standalone-non-object-scalar",
+      "method": "POST",
+      "path": "/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "\"vector scalar\""
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Request body must be a JSON object\",\"type\":\"invalid_request_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#7>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "15"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "standalone-native-query",
+      "method": "POST",
+      "path": "/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"vector\":[1,0],\"topK\":1}"
+    },
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-length": "35",
+        "content-type": "application/json"
+      },
+      "body": "{\"matches\":[{\"id\":\"v1\",\"score\":1}]}"
+    },
+    "entries": [
+      {
+        "id": "req-<#8>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "25"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  },
+  {
+    "request": {
+      "id": "standalone-malformed-json",
+      "method": "POST",
+      "path": "/query",
+      "headers": {
+        "host": "vector.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "vector-caller-trace"
+      },
+      "body": "{\"vector\":"
+    },
+    "wire": {
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":\"Malformed JSON body: Unexpected end of JSON input\"}"
+    },
+    "entries": [
+      {
+        "id": "req-<#9>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/query",
+        "headers": {
+          "host": "vector.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "vector-caller-trace",
+          "content-length": "10"
+        },
+        "body": null,
+        "service": "vector",
+        "response": {
+          "status": 400,
+          "fixture": null
+        }
+      }
+    ],
+    "metricsBefore": "",
+    "metricsAfter": "",
+    "stateBefore": {
+      "status": "ok",
+      "collections": 1
+    },
+    "stateAfter": {
+      "status": "ok",
+      "collections": 1
+    }
+  }
+]

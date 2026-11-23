@@ -1,0 +1,49 @@
+{
+  "got": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"id\":\"msg_<#0>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_<#1>\",\"name\":\"lookup\",\"input\":{}}],\"model\":\"gpt-4\",\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "tool"
+          }
+        ],
+        "stream": false,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 200,
+        "fixture": {
+          "match": {
+            "userMessage": "tool"
+          },
+          "response": {
+            "toolCalls": [
+              {
+                "name": "lookup",
+                "arguments": "{}"
+              }
+            ],
+            "reasoning": "Reason",
+            "reasoningSignature": "signature"
+          }
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

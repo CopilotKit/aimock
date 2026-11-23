@@ -316,6 +316,31 @@ describe("writeEventStream", () => {
     expect(headers()["Content-Type"]).toBeUndefined();
   });
 
+  it("returns true when res.writableEnded is already true and there are no events", async () => {
+    const { res } = makeMockResponse();
+    Object.defineProperty(res, "writableEnded", { get: () => true });
+    expect(await writeEventStream(res, [])).toBe(true);
+  });
+
+  it("returns true when the response ends mid-stream (only an abort returns false)", async () => {
+    const { res } = makeMockResponse();
+    let ended = false;
+    Object.defineProperty(res, "writableEnded", { get: () => ended });
+    const events = [
+      { eventType: "test", payload: { n: 1 } },
+      { eventType: "test", payload: { n: 2 } },
+    ];
+    let sent = 0;
+    const result = await writeEventStream(res, events, {
+      onChunkSent: () => {
+        sent++;
+        ended = true;
+      },
+    });
+    expect(result).toBe(true);
+    expect(sent).toBe(1);
+  });
+
   it("supports streaming profile delays", async () => {
     vi.useFakeTimers();
     const { res } = makeMockResponse();

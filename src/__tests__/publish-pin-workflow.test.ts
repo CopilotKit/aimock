@@ -43,7 +43,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Two guards below run REAL pip, and pip's cost is the runner's, not ours: the
+// same two tests measure ~0.2s each against a warm local pip but took the whole
+// file to 21075ms on the CI runner on 2026-09-13, where `SUBSTITUTED backend
+// bytes are REFUSED by the repo's own pin` blew the inherited 5000ms default
+// (run 34731065578, `test (24)`). Stubbing pip is not an option — executing the
+// repo's own pin against the real resolver IS the guard — so the budget is
+// stated, with headroom over the slowest observation rather than over the
+// fastest. Still far short of a hang: a wedged pip is caught here, not by CI's
+// job timeout.
+vi.setConfig({ testTimeout: 60_000 });
 
 const REPO = resolve(__dirname, "../..");
 const RELEASE_PATH = join(REPO, ".github/workflows/publish-release.yml");

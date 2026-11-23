@@ -13,6 +13,7 @@ import type {
 import { extractLastUserMessage, getLastMessageIfToolResult } from "./agui-handler.js";
 import type { Logger } from "./logger.js";
 import { isAuthenticatedRequest } from "./api-key-auth.js";
+import { buildForwardHeaders, removeForwardHeader, setForwardHeaderDefault } from "./recorder.js";
 
 /**
  * Sentinel `match.message` value written to disk when the request had no
@@ -75,6 +76,15 @@ function resolveAGUIRecordBufferCap(configured: number | undefined): number {
  * SSE event stream as a fixture on disk and in memory, and relay the
  * response back to the original client in real time.
  *
+ * `rawBody` is the exact request payload as it arrived on the wire. It is
+ * forwarded byte-for-byte rather than re-serialized from the parsed `input`,
+ * because re-serialization changes key order and whitespace and therefore
+ * invalidates any signature the caller computed over the body (AWS SigV4 signs
+ * a hash of the payload). `input` remains the parsed view used for fixture
+ * matching only. It is the LAST parameter so that a pre-existing JavaScript
+ * caller omitting it fails loudly here rather than silently shifting an
+ * earlier argument into the request body.
+ *
  * Returns the HTTP status code written to the client if the request was proxied,
  * or `false` if no upstream is configured.
  */
@@ -85,7 +95,16 @@ export async function proxyAndRecordAGUI(
   fixtures: AGUIFixture[],
   config: AGUIRecordConfig,
   logger: Logger,
+  rawBody: string,
 ): Promise<number | false> {
+  // A caller that predates the raw-body parameter would otherwise proxy
+  // `undefined` as the payload. Refuse before opening an upstream connection.
+  if (typeof rawBody !== "string") {
+    logger.error("proxyAndRecordAGUI called without the raw request body — cannot proxy");
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Internal proxy misconfiguration" }));
+    return 500;
+  }
   // AG-UI has no provider-specific static credential contract. An inbound
   // test key must never become an implicit upstream credential, so fail before
   // opening an upstream connection.
@@ -112,31 +131,34 @@ export async function proxyAndRecordAGUI(
 
   logger.warn(`NO AG-UI FIXTURE MATCH — proxying to ${config.upstream}`);
 
-  // Build upstream request headers
-  const forwardHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  // Forward auth headers if present
-  const authorization = req.headers["authorization"];
-  if (authorization) {
-    forwardHeaders["Authorization"] = Array.isArray(authorization)
-      ? authorization.join(", ")
-      : authorization;
-  }
-  const apiKey = req.headers["x-api-key"];
-  if (apiKey) {
-    forwardHeaders["x-api-key"] = Array.isArray(apiKey) ? apiKey.join(", ") : apiKey;
-  }
-
-  const requestBody = JSON.stringify(input);
+  // Forward the inbound headers to the upstream agent, minus hop-by-hop,
+  // client-set, and mock-internal ones — the same egress rule the generic
+  // proxy path applies. An agent runtime's contract frequently lives in
+  // headers (session affinity, per-request agent configuration, request
+  // signatures), so the proxy strips a known-unsafe set rather than keeping a
+  // hand-picked allowlist that silently drops everything it has not heard of.
+  const forwardHeaders = buildForwardHeaders(req);
+  // `Content-Type` describes the bytes the CALLER sent, so the caller owns it
+  // and this only fills in a default. Signed requests depend on that: replacing
+  // a caller-sent Content-Type invalidates a SigV4 signature computed over it.
+  setForwardHeaderDefault(forwardHeaders, "Content-Type", "application/json");
+  // `Accept` is the opposite: it describes what AIMOCK needs back. AG-UI is an
+  // SSE protocol and the recorder can only parse an event stream, so a caller's
+  // generic `*/*` or `application/json, text/plain, */*` must not be forwarded
+  // to an upstream that content-negotiates — it would answer with JSON, which
+  // relays to the client mislabelled and records as a zero-event fixture.
+  // Overriding is safe here where it is not for Content-Type: AWS signs `host`,
+  // `content-type` and the `x-amz-*` family, and `accept` is not in
+  // `SignedHeaders`.
+  removeForwardHeader(forwardHeaders, "Accept");
+  forwardHeaders["Accept"] = "text/event-stream";
 
   let status: number;
   try {
     status = await teeUpstreamStream(
       target,
       forwardHeaders,
-      requestBody,
+      rawBody,
       res,
       input,
       fixtures,
@@ -311,9 +333,35 @@ function teeUpstreamStream(
             return;
           }
 
+          // A 2xx upstream that did not answer with an event stream cannot be
+          // recorded. `parseSSEEvents` finds no `data:` lines in a JSON body and
+          // returns [], which would persist a zero-event fixture — and that
+          // fixture then MATCHES on replay and streams nothing, with no
+          // "NO AG-UI FIXTURE MATCH" and no parse warning to chase. Refuse the
+          // recording and say why, rather than writing a tape that looks valid.
+          // The client has already received every byte via the live tee above.
+          const upstreamContentType = upstreamRes.headers["content-type"] ?? "";
+          if (!/text\/event-stream/i.test(upstreamContentType)) {
+            logger.error(
+              `Upstream answered ${upstreamStatus} with Content-Type "${upstreamContentType || "(none)"}", not text/event-stream — response relayed to the client, recording refused`,
+            );
+            resolve(clientStatus);
+            return;
+          }
+
           // Parse buffered SSE events
           const buffered = Buffer.concat(chunks).toString();
           const events = parseSSEEvents(buffered, logger);
+
+          // Same reasoning as the Content-Type refusal: an event stream that
+          // yielded nothing parseable must not become a fixture.
+          if (events.length === 0) {
+            logger.error(
+              "Upstream event stream contained no parseable AG-UI events — response relayed to the client, recording refused",
+            );
+            resolve(clientStatus);
+            return;
+          }
 
           // Build fixture — three-way match priority:
           // 1. Tool-result continuation (HITL): match by toolCallId

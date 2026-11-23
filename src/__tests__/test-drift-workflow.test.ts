@@ -42,10 +42,28 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The `EXECUTED` guards below run the workflow's own `run:` bodies under bash,
+// shelling out many times per observation — orders of magnitude slower than the
+// substring guards beside them. On an IDLE 18-core machine the slowest,
+// `EXECUTED POSITIVE CONTROL: base exits 0 and 2 stay non-fatal`, measured
+// 3039ms of the inherited 5000ms default; re-measured with the suite running
+// concurrently it reached 5490ms and timed out. A guard whose RED cannot be
+// told apart from a timeout proves nothing, so the budget for this file is
+// stated — matching fix-drift-workflow and unreleased-check-workflow, which run
+// the same harness and already state theirs.
+vi.setConfig({ testTimeout: 30_000 });
 
 const WORKFLOW = resolve(__dirname, "../../.github/workflows/test-drift.yml");
 const wf = readFileSync(WORKFLOW, "utf8");
+
+// The real steps extract the shared native gate from their checked-out workflow.
+const stageWorkflowCheckout = (root: string) => {
+  const workflows = join(root, ".github/workflows");
+  mkdirSync(workflows, { recursive: true });
+  writeFileSync(join(workflows, "test-drift.yml"), wf);
+};
 
 const OLLAMA_STEP = "Provision Ollama daemon (live drift leg)";
 const DRIFT_JOB = "drift";
@@ -161,6 +179,24 @@ function stepByName(name: string, job: string = DRIFT_JOB): Step {
     throw new Error(`test-drift.yml: ${hits.length} steps named \`${name}\` in job \`${job}\``);
   return hits[0];
 }
+
+it("uploads every invocation sidecar with the final drift report", () => {
+  const step = stepByName("Upload drift report");
+  expect(step.uses).toBe(
+    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
+  );
+  expect(wf).toContain(`      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: drift-report
+          path: |
+            drift-report.json
+            drift-observations.json
+            drift-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 30`);
+});
 
 /**
  * A step's run body with shell COMMENT lines removed.
@@ -420,6 +456,7 @@ const observeCollectorLeg = (
 ): LegRun => {
   const dir = mkdtempSync(join(tmpdir(), "test-drift-leg-"));
   try {
+    stageWorkflowCheckout(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin);
     const report = JSON.stringify({
@@ -440,6 +477,11 @@ const observeCollectorLeg = (
       ].join("\n"),
       { mode: 0o755 },
     );
+    writeFileSync(
+      join(bin, "git"),
+      '#!/bin/sh\ncase "$*" in *rev-parse*) echo pinned-agui;; esac\n',
+      { mode: 0o755 },
+    );
     const step = stepByName(stepName, job);
     const script = join(dir, "step.sh");
     writeFileSync(script, step.run);
@@ -454,6 +496,8 @@ const observeCollectorLeg = (
         GITHUB_WORKSPACE: dir,
         GITHUB_OUTPUT: outFile,
         LIVE_LEGS_RAN: "true",
+        AGUI_REPO_PATH: dir,
+        AGUI_UPSTREAM_SHA: "pinned-agui",
       },
     });
     return {
@@ -655,6 +699,7 @@ const observeBaseLeg = (
   try {
     const ws = join(parent, "workspace");
     mkdirSync(ws);
+    stageWorkflowCheckout(ws);
     const bin = join(parent, "bin");
     mkdirSync(bin);
     const report = JSON.stringify({
@@ -681,6 +726,7 @@ const observeBaseLeg = (
       join(bin, "npx"),
       [
         "#!/bin/sh",
+        'case "$*" in *drift-agui-baseline.ts*) echo true; exit 0;; esac',
         `cat > ${JSON.stringify(join(ws, "drift-report-base.json"))} <<'REPORT'`,
         report,
         "REPORT",
@@ -705,6 +751,7 @@ const observeBaseLeg = (
         GITHUB_WORKSPACE: ws,
         GITHUB_OUTPUT: outFile,
         LIVE_LEGS_RAN: "true",
+        AGUI_REPO_PATH: parent,
         REPO: "CopilotKit/aimock",
         GH_TOKEN: "stub",
       },
@@ -799,5 +846,87 @@ describe("test-drift.yml — a hang-up is annotated as a close, not as a timeout
     expect(run.stepExit, `base leg failed on a hang-up:\n${run.stdio}`).toBe(0);
     expect(run.stdio).toContain("session closed by the server (code 1011)");
     expect(run.stdio).not.toContain("nullms");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A retired probe model is named as one, never as drift.
+//
+// o4-mini hit its OpenAI shutdown_date on 2026-10-23 and the K9 probe that
+// pinned it failed the nightly run for three nights, alerted as "providers
+// changed response formats". The `Preflight — probe model retirement` step now
+// stops the job first, and `notify` routes on its outputs.
+// ---------------------------------------------------------------------------
+describe("test-drift.yml — a retired probe model is not reported as drift", () => {
+  const RETIRED_LINE =
+    "• probe model o4-mini (openai) retired on 2026-10-23 — update OPENAI_K9_PROBE_MODEL in src/__tests__/drift/probe-models.ts";
+  const WARN_LINE =
+    "• probe model gpt-5-mini (openai) retires on 2026-12-11 (in 20 days) — update the pin in src/__tests__/drift/providers.ts and its entry in src/__tests__/drift/probe-models.ts";
+
+  it("the preflight runs in the drift job before any drift test, with the keys it queries", () => {
+    const order = stepsOfJob(DRIFT_JOB);
+    const idx = order.findIndex((s) => s.name === "Preflight — probe model retirement");
+    expect(idx, "no probe-model preflight step").toBeGreaterThan(-1);
+    expect(idx).toBeLessThan(order.findIndex((s) => s.name === KEY_STEP));
+    expect(order[idx].id).toBe("model_preflight");
+    expect(order[idx].run).toContain("npx tsx scripts/drift-model-preflight.ts");
+    expect(Object.keys(order[idx].env).sort()).toEqual([
+      "ANTHROPIC_API_KEY",
+      "COHERE_API_KEY",
+      "GOOGLE_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+    ]);
+    expect(wf).toContain("model_alert: ${{ steps.model_preflight.outputs.retirement_alert }}");
+    expect(wf).toContain("model_retired: ${{ steps.model_preflight.outputs.retired }}");
+  });
+
+  it("EXECUTED: a retired probe model alerts as a retirement, not as HTTP API drift", () => {
+    const { posted } = observeNotify({
+      DRIFT_EXIT_CODE: "",
+      DRIFT_RESULT: "failure",
+      PREV: "success",
+      MODEL_RETIRED: "true",
+      MODEL_ALERT: RETIRED_LINE,
+    });
+    expect(posted).toContain("Drift probe model retired");
+    expect(posted).toContain("o4-mini (openai) retired on 2026-10-23");
+    expect(posted).not.toContain("HTTP API drift detected");
+  });
+
+  it("EXECUTED NEGATIVE CONTROL: the same failed job without a retirement is still drift", () => {
+    const { posted } = observeNotify({
+      DRIFT_EXIT_CODE: "",
+      DRIFT_RESULT: "failure",
+      PREV: "success",
+      MODEL_RETIRED: "false",
+      MODEL_ALERT: "",
+    });
+    expect(posted).toContain("HTTP API drift detected");
+    expect(posted).not.toContain("probe model");
+  });
+
+  it("EXECUTED: a soon-retiring probe model posts on an otherwise quiet day", () => {
+    const { posted } = observeNotify({
+      DRIFT_EXIT_CODE: "0",
+      DRIFT_RESULT: "success",
+      PREV: "success",
+      MODEL_RETIRED: "false",
+      MODEL_ALERT: WARN_LINE,
+    });
+    expect(posted).toContain("Drift probe model retiring soon");
+    expect(posted).toContain("gpt-5-mini (openai) retires on 2026-12-11");
+  });
+
+  it("EXECUTED: a soon-retiring probe model rides along on a real drift alert", () => {
+    const { posted } = observeNotify({
+      DRIFT_EXIT_CODE: "2",
+      DRIFT_RESULT: "failure",
+      PREV: "success",
+      MODEL_RETIRED: "false",
+      MODEL_ALERT: WARN_LINE,
+    });
+    expect(posted).toContain("HTTP API drift detected");
+    expect(posted).toContain("gpt-5-mini (openai) retires on 2026-12-11");
   });
 });

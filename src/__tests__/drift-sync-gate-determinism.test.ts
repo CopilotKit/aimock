@@ -43,7 +43,7 @@
  *     diff, drift-report-collector.ts) standing in for "one critical diff
  *     somewhere in the live suite, unrelated to the gemini deprecations".
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -53,6 +53,7 @@ import {
   runDriftSyncCore,
   computeChangesetKey,
   SyncCoreReason,
+  VOICE_SEED_SET_PROVIDER,
   MODEL_REGISTRY_REL_PATH,
   LOGIC_PIN_REL_PATH,
   type SyncCoreDeps,
@@ -101,6 +102,92 @@ describe("premise: the live drift suite cannot observe a recorded deprecation", 
     // Same read path, same glob, a symbol that IS present — proves the scan can
     // find a reference at all, so the empty result above is a real absence.
     expect(driftSuiteFilesReferencing("includeFamilies").length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The premise `needsVoiceSeedSetEdit`'s provider scope rests on.
+// ---------------------------------------------------------------------------
+
+/**
+ * `needsVoiceSeedSetEdit` routes a decided voice family to a human ONLY for
+ * `VOICE_SEED_SET_PROVIDER`, on the premise that voice-drift DETECTION only ever
+ * runs on that provider's `/models` listing. If detection ran on another
+ * provider's listing, that provider's decided voice families would be
+ * auto-applied, leave the canary red, fail gate-3 and revert every night.
+ *
+ * What this block checks, at runtime:
+ *   * voice-models.ts exports exactly the names below. The detector and the
+ *     mutable seed set are module-private, and adding an export turns this red.
+ *   * The one export that runs detection, `detectOpenAIVoiceModelDrift(apiKey)`,
+ *     fetches api.openai.com's listing and nothing else (observed below).
+ *     voice-seed-set-entry.type-test.ts checks its argument shape under
+ *     `pnpm typecheck`.
+ *   * `VOICE_SEED_SET_PROVIDER` is "openai". That is a constant check only;
+ *     nothing here ties the constant to the URL the entry fetches.
+ *
+ * KNOWN LIMIT (accepted, not guarded): the exported `isVoiceModelId` and
+ * `isKnownVoiceModelFamily` can be composed into the same detection over any
+ * listing. A new voice canary built that way on another provider's listing
+ * would leave every test here green. Anyone reviewing a new voice canary must
+ * check its provider scope against `VOICE_SEED_SET_PROVIDER` in
+ * scripts/drift-sync.ts.
+ */
+const VOICE_MODELS_EXPORTS = [
+  // Runs the detection, on the OpenAI listing it fetches itself.
+  "detectOpenAIVoiceModelDrift",
+  // Frozen GA list. Exported because the collector's NO_GA remediation path
+  // names it, and drift-collector.test.ts requires that name to be an exported
+  // declaration of a drift module.
+  "gaRealtimeModels",
+  // Read-only membership, for scripts/drift-sync.ts's needsVoiceSeedSetEdit.
+  "isKnownVoiceModelFamily",
+  // Pure id-shape matcher, no seed data; drift-sync needs it next to membership.
+  "isVoiceModelId",
+  // Sorted copy of the seed set, for logic-pin.test.ts's DATA_FROZEN pin.
+  "listKnownVoiceModelFamilies",
+];
+
+describe("premise: voice-models.ts exposes detection only through the OpenAI entry (see KNOWN LIMIT)", () => {
+  it("VOICE_SEED_SET_PROVIDER is openai", () => {
+    // Only compares the constant to a literal. If the realtime canary moves to
+    // another provider, change this, the URL below, and the constant together.
+    expect(VOICE_SEED_SET_PROVIDER).toBe("openai");
+  });
+
+  it("voice-models.ts exports exactly the reviewed runtime names (detector and seed set stay private)", async () => {
+    const voiceModels = await import("./drift/voice-models.js");
+    expect(Object.keys(voiceModels).sort()).toEqual(VOICE_MODELS_EXPORTS);
+  });
+
+  it("the exported GA list cannot be mutated at runtime", async () => {
+    const { gaRealtimeModels } = await import("./drift/voice-models.js");
+    expect(Object.isFrozen(gaRealtimeModels)).toBe(true);
+  });
+
+  it("the entry fetches only the OpenAI /models listing and detects on it", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        urls.push(input instanceof Request ? input.url : String(input));
+        // Served in BOTH the OpenAI (`data[].id`) and Gemini (`models[].name`)
+        // shapes, so a fetcher pointed elsewhere still parses and is caught by
+        // the URL assertion, not by a parse error.
+        const ids = ["gpt-realtime", "gpt-live-1-mini"];
+        const body = { data: ids.map((id) => ({ id })), models: ids.map((name) => ({ name })) };
+        return new Response(JSON.stringify(body));
+      }),
+    );
+    try {
+      const { detectOpenAIVoiceModelDrift } = await import("./drift/voice-models.js");
+      const result = await detectOpenAIVoiceModelDrift("test-key");
+      expect(urls).toEqual(["https://api.openai.com/v1/models"]);
+      expect(result.unknown).toEqual(["gpt-live-1-mini"]);
+      expect(result.hasGA).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

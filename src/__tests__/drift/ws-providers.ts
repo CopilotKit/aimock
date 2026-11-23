@@ -11,6 +11,8 @@
 
 import * as tls from "node:tls";
 import { randomBytes } from "node:crypto";
+import type { RealtimeResponseCreateParams } from "openai-current-sdk/resources/realtime/realtime";
+import type { ResponseCreateParamsBase } from "openai/resources/responses/responses";
 import { extractShape, type SSEEventShape } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -212,14 +214,19 @@ export function isResponsesWSError(msg: unknown): boolean {
 /**
  * Terminal predicate for the OpenAI Responses WS protocol: a successful
  * completion (`response.completed` / `response.done`, both observed in the
- * wild) OR a request-level error frame. Including the error frame as terminal
+ * wild), an incomplete response, OR a request-level error frame. Including the error frame as terminal
  * means a retired/invalid model id surfaces here promptly instead of the
  * `waitUntil` call timing out after 30s waiting for a completion event that
  * will never arrive.
  */
 export function isResponsesWSTerminal(msg: unknown): boolean {
   const m = msg as Record<string, unknown> | null;
-  return m?.type === "response.completed" || m?.type === "response.done" || isResponsesWSError(msg);
+  return (
+    m?.type === "response.completed" ||
+    m?.type === "response.done" ||
+    m?.type === "response.incomplete" ||
+    isResponsesWSError(msg)
+  );
 }
 
 /**
@@ -231,6 +238,12 @@ export function extractWSErrorBody(messages: unknown[]): string | null {
   return isResponsesWSError(last) ? JSON.stringify(last) : null;
 }
 
+/** Native request controls for bounded Responses fault probes. */
+export type ResponsesWSRequestOptions = Pick<
+  ResponseCreateParamsBase,
+  "max_output_tokens" | "reasoning" | "tool_choice"
+>;
+
 /**
  * Build the `response.create` WS message body. The model is a PARAMETER, never
  * hardcoded here, so callers thread a live-discovered id (via
@@ -241,6 +254,7 @@ export function buildResponsesCreateMessage(
   model: string,
   input: object[],
   tools?: object[],
+  options?: ResponsesWSRequestOptions,
 ): Record<string, unknown> {
   const msg: Record<string, unknown> = {
     type: "response.create",
@@ -249,6 +263,9 @@ export function buildResponsesCreateMessage(
     max_output_tokens: 50,
   };
   if (tools) msg.tools = tools;
+  if (options?.max_output_tokens !== undefined) msg.max_output_tokens = options.max_output_tokens;
+  if (options?.reasoning !== undefined) msg.reasoning = options.reasoning;
+  if (options?.tool_choice !== undefined) msg.tool_choice = options.tool_choice;
   return msg;
 }
 
@@ -653,31 +670,34 @@ export async function openaiResponsesWS(
   input: object[],
   tools?: object[],
   model = "gpt-4o-mini",
+  options?: ResponsesWSRequestOptions,
 ): Promise<WSResult> {
   const ws = await connectTLSWebSocket("api.openai.com", "/v1/responses", {
     Authorization: `Bearer ${config.apiKey}`,
   });
 
-  // Real Responses WS API uses flat format: model/input/tools at the top level
-  // of the response.create message (not nested inside a "response" object).
-  // `model` is a caller-supplied parameter (default retained for back-compat)
-  // so the drift leg can thread a live-discovered id via `resolveLiveModel`
-  // instead of this file hardcoding one the provider can later retire.
-  ws.send(JSON.stringify(buildResponsesCreateMessage(model, input, tools)));
+  try {
+    // Real Responses WS API uses flat format: model/input/tools at the top level
+    // of the response.create message (not nested inside a "response" object).
+    // `model` is a caller-supplied parameter (default retained for back-compat)
+    // so the drift leg can thread a live-discovered id via `resolveLiveModel`
+    // instead of this file hardcoding one the provider can later retire.
+    ws.send(JSON.stringify(buildResponsesCreateMessage(model, input, tools, options)));
 
-  // Terminal: a completion event ("response.completed"/"response.done", both
-  // observed in the wild) OR a request-level error frame — see
-  // isResponsesWSTerminal for why the error frame must be terminal too.
-  const rawMessages = await ws.waitUntil(isResponsesWSTerminal, undefined, "response");
+    // Terminal: a completion event ("response.completed"/"response.done", both
+    // observed in the wild) OR a request-level error frame — see
+    // isResponsesWSTerminal for why the error frame must be terminal too.
+    const rawMessages = await ws.waitUntil(isResponsesWSTerminal, undefined, "response");
 
-  ws.close();
+    const events: SSEEventShape[] = rawMessages.map((msg: any) => ({
+      type: msg.type ?? "unknown",
+      dataShape: extractShape(msg),
+    }));
 
-  const events: SSEEventShape[] = rawMessages.map((msg: any) => ({
-    type: msg.type ?? "unknown",
-    dataShape: extractShape(msg),
-  }));
-
-  return { events, rawMessages };
+    return { events, rawMessages };
+  } finally {
+    ws.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +708,7 @@ export async function openaiRealtimeWS(
   config: ProviderConfig,
   text: string,
   tools?: object[],
+  options?: Pick<RealtimeResponseCreateParams, "max_output_tokens" | "tool_choice">,
 ): Promise<WSResult> {
   // GA-only probe. The Realtime Beta API is retired — a live Beta handshake
   // ("OpenAI-Beta: realtime=v1") is now rejected with
@@ -705,72 +726,83 @@ export async function openaiRealtimeWS(
     headers,
   );
 
-  // Step 1: Wait for session.created
-  const sessionCreated = await ws.waitUntil(
-    (msg: any) => msg?.type === "session.created",
-    undefined,
-    "session.created",
-  );
+  try {
+    // Step 1: Wait for session.created
+    const sessionCreated = await ws.waitUntil(
+      (msg: any) => msg?.type === "session.created",
+      undefined,
+      "session.created",
+    );
 
-  // Step 2: Send session.update.
-  // GA requires session.type:"realtime" and renames the legacy `modalities`
-  // field to `output_modalities`. Confirmed live: a GA session.update without
-  // session.type is rejected with "Missing required parameter: 'session.type'".
-  const session: Record<string, unknown> = {
-    type: "realtime",
-    model: "gpt-realtime-mini",
-    output_modalities: ["text"],
-  };
-  if (tools) session.tools = tools;
-  ws.send(JSON.stringify({ type: "session.update", session }));
+    // Step 2: Send session.update.
+    // GA requires session.type:"realtime" and renames the legacy `modalities`
+    // field to `output_modalities`. Confirmed live: a GA session.update without
+    // session.type is rejected with "Missing required parameter: 'session.type'".
+    const session: Record<string, unknown> = {
+      type: "realtime",
+      model: "gpt-realtime-mini",
+      output_modalities: ["text"],
+    };
+    if (tools) session.tools = tools;
+    ws.send(JSON.stringify({ type: "session.update", session }));
 
-  // Step 3: Wait for session.updated
-  const sessionUpdated = await ws.waitUntil(
-    (msg: any) => msg?.type === "session.updated",
-    undefined,
-    "session.updated",
-  );
+    // Step 3: Wait for session.updated
+    const sessionUpdated = await ws.waitUntil(
+      (msg: any) => msg?.type === "session.updated",
+      undefined,
+      "session.updated",
+    );
 
-  // Step 4: Send conversation.item.create
-  ws.send(
-    JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text }],
-      },
-    }),
-  );
+    // Step 4: Send conversation.item.create
+    ws.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text }],
+        },
+      }),
+    );
 
-  // Step 5: Wait for conversation.item.added (GA)
-  const itemCreated = await ws.waitUntil(
-    (msg: any) => msg?.type === "conversation.item.added",
-    undefined,
-    "conversation.item.added",
-  );
+    // Step 5: Wait for conversation.item.added (GA)
+    const itemCreated = await ws.waitUntil(
+      (msg: any) => msg?.type === "conversation.item.added",
+      undefined,
+      "conversation.item.added",
+    );
 
-  // Step 6: Send response.create
-  ws.send(JSON.stringify({ type: "response.create" }));
+    // Step 6: Send response.create
+    const response: Pick<RealtimeResponseCreateParams, "max_output_tokens" | "tool_choice"> = {};
+    if (options?.max_output_tokens !== undefined)
+      response.max_output_tokens = options.max_output_tokens;
+    if (options?.tool_choice !== undefined) response.tool_choice = options.tool_choice;
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        ...(Object.keys(response).length > 0 ? { response } : {}),
+      }),
+    );
 
-  // Step 7: Collect until response.done
-  const responseMessages = await ws.waitUntil(
-    (msg: any) => msg?.type === "response.done",
-    undefined,
-    "response.done",
-  );
+    // Step 7: Collect until response.done
+    const responseMessages = await ws.waitUntil(
+      (msg: any) => msg?.type === "response.done",
+      undefined,
+      "response.done",
+    );
 
-  ws.close();
+    // Combine all step results (each waitUntil returns only new messages since prior call)
+    const allMessages = [...sessionCreated, ...sessionUpdated, ...itemCreated, ...responseMessages];
 
-  // Combine all step results (each waitUntil returns only new messages since prior call)
-  const allMessages = [...sessionCreated, ...sessionUpdated, ...itemCreated, ...responseMessages];
+    const events: SSEEventShape[] = allMessages.map((msg: any) => ({
+      type: msg.type ?? "unknown",
+      dataShape: extractShape(msg),
+    }));
 
-  const events: SSEEventShape[] = allMessages.map((msg: any) => ({
-    type: msg.type ?? "unknown",
-    dataShape: extractShape(msg),
-  }));
-
-  return { events, rawMessages: allMessages };
+    return { events, rawMessages: allMessages };
+  } finally {
+    ws.close();
+  }
 }
 
 // ---------------------------------------------------------------------------

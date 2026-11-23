@@ -1,0 +1,7 @@
+{
+  "status": 404,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"error\":{\"code\":\"NOT_FOUND\",\"message\":\"No fixture matched\"}}"
+}

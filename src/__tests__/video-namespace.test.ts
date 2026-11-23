@@ -118,7 +118,7 @@ describe("shared `video` fixture namespace", () => {
         `${p.name}=${res.status}${text.includes("not a video type") ? " NOT-A-VIDEO-TYPE" : ""}`,
       );
     }
-    expect(served).toEqual(["grok=200", "openrouter=200", "sora=200", "veo=200"]);
+    expect(served).toEqual(["grok=200", "openrouter=202", "sora=200", "veo=200"]);
   });
 
   test("a VideoResponse fixture is not served to a BytePlus submit", async () => {

@@ -45,7 +45,9 @@ describe("OpenAI Moderations drift", () => {
 
     expect(mockRes.status).toBe(200);
     expect(mockBody.id).toMatch(/^modr-/);
-    expect(mockBody.model).toBe("text-moderation-latest");
+    // A request that names no model gets the current default, not a model
+    // OpenAI removed on 2025-10-27.
+    expect(mockBody.model).toBe("omni-moderation-latest");
     expect(mockBody.results).toBeInstanceOf(Array);
     expect(mockBody.results).toHaveLength(1);
 
@@ -57,6 +59,18 @@ describe("OpenAI Moderations drift", () => {
       diffs.filter((d) => d.severity === "critical"),
       report,
     ).toEqual([]);
+  });
+
+  it("echoes the requested model, like the real API", async () => {
+    for (const model of ["omni-moderation-latest", "omni-moderation-2024-09-26"]) {
+      const mockRes = await httpPost(`${instance.url}/v1/moderations`, {
+        input: "Hello world",
+        model,
+      });
+
+      expect(mockRes.status).toBe(200);
+      expect(JSON.parse(mockRes.body).model).toBe(model);
+    }
   });
 
   it("moderation result contains all required category fields", async () => {

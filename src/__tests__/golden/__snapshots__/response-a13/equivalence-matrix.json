@@ -1,0 +1,220 @@
+[
+  {
+    "id": "chaos-drop",
+    "action": "drop",
+    "chaos": {
+      "dropRate": 1
+    },
+    "request": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a13 baseline"
+        }
+      ]
+    },
+    "exchange": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a13_trace"
+      },
+      "body": "{\"error\":{\"message\":\"Chaos: request dropped\",\"type\":\"server_error\",\"code\":\"chaos_drop\"}}"
+    },
+    "journal": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "connection": "close",
+          "content-length": "71",
+          "content-type": "application/json",
+          "host": "a13.local",
+          "x-request-id": "a13_trace",
+          "x-test-id": "a13"
+        },
+        "body": {
+          "model": "gpt-4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a13 baseline"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "userMessage": "a13 baseline"
+            },
+            "response": {
+              "content": "a13 native success"
+            },
+            "chaos": {
+              "dropRate": 1
+            }
+          },
+          "chaosAction": "drop",
+          "source": "fixture"
+        }
+      }
+    ],
+    "chaosCounters": [
+      "aimock_chaos_triggered_total{action=\"drop\",source=\"fixture\"} 1"
+    ]
+  },
+  {
+    "id": "chaos-rate-limit",
+    "action": "rateLimit",
+    "chaos": {
+      "rateLimitRate": 1
+    },
+    "request": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a13 baseline"
+        }
+      ]
+    },
+    "exchange": {
+      "status": 429,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "retry-after": "1",
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-limit-tokens": "150000",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-requests": "1s",
+        "x-ratelimit-reset-tokens": "6m0s",
+        "x-request-id": "a13_trace"
+      },
+      "body": "{\"error\":{\"message\":\"Chaos: rate limit exceeded\",\"type\":\"rate_limit_error\",\"code\":\"chaos_ratelimit\"}}"
+    },
+    "journal": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "connection": "close",
+          "content-length": "71",
+          "content-type": "application/json",
+          "host": "a13.local",
+          "x-request-id": "a13_trace",
+          "x-test-id": "a13"
+        },
+        "body": {
+          "model": "gpt-4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a13 baseline"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 429,
+          "fixture": {
+            "match": {
+              "userMessage": "a13 baseline"
+            },
+            "response": {
+              "content": "a13 native success"
+            },
+            "chaos": {
+              "rateLimitRate": 1
+            }
+          },
+          "chaosAction": "rateLimit",
+          "source": "fixture"
+        }
+      }
+    ],
+    "chaosCounters": [
+      "aimock_chaos_triggered_total{action=\"rateLimit\",source=\"fixture\"} 1"
+    ]
+  },
+  {
+    "id": "chaos-off-native-success",
+    "action": null,
+    "chaos": {
+      "dropRate": 0,
+      "rateLimitRate": 0
+    },
+    "request": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a13 baseline"
+        }
+      ]
+    },
+    "exchange": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a13_trace"
+      },
+      "body": "{\"id\":\"chatcmpl-<#0>\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"a13 native success\",\"refusal\":null},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}"
+    },
+    "journal": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {
+          "connection": "close",
+          "content-length": "71",
+          "content-type": "application/json",
+          "host": "a13.local",
+          "x-request-id": "a13_trace",
+          "x-test-id": "a13"
+        },
+        "body": {
+          "model": "gpt-4",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a13 baseline"
+            }
+          ],
+          "_endpointType": "chat"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a13 baseline"
+            },
+            "response": {
+              "content": "a13 native success"
+            },
+            "chaos": {
+              "dropRate": 0,
+              "rateLimitRate": 0
+            }
+          }
+        }
+      }
+    ],
+    "chaosCounters": []
+  }
+]

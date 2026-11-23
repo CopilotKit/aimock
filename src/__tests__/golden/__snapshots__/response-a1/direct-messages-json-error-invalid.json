@@ -1,0 +1,24 @@
+{
+  "got": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"message\":\"messages must be an array\",\"type\":\"invalid_request_error\"}}"
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": null,
+      "response": {
+        "status": 400,
+        "fixture": null
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

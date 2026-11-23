@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Files API — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Files API</h1>
+        <p class="lead">
+          The OpenAI Files endpoints — <code>POST /v1/files</code>, <code>GET /v1/files</code>,
+          <code>GET /v1/files/{id}</code>, <code>GET /v1/files/{id}/content</code> and
+          <code>DELETE /v1/files/{id}</code> — are mocked in-memory so upload flows (fine-tune
+          datasets, batch inputs, Responses-API file inputs) run without touching the real API.
+          Multipart uploads are stored byte-for-byte, so binary files round-trip unchanged; the JSON
+          upload body carries UTF-8 text rather than arbitrary octets.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Request Body</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/v1/files</code></td>
+              <td><code>multipart/form-data</code> or JSON</td>
+              <td>File object</td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/v1/files</code></td>
+              <td>
+                &mdash; (optional <code>?purpose=</code>, <code>?limit=</code>,
+                <code>?order=</code>, <code>?after=</code>)
+              </td>
+              <td><code>{ object: "list", data: [...], first_id, last_id, has_more }</code></td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/v1/files/{id}</code></td>
+              <td>&mdash;</td>
+              <td>File object, or 404</td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/v1/files/{id}/content</code></td>
+              <td>&mdash;</td>
+              <td>Raw bytes, or 404</td>
+            </tr>
+            <tr>
+              <td>DELETE</td>
+              <td><code>/v1/files/{id}</code></td>
+              <td>&mdash;</td>
+              <td><code>{ id, object: "file", deleted: true }</code>, or 404</td>
+            </tr>
+            <tr>
+              <td>PATCH, HEAD, PUT (any other method)</td>
+              <td><code>/v1/files</code>, <code>/v1/files/{id}</code></td>
+              <td>&mdash;</td>
+              <td>
+                404 <code>{ error: { message: "Not found", type: "not_found" } }</code> — every
+                branch is method-guarded and nothing answers <code>405</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Upload with Multipart</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Multipart upload <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> fs <span class="kw">from</span> <span class="str">"node:fs"</span>;
+<span class="kw">import</span> OpenAI <span class="kw">from</span> <span class="str">"openai"</span>;
+<span class="kw">import</span> { LLMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> mock = <span class="kw">new</span> LLMock({ port: <span class="num">0</span> });
+<span class="kw">await</span> mock.start();
+
+<span class="kw">const</span> client = <span class="kw">new</span> OpenAI({ baseURL: <span class="str">`${mock.url}/v1`</span>, apiKey: <span class="str">"test"</span> });
+
+<span class="kw">const</span> file = <span class="kw">await</span> client.files.create({
+  file: fs.createReadStream(<span class="str">"./train.jsonl"</span>),
+  purpose: <span class="str">"fine-tune"</span>,
+});
+
+<span class="cmt">// file.id === "file-…", file.bytes === the real byte length</span></code></pre>
+        </div>
+        <p>
+          The <code>Content-Type</code> must carry a <code>boundary</code>, and the body must carry
+          exactly one payload part, named either <code>file</code> or <code>content</code>. Sending
+          both parts is ambiguous — the filename from one could be paired with the bytes of the
+          other — so it is rejected with a <code>400</code> naming the two parts, and sending
+          neither is rejected as well. The same rule applies to <code>purpose</code>: two
+          <code>purpose</code> parts are a <code>400</code> rather than a silent last-one-wins.
+          Every part needs a <code>name</code> parameter on its
+          <code>Content-Disposition</code> header, and a part without one is a
+          <code>400</code> naming that part by position.
+        </p>
+        <p>
+          Part bodies are framed as RFC 2046 delimiters — <code>CRLF</code>, <code>--</code>,
+          boundary — rather than by searching for the boundary token anywhere in the body, so a
+          payload that happens to contain its own boundary is stored whole instead of silently
+          truncated at the first match.
+        </p>
+
+        <h2>Upload with JSON</h2>
+        <p>
+          For tests that would rather not build a multipart body, the mock also accepts a plain JSON
+          body with <code>filename</code>, <code>purpose</code>, and <code>content</code> (aliased
+          as <code>bytes</code>). Send exactly one of <code>content</code> or <code>bytes</code>.
+          Supplying both is ambiguous and is rejected with a <code>400</code>, as is a non-string
+          value or a body with neither.
+        </p>
+        <p>
+          This path carries text, not octets. The string is encoded as UTF-8, so a
+          <code>content</code> of <code>"héllo"</code> is stored as six bytes rather than five, and
+          a string holding an unpaired UTF-16 surrogate — which has no UTF-8 encoding at all — is
+          rejected with a <code>400</code> instead of being stored as <code>U+FFFD</code>. Binary
+          belongs on the multipart path above.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">JSON upload <span class="lang-tag">bash</span></div>
+          <pre><code>curl -X POST http://localhost:4010/v1/files \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"filename":"train.jsonl","purpose":"fine-tune","content":"{\"prompt\":\"hi\"}\n"}'</span></code></pre>
+        </div>
+
+        <h2>Purposes</h2>
+        <p>
+          Uploads are validated against the OpenAI <em>create</em> purpose enum. The three
+          server-minted output purposes are rejected with a <code>400</code> on upload, matching the
+          <code>FilePurpose</code> type the OpenAI SDK admits on
+          <code>files.create</code> (openai@4.104.0, <code>resources/files.d.ts</code>); the live
+          API's runtime answer is not something the mock verifies. The mock mints one of them
+          itself: the batches endpoint stores a <code>batch_output</code> file named
+          <code>&lt;batch-id&gt;_output.jsonl</code> when a batch completes, and a
+          <code>batch_output</code> file named <code>&lt;batch-id&gt;_error.jsonl</code> when it
+          fails. Those files are ordinary entries in the store, so
+          <code>?purpose=batch_output</code> returns them and
+          <code>GET /v1/files/{id}/content</code> serves their JSONL. The other two response-only
+          purposes are listed for parity with the SDK's response enum; nothing in the mock mints
+          them. The <code>?purpose=</code> list filter is not validated against either list &mdash;
+          the real API declares it as a free-form string, so an unrecognised value simply matches
+          nothing and returns an empty list with a <code>200</code>. A <code>?purpose=</code> with
+          no value at all is the one exception: it is a <code>400</code>, because an empty string is
+          not a purpose any stored file can carry and handing back the whole store is the opposite
+          of the narrowing that was asked for.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Accepted on upload</th>
+              <th>Response-only</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>assistants</code>, <code>batch</code>, <code>fine-tune</code>,
+                <code>vision</code>, <code>user_data</code>, <code>evals</code>
+              </td>
+              <td>
+                <code>assistants_output</code>, <code>batch_output</code>,
+                <code>fine-tune-results</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Listing &amp; Paging</h2>
+        <p>
+          <code>GET /v1/files</code> is a cursor page. <code>order</code> defaults to
+          <code>desc</code>, so the newest file comes back first; <code>asc</code> is the only other
+          accepted value and anything else is a <code>400</code>. <code>limit</code> must be an
+          unsigned <em>decimal</em> integer between <code>1</code> and <code>10000</code>, and
+          defaults to <code>10000</code> — the Files endpoint is the odd one out among the list
+          surfaces, which mostly default to 20. Spellings that JavaScript's
+          <code>Number()</code> would otherwise accept — <code>0x10</code>, <code>1e3</code>,
+          <code>+5</code>, a whitespace-padded <code>5</code> — are rejected with a
+          <code>400</code> rather than quietly becoming a page size. <code>after</code> takes the
+          <code>last_id</code> of the previous page; a cursor matching no file in the
+          <em>current</em> listing is a <code>400</code> rather than a silent restart at page one,
+          so a paging bug fails the test instead of looping forever. All four parameters obey the
+          same two rules on top of their own: one given twice is a <code>400</code> naming it and
+          the count, and one present with an empty value — <code>?limit=</code>,
+          <code>?order=</code>, <code>?after=</code>, <code>?purpose=</code>, which is what building
+          a URL from a partly-undefined params object emits — is a <code>400</code> telling you to
+          omit it instead. A <code>#</code> in a value is part of that value: a request target has
+          no fragment, so <code>?purpose=batch#frag</code> asks for the purpose
+          <code>batch#frag</code> and matches nothing. Every page carries <code>first_id</code>,
+          <code>last_id</code> and <code>has_more</code>.
+        </p>
+
+        <h2>Binary Content</h2>
+        <p>
+          Uploaded bytes are stored as a <code>Buffer</code> and never round-tripped through a UTF-8
+          string, so <code>GET /v1/files/{id}/content</code> returns exactly the octets that were
+          uploaded — a PNG, a PDF, or a zip comes back with an identical SHA-256 and byte count. The
+          response <code>Content-Type</code> is derived from the stored filename's extension — never
+          from the <code>Content-Type</code> declared on the multipart part, which is
+          client-supplied and which real SDKs set to <code>application/octet-stream</code> for every
+          binary upload. Unrecognised extensions — and <code>.html</code>, which is deliberately off
+          the allowlist — are served as <code>application/octet-stream</code>. Every content
+          response carries <code>X-Content-Type-Options: nosniff</code> and
+          <code>Content-Disposition: attachment</code> naming the stored file, so the mock never
+          renders stored content from its own origin — including a
+          <code>application/pdf</code> upload, which a browser's built-in viewer would otherwise run
+          as an active surface. A stored name containing any character outside printable ASCII
+          (<code>0x20</code> to <code>0x7E</code>) also gets an RFC 5987
+          <code>filename*=UTF-8''…</code> parameter alongside an ASCII fallback in which each UTF-16
+          code unit outside that range becomes a single <code>_</code> (so <code>é</code> is one
+          underscore and an astral character is two). Neither header is listed in the mock's
+          <code>Access-Control-Expose-Headers</code>, which exposes only
+          <code>X-Total-Count</code> and <code>X-Request-Id</code>, so cross-origin browser code
+          cannot read <code>Content-Disposition</code> or <code>X-Content-Type-Options</code>; a
+          same-origin or Node client sees both. Because the part body is stored verbatim, a file
+          part that declares a <code>Content-Transfer-Encoding</code> other than
+          <code>7bit</code>/<code>8bit</code>/<code>binary</code>/<code>identity</code> (or a
+          non-<code>identity</code> <code>Content-Encoding</code>) is rejected with a
+          <code>400</code> naming the header rather than stored still-encoded.
+        </p>
+        <p>
+          A payload part carrying no <code>filename</code> parameter is legal — as is a JSON
+          <code>filename</code> that is empty or only spaces (a tab counts as a control character,
+          so a tab-only name is a <code>400</code>; the control-character check runs before the
+          blank check on both paths) — and the stored name is synthesized deterministically as
+          <code>upload-&lt;first 24 hex digits of the content's SHA-256&gt;.bin</code> — the same
+          bytes always produce the same name on either path, so a test can assert on it, and the
+          extension-derived Content-Type is then <code>application/octet-stream</code>. A JSON body
+          that omits <code>filename</code> entirely is a <code>400</code> rather than a synthesis,
+          because the key is declared and its value has to be a string. A part that sends only the
+          RFC 5987 <code>filename*=</code> form keeps the name it sent rather than getting a
+          synthesized one.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Byte-exact round-trip <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="cmt">// continues the upload snippet above — same `fs`, `OpenAI`, `mock` and `client`</span>
+<span class="kw">const</span> uploaded = <span class="kw">await</span> fs.promises.readFile(<span class="str">"pixel.png"</span>);
+<span class="kw">const</span> created = <span class="kw">await</span> client.files.create({
+  file: <span class="kw">await</span> OpenAI.toFile(uploaded, <span class="str">"pixel.png"</span>),
+  purpose: <span class="str">"user_data"</span>,
+});
+
+<span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">`${mock.url}/v1/files/${created.id}/content`</span>);
+<span class="kw">const</span> got = Buffer.from(<span class="kw">await</span> res.arrayBuffer());
+
+got.equals(uploaded); <span class="cmt">// true</span>
+created.bytes === uploaded.length; <span class="cmt">// true</span></code></pre>
+        </div>
+
+        <h2>Limits &amp; Reset</h2>
+        <ul>
+          <li>
+            Per-file content is capped at 10&nbsp;MB (10,485,760 bytes). An upload of exactly that
+            size still succeeds with a <code>200</code>; one byte more is a
+            <code>400</code> carrying the usual <code>Access-Control-*</code> headers, and so is a
+            body arbitrarily far past the cap, up to the 125,960,192-byte drain backstop in the next
+            item — below that bound the answer is a status, not a dropped socket.
+          </li>
+          <li>
+            A request body above 62,980,096 bytes gets its own <code>400</code> (<code
+              >Request body exceeds the 62980096 byte upload limit for this route (the 10485760 byte
+              content cap plus worst-case wire encoding overhead)</code
+            >). That figure is the content cap times the worst-case six wire bytes a single content
+            byte can cost as a <code>\uXXXX</code> JSON escape, plus headroom, so no body that could
+            still decode to a within-cap payload is ever refused for its size. Bytes past the bound
+            are counted rather than retained, and a multipart body is scanned where it landed rather
+            than copied first in order to be scanned, so peak memory tracks the bound and not the
+            sender. Only a body that keeps arriving past 125,960,192 bytes (twice the buffering
+            bound, <code>FILES_BODY_DRAIN_MAX_BYTES</code>) is cut off: the request is destroyed
+            mid-body as a denial-of-service backstop, so the client gets no status line, no envelope
+            and no <code>Access-Control-*</code> headers, only a reset connection. This is the one
+            socket drop on the files routes.
+          </li>
+          <li>
+            A <code>filename</code> is capped at 1024 UTF-8 bytes on both upload paths. The name is
+            echoed into the <code>Content-Disposition</code> of
+            <code>GET /v1/files/{id}/content</code> twice — quoted ASCII plus the RFC 5987 form — so
+            a longer one makes that response unfetchable, its headers overflowing before any client
+            can read a status. The cap is aimock's own; the API's own schema states none.
+          </li>
+          <li>
+            Storage is in-memory and per-process — nothing touches disk. The store is module-global
+            rather than per-instance, so two <code>LLMock</code> objects in one process share it and
+            either one's <code>reset()</code> clears both. A stored file holds an exact copy of its
+            own bytes, never a view of the request it arrived in, so residency is the sum of the
+            stored file sizes: ten 2-byte files uploaded in 5&nbsp;MB request bodies retain 20
+            bytes, not 50&nbsp;MB. Per-file size is capped and the filename is capped, but the file
+            <em>count</em> is not, so residency still grows until a reset.
+          </li>
+          <li>
+            <code>POST /__aimock/reset</code> (and <code>LLMock.reset()</code>) clears every stored
+            file along with the rest of the mock state.
+          </li>
+        </ul>
+
+        <h2>Chaos &amp; CORS</h2>
+        <p>
+          Every files route runs through the chaos gate, so
+          <a href="/chaos-testing">chaos testing</a> can inject failures at the upload surface too.
+          Faulted responses still carry the full <code>Access-Control-*</code> header set, so a
+          browser-based suite sees the injected status rather than an opaque CORS error.
+        </p>
+
+        <h2>Journal Integration</h2>
+        <p>
+          Files requests are recorded in the journal with <code>service: "files"</code>. A
+          successful upload also carries a synthetic <code>body</code> describing what was uploaded
+          — <code>purpose</code>, <code>filename</code>, <code>bytes</code>,
+          <code>content_type</code> and the content's <code>sha256</code>, plus the three inert keys
+          every journal body carries: <code>model: ""</code>, <code>messages: []</code> and
+          <code>_endpointType: "files"</code>. Those eight keys are the whole descriptor. The
+          uploaded octets themselves are never journalled in any encoding; <code>sha256</code> is
+          how a test pins byte identity without a megabyte of binary in the journal. Every other
+          files entry — list, retrieve, content, delete, a chaos-faulted request, and an upload
+          rejected with a <code>400</code> (bad purpose, oversize body, malformed multipart) —
+          carries <code>body: null</code>, because there is no parsed payload to describe. Around
+          the body, each entry has the standard journal keys: <code>id</code>,
+          <code>timestamp</code>, <code>method</code>, <code>path</code>, <code>headers</code>,
+          <code>service: "files"</code> and <code>response: { status, fixture: null }</code>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Journal entries <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">const</span> entries = mock.getRequests();
+<span class="kw">const</span> fileRequests = entries.filter((e) =&gt; e.service === <span class="str">"files"</span>);
+
+<span class="cmt">// fileRequests[0] — the JSON upload from the snippet above, as journalled:</span>
+{
+  id: <span class="str">"req-K0-lLOhnCH1K8w9w"</span>,
+  timestamp: <span class="num">1789578457013</span>,
+  method: <span class="str">"POST"</span>,
+  path: <span class="str">"/v1/files"</span>,
+  headers: { host: <span class="str">"127.0.0.1:4010"</span>, <span class="str">"content-type"</span>: <span class="str">"application/json"</span>, <span class="cmt">/* … */</span> },
+  body: {
+    model: <span class="str">""</span>,
+    messages: [],
+    _endpointType: <span class="str">"files"</span>,
+    purpose: <span class="str">"fine-tune"</span>,
+    filename: <span class="str">"train.jsonl"</span>,
+    bytes: <span class="num">16</span>,
+    content_type: <span class="str">"application/jsonl"</span>,
+    sha256: <span class="str">"855a2484322c2b66d92157e7f1594aec200407b1ad216a7caa38a37effc60641"</span>,
+  },
+  service: <span class="str">"files"</span>,
+  response: { status: <span class="num">200</span>, fixture: <span class="kw">null</span> },
+}
+
+<span class="cmt">// an upload rejected with a 400 (e.g. purpose: "nope") journals the same envelope with body: null</span>
+{ method: <span class="str">"POST"</span>, path: <span class="str">"/v1/files"</span>, body: <span class="kw">null</span>, service: <span class="str">"files"</span>, response: { status: <span class="num">400</span>, fixture: <span class="kw">null</span> } <span class="cmt">/* … */</span> }</code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            See also the <a href="/services">Services</a> overview, the
+            <a href="/control-api">Control API</a> for reset and journal inspection, and
+            <a href="/chaos-testing">Chaos Testing</a>.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

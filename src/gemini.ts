@@ -5,6 +5,9 @@
  * used by the fixture router, and converts fixture responses back into the
  * Gemini GenerateContent streaming (or non-streaming) format.
  */
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 import type * as http from "node:http";
 import type {
@@ -14,39 +17,50 @@ import type {
   Fixture,
   FixtureBlock,
   HandlerDefaults,
-  RecordedTimings,
   RecordProviderKey,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
 import {
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   isAudioResponse,
   extractOverrides,
+  requireServedFunctionToolCalls,
+  requireEmittedFunctionToolCalls,
+  validateToolsField,
   formatToMime,
   flattenHeaders,
+  isJsonObject,
   getContext,
   getTestId,
-  resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
+  resolveCitations,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  servedToolArgs,
+  fixtureFiles,
+  type ResolvedCitation,
+  surrogateSafeChunks,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { Logger } from "./logger.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
+import { mapGeminiFinish } from "./response/finish.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
+import { render as renderGeminiUsage } from "./response/usage/codecs/gemini.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
 
@@ -67,6 +81,7 @@ interface GeminiFunctionDeclaration {
   name: string;
   description?: string;
   parameters?: object;
+  parametersJsonSchema?: object;
 }
 
 interface GeminiToolDef {
@@ -87,6 +102,57 @@ interface GeminiRequest {
 
 // ─── Input conversion: Gemini → ChatCompletions messages ────────────────────
 
+/**
+ * Validate the shape of a Gemini `generateContent` body.
+ *
+ * Returns an error detail string when the shape is wrong, or null when
+ * `geminiToCompletionRequest` can safely consume it. Wrong types here used
+ * to throw inside the converter (`parts.filter` on a missing `parts`,
+ * iterating the characters of a string `contents`, `.flatMap` on a string
+ * `tools`) and surface as 500s. A present-but-part-less content or
+ * systemInstruction is tolerated (treated as no text) rather than rejected.
+ */
+function validateGeminiBody(req: GeminiRequest): string | null {
+  if (req.contents !== undefined && req.contents !== null && !Array.isArray(req.contents)) {
+    return "contents must be an array";
+  }
+  if (Array.isArray(req.contents)) {
+    for (let i = 0; i < req.contents.length; i++) {
+      const content = req.contents[i] as unknown;
+      if (content === null || typeof content !== "object" || Array.isArray(content)) {
+        return `contents[${i}] must be an object`;
+      }
+      const parts = (content as { parts?: unknown }).parts;
+      if (parts !== undefined && parts !== null && !Array.isArray(parts)) {
+        return `contents[${i}].parts must be an array`;
+      }
+    }
+  }
+  if (req.systemInstruction !== undefined && req.systemInstruction !== null) {
+    if (typeof req.systemInstruction !== "object" || Array.isArray(req.systemInstruction)) {
+      return "systemInstruction must be an object";
+    }
+    const parts = req.systemInstruction.parts as unknown;
+    if (parts !== undefined && parts !== null && !Array.isArray(parts)) {
+      return "systemInstruction.parts must be an array";
+    }
+  }
+  const toolsError = validateToolsField(req.tools);
+  if (toolsError) return toolsError;
+  if (Array.isArray(req.tools)) {
+    for (const [toolIndex, tool] of req.tools.entries()) {
+      if (!Array.isArray(tool.functionDeclarations)) continue;
+      const declarationIndex = tool.functionDeclarations.findIndex(
+        (declaration) => declaration === null,
+      );
+      if (declarationIndex !== -1) {
+        return `tools[${toolIndex}].functionDeclarations[${declarationIndex}] must not be null`;
+      }
+    }
+  }
+  return null;
+}
+
 export function geminiToCompletionRequest(
   req: GeminiRequest,
   model: string,
@@ -96,8 +162,8 @@ export function geminiToCompletionRequest(
 
   // systemInstruction → system message
   if (req.systemInstruction) {
-    const text = req.systemInstruction.parts
-      .filter((p) => p.text !== undefined)
+    const text = (req.systemInstruction.parts ?? [])
+      .filter((p) => p !== null && p !== undefined && p.text !== undefined)
       .map((p) => p.text!)
       .join("");
     if (text) {
@@ -112,8 +178,13 @@ export function geminiToCompletionRequest(
 
       if (role === "user") {
         // Check for functionResponse parts
-        const funcResponses = content.parts.filter((p) => p.functionResponse);
-        const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
+        const parts = content.parts ?? [];
+        const funcResponses = parts.filter(
+          (p) => p !== null && p !== undefined && p.functionResponse,
+        );
+        const textParts = parts.filter(
+          (p) => p !== null && p !== undefined && p.text !== undefined && !p.thought,
+        );
 
         if (funcResponses.length > 0) {
           // functionResponse → tool message; match IDs from the preceding assistant's tool_calls
@@ -152,8 +223,11 @@ export function geminiToCompletionRequest(
         }
       } else if (role === "model") {
         // Check for functionCall parts
-        const funcCalls = content.parts.filter((p) => p.functionCall);
-        const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
+        const parts = content.parts ?? [];
+        const funcCalls = parts.filter((p) => p !== null && p !== undefined && p.functionCall);
+        const textParts = parts.filter(
+          (p) => p !== null && p !== undefined && p.text !== undefined && !p.thought,
+        );
 
         if (funcCalls.length > 0) {
           const text = textParts.map((p) => p.text!).join("");
@@ -190,7 +264,7 @@ export function geminiToCompletionRequest(
         function: {
           name: d.name,
           description: d.description,
-          parameters: d.parameters,
+          parameters: d.parameters ?? d.parametersJsonSchema,
         },
       }));
     }
@@ -212,12 +286,7 @@ export function geminiToCompletionRequest(
 
 function geminiFinishReason(finishReason: string | undefined, defaultReason: string): string {
   if (!finishReason) return defaultReason;
-  if (finishReason === "stop") return "STOP";
-  if (finishReason === "tool_calls") return "FUNCTION_CALL";
-  if (finishReason === "length") return "MAX_TOKENS";
-  if (finishReason === "content_filter") return "SAFETY";
-  // Pass through unrecognized values as-is
-  return finishReason;
+  return mapGeminiFinish(finishReason);
 }
 
 function geminiUsageMetadata(overrides?: ResponseOverrides): {
@@ -225,30 +294,16 @@ function geminiUsageMetadata(overrides?: ResponseOverrides): {
   candidatesTokenCount: number;
   totalTokenCount: number;
 } {
-  if (!overrides?.usage)
-    return { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 };
-  const prompt =
-    overrides.usage.promptTokenCount ??
-    overrides.usage.prompt_tokens ??
-    overrides.usage.input_tokens ??
-    0;
-  const candidates =
-    overrides.usage.candidatesTokenCount ??
-    overrides.usage.completion_tokens ??
-    overrides.usage.output_tokens ??
-    0;
-  const total = overrides.usage.totalTokenCount ?? prompt + candidates;
-  return {
-    promptTokenCount: prompt,
-    candidatesTokenCount: candidates,
-    totalTokenCount: total,
-  };
+  return renderGeminiUsage(overrides);
 }
 
 interface GeminiResponseChunk {
   candidates: {
-    content: { role: string; parts: GeminiPart[] };
+    content?: { role: string; parts: GeminiPart[] };
     finishReason?: string;
+    finishMessage?: string;
+    safetyRatings?: { category: string; probability: string; blocked: boolean }[];
+    groundingMetadata?: GeminiGroundingMetadata;
     index: number;
   }[];
   usageMetadata?: {
@@ -256,6 +311,175 @@ interface GeminiResponseChunk {
     candidatesTokenCount: number;
     totalTokenCount: number;
   };
+}
+
+interface GeminiGroundingMetadata {
+  groundingChunks: { web: { uri: string; title: string } }[];
+  groundingSupports: {
+    segment: { partIndex: number; startIndex: number; endIndex: number; text: string };
+    groundingChunkIndices: number[];
+  }[];
+}
+
+// A text part of the Content that carries the grounding: its index in that
+// Content's `parts`, and the character span [start, end) of the cited text
+// it holds.
+interface GeminiCitedTextPart {
+  partIndex: number;
+  start: number;
+  end: number;
+}
+
+type GeminiGroundingSupport = GeminiGroundingMetadata["groundingSupports"][number];
+
+// The whole cited text as the single text part `partIndex`.
+function geminiWholeTextPart(text: string, partIndex: number): GeminiCitedTextPart[] {
+  return [{ partIndex, start: 0, end: text.length }];
+}
+
+// Fixture `citations` as Gemini grounding supports, one or more per citation,
+// each pointing at grounding chunk `i` (the citation's index). The @google/genai
+// `Segment` type documents `startIndex` / `endIndex` as byte offsets "in the
+// given Part" — the Part at `partIndex` within its parent Content — so every
+// segment holds UTF-8 byte offsets into the text of one part. A citation that
+// spans several text parts becomes one support per part, in text order, all
+// naming the same grounding chunk; a client joining their segments gets the
+// whole cited text. An empty citation names the part holding its start.
+function geminiGroundingSupports(
+  text: string,
+  citations: ResolvedCitation[],
+  textParts: GeminiCitedTextPart[],
+): GeminiGroundingSupport[] {
+  const segment = (
+    part: GeminiCitedTextPart,
+    from: number,
+    to: number,
+  ): GeminiGroundingSupport["segment"] => {
+    const partText = text.slice(part.start, part.end);
+    const start = Math.min(Math.max(from - part.start, 0), partText.length);
+    const end = Math.min(Math.max(to - part.start, start), partText.length);
+    const byteOffset = (charIndex: number) =>
+      Buffer.byteLength(partText.slice(0, charIndex), "utf8");
+    return {
+      partIndex: part.partIndex,
+      startIndex: byteOffset(start),
+      endIndex: byteOffset(end),
+      text: partText.slice(start, end),
+    };
+  };
+  return citations.flatMap((c, i) => {
+    const spanned = textParts.filter(
+      (p) => Math.max(c.startIndex, p.start) < Math.min(c.endIndex, p.end),
+    );
+    const parts =
+      spanned.length > 0
+        ? spanned
+        : [textParts.find((p) => c.startIndex < p.end) ?? textParts[textParts.length - 1]];
+    return parts.map((p) => ({
+      segment: segment(p, c.startIndex, c.endIndex),
+      groundingChunkIndices: [i],
+    }));
+  });
+}
+
+// Fixture `citations` as Gemini `groundingMetadata` for one Content holding
+// `textParts`: one `web` grounding chunk per citation and the supports from
+// {@link geminiGroundingSupports}. File citations are skipped (see
+// resolveCitations): grounding chunks carry no file IDs. Nothing when the
+// fixture has no URL citations or the Content has no text part to cite.
+function geminiGroundingMetadata(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  textParts: GeminiCitedTextPart[],
+): GeminiGroundingMetadata | undefined {
+  const citations = resolveCitations(text, overrides?.citations);
+  if (citations.length === 0 || textParts.length === 0) return undefined;
+  return {
+    groundingChunks: geminiGroundingChunks(citations),
+    groundingSupports: geminiGroundingSupports(text, citations, textParts),
+  };
+}
+
+function geminiGroundingChunks(
+  citations: ResolvedCitation[],
+): GeminiGroundingMetadata["groundingChunks"] {
+  return citations.map((c) => ({ web: { uri: c.url, title: c.title } }));
+}
+
+// `{ groundingMetadata }` for the candidate holding `textParts`, or nothing
+// when {@link geminiGroundingMetadata} yields none.
+function geminiGroundingField(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  textParts: GeminiCitedTextPart[],
+): { groundingMetadata?: GeminiGroundingMetadata } {
+  const groundingMetadata = geminiGroundingMetadata(text, overrides, textParts);
+  return groundingMetadata ? { groundingMetadata } : {};
+}
+
+// Streaming form of {@link geminiGroundingField}. `spans` are the character
+// spans of `text` that the streamed text chunks carry, in stream order, each
+// as part 0 of its own chunk. Each chunk's Content holds only that chunk's
+// text, so, per the `Segment` contract above, a chunk's supports must index
+// that chunk's part. (Neither @google/genai nor Google's public Gemini API
+// docs say streamed segments index the accumulated text instead.) Every chunk
+// holding some cited text carries groundingMetadata whose supports cover just
+// its part (partIndex 0, byte offsets into the chunk's text), splitting a
+// citation across chunks as across parts. Each grounded chunk lists every grounding
+// chunk, so `groundingChunkIndices` mean the same in every chunk and in the
+// non-streaming response. Returns one field per span; empty for a span that
+// holds no cited text.
+function geminiStreamGroundingFields(
+  text: string,
+  overrides: ResponseOverrides | undefined,
+  spans: { start: number; end: number }[],
+): { groundingMetadata?: GeminiGroundingMetadata }[] {
+  const fields: { groundingMetadata?: GeminiGroundingMetadata }[] = spans.map(() => ({}));
+  const citations = resolveCitations(text, overrides?.citations);
+  if (citations.length === 0 || spans.length === 0) return fields;
+  // Number the spans as parts so each support says which chunk it belongs to.
+  const textParts = spans.map((s, k) => ({ partIndex: k, start: s.start, end: s.end }));
+  const groundingChunks = geminiGroundingChunks(citations);
+  for (const support of geminiGroundingSupports(text, citations, textParts)) {
+    const k = support.segment.partIndex;
+    const metadata = (fields[k].groundingMetadata ??= { groundingChunks, groundingSupports: [] });
+    metadata.groundingSupports.push({ ...support, segment: { ...support.segment, partIndex: 0 } });
+  }
+  return fields;
+}
+
+// The [start, end) spans of the chunks that streaming `text` as
+// {@link surrogateSafeChunks} yields, as offsets into the joined text, where
+// `text` starts at `offset`. Empty `text` yields one empty span at `offset`.
+function geminiTextChunkSpans(
+  text: string,
+  chunkSize: number,
+  offset = 0,
+): { start: number; end: number }[] {
+  if (text.length === 0) return [{ start: offset, end: offset }];
+  const spans: { start: number; end: number }[] = [];
+  let start = offset;
+  for (const slice of surrogateSafeChunks(text, chunkSize)) {
+    spans.push({ start, end: start + slice.length });
+    start += slice.length;
+  }
+  return spans;
+}
+
+// Fixture `files` as Gemini `inlineData` parts. Every text and tool-call builder
+// emits these after any thought parts and before the text / functionCall parts.
+function geminiFileParts(overrides?: ResponseOverrides): GeminiPart[] {
+  return fixtureFiles(overrides?.files).map((f) => ({
+    inlineData: { mimeType: f.mimeType, data: f.data },
+  }));
+}
+
+// Streaming form of {@link geminiFileParts}: one chunk holding every file part,
+// or nothing when the fixture has no files.
+function geminiFileChunks(overrides?: ResponseOverrides): GeminiResponseChunk[] {
+  const parts = geminiFileParts(overrides);
+  if (parts.length === 0) return [];
+  return [{ candidates: [{ content: { role: "model", parts }, index: 0 }] }];
 }
 
 function buildGeminiTextStreamChunks(
@@ -283,22 +507,33 @@ function buildGeminiTextStreamChunks(
     }
   }
 
-  // Content chunks
-  for (let i = 0; i < content.length; i += chunkSize) {
-    const slice = content.slice(i, i + chunkSize);
-    const isLast = i + chunkSize >= content.length;
+  chunks.push(...geminiFileChunks(overrides));
+
+  // Each content chunk carries the grounding for the cited text it holds.
+  const grounding = geminiStreamGroundingFields(
+    content,
+    overrides,
+    geminiTextChunkSpans(content, chunkSize),
+  );
+
+  // Content chunks, never cutting a surrogate pair, so each chunk is valid
+  // UTF-16 and its grounding byte offsets count whole characters.
+  const contentSlices = surrogateSafeChunks(content, chunkSize);
+  contentSlices.forEach((slice, k) => {
+    const isLast = k === contentSlices.length - 1;
     const chunk: GeminiResponseChunk = {
       candidates: [
         {
           content: { role: "model", parts: [{ text: slice }] },
           index: 0,
           ...(isLast ? { finishReason: effectiveFinish } : {}),
+          ...grounding[k],
         },
       ],
       ...(isLast ? { usageMetadata: usage } : {}),
     };
     chunks.push(chunk);
-  }
+  });
 
   // Handle empty content
   if (content.length === 0) {
@@ -307,6 +542,7 @@ function buildGeminiTextStreamChunks(
         {
           content: { role: "model", parts: [{ text: "" }] },
           finishReason: effectiveFinish,
+          ...grounding[0],
           index: 0,
         },
       ],
@@ -318,13 +554,7 @@ function buildGeminiTextStreamChunks(
 }
 
 function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
-  let argsObj: Record<string, unknown>;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
+  const args = servedToolArgs(tc, "object", logger);
   // Surface the fixture's tool_call.id on the Gemini functionCall response
   // so clients can preserve it across the round-trip and any
   // toolCallId-keyed follow-up fixtures match. Pairs with v1.23.1's
@@ -338,7 +568,7 @@ function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
   // generator handles those).
   const functionCall: GeminiPart["functionCall"] = {
     name: tc.name,
-    args: argsObj,
+    args: args.value as Record<string, unknown>,
   };
   if (tc.id) {
     functionCall.id = tc.id;
@@ -371,6 +601,10 @@ function buildGeminiToolCallStreamChunks(
     }
   }
 
+  chunks.push(...geminiFileChunks(overrides));
+
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
 
   // Gemini sends all tool calls in a single response chunk
@@ -399,6 +633,8 @@ function buildGeminiTextResponse(
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
+  parts.push(...geminiFileParts(overrides));
+  const textParts = geminiWholeTextPart(content, parts.length);
   parts.push({ text: content });
 
   return {
@@ -406,6 +642,7 @@ function buildGeminiTextResponse(
       {
         content: { role: "model", parts },
         finishReason: geminiFinishReason(overrides?.finishReason, "STOP"),
+        ...geminiGroundingField(content, overrides, textParts),
         index: 0,
       },
     ],
@@ -419,10 +656,13 @@ function buildGeminiToolCallResponse(
   reasoning?: string,
   overrides?: ResponseOverrides,
 ): GeminiResponseChunk {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const parts: GeminiPart[] = [];
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
+  parts.push(...geminiFileParts(overrides));
   parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
 
   return {
@@ -463,17 +703,35 @@ function buildGeminiContentWithToolCallsStreamChunks(
     }
   }
 
+  chunks.push(...geminiFileChunks(overrides));
+
   if (blocks && blocks.length > 0) {
     // NEW path (#274): stream chunks whose parts follow the blocks' ARRAY ORDER,
     // so a tool-first / interleaved fixture emits its functionCall part before
     // its text part. Gemini's ordered `parts` make this fully expressible. The
     // terminal block carries the finishReason regardless of its type. Legacy
     // fixtures (no `blocks`) never enter here — see the else branch below.
-    const resolved = resolveFixtureBlocks(blocks);
+    // The grounding rides on the text chunks holding the cited text, never on
+    // a functionCall chunk: each text block streams as chunks whose part 0 is
+    // the text their offsets refer to.
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const resolved = outcome.ordered;
+    const spans: { start: number; end: number }[] = [];
+    let offset = 0;
+    for (const block of resolved) {
+      if (block.type !== "text") continue;
+      spans.push(...geminiTextChunkSpans(block.text, chunkSize, offset));
+      offset += block.text.length;
+    }
+    const grounding = geminiStreamGroundingFields(outcome.content, overrides, spans);
+    let textChunk = 0;
     resolved.forEach((block, i) => {
       const isLast = i === resolved.length - 1;
       const finishReason = isLast
-        ? geminiFinishReason(overrides?.finishReason, "FUNCTION_CALL")
+        ? geminiFinishReason(
+            overrides?.finishReason,
+            outcome.hasToolCalls ? "FUNCTION_CALL" : "STOP",
+          )
         : undefined;
       if (block.type === "toolCall") {
         const part = parseToolCallPart(
@@ -498,27 +756,29 @@ function buildGeminiContentWithToolCallsStreamChunks(
               {
                 content: { role: "model", parts: [{ text: "" }] },
                 ...(finishReason ? { finishReason } : {}),
+                ...grounding[textChunk++],
                 index: 0,
               },
             ],
             ...(isLast ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
           });
         } else {
-          for (let j = 0; j < text.length; j += chunkSize) {
-            const slice = text.slice(j, j + chunkSize);
-            const lastSlice = j + chunkSize >= text.length;
+          const slices = surrogateSafeChunks(text, chunkSize);
+          slices.forEach((slice, j) => {
+            const lastSlice = j === slices.length - 1;
             const sliceFinish = isLast && lastSlice ? finishReason : undefined;
             chunks.push({
               candidates: [
                 {
                   content: { role: "model", parts: [{ text: slice }] },
                   ...(sliceFinish ? { finishReason: sliceFinish } : {}),
+                  ...grounding[textChunk++],
                   index: 0,
                 },
               ],
               ...(isLast && lastSlice ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
             });
-          }
+          });
         }
       }
     });
@@ -526,27 +786,35 @@ function buildGeminiContentWithToolCallsStreamChunks(
     return chunks;
   }
 
+  // The grounding rides on the text chunks holding the cited text, not on the
+  // functionCall chunk, so their part 0 is the text the offsets refer to.
+  const grounding = geminiStreamGroundingFields(
+    content,
+    overrides,
+    geminiTextChunkSpans(content, chunkSize),
+  );
   if (content.length === 0) {
     chunks.push({
       candidates: [
         {
           content: { role: "model", parts: [{ text: "" }] },
+          ...grounding[0],
           index: 0,
         },
       ],
     });
   } else {
-    for (let i = 0; i < content.length; i += chunkSize) {
-      const slice = content.slice(i, i + chunkSize);
+    surrogateSafeChunks(content, chunkSize).forEach((slice, k) => {
       chunks.push({
         candidates: [
           {
             content: { role: "model", parts: [{ text: slice }] },
+            ...grounding[k],
             index: 0,
           },
         ],
       });
-    }
+    });
   }
 
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
@@ -577,24 +845,35 @@ function buildGeminiContentWithToolCallsResponse(
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
+  parts.push(...geminiFileParts(overrides));
 
+  let blockHasTools: boolean | undefined;
+  let groundingText = content;
+  // Each text part, with the span of `groundingText` it holds.
+  const textParts: GeminiCitedTextPart[] = [];
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-streaming `parts[]` array is positionally observable, so
     // emit parts in the fixture's ARRAY ORDER (after any leading thought part).
     // A toolCall block before a text block therefore yields a functionCall part
     // ahead of the text — matching the streaming path for the same `blocks`.
-    const resolved = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const resolved = outcome.ordered;
+    blockHasTools = outcome.hasToolCalls;
+    groundingText = outcome.content;
     for (const block of resolved) {
       if (block.type === "toolCall") {
         parts.push(
           parseToolCallPart({ name: block.name, arguments: block.arguments, id: block.id }, logger),
         );
       } else {
+        const start = textParts.length > 0 ? textParts[textParts.length - 1].end : 0;
+        textParts.push({ partIndex: parts.length, start, end: start + block.text.length });
         parts.push({ text: block.text });
       }
     }
   } else {
-    // LEGACY PATH (unchanged): text part first, then functionCall parts.
+    // LEGACY PATH: text part first, then functionCall parts.
+    textParts.push(...geminiWholeTextPart(content, parts.length));
     parts.push({ text: content });
     parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
   }
@@ -603,7 +882,11 @@ function buildGeminiContentWithToolCallsResponse(
     candidates: [
       {
         content: { role: "model", parts },
-        finishReason: geminiFinishReason(overrides?.finishReason, "FUNCTION_CALL"),
+        finishReason: geminiFinishReason(
+          overrides?.finishReason,
+          blockHasTools === false ? "STOP" : "FUNCTION_CALL",
+        ),
+        ...geminiGroundingField(groundingText, overrides, textParts),
         index: 0,
       },
     ],
@@ -639,6 +922,7 @@ function resolveAudioInlineData(audio: AudioResponse): { mimeType: string; data:
 // would never emit.
 function buildGeminiAudioParts(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiPart[] {
@@ -650,31 +934,36 @@ function buildGeminiAudioParts(
   if (audio.content) {
     parts.push({ text: audio.content });
   }
-  if (audio.toolCalls?.length) {
-    parts.push(...audio.toolCalls.map((tc) => parseToolCallPart(tc, logger)));
+  if (toolCalls.length) {
+    parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
   }
   return parts;
 }
 
 function buildGeminiAudioResponse(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiResponseChunk {
   return {
     candidates: [
       {
-        content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
-        finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
+        content: {
+          role: "model",
+          parts: buildGeminiAudioParts(audio, toolCalls, logger, effReasoning),
+        },
+        finishReason: toolCalls.length ? "FUNCTION_CALL" : "STOP",
         index: 0,
       },
     ],
-    usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 },
+    usageMetadata: renderGeminiUsage(),
   };
 }
 
 function buildGeminiAudioStreamChunks(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiResponseChunk[] {
@@ -682,70 +971,197 @@ function buildGeminiAudioStreamChunks(
     {
       candidates: [
         {
-          content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
-          finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
+          content: {
+            role: "model",
+            parts: buildGeminiAudioParts(audio, toolCalls, logger, effReasoning),
+          },
+          finishReason: toolCalls.length ? "FUNCTION_CALL" : "STOP",
           index: 0,
         },
       ],
-      usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 },
+      usageMetadata: renderGeminiUsage(),
     },
   ];
 }
 
 // ─── SSE writer for Gemini streaming ────────────────────────────────────────
 
-interface GeminiStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  jitterSource?: JitterSource;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
+// Gemini streams data-only SSE frames (no `event:` prefix) and sends no
+// `[DONE]` trailer.
+const GEMINI_SSE = sseCodec<GeminiResponseChunk>({ done: false });
+
+const SILENT_LOGGER = new Logger("silent");
+
+/**
+ * The reasoning a misbehavior reply's non-streaming wait is sized with: the
+ * plan response's reasoning through the same model and strict gate the
+ * builders apply. The gate runs with a silent logger, so the builder's own
+ * warning stays the only one. A reasoning-only plan carries its reasoning on
+ * the plan, and `misbehaviorPayloadLength` reads it there.
+ */
+function misbehaviorPayloadReasoning(
+  plan: MisbehaviorPlan,
+  model: string | undefined,
+  strict: boolean,
+): string | undefined {
+  const response = plan.response;
+  if (
+    plan.reasoning !== undefined ||
+    !(
+      isCombinedFixtureResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  ) {
+    return undefined;
+  }
+  return resolveReasoningForModel(response.reasoning, model, strict, SILENT_LOGGER);
 }
 
-async function writeGeminiSSEStream(
-  res: http.ServerResponse,
-  chunks: GeminiResponseChunk[],
-  optionsOrLatency?: number | GeminiStreamOptions,
-): Promise<boolean> {
-  const opts: GeminiStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(
-      chunkIndex,
-      profile,
-      latency,
-      recordedTimings,
-      replaySpeed,
-      opts.jitterSource,
-    );
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    // Gemini uses data-only SSE (no event: prefix, no [DONE])
-    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
+/** Prepare native fault output once; the journal describes these exact parts. */
+function prepareGeminiMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  streaming: boolean,
+  chunkSize: number,
+  logger: Logger,
+  strict: boolean,
+): { chunks: GeminiResponseChunk[]; summary: MisbehaviorPlan["summary"] } {
+  const response = plan.response;
+  const combined = isCombinedFixtureResponse(response);
+  if (!(combined || isToolCallResponse(response) || isTextResponse(response))) {
+    throw new Error("Applied Gemini misbehavior requires a chat response");
   }
-
-  if (!res.writableEnded) {
-    res.end();
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  // The planner skips a custom-call fixture on this wire, so this narrowing
+  // never throws; the normal path's guard rejects it instead.
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  const overrides = extractOverrides(response);
+  delete overrides.usage;
+  const fault = plan.summary.fault;
+  const candidate: GeminiResponseChunk["candidates"][number] & { content: GeminiContent } = {
+    content: { role: "model", parts: [] },
+    index: 0,
+  };
+  let chunks: GeminiResponseChunk[];
+  if (fault === "tool-args-invalid-json") {
+    const target = calls[plan.target?.index ?? 0];
+    if (!target) throw new Error("Gemini malformed-call plan requires its selected tool call");
+    chunks = [
+      {
+        candidates: [
+          {
+            index: 0,
+            finishReason: "MALFORMED_FUNCTION_CALL",
+            finishMessage: `Malformed function call: ${target.name}(${target.arguments})`,
+          },
+        ],
+      },
+    ];
+  } else if (fault === "tool-unknown-name" && !request.tools?.length) {
+    candidate.finishReason = "UNEXPECTED_TOOL_CALL";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "stop-length-mid-tool") {
+    // Object arguments cannot be partial; preserve only text preceding the cut.
+    // The fixture's files precede that text, as on the normal path.
+    const parts = geminiFileParts(overrides);
+    const textPartIndex = parts.length;
+    if (content) parts.push({ text: content });
+    candidate.content.parts = parts;
+    // The planner drops `citations` whenever the fault changes the served
+    // text in any way, not only when the cut removes cited text.
+    if (content)
+      Object.assign(
+        candidate,
+        geminiGroundingField(content, overrides, geminiWholeTextPart(content, textPartIndex)),
+      );
+    candidate.finishReason = "MAX_TOKENS";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "empty-response") {
+    candidate.content.parts = [{ text: "" }];
+    candidate.finishReason = "STOP";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "content-filter") {
+    candidate.finishReason = "SAFETY";
+    candidate.safetyRatings = [
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", probability: "HIGH", blocked: true },
+    ];
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "reasoning-only") {
+    candidate.content.parts = [{ text: plan.reasoning ?? "", thought: true }];
+    candidate.finishReason = "MAX_TOKENS";
+    chunks = [{ candidates: [candidate] }];
+  } else {
+    const reasoning = resolveReasoningForModel(response.reasoning, request.model, strict, logger);
+    if (fault === "tool-unknown-name") overrides.finishReason = "stop";
+    if (combined) {
+      chunks = streaming
+        ? buildGeminiContentWithToolCallsStreamChunks(
+            content,
+            calls,
+            chunkSize,
+            logger,
+            reasoning,
+            overrides,
+            response.blocks,
+          )
+        : [
+            buildGeminiContentWithToolCallsResponse(
+              content,
+              calls,
+              logger,
+              reasoning,
+              overrides,
+              response.blocks,
+            ),
+          ];
+    } else if (isToolCallResponse(response)) {
+      chunks = streaming
+        ? buildGeminiToolCallStreamChunks(calls, chunkSize, logger, reasoning, overrides)
+        : [buildGeminiToolCallResponse(calls, logger, reasoning, overrides)];
+    } else {
+      chunks = streaming
+        ? buildGeminiTextStreamChunks(content, chunkSize, reasoning, overrides)
+        : [buildGeminiTextResponse(content, reasoning, overrides)];
+    }
   }
-  return true;
+  const parts = chunks.flatMap((chunk) =>
+    chunk.candidates.flatMap((item) => item.content?.parts ?? []),
+  );
+  const servedToolCalls = parts.flatMap((part) =>
+    part.functionCall
+      ? [
+          {
+            name: part.functionCall.name,
+            arguments: JSON.stringify(part.functionCall.args),
+            ...(part.functionCall.id ? { id: part.functionCall.id } : {}),
+          },
+        ]
+      : [],
+  );
+  const prompt = request.messages
+    .map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : (message.content ?? []).map((part) => part.text ?? "").join(""),
+    )
+    .join("");
+  const output = parts
+    .map(
+      (part) =>
+        part.text ??
+        (part.functionCall ? part.functionCall.name + JSON.stringify(part.functionCall.args) : ""),
+    )
+    .join("");
+  for (const chunk of chunks) delete chunk.usageMetadata;
+  chunks[chunks.length - 1].usageMetadata = renderGeminiUsage(undefined, {
+    kind: "applied-misbehavior",
+    promptText: prompt,
+    completionText: output,
+  });
+  return { chunks, summary: { ...plan.summary, servedToolCalls } };
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -763,6 +1179,7 @@ export async function handleGemini(
   providerKey: RecordProviderKey = "gemini",
 ): Promise<void> {
   const { logger } = defaults;
+  const wire = providerKey === "vertexai" ? "Vertex AI" : "Gemini";
   setCorsHeaders(res);
 
   let geminiReq: GeminiRequest;
@@ -780,13 +1197,56 @@ export async function handleGemini(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          code: 400,
-          status: "INVALID_ARGUMENT",
-        },
-      }),
+      renderError("gemini", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise the converter dereference throws a TypeError that surfaces as
+  // a 500 instead of a 400.
+  if (!isJsonObject(geminiReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? `/v1beta/models/${model}:generateContent`,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("gemini", "validation", {
+        message: "Request body must be a JSON object",
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject wrong-typed fields before the converter dereferences them.
+  const geminiShapeError = validateGeminiBody(geminiReq);
+  if (geminiShapeError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? `/v1beta/models/${model}:generateContent`,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("gemini", "validation", {
+        message: `Invalid argument: ${geminiShapeError}`,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
@@ -805,7 +1265,7 @@ export async function handleGemini(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "gemini" },
   );
   const path = req.url ?? `/v1beta/models/${model}:generateContent`;
 
@@ -819,29 +1279,30 @@ export async function handleGemini(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const decisions = resolveRequestDecisions(defaults.strict, req.headers);
+    if (decisions.fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       logger.error(strictNoMatchLogLine(req.method ?? "POST", path, skippedBySequenceOrTurn));
       journal.add({
@@ -858,27 +1319,18 @@ export async function handleGemini(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            code: 503,
-            status: "UNAVAILABLE",
-          },
-        }),
+        renderError("gemini", "strict-miss", {
+          message: strictMessage,
+          bodyCode: 503,
+          status: "UNAVAILABLE",
+        }).body,
       );
       return;
     }
 
-    if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        providerKey,
-        path,
-        fixtures,
-        defaults,
-        raw,
+    if (decisions.upstream && defaults.record) {
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, providerKey, path, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -887,7 +1339,12 @@ export async function handleGemini(
           path,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -906,49 +1363,164 @@ export async function handleGemini(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          code: 404,
-          status: "NOT_FOUND",
-        },
-      }),
+      renderError("gemini", "fixture-miss", {
+        message: "No fixture matched",
+        bodyCode: 404,
+        status: "NOT_FOUND",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "gemini",
+    toolCallIdMode: "authored-nonempty",
+    fixture,
+    response,
+    request: completionReq,
+    stream: streaming,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture, error: misbehavior.message },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (misbehavior.summary?.evaluations.length === 0) {
+      logger.error(`${req.method ?? "POST"} ${path}: ${misbehavior.message}`);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("gemini", "misbehavior", {
+        bodyCode: misbehavior.status,
+        message: misbehavior.message,
+        status: misbehavior.status === 400 ? "INVALID_ARGUMENT" : "UNIMPLEMENTED",
+      }).body,
+    );
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
+
+  if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const strictReasoning = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const prepared = prepareGeminiMisbehavior(
+      misbehavior,
+      completionReq,
+      streaming,
+      chunkSize,
+      logger,
+      strictReasoning,
+    );
+    recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    if (!streaming) {
+      const preparedBody = prepared.chunks[0];
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => preparedBody,
+        jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehaviorPayloadReasoning(misbehavior, completionReq.model, strictReasoning),
+          ),
+          !!misbehavior.duplicateId,
+        ),
+      );
+    } else {
+      await deliverStream(res, entry, fixture, GEMINI_SSE, prepared.chunks, streamTiming);
+    }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored chunks or JSON, framed for this wire.
+  // Covers the Vertex AI route, which shares this handler.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "gemini",
+      stream: streaming,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "gemini",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const errorEntry = journal.add({
       method: req.method ?? "POST",
       path,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
-    // Gemini-style error format: { error: { code, message, status } }
-    const geminiError = {
-      error: {
-        code: status,
+    recordMisbehaviorOutcome({ entry: errorEntry, summary: misbehavior.summary, defaults, testId });
+    writeErrorResponse(
+      res,
+      status,
+      renderError("gemini", "fixture", {
+        bodyCode: status,
         message: response.error.message,
         status: response.error.type ?? "ERROR",
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(geminiError), {
-      retryAfter: response.retryAfter,
-    });
+      }).body,
+      { retryAfter: response.retryAfter },
+    );
     return;
   }
 
   // Audio response
   if (isAudioResponse(response)) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       model,
@@ -962,39 +1534,41 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // A non-array companion `toolCalls` emits no tool parts, as before custom calls existed.
+    const audioToolCalls = Array.isArray(response.toolCalls)
+      ? requireServedFunctionToolCalls(response, wire)
+      : [];
     if (!streaming) {
-      const body = buildGeminiAudioResponse(response, logger, effReasoning);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
-      const chunks = buildGeminiAudioStreamChunks(response, logger, effReasoning);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      const chunks = buildGeminiAudioStreamChunks(response, audioToolCalls, logger, effReasoning);
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       model,
@@ -1008,43 +1582,40 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
-      const body = buildGeminiContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        logger,
-        effReasoning,
-        overrides,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildGeminiContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            logger,
+            effReasoning,
+            overrides,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildGeminiContentWithToolCallsStreamChunks(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
@@ -1055,7 +1626,10 @@ export async function handleGemini(
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       model,
@@ -1069,10 +1643,20 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (!streaming) {
-      const body = buildGeminiTextResponse(response.content, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiTextResponse(response.content, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildGeminiTextStreamChunks(
         response.content,
@@ -1080,22 +1664,7 @@ export async function handleGemini(
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
@@ -1106,7 +1675,10 @@ export async function handleGemini(
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       model,
@@ -1120,55 +1692,50 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
-      const body = buildGeminiToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildGeminiToolCallResponse(functionToolCalls, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildGeminiToolCallStreamChunks(
-        response.toolCalls,
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, GEMINI_SSE, chunks, streamTiming);
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const unknownEntry = journal.add({
     method: req.method ?? "POST",
     path,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: unknownEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        code: 500,
-        status: "INTERNAL",
-      },
-    }),
+    renderError("gemini", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      bodyCode: 500,
+      status: "INTERNAL",
+    }).body,
   );
 }

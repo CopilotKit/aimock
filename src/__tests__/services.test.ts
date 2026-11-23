@@ -185,7 +185,7 @@ describe("POST /v1/moderations", () => {
       }>;
     };
     expect(data.id).toMatch(/^modr-/);
-    expect(data.model).toBe("text-moderation-latest");
+    expect(data.model).toBe("omni-moderation-latest");
     expect(data.results).toHaveLength(1);
     expect(data.results[0].flagged).toBe(true);
     expect(data.results[0].categories.violence).toBe(true);

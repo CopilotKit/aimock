@@ -124,6 +124,44 @@ function parseEvents(raw: string[]): WSEvent[] {
 // ─── Integration tests: WebSocket /v1/responses ──────────────────────────────
 
 describe("WebSocket /v1/responses", () => {
+  it.each([undefined, "commentary", "final_answer"] as const)(
+    "preserves an explicitly supplied message phase (%s)",
+    async (phase) => {
+      instance = await createServer([
+        {
+          match: { userMessage: "phase" },
+          response: { content: "Hi!", ...(phase !== undefined ? { phase } : {}) },
+          chunkSize: 100,
+        },
+      ]);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      try {
+        ws.send(responseCreateMsg("phase"));
+        const events = parseEvents(await ws.waitForMessages(9));
+        expect(events[events.length - 1].type).toBe("response.completed");
+        const added = events.find((event) => event.type === "response.output_item.added")!
+          .item as Record<string, unknown>;
+        const done = events.find((event) => event.type === "response.output_item.done")!
+          .item as Record<string, unknown>;
+        const completed = events.find((event) => event.type === "response.completed")!.response as {
+          output: Array<Record<string, unknown>>;
+        };
+        expect(completed.output).toEqual([done]);
+        expect(added.id).toBe(done.id);
+        for (const item of [added, done, ...completed.output]) {
+          if (phase === undefined) {
+            expect(item).not.toHaveProperty("phase");
+          } else {
+            expect(item.phase).toBe(phase);
+          }
+        }
+      } finally {
+        ws.close();
+        await ws.waitForClose();
+      }
+    },
+  );
+
   it("streams text response with correct event types", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, "/v1/responses");

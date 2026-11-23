@@ -1,0 +1,690 @@
+{
+  "sse: empty frames": {
+    "returned": true,
+    "bytes": "646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, latency": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, signal aborted before": {
+    "returned": true,
+    "bytes": "646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, signal aborted before": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, signal aborted before, latency": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, abort after first frame": {
+    "returned": false,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, abort after last frame": {
+    "returned": false,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, abort during delay": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, ended before, signal aborted": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, ended after first frame": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, ended after last frame": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, ended during delay": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, destroyed": {
+    "returned": true,
+    "bytes": "646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, destroyed": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: two frames, no writeHead": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, no writeHead, signal aborted": {
+    "returned": true,
+    "bytes": "646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: numeric latency": {
+    "returned": true,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227431227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: usage + openRouterProcessing": {
+    "returned": true,
+    "bytes": "3a204f50454e524f555445522050524f43455353494e470a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b5d2c227573616765223a7b2270726f6d70745f746f6b656e73223a312c22636f6d706c6574696f6e5f746f6b656e73223a322c22746f74616c5f746f6b656e73223a337d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: empty frames, usage + openRouterProcessing, signal aborted before": {
+    "returned": true,
+    "bytes": "3a204f50454e524f555445522050524f43455353494e470a0a646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b5d2c227573616765223a7b2270726f6d70745f746f6b656e73223a312c22636f6d706c6574696f6e5f746f6b656e73223a322c22746f74616c5f746f6b656e73223a337d7d0a0a646174613a205b444f4e455d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "sse: openRouterProcessing, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "sse: usage, abort after last frame": {
+    "returned": false,
+    "bytes": "646174613a207b226964223a2263222c226f626a656374223a22636861742e636f6d706c6574696f6e2e6368756e6b222c2263726561746564223a312c226d6f64656c223a226d222c2263686f69636573223a5b7b22696e646578223a302c2264656c7461223a7b22636f6e74656e74223a227430227d2c226c6f6770726f6273223a6e756c6c2c2266696e6973685f726561736f6e223a6e756c6c7d5d7d0a0a",
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, latency": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames, signal aborted before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, signal aborted before": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, signal aborted before, latency": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, abort after first frame": {
+    "returned": false,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, abort after last frame": {
+    "returned": false,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, abort during delay": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames, ended before, signal aborted": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, ended after first frame": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, ended after last frame": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, ended during delay": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames, destroyed": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, destroyed": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: two frames, no writeHead": {
+    "returned": true,
+    "bytes": "7b2269223a302c22646f6e65223a66616c73657d0a7b2269223a312c22646f6e65223a66616c73657d0a",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "ndjson: empty frames, no writeHead, signal aborted": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, latency": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames, signal aborted before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, signal aborted before": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, signal aborted before, latency": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, abort after first frame": {
+    "returned": false,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b24",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, abort after last frame": {
+    "returned": false,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, abort during delay": {
+    "returned": false,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": false,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, ended before": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames, ended before, signal aborted": {
+    "returned": true,
+    "bytes": "",
+    "headers": {},
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, ended after first frame": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b24",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, ended after last frame": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, ended during delay": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 0,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames, destroyed": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, destroyed": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: two frames, no writeHead": {
+    "returned": true,
+    "bytes": "0000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a307d30ba1b240000006e00000057b62fd2120d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0b3a6576656e742d74797065070011636f6e74656e74426c6f636b44656c74610d3a6d6573736167652d747970650700056576656e747b2269223a317d29a12a65",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  },
+  "eventStream: empty frames, no writeHead, signal aborted": {
+    "returned": true,
+    "bytes": "",
+    "headers": {
+      "Content-Type": "application/vnd.amazon.eventstream",
+      "Transfer-Encoding": "chunked"
+    },
+    "writableEnded": true,
+    "endCalls": 1,
+    "writeHeadCalls": 0
+  }
+}

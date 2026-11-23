@@ -1,0 +1,39 @@
+{
+  "mcpFakes": [
+    {
+      "scope": { "testId": "swallowed.test.ts › weather › seattle" },
+      "undeclaredTools": "deny",
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    },
+    {
+      "scope": { "testId": "jest/swallowed.test.cjs › weather seattle" },
+      "undeclaredTools": "deny",
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    },
+    {
+      "scope": { "testId": "unused.test.ts › weather › unused" },
+      "tools": [
+        {
+          "name": "get_weather",
+          "calls": [{ "id": "never-called", "args": { "city": "Paris" }, "result": "sun" }]
+        }
+      ]
+    },
+    {
+      "scope": { "testId": "fakes-for.test.ts › weather › seattle" },
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    },
+    {
+      "scope": { "testId": "jest/fakes-for.test.cjs › weather seattle" },
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    }
+  ]
+}

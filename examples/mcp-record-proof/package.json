@@ -1,0 +1,14 @@
+{
+  "name": "aimock-mcp-record-proof",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "proof": "./proof.sh ../../dist/cli.js"
+  },
+  "dependencies": {
+    "@copilotkit/aimock": "link:../..",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/server-everything": "2026.8.31"
+  }
+}

@@ -19,11 +19,11 @@ import {
   getContext,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { applyChaos, chaosIdentity, prepareChaos } from "./chaos.js";
@@ -415,6 +415,31 @@ function classifyRoute(
   return null;
 }
 
+/** The single-valued `x-fal-target-host` header, or undefined when absent. */
+function falTargetHost(req: http.IncomingMessage): string | undefined {
+  const header = req.headers["x-fal-target-host"];
+  return Array.isArray(header) ? header[0] : header;
+}
+
+/**
+ * Whether `handleFal` will take ownership of this request — i.e. whether it
+ * returns `"handled"` rather than `"passthrough"`. Pure, synchronous and
+ * side-effect free: it runs exactly the classification `handleFal` itself runs
+ * (same `falTargetHost` + `classifyRoute` pair, which are the ONLY two things
+ * that can produce `"passthrough"`), so the two cannot disagree.
+ *
+ * The server calls this BEFORE rolling chaos so that each fal request is
+ * rolled exactly once: when this returns true the general handler owns the
+ * request and the server's gate is the single roll; when it returns false the
+ * request falls through to the legacy `/fal/queue/...` and `/fal/run/...`
+ * routes, which roll (and delay) their own.
+ */
+export function falWillHandle(req: http.IncomingMessage, pathname: string): boolean {
+  const targetHost = falTargetHost(req);
+  if (!targetHost) return false;
+  return classifyRoute(req, pathname, targetHost) !== null;
+}
+
 /**
  * General fal.ai handler. Routes by `x-fal-target-host` header (the convention
  * used by `@fal-ai/client`'s server-side requestMiddleware workaround for the
@@ -422,7 +447,8 @@ function classifyRoute(
  *
  * Returns `"passthrough"` when the request does not look like a host-mirrored
  * fal call, so the caller can fall back to the legacy `/fal/queue/...` and
- * `/fal/run/...` audio routes.
+ * `/fal/run/...` audio routes. `falWillHandle` predicts that outcome without
+ * running the handler.
  */
 export async function handleFal(
   req: http.IncomingMessage,
@@ -433,8 +459,7 @@ export async function handleFal(
   defaults: HandlerDefaults,
   journal: Journal,
 ): Promise<HandleFalOutcome> {
-  const targetHostHeader = req.headers["x-fal-target-host"];
-  const targetHost = Array.isArray(targetHostHeader) ? targetHostHeader[0] : targetHostHeader;
+  const targetHost = falTargetHost(req);
   if (!targetHost) return "passthrough";
 
   const route = classifyRoute(req, pathname, targetHost);
@@ -602,13 +627,11 @@ export async function handleFal(
         });
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: detail,
-              type: "invalid_request_error",
-              code: "invalid_json",
-            },
-          }),
+          renderError("openai", "validation", {
+            message: detail,
+            type: "invalid_request_error",
+            code: "invalid_json",
+          }).body,
         );
         return "handled";
       }
@@ -653,8 +676,8 @@ export async function handleFal(
       }
 
       if (!fixture) {
-        const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-        if (effectiveStrict) {
+        const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+        if (fixtureMiss) {
           const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
           defaults.logger.error(
             strictNoMatchLogLine(req.method ?? "POST", pathname, skippedBySequenceOrTurn),
@@ -672,13 +695,11 @@ export async function handleFal(
           });
           res.writeHead(503, { "Content-Type": "application/json" });
           res.end(
-            JSON.stringify({
-              error: {
-                message: strictMessage,
-                type: "invalid_request_error",
-                code: "no_fixture_match",
-              },
-            }),
+            renderError("openai", "strict-miss", {
+              message: strictMessage,
+              type: "invalid_request_error",
+              code: "no_fixture_match",
+            }).body,
           );
           return "handled";
         }
@@ -743,13 +764,11 @@ export async function handleFal(
         });
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: "No fixture matched",
-              type: "invalid_request_error",
-              code: "no_fixture_match",
-            },
-          }),
+          renderError("openai", "fixture-miss", {
+            message: "No fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          }).body,
         );
         return "handled";
       }
@@ -787,12 +806,10 @@ export async function handleFal(
         });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({
-            error: {
-              message: "Fixture response is not JSON or audio for fal endpoint",
-              type: "server_error",
-            },
-          }),
+          renderError("openai", "unknown-response", {
+            message: "Fixture response is not JSON or audio for fal endpoint",
+            type: "server_error",
+          }).body,
         );
         return "handled";
       }
@@ -1170,9 +1187,10 @@ async function proxyAndRecordFalQueueSubmit(args: {
     });
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
     return "handled";
   }
@@ -1318,8 +1336,9 @@ function respondNotFound(
   });
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(
-    JSON.stringify({
-      error: { message: `Request ${requestId} not found`, type: "not_found" },
-    }),
+    renderError("openai", "route-failure", {
+      message: `Request ${requestId} not found`,
+      type: "not_found",
+    }).body,
   );
 }

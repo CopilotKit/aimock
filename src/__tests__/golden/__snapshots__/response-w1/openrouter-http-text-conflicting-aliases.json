@@ -1,0 +1,12 @@
+{
+  "status": 200,
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+    "content-type": "application/json",
+    "x-request-id": "req-<#0>"
+  },
+  "body": "{\"id\":\"w1-fixed\",\"object\":\"chat.completion\",\"created\":\"<epoch>\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"hello world!\",\"refusal\":null,\"reasoning\":null},\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":20},\"provider\":\"openai\",\"system_fingerprint\":null,\"service_tier\":null}"
+}

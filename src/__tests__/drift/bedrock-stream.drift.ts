@@ -1,8 +1,23 @@
 /**
- * AWS Bedrock drift tests.
+ * AWS Bedrock OFFLINE SHAPE-CONFORMANCE tests.
  *
- * Three-way comparison: SDK types x real API x aimock output.
- * Covers invoke-with-response-stream, converse, and converse-stream endpoints.
+ * NOT drift tests. Nothing here ever reaches AWS — this repo implements no
+ * SigV4 request signing (no `@aws-sdk` dependency, no HMAC signer anywhere), so
+ * there is no live leg to compare against. Every case below drives the LOCAL
+ * aimock server and grades its output against a hand-written SDK-shape fixture
+ * in this file / `sdk-shapes.ts`. That catches an aimock builder regression; it
+ * cannot catch AWS changing its wire format.
+ *
+ * The four surfaces these cases emit (`bedrock-invoke`, `bedrock-invoke-stream`,
+ * `bedrock-converse`, `bedrock-converse-stream`) are therefore declared
+ * `liveCoverage: "none"` in `surface-registry.ts`, and the drift report lists
+ * them under `unverifiedSurfaces` on every run so a green report never reads as
+ * "AWS was checked".
+ *
+ * They run UNCONDITIONALLY. They used to sit behind
+ * `describe.skipIf(!AWS_ACCESS_KEY_ID && ...)` — an AWS-credential gate on a
+ * body that needs no AWS — and no drift workflow sets those variables, so all
+ * six cases had never executed in CI while four surfaces reported as covered.
  */
 
 import http from "node:http";
@@ -12,6 +27,7 @@ import type { Fixture } from "../../types.js";
 import { extractShape, triangulate, formatDriftReport } from "./schema.js";
 import { httpPost, startDriftServer, stopDriftServer } from "./helpers.js";
 import {
+  anthropicMessageShape,
   bedrockConverseStreamEventShapes,
   bedrockConverseStreamToolShapes,
   bedrockConverseStreamReasoningShapes,
@@ -19,23 +35,10 @@ import {
 } from "./sdk-shapes.js";
 
 // ---------------------------------------------------------------------------
-// Credentials check
-// ---------------------------------------------------------------------------
-
-const HAS_CREDENTIALS =
-  !!process.env.AWS_ACCESS_KEY_ID &&
-  !!process.env.AWS_SECRET_ACCESS_KEY &&
-  !!process.env.AWS_REGION;
-
-// ---------------------------------------------------------------------------
 // Model pin
 // ---------------------------------------------------------------------------
 //
-// This leg never makes a live Bedrock call — nothing in this repo implements
-// AWS SigV4 request signing (no `@aws-sdk` dependency, no HMAC-based signer
-// anywhere), so every HAS_CREDENTIALS-gated test below only exercises the
-// LOCAL aimock mock server against a static SDK-shape stub. The
-// infra-unavailable / model-not-found "honest skip" classification used by
+// The infra-unavailable / model-not-found "honest skip" classification used by
 // the other retrofit legs (which DO drive a real provider endpoint) does not
 // apply here: a 4xx/5xx from the mock server is never a live-provider
 // condition, it is a mock regression, and must hard-fail like any other drift
@@ -62,22 +65,35 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal Bedrock InvokeModel response shape.
- * Bedrock wraps the model output in its own envelope.
+ * Bedrock InvokeModel response shape, as it appears ON THE WIRE.
+ *
+ * For an `anthropic.*` model id the HTTP response body IS the Anthropic
+ * Messages envelope, verbatim — Bedrock adds no envelope of its own over HTTP.
+ * So this delegates to `anthropicMessageShape()`, the SAME fixture the LIVE
+ * Anthropic drift leg grades `api.anthropic.com` against every run. That keeps
+ * the expected shape tethered to something a real provider response moves: if
+ * Anthropic changes the envelope, the live leg reds and this fixture is updated
+ * with it, and this offline check follows along.
+ *
+ * It used to describe `{ body, contentType, $metadata }` instead. Those are
+ * `aws-sdk-js-v3` CLIENT artifacts (`$metadata` is the smithy `MetadataBearer`
+ * the middleware stack bolts on; `body`/`contentType` are how the JS client
+ * hands you the payload), not fields any HTTP response carries. aimock is an
+ * HTTP mock and serves the wire body, so that fixture asserted three fields
+ * that could never be present — and, because the gate meant these cases never
+ * ran, nobody saw it fail.
  */
 function bedrockInvokeResponseShape() {
-  return extractShape({
-    body: "base64-encoded-string",
-    contentType: "application/json",
-    $metadata: {
-      httpStatusCode: 200,
-      requestId: "req-abc",
-    },
-  });
+  return anthropicMessageShape();
 }
 
 /**
- * Minimal Bedrock Converse response shape.
+ * Minimal Bedrock Converse response shape, as it appears ON THE WIRE.
+ *
+ * `$metadata` is deliberately absent: it is the `aws-sdk-js-v3` smithy
+ * `MetadataBearer` the client middleware attaches (hence the `$` prefix), never
+ * a field in the Converse HTTP body. It used to be asserted here, which made
+ * this case fail against a correct mock the moment it was allowed to run.
  */
 function bedrockConverseResponseShape() {
   return extractShape({
@@ -95,10 +111,6 @@ function bedrockConverseResponseShape() {
     },
     metrics: {
       latencyMs: 100,
-    },
-    $metadata: {
-      httpStatusCode: 200,
-      requestId: "req-abc",
     },
   });
 }
@@ -194,7 +206,7 @@ function parseFrames(buf: Buffer): ParsedFrame[] {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
+describe("Bedrock mock shape conformance (offline — no live AWS leg)", () => {
   it("invoke-with-response-stream mock shape is plausible", async () => {
     const sdkShape = bedrockInvokeResponseShape();
 
@@ -243,7 +255,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
 
     // Extract the Anthropic-native event type from each frame's payload
     const payloadEvents = frames.map((f) => {
-      const payload = f.payload as Record<string, unknown>;
+      const envelope = f.payload as { bytes: string };
+      const payload = JSON.parse(Buffer.from(envelope.bytes, "base64").toString("utf8")) as Record<
+        string,
+        unknown
+      >;
       return {
         type: (payload.type as string) ?? "",
         dataShape: extractShape(payload),

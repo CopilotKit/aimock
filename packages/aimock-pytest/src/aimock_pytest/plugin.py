@@ -45,9 +45,13 @@ def _aimock_node_manager(request: pytest.FixtureRequest) -> NodeManager:
 @pytest.fixture
 def aimock(request: pytest.FixtureRequest, _aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
     """Function-scoped aimock server.  A fresh server is started for every
-    test that requests this fixture, and torn down afterwards."""
+    test that requests this fixture, and torn down afterwards.
+
+    Its ``fakes_for`` and ``fakes_report`` default to this test's
+    ``request.node.nodeid`` (spec TI3); nothing else is tagged with it."""
     server = AIMockServer(_aimock_node_manager, port=0, api_key=request.config.getoption("--aimock-api-key"))
     server.start()
+    server._default_test_id = request.node.nodeid
     yield server
     server.stop()
 

@@ -1,4 +1,5 @@
 import * as http from "node:http";
+import { buildOpenAIError } from "./response/errors.js";
 import type { Mountable, JournalEntry } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { MetricsRegistry } from "./metrics.js";
@@ -11,7 +12,7 @@ import type {
   QueryHandler,
 } from "./vector-types.js";
 import { createVectorRequestHandler, type VectorState } from "./vector-handler.js";
-import { flattenHeaders, readBody } from "./helpers.js";
+import { flattenHeaders, isJsonObject, readBody } from "./helpers.js";
 
 export class VectorMock implements Mountable {
   private collections: Map<string, VectorCollection> = new Map();
@@ -86,8 +87,47 @@ export class VectorMock implements Mountable {
         if (body) parsed = JSON.parse(body);
       } catch (parseErr) {
         const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+        if (this.journal) {
+          this.journal.add({
+            method: req.method ?? "GET",
+            path: req.url ?? "/",
+            headers: flattenHeaders(req.headers),
+            body: null,
+            service: "vector",
+            response: { status: 400, fixture: null },
+          });
+        }
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Malformed JSON body: ${detail}` }));
+        return true;
+      }
+
+      // Reject bodies that parsed but are not a JSON object (e.g. `null`)
+      // before the route handlers touch fields — `body.ids`, `body.vectors`,
+      // `body.points` and friends throw a TypeError on `null` that nothing
+      // catches, killing the process rather than answering the request.
+      // Arrays and scalars are rejected for the same reason the JSON handlers
+      // reject them: every field reads as `undefined` and the handler answers
+      // a misleading `200` on a degenerate empty result.
+      if (!isJsonObject(parsed)) {
+        if (this.journal) {
+          this.journal.add({
+            method: req.method ?? "GET",
+            path: req.url ?? "/",
+            headers: flattenHeaders(req.headers),
+            body: null,
+            service: "vector",
+            response: { status: 400, fixture: null },
+          });
+        }
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify(
+            buildOpenAIError("service-validation", {
+              message: "Request body must be a JSON object",
+            }),
+          ),
+        );
         return true;
       }
     }
@@ -109,6 +149,26 @@ export class VectorMock implements Mountable {
         body: null,
         service: "vector",
         response: { status: res.statusCode, fixture: null },
+      });
+    }
+
+    // When mounted, an unmatched path is answered by the parent server, not
+    // here, so journal it once the response is out and only if it really was
+    // a 404 — otherwise a path this wrapper declines but the server rewrites
+    // and serves would be journaled twice. Keeps mounted mode in step with
+    // the standalone 404 journaling below.
+    if (!handled && this.journal) {
+      const journal = this.journal;
+      res.once("finish", () => {
+        if (res.statusCode !== 404) return;
+        journal.add({
+          method: req.method ?? "GET",
+          path: req.url ?? "/",
+          headers: flattenHeaders(req.headers),
+          body: null,
+          service: "vector",
+          response: { status: 404, fixture: null },
+        });
       });
     }
 
@@ -152,10 +212,45 @@ export class VectorMock implements Mountable {
           } catch (parseErr) {
             if (req.method !== "GET") {
               const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+              if (this.journal) {
+                this.journal.add({
+                  method: req.method ?? "GET",
+                  path: req.url ?? "/",
+                  headers: flattenHeaders(req.headers),
+                  body: null,
+                  service: "vector",
+                  response: { status: 400, fixture: null },
+                });
+              }
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ error: `Malformed JSON body: ${detail}` }));
               return;
             }
+          }
+
+          // Same non-object rejection as the mounted path above — a `null`
+          // body otherwise reaches the route handlers and throws an uncaught
+          // TypeError that takes the standalone server's process down.
+          if (req.method !== "GET" && !isJsonObject(parsed)) {
+            if (this.journal) {
+              this.journal.add({
+                method: req.method ?? "GET",
+                path: req.url ?? "/",
+                headers: flattenHeaders(req.headers),
+                body: null,
+                service: "vector",
+                response: { status: 400, fixture: null },
+              });
+            }
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify(
+                buildOpenAIError("service-validation", {
+                  message: "Request body must be a JSON object",
+                }),
+              ),
+            );
+            return;
           }
 
           const url = new URL(req.url ?? "/", `http://${host}`);
@@ -173,6 +268,16 @@ export class VectorMock implements Mountable {
             });
           }
           if (!handled) {
+            if (this.journal) {
+              this.journal.add({
+                method: req.method ?? "GET",
+                path: req.url ?? "/",
+                headers: flattenHeaders(req.headers),
+                body: null,
+                service: "vector",
+                response: { status: 404, fixture: null },
+              });
+            }
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Not found" }));
           }

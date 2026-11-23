@@ -7,7 +7,52 @@
  * required fields populated with representative values.
  */
 
-import { extractShape, type ShapeNode, type SSEEventShape } from "./schema.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+  extractShape,
+  triangulate,
+  type ShapeNode,
+  type SSEEventShape,
+  type ShapeDiff,
+} from "./schema.js";
+import type { ObservedResponse, ObservationBody } from "./live-observations.js";
+
+/** Native status and discriminator values supplement the existing shape channel.
+ * Exact messages/request IDs remain in observations; vendor comparisons do not
+ * require the mock's deterministic message to equal provider diagnostic text.
+ */
+export function nativeResponseDiffs(
+  expected: ObservedResponse,
+  actual: ObservedResponse,
+  exactBody = false,
+): ShapeDiff[] {
+  // These are raw HTTP observations, not an independent SDK error descriptor.
+  const diffs = triangulate(null, extractShape(expected.body), extractShape(actual.body));
+  const field = (body: ObservationBody, key: string) =>
+    body && typeof body === "object" && !Array.isArray(body) ? body[key] : undefined;
+  const values = [
+    ["status", expected.status, actual.status],
+    ["type", field(expected.body, "type"), field(actual.body, "type")],
+    ...["type", "code", "status"].map((key) => [
+      `error.${key}`,
+      field(field(expected.body, "error") ?? null, key),
+      field(field(actual.body, "error") ?? null, key),
+    ]),
+    ...(exactBody ? [["body", expected.body, actual.body]] : []),
+  ];
+  for (const [path, real, mock] of values) {
+    if (!isDeepStrictEqual(real, mock))
+      diffs.push({
+        path: String(path),
+        severity: "critical",
+        issue: "Native response value differs",
+        expected: JSON.stringify(real) ?? "<absent>",
+        real: JSON.stringify(real) ?? "<absent>",
+        mock: JSON.stringify(mock) ?? "<absent>",
+      });
+  }
+  return diffs;
+}
 
 // ---------------------------------------------------------------------------
 // OpenAI Chat Completions
@@ -170,7 +215,7 @@ export function openaiChatCompletionReasoningChunkShape(): ShapeNode {
 export function openaiModerationResponseShape(): ShapeNode {
   return extractShape({
     id: "modr-abc123",
-    model: "text-moderation-latest",
+    model: "omni-moderation-latest",
     results: [
       {
         flagged: false,
@@ -398,6 +443,187 @@ export function openaiResponsesToolCallEventShapes(): SSEEventShape[] {
         arguments: '{"city":"SF"}',
       }),
     },
+  ];
+}
+
+/** A Responses object whose `output` holds exactly `item`. */
+function openaiResponseWithItem(item: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: "resp_abc123",
+    object: "response",
+    created_at: 1700000000,
+    model: "gpt-5-mini",
+    status: "completed",
+    output: [item],
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+    },
+  };
+}
+
+/**
+ * `response.completed` whose `output` holds exactly `item`, for the legs that
+ * grade a single tool-call item end to end. The text leg's `response.completed`
+ * shape carries a `message` item. Reusing it would leave the tool item's fields
+ * without an SDK expectation, so a field the mock dropped would surface only as
+ * a PROVIDER ADDED FIELD warning, not as critical LLMOCK DRIFT.
+ */
+function openaiResponsesCompletedWithItemShape(item: Record<string, unknown>): SSEEventShape {
+  return {
+    type: "response.completed",
+    dataShape: extractShape({ type: "response.completed", response: openaiResponseWithItem(item) }),
+  };
+}
+
+/**
+ * The `function_call` item for a tool offered inside a `namespace` tool. Source:
+ * openai-node 6.44.0 `resources/responses/responses.d.ts`
+ * (`ResponseFunctionToolCall.namespace?: string`).
+ */
+function namespacedFunctionCallItem(
+  args: string,
+  status: "in_progress" | "completed",
+): Record<string, unknown> {
+  return {
+    type: "function_call",
+    id: "fc_abc123",
+    call_id: "call_abc123",
+    namespace: "weather_tools",
+    name: "get_weather",
+    arguments: args,
+    status,
+  };
+}
+
+/**
+ * The `custom_tool_call` item. Source: openai-node 6.44.0
+ * `resources/responses/responses.d.ts` (`ResponseCustomToolCall`), which
+ * declares no `status`; it is kept because aimock emits it, and a real item
+ * without it grades as info (SDK EXTRA), not as drift.
+ */
+function customToolCallItem(
+  input: string,
+  status: "in_progress" | "completed",
+): Record<string, unknown> {
+  return {
+    type: "custom_tool_call",
+    id: "ctc_abc123",
+    call_id: "call_abc123",
+    name: "apply_patch",
+    input,
+    status,
+  };
+}
+
+/**
+ * Non-streaming Responses body for a forced namespaced `function_call`: the
+ * plain JSON `output[]` item carries `namespace`, like the streamed item.
+ */
+export function openaiResponsesNamespacedToolCallNonStreamingShape(): ShapeNode {
+  return extractShape(
+    openaiResponseWithItem(namespacedFunctionCallItem('{"city":"Paris"}', "completed")),
+  );
+}
+
+/**
+ * Non-streaming Responses body for a forced `custom_tool_call`: the plain JSON
+ * `output[]` item carries `call_id` and the full `input`.
+ */
+export function openaiResponsesCustomToolCallNonStreamingShape(): ShapeNode {
+  return extractShape(openaiResponseWithItem(customToolCallItem("*** Begin Patch", "completed")));
+}
+
+/**
+ * A `function_call` for a tool offered inside a `namespace` tool carries
+ * `namespace` on every item-bearing event: `output_item.added`,
+ * `output_item.done` and the item in `response.completed.output`.
+ *
+ * Source: openai-node 6.44.0 `resources/responses/responses.d.ts`
+ * (`ResponseFunctionToolCall.namespace?: string`). The repo's installed
+ * openai 4.104.0 predates `namespace`, so it cannot be checked there.
+ *
+ * Includes its own `response.completed`; callers must not also merge the text
+ * leg's `response.completed` (a `message` item) into the SDK expectations.
+ */
+export function openaiResponsesNamespacedToolCallEventShapes(): SSEEventShape[] {
+  const item = namespacedFunctionCallItem;
+  return [
+    {
+      type: "response.output_item.added",
+      dataShape: extractShape({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: item("", "in_progress"),
+      }),
+    },
+    ...openaiResponsesToolCallEventShapes().filter((e) => e.type !== "response.output_item.added"),
+    {
+      type: "response.output_item.done",
+      dataShape: extractShape({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: item('{"city":"Paris"}', "completed"),
+      }),
+    },
+    openaiResponsesCompletedWithItemShape(item('{"city":"Paris"}', "completed")),
+  ];
+}
+
+/**
+ * A custom (freeform) tool call streams as a `custom_tool_call` item with
+ * `response.custom_tool_call_input.delta` / `.done`, and carries the full
+ * `input` and `call_id` on `output_item.done` and in `response.completed.output`.
+ *
+ * Source: openai-node 6.44.0 `resources/responses/responses.d.ts`
+ * (`ResponseCustomToolCall`, `ResponseCustomToolCallInputDeltaEvent`,
+ * `ResponseCustomToolCallInputDoneEvent`); the installed openai 4.104.0 has none
+ * of these types. `ResponseCustomToolCall` declares no `status`; it is kept here
+ * because aimock emits it, and a real item without it grades as info
+ * (SDK EXTRA), not as drift.
+ *
+ * Includes its own `response.completed`; callers must not also merge the text
+ * leg's `response.completed` (a `message` item) into the SDK expectations.
+ */
+export function openaiResponsesCustomToolCallEventShapes(): SSEEventShape[] {
+  const item = customToolCallItem;
+  return [
+    {
+      type: "response.output_item.added",
+      dataShape: extractShape({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: item("", "in_progress"),
+      }),
+    },
+    {
+      type: "response.custom_tool_call_input.delta",
+      dataShape: extractShape({
+        type: "response.custom_tool_call_input.delta",
+        item_id: "ctc_abc123",
+        output_index: 0,
+        delta: "*** Begin",
+      }),
+    },
+    {
+      type: "response.custom_tool_call_input.done",
+      dataShape: extractShape({
+        type: "response.custom_tool_call_input.done",
+        item_id: "ctc_abc123",
+        output_index: 0,
+        input: "*** Begin Patch",
+      }),
+    },
+    {
+      type: "response.output_item.done",
+      dataShape: extractShape({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: item("*** Begin Patch", "completed"),
+      }),
+    },
+    openaiResponsesCompletedWithItemShape(item("*** Begin Patch", "completed")),
   ];
 }
 

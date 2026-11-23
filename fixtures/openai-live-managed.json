@@ -1,0 +1,709 @@
+{
+  "$comment": "Authored offline protocol example, not a provider capture. PCM is six synthetic 16-bit samples per direction, not speech. Timings, usage and identifiers are illustrative; no interruption or live-provider behavior is proved by this fixture.",
+  "fixtures": [
+    {
+      "match": {
+        "endpoint": "openai-live",
+        "model": "gpt-live-1"
+      },
+      "response": {
+        "live": {
+          "version": 1,
+          "model": "gpt-live-1",
+          "mode": "managed",
+          "audio": {
+            "encoding": "pcm16le",
+            "sampleRateHz": 24000,
+            "channels": 1
+          },
+          "configuration": {
+            "model": "gpt-live-1",
+            "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+            "audio": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "output": {
+                "voice": "marin"
+              }
+            },
+            "delegation": {
+              "type": "responses",
+              "responses": {
+                "model": "gpt-5.6-luna",
+                "instructions": "Call read_red and read_blue. Continue after both tool outputs.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "read_red",
+                    "description": "Read the fictional red sensor.",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {},
+                      "required": [],
+                      "additionalProperties": false
+                    },
+                    "strict": true
+                  },
+                  {
+                    "type": "function",
+                    "name": "read_blue",
+                    "description": "Read the fictional blue sensor.",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {},
+                      "required": [],
+                      "additionalProperties": false
+                    },
+                    "strict": true
+                  }
+                ],
+                "parallel_tool_calls": true,
+                "max_output_tokens": 512,
+                "tool_choice": "auto"
+              }
+            }
+          },
+          "entries": [
+            {
+              "direction": "client",
+              "atMs": 0,
+              "event": {
+                "type": "session.start",
+                "event_id": "live-id-1",
+                "session": {
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "responses",
+                    "responses": {
+                      "model": "gpt-5.6-luna",
+                      "instructions": "Call read_red and read_blue. Continue after both tool outputs.",
+                      "tools": [
+                        {
+                          "type": "function",
+                          "name": "read_red",
+                          "description": "Read the fictional red sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        },
+                        {
+                          "type": "function",
+                          "name": "read_blue",
+                          "description": "Read the fictional blue sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        }
+                      ],
+                      "parallel_tool_calls": true,
+                      "max_output_tokens": 512,
+                      "tool_choice": "auto"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 10,
+              "event": {
+                "event_id": "live-id-2",
+                "type": "session.started",
+                "client_event_id": "live-id-1",
+                "session": {
+                  "id": "live-id-3",
+                  "expires_at": 2000000000,
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "responses",
+                    "responses": {
+                      "model": "gpt-5.6-luna",
+                      "instructions": "Call read_red and read_blue. Continue after both tool outputs.",
+                      "tools": [
+                        {
+                          "type": "function",
+                          "name": "read_red",
+                          "description": "Read the fictional red sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        },
+                        {
+                          "type": "function",
+                          "name": "read_blue",
+                          "description": "Read the fictional blue sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        }
+                      ],
+                      "parallel_tool_calls": true,
+                      "max_output_tokens": 512,
+                      "tool_choice": "auto"
+                    }
+                  },
+                  "status": "active",
+                  "input": []
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 20,
+              "event": {
+                "type": "session.input_audio.append",
+                "audio": "AAABAP//AgD+/wAA"
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 30,
+              "event": {
+                "type": "session.delegation.created",
+                "offset_ms": 0,
+                "delegation": {
+                  "id": "live-id-5",
+                  "type": "delegation",
+                  "response_id": "live-id-6",
+                  "target": "responses"
+                },
+                "event_id": "live-id-4"
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 40,
+              "event": {
+                "event_id": "live-id-7",
+                "type": "response.event",
+                "delegation_id": "live-id-5",
+                "event": {
+                  "type": "response.output_item.added",
+                  "item": {
+                    "id": "live-id-8",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "arguments": "",
+                    "call_id": "live-id-9",
+                    "name": "read_red"
+                  },
+                  "output_index": 1,
+                  "sequence_number": 4
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 50,
+              "event": {
+                "event_id": "live-id-10",
+                "type": "response.event",
+                "delegation_id": "live-id-5",
+                "event": {
+                  "type": "response.output_item.done",
+                  "item": {
+                    "id": "live-id-8",
+                    "type": "function_call",
+                    "status": "completed",
+                    "arguments": "{}",
+                    "call_id": "live-id-9",
+                    "name": "read_red"
+                  },
+                  "output_index": 1,
+                  "sequence_number": 7
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 60,
+              "event": {
+                "event_id": "live-id-11",
+                "type": "response.event",
+                "delegation_id": "live-id-5",
+                "event": {
+                  "type": "response.output_item.added",
+                  "item": {
+                    "id": "live-id-12",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "arguments": "",
+                    "call_id": "live-id-13",
+                    "name": "read_blue"
+                  },
+                  "output_index": 2,
+                  "sequence_number": 8
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 70,
+              "event": {
+                "event_id": "live-id-14",
+                "type": "response.event",
+                "delegation_id": "live-id-5",
+                "event": {
+                  "type": "response.output_item.done",
+                  "item": {
+                    "id": "live-id-12",
+                    "type": "function_call",
+                    "status": "completed",
+                    "arguments": "{}",
+                    "call_id": "live-id-13",
+                    "name": "read_blue"
+                  },
+                  "output_index": 2,
+                  "sequence_number": 11
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 80,
+              "event": {
+                "type": "response.item.create",
+                "event_id": "live-id-15",
+                "item": {
+                  "type": "function_call_output",
+                  "call_id": "live-id-9",
+                  "output": "{\"sensor\":\"read_red\",\"value\":7}"
+                }
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 90,
+              "event": {
+                "type": "response.item.create",
+                "event_id": "live-id-16",
+                "item": {
+                  "type": "function_call_output",
+                  "call_id": "live-id-13",
+                  "output": "{\"sensor\":\"read_blue\",\"value\":9}"
+                }
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 100,
+              "event": {
+                "type": "response.create",
+                "event_id": "live-id-17"
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 110,
+              "event": {
+                "type": "session.output_audio.delta",
+                "delta": "AAACAP7/AQD//wAA"
+              },
+              "barrier": {
+                "command": 4,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 120,
+              "event": {
+                "type": "session.usage.updated",
+                "usage": {
+                  "seconds": 1
+                },
+                "context_window": {
+                  "usage_ratio": 0.001
+                },
+                "event_id": "live-id-18"
+              },
+              "barrier": {
+                "command": 4,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 130,
+              "event": {
+                "type": "session.close",
+                "event_id": "live-id-19"
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 140,
+              "event": {
+                "event_id": "live-id-20",
+                "type": "session.closed",
+                "reason": "close_requested",
+                "session": {
+                  "id": "live-id-3",
+                  "expires_at": 2000000000,
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "responses",
+                    "responses": {
+                      "model": "gpt-5.6-luna",
+                      "instructions": "Call read_red and read_blue. Continue after both tool outputs.",
+                      "tools": [
+                        {
+                          "type": "function",
+                          "name": "read_red",
+                          "description": "Read the fictional red sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        },
+                        {
+                          "type": "function",
+                          "name": "read_blue",
+                          "description": "Read the fictional blue sensor.",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          },
+                          "strict": true
+                        }
+                      ],
+                      "parallel_tool_calls": true,
+                      "max_output_tokens": 512,
+                      "tool_choice": "auto"
+                    }
+                  },
+                  "status": "active",
+                  "input": []
+                },
+                "usage": {
+                  "seconds": 1
+                },
+                "client_event_id": "live-id-19"
+              },
+              "barrier": {
+                "command": 5,
+                "audioBytes": 0
+              }
+            }
+          ],
+          "bindings": [
+            {
+              "entry": 0,
+              "pointer": "/event_id",
+              "name": "binding-1",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 1,
+              "pointer": "/event_id",
+              "name": "binding-2",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 1,
+              "pointer": "/client_event_id",
+              "name": "binding-1",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 1,
+              "pointer": "/session/id",
+              "name": "binding-3",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 3,
+              "pointer": "/event_id",
+              "name": "binding-4",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 3,
+              "pointer": "/delegation/id",
+              "name": "binding-5",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 3,
+              "pointer": "/delegation/response_id",
+              "name": "binding-6",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 4,
+              "pointer": "/event_id",
+              "name": "binding-7",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 4,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 4,
+              "pointer": "/event/item/id",
+              "name": "binding-8",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 4,
+              "pointer": "/event/item/call_id",
+              "name": "binding-9",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/event_id",
+              "name": "binding-10",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/event/item/id",
+              "name": "binding-8",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/event/item/call_id",
+              "name": "binding-9",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 6,
+              "pointer": "/event_id",
+              "name": "binding-11",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 6,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 6,
+              "pointer": "/event/item/id",
+              "name": "binding-12",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 6,
+              "pointer": "/event/item/call_id",
+              "name": "binding-13",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/event_id",
+              "name": "binding-14",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/event/item/id",
+              "name": "binding-12",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/event/item/call_id",
+              "name": "binding-13",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 8,
+              "pointer": "/event_id",
+              "name": "binding-15",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 8,
+              "pointer": "/item/call_id",
+              "name": "binding-9",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 9,
+              "pointer": "/event_id",
+              "name": "binding-16",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 9,
+              "pointer": "/item/call_id",
+              "name": "binding-13",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 10,
+              "pointer": "/event_id",
+              "name": "binding-17",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 12,
+              "pointer": "/event_id",
+              "name": "binding-18",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 13,
+              "pointer": "/event_id",
+              "name": "binding-19",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 14,
+              "pointer": "/event_id",
+              "name": "binding-20",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 14,
+              "pointer": "/client_event_id",
+              "name": "binding-19",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 14,
+              "pointer": "/session/id",
+              "name": "binding-3",
+              "action": "reference",
+              "owner": "server"
+            }
+          ],
+          "capture": {
+            "source": "authored",
+            "complete": true,
+            "terminalEntry": 14
+          }
+        },
+        "liveTiming": "immediate"
+      }
+    }
+  ]
+}

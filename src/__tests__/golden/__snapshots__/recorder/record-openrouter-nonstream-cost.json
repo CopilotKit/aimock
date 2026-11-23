@@ -1,0 +1,36 @@
+{
+  "fixtures": [
+    {
+      "match": {
+        "userMessage": "record openrouter nonstream",
+        "model": "openai/gpt-4o-mini",
+        "turnIndex": 0,
+        "hasToolResult": false
+      },
+      "response": {
+        "content": "Hello world",
+        "usage": {
+          "prompt_tokens": 1234,
+          "completion_tokens": 567,
+          "total_tokens": 1801,
+          "cost": 0.0042,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.004,
+            "upstream_inference_prompt_cost": 0.001,
+            "upstream_inference_completions_cost": 0.003
+          },
+          "prompt_tokens_details": {
+            "cached_tokens": 12,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 34
+          },
+          "native_tokens_prompt": 1200,
+          "native_tokens_completion": 550
+        }
+      }
+    }
+  ]
+}

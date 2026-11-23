@@ -7,56 +7,97 @@
  */
 
 import type * as http from "node:http";
+import { randomBytes } from "node:crypto";
 import type {
   ChatCompletionRequest,
   ChatMessage,
+  ContentPart,
+  CustomToolCall,
+  CustomToolDefinition,
   Fixture,
   FixtureBlock,
+  FixtureGeneratedFile,
+  FixtureResponse,
+  FixtureToolCall,
   HandlerDefaults,
   ResponseOverrides,
-  StreamingProfile,
+  ResponsesFixtureBlock,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
+import type { Logger } from "./logger.js";
 import {
   generateId,
   generateToolCallId,
   resolveFixtureBlocks,
+  assertResponsesToolCalls,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   serializeErrorResponse,
   flattenHeaders,
+  isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
+  assertCustomToolCalls,
+  resolveServedBlockOutcome,
+  servedToolCalls,
+  toolCallFixtureBlock,
+  withoutLegacyNamespaces,
+  UnsupportedGeneratedFileError,
+  fixtureFiles,
+  fixtureCitations,
+  surrogateSafeChunks,
 } from "./helpers.js";
+import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
-import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
-import type { RecordedTimings } from "./types.js";
+import { matchFixtureDiagnostic, recordMatchOptions, setResponsesOfferedTools } from "./router.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import {
+  extendRecordedTimings,
+  misbehaviorPayloadLength,
+  nonStreamingTimingEnabled,
+  responsesOutputFrames,
+  responsesPayloadLength,
+} from "./response/timing.js";
 import type { Journal } from "./journal.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import { render as renderResponsesUsage } from "./response/usage/codecs/responses.js";
+import { mapResponsesFinish } from "./response/finish.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
-interface ResponsesInputItem {
+export interface ResponsesInputItem {
   role?: string;
   type?: string;
   content?: string | ResponsesContentPart[];
   call_id?: string;
   name?: string;
+  /** `function_call` / `custom_tool_call`: the namespace of the called tool. */
+  namespace?: string;
   arguments?: string;
-  output?: string;
+  /** `custom_tool_call`: the free-text input. */
+  input?: string;
+  /** `function_call_output` / `custom_tool_call_output`: a string or content parts. */
+  output?: string | ResponsesContentPart[];
+  /** `additional_tools` / `tool_search_output`: tools made available at this item. */
+  tools?: ResponsesToolDef[];
   id?: string;
 }
 
@@ -84,13 +125,37 @@ interface ResponsesRequest {
   [key: string]: unknown;
 }
 
-interface ResponsesToolDef {
+interface ResponsesFunctionToolDef {
   type: "function";
   name: string;
   description?: string;
   parameters?: object;
   strict?: boolean;
 }
+
+interface ResponsesCustomToolDef {
+  type: "custom";
+  name: string;
+  description?: string;
+  format?: unknown;
+}
+
+interface ResponsesNamespaceToolDef {
+  type: "namespace";
+  name: string;
+  description?: string;
+  tools: Array<ResponsesFunctionToolDef | ResponsesCustomToolDef>;
+}
+
+/**
+ * A Responses request tool. `function`, `custom` and `namespace` tools are
+ * flattened for matching; any other tool type is accepted and ignored.
+ */
+export type ResponsesToolDef =
+  | ResponsesFunctionToolDef
+  | ResponsesCustomToolDef
+  | ResponsesNamespaceToolDef
+  | { type: string; name?: string; [key: string]: unknown };
 
 // ─── Input conversion: Responses → ChatCompletions messages ─────────────────
 
@@ -103,7 +168,65 @@ function extractTextContent(content: string | ResponsesContentPart[] | undefined
     .join("");
 }
 
-export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
+/**
+ * User item content. An item whose parts carry no text at all (only
+ * `input_image` / `input_file`) stays text-less (`null`) rather than `""`, so
+ * `userMessage` matching skips it and keys on the preceding prompt. Some SDKs
+ * (AG2's OpenAI Responses mapper) send one multimodal turn as a text item
+ * followed by an attachment-only item; the Chat Completions path already
+ * handles the same split this way.
+ */
+function extractUserContent(content: string | ResponsesContentPart[] | undefined): string | null {
+  if (Array.isArray(content) && !content.some((p) => p.type === "input_text")) return null;
+  return extractTextContent(content);
+}
+
+/**
+ * A `custom_tool_call_output.output` is a string or a list of content parts
+ * (`input_text` / `input_image` / `input_file`). Flatten a list to its
+ * concatenated `input_text` text so text matchers such as
+ * `toolResultContains` see it.
+ *
+ * The value comes straight from the request body, so it is read as `unknown`.
+ * Like `function_call_output`, a malformed output never fails the request:
+ * any other value (null, an object, a number) yields empty text, and list
+ * entries that are not `input_text` parts with string text are skipped.
+ */
+function customToolOutputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (!Array.isArray(output)) return "";
+  return output
+    .map((p: unknown) => {
+      if (p === null || typeof p !== "object") return "";
+      const part = p as { type?: unknown; text?: unknown };
+      return part.type === "input_text" && typeof part.text === "string" ? part.text : "";
+    })
+    .join("");
+}
+
+/** Options for converting a Responses request into the router's request shape. */
+export interface ResponsesConversionOptions {
+  /**
+   * `responsesTools: "extended"`: count custom tool call history, keep history
+   * namespaces, and offer namespaced, custom and `additional_tools` /
+   * `tool_search_output` tools to `toolName` and predicates. Default false:
+   * the conversion of earlier releases.
+   */
+  extended?: boolean;
+  /** Receives one warning per malformed tool item dropped in extended mode. */
+  logger?: Logger;
+}
+
+/**
+ * Convert Responses input items into chat messages for fixture matching. The
+ * default is the conversion of earlier releases: `custom_tool_call` and
+ * `custom_tool_call_output` items are skipped, and history namespaces are not
+ * kept. With `extended`, a custom tool call becomes an assistant message with
+ * `custom_tool_calls` (so turn counting sees it), its output becomes a `tool`
+ * message (so `hasToolResult` and `toolCallId` see it), and a `function_call`
+ * keeps its `namespace`.
+ */
+export function responsesInputToMessages(req: ResponsesRequest, extended = false): ChatMessage[] {
   const messages: ChatMessage[] = [];
   // Track item_reference placeholders so we can upgrade or clean them up
   const itemReferencePlaceholders = new WeakSet<ChatMessage>();
@@ -120,11 +243,27 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
     return messages;
   }
 
+  /** A synthesized call for an output item that has no matching call. */
+  const attachSynthesizedCall = (target: ChatMessage, item: ResponsesInputItem): void => {
+    const id = item.call_id ?? generateToolCallId();
+    if (item.type === "custom_tool_call_output") {
+      (target.custom_tool_calls ??= []).push({ id, type: "custom", name: "", input: "" });
+    } else {
+      (target.tool_calls ??= []).push({
+        id,
+        type: "function",
+        function: { name: "", arguments: "" },
+      });
+    }
+  };
+  const hasCalls = (m: ChatMessage): boolean =>
+    m.tool_calls !== undefined || m.custom_tool_calls !== undefined;
+
   for (const item of req.input) {
     if (item.role === "system" || item.role === "developer") {
       messages.push({ role: "system", content: extractTextContent(item.content) });
     } else if (item.role === "user") {
-      messages.push({ role: "user", content: extractTextContent(item.content) });
+      messages.push({ role: "user", content: extractUserContent(item.content) });
     } else if (item.role === "assistant") {
       messages.push({ role: "assistant", content: extractTextContent(item.content) });
     } else if (item.type === "function_call") {
@@ -136,18 +275,47 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           {
             id: item.call_id ?? generateToolCallId(),
             type: "function",
+            ...(extended && typeof item.namespace === "string"
+              ? { namespace: item.namespace }
+              : {}),
             function: { name: item.name ?? "", arguments: item.arguments ?? "" },
           },
         ],
       });
-    } else if (item.type === "function_call_output") {
+    } else if (extended && item.type === "custom_tool_call") {
+      // Previous assistant custom tool call. The pushed assistant message makes
+      // turn counting see the call. A non-string input (malformed history)
+      // becomes "", the same coercion customToolOutputText applies to a
+      // custom output.
+      messages.push({
+        role: "assistant",
+        content: null,
+        custom_tool_calls: [
+          {
+            id: item.call_id ?? generateToolCallId(),
+            type: "custom",
+            name: item.name ?? "",
+            input: typeof item.input === "string" ? item.input : "",
+            ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}),
+          },
+        ],
+      });
+    } else if (
+      item.type === "function_call_output" ||
+      (extended && item.type === "custom_tool_call_output")
+    ) {
       // Bug 1 fix: If there's no preceding assistant message with a matching
       // tool_call for this call_id, synthesize one. This happens when the AI SDK
       // sends [user, item_reference, function_call_output] — the item_reference
       // placeholder (see below) has no tool_calls, so we need a real assistant
-      // message with the tool_call for turnIndex counting.
+      // message with the tool_call for turnIndex counting. In extended mode a
+      // custom_tool_call_output is handled the same way, and its synthesized
+      // call is a custom one.
       const hasMatchingToolCall = messages.some(
-        (m) => m.role === "assistant" && m.tool_calls?.some((tc) => tc.id === item.call_id),
+        (m) =>
+          m.role === "assistant" &&
+          (m.tool_calls?.some((tc) => tc.id === item.call_id) ||
+            m.custom_tool_calls?.some((tc) => tc.id === item.call_id)),
       );
       if (!hasMatchingToolCall) {
         // Check if the last message is an item_reference placeholder — if so,
@@ -157,16 +325,10 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           lastMsg &&
           lastMsg.role === "assistant" &&
           itemReferencePlaceholders.has(lastMsg) &&
-          !lastMsg.tool_calls
+          !hasCalls(lastMsg)
         ) {
           lastMsg.content = null;
-          lastMsg.tool_calls = [
-            {
-              id: item.call_id ?? generateToolCallId(),
-              type: "function",
-              function: { name: "", arguments: "" },
-            },
-          ];
+          attachSynthesizedCall(lastMsg, item);
           itemReferencePlaceholders.delete(lastMsg);
         } else {
           // Multi-fco case: look for a recent assistant with tool_calls that
@@ -177,12 +339,8 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           let appended = false;
           for (let k = messages.length - 1; k >= 0; k--) {
             const m = messages[k];
-            if (m.role === "assistant" && m.tool_calls) {
-              m.tool_calls.push({
-                id: item.call_id ?? generateToolCallId(),
-                type: "function",
-                function: { name: "", arguments: "" },
-              });
+            if (m.role === "assistant" && hasCalls(m)) {
+              attachSynthesizedCall(m, item);
               appended = true;
               break;
             }
@@ -190,23 +348,21 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
             if (m.role === "user") break;
           }
           if (!appended) {
-            messages.push({
-              role: "assistant",
-              content: null,
-              tool_calls: [
-                {
-                  id: item.call_id ?? generateToolCallId(),
-                  type: "function",
-                  function: { name: "", arguments: "" },
-                },
-              ],
-            });
+            const synthesized: ChatMessage = { role: "assistant", content: null };
+            attachSynthesizedCall(synthesized, item);
+            messages.push(synthesized);
           }
         }
       }
       messages.push({
         role: "tool",
-        content: item.output ?? "",
+        content:
+          item.type === "custom_tool_call_output"
+            ? customToolOutputText(item.output)
+            : // function_call_output keeps its handling from earlier releases:
+              // an array output passes through as content parts, so text
+              // matchers do not see it.
+              ((item.output ?? "") as string | ContentPart[]),
         tool_call_id: item.call_id,
       });
     } else if (item.type === "item_reference") {
@@ -219,13 +375,14 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
       messages.push(placeholder);
     } else {
       // Skip local_shell_call, mcp_list_tools, etc. — not needed for fixture
-      // matching.
+      // matching. Without extended mode this includes custom tool call items.
     }
   }
 
   return messages;
 }
 
+/** The request tools of earlier releases: top-level `function` tools only. */
 function responsesToolsToCompletionsTools(
   tools?: ResponsesToolDef[],
 ): ToolDefinition[] | undefined {
@@ -234,47 +391,178 @@ function responsesToolsToCompletionsTools(
     .filter((t) => t.type === "function")
     .map((t) => ({
       type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
+      function: {
+        name: t.name as string,
+        description: t.description as string | undefined,
+        parameters: (t as { parameters?: object }).parameters,
+      },
     }));
 }
 
-export function responsesToCompletionRequest(req: ResponsesRequest): ChatCompletionRequest {
-  return {
+/** One Responses `function` or `custom` tool in aimock's normalized form. */
+function normalizeResponsesTool(
+  tool: unknown,
+  namespace?: string,
+): ToolDefinition | CustomToolDefinition | undefined {
+  if (tool === null || typeof tool !== "object") return undefined;
+  const t = tool as Record<string, unknown>;
+  const ns = namespace !== undefined ? { namespace } : {};
+  if (t.type === "function") {
+    const fn = t as unknown as ResponsesFunctionToolDef;
+    return {
+      type: "function",
+      ...ns,
+      function: {
+        name: fn.name,
+        description: fn.description,
+        parameters: fn.parameters,
+      },
+    };
+  }
+  if (t.type === "custom") {
+    const custom = t as unknown as ResponsesCustomToolDef;
+    return {
+      type: "custom",
+      name: custom.name,
+      ...(custom.description !== undefined ? { description: custom.description } : {}),
+      ...ns,
+      ...(custom.format !== undefined ? { format: custom.format } : {}),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Input items whose `tools` add to the request's tools:
+ * `additional_tools` (Codex responses-lite) and `tool_search_output` (tools
+ * loaded by tool search, e.g. Codex's deferred MCP namespaces). Both carry the
+ * same function / custom / namespace tool shapes as `req.tools`.
+ */
+function isToolCarryingItemType(type: unknown): boolean {
+  return type === "additional_tools" || type === "tool_search_output";
+}
+
+/**
+ * Why a `namespace` tool cannot be flattened, or undefined when it can: its
+ * name is not a non-empty string (OpenAI's `NamespaceToolParam` requires
+ * `name` with `minLength: 1`), or its `tools` is not an array.
+ */
+function namespaceToolProblem(tool: { name?: unknown; tools?: unknown }): string | undefined {
+  if (typeof tool.name !== "string" || tool.name === "") return "name is not a non-empty string";
+  if (!Array.isArray(tool.tools)) return "tools is not an array";
+  return undefined;
+}
+
+/**
+ * Flatten every Responses tool a request offers, for extended matching and for
+ * `toolNamespace`. Sources, in order: `req.tools`, then the `tools` of every
+ * `additional_tools` or `tool_search_output` input item, in input order.
+ * `namespace` tools contribute one entry per inner function/custom tool, each
+ * carrying the namespace; other tool types are ignored.
+ *
+ * Malformed items never fail the request (earlier releases ignored them): a
+ * `namespace` tool without a non-empty string name or with a non-array
+ * `tools`, a `null` entry, and a tool-carrying item whose `tools` is not an
+ * array are dropped, with a warning when `warn` is given.
+ */
+function flattenResponsesTools(
+  req: ResponsesRequest,
+  warn?: (message: string) => void,
+): { tools: ToolDefinition[]; customTools: CustomToolDefinition[]; sourceCount: number } {
+  const tools: ToolDefinition[] = [];
+  const customTools: CustomToolDefinition[] = [];
+  const add = (normalized: ToolDefinition | CustomToolDefinition | undefined) => {
+    if (!normalized) return;
+    if (normalized.type === "custom") customTools.push(normalized);
+    else tools.push(normalized);
+  };
+  const sources: Array<{ tool: unknown; path: string }> = [];
+  if (Array.isArray(req.tools)) {
+    req.tools.forEach((tool, i) => sources.push({ tool, path: `tools[${i}]` }));
+  }
+  if (Array.isArray(req.input)) {
+    req.input.forEach((item, i) => {
+      if (!isToolCarryingItemType(item?.type) || item?.tools === undefined) return;
+      if (!Array.isArray(item.tools)) {
+        warn?.(`Ignoring input[${i}].tools: not an array`);
+        return;
+      }
+      item.tools.forEach((tool, j) => sources.push({ tool, path: `input[${i}].tools[${j}]` }));
+    });
+  }
+  for (const { tool, path } of sources) {
+    const t = tool as { type?: unknown; name?: unknown; tools?: unknown } | null;
+    if (t === null) {
+      warn?.(`Ignoring ${path}: null tool`);
+      continue;
+    }
+    if (t?.type === "namespace") {
+      const problem = namespaceToolProblem(t);
+      if (problem) {
+        warn?.(`Ignoring namespace tool ${path}: ${problem}`);
+        continue;
+      }
+      (t.tools as unknown[]).forEach((inner, k) => {
+        if (inner === null) warn?.(`Ignoring ${path}.tools[${k}]: null tool`);
+        else add(normalizeResponsesTool(inner, t.name as string));
+      });
+      continue;
+    }
+    add(normalizeResponsesTool(tool));
+  }
+  return { tools, customTools, sourceCount: sources.length };
+}
+
+export function responsesToCompletionRequest(
+  req: ResponsesRequest,
+  options: ResponsesConversionOptions = {},
+): ChatCompletionRequest {
+  const extended = options.extended === true;
+  const all = flattenResponsesTools(
+    req,
+    extended && options.logger
+      ? (message) => options.logger?.warn(`Responses request: ${message}`)
+      : undefined,
+  );
+  const completionReq: ChatCompletionRequest = {
     model: req.model,
-    messages: responsesInputToMessages(req),
+    messages: responsesInputToMessages(req, extended),
     stream: req.stream,
     temperature: req.temperature,
     max_tokens: req.max_output_tokens,
-    tools: responsesToolsToCompletionsTools(req.tools),
+    tools: extended
+      ? all.sourceCount > 0
+        ? all.tools
+        : undefined
+      : responsesToolsToCompletionsTools(req.tools),
+    ...(extended && all.customTools.length > 0 ? { customTools: all.customTools } : {}),
     tool_choice: req.tool_choice,
     response_format: req.response_format,
   };
+  setResponsesOfferedTools(completionReq, { tools: all.tools, customTools: all.customTools });
+  return completionReq;
+}
+
+/**
+ * The HTTP request check of earlier releases for `tools`: keep the
+ * converter's empty/falsy bypass, and reject only a collection the legacy
+ * converter would throw on (not an array, or a `null` entry). Malformed
+ * nested tools (inside a `namespace` tool or a tool-carrying input item) are
+ * dropped by the conversion instead.
+ */
+export function validateResponsesTools(tools: unknown): string | undefined {
+  if (tools && (tools as { length?: unknown }).length !== 0) {
+    if (!Array.isArray(tools)) return "tools must be an array";
+    if (tools.some((tool) => tool === null)) return "tools entries must not be null";
+  }
+  return undefined;
 }
 
 // ─── Response building: fixture → Responses API format ──────────────────────
 
 function responsesStatus(finishReason: string | undefined, defaultStatus: string): string {
   if (!finishReason) return defaultStatus;
-  if (finishReason === "stop") return "completed";
-  if (finishReason === "tool_calls") return "completed";
-  if (finishReason === "length") return "incomplete";
-  if (finishReason === "content_filter") return "failed";
-  return finishReason;
-}
-
-function responsesUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-  const input = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
-  const output = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
-  return {
-    input_tokens: input,
-    output_tokens: output,
-    total_tokens: overrides.usage.total_tokens ?? input + output,
-  };
+  return mapResponsesFinish(finishReason);
 }
 
 function responseId(): string {
@@ -316,6 +604,8 @@ export function buildTextStreamEvents(
     content,
     chunkSize,
     nextOutputIndex,
+    overrides?.phase,
+    buildAnnotations(content, overrides?.citations),
   );
   events.push(...msgEvents);
 
@@ -328,11 +618,131 @@ export function buildTextStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, msgItem],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
   return events;
+}
+
+function requireFixtureToolArguments(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error('Invalid fixture tool call: "arguments" must be a string after normalization');
+  }
+  return value;
+}
+
+function requireFixtureToolInput(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error('Invalid fixture tool call: "input" must be a string for a custom tool call');
+  }
+  return value;
+}
+
+/**
+ * A tool call to emit: a `toolCalls` entry, or a normalized `toolCall` /
+ * `customToolCall` block passed through as-is.
+ */
+type EmittableToolCall = FixtureToolCall | Exclude<ResponsesFixtureBlock, { type: "text" }>;
+
+function isCustomEmittable(
+  call: EmittableToolCall,
+): call is CustomToolCall | Extract<ResponsesFixtureBlock, { type: "customToolCall" }> {
+  // A non-object entry (only reachable from an untyped fixture) takes the
+  // function path, which fails on it exactly as earlier releases did.
+  if (call === null || typeof call !== "object") return false;
+  return call.type === "custom" || call.type === "customToolCall";
+}
+
+/**
+ * A Responses `function_call` item. `namespace` is added only when the fixture
+ * sets it, so a call without one keeps the keys and key order it had before
+ * namespaces existed (existing fixtures stay byte-identical on the wire).
+ */
+function functionCallItem(
+  call: { name: string; namespace?: string },
+  fcId: string,
+  callId: string,
+  args: string,
+  status: "in_progress" | "completed",
+): Record<string, unknown> {
+  return {
+    type: "function_call",
+    id: fcId,
+    call_id: callId,
+    ...(call.namespace !== undefined ? { namespace: call.namespace } : {}),
+    name: call.name,
+    arguments: args,
+    status,
+  };
+}
+
+/**
+ * `ctc_…` item id, the prefix the OpenAI guide and Codex's item-id map use for
+ * custom tool calls. The underscore separator is deliberate: it matches the
+ * real id format, so this does not use `generateId` (which would give
+ * `ctc-…`, like aimock's own `fc-…` ids).
+ */
+function customToolCallItemId(): string {
+  return `ctc_${randomBytes(12).toString("base64url")}`;
+}
+
+/** A Responses `custom_tool_call` item; `namespace` is added only when set. */
+function customToolCallItem(
+  call: { name: string; namespace?: string },
+  ctcId: string,
+  callId: string,
+  input: string,
+  status: "in_progress" | "completed",
+): Record<string, unknown> {
+  return {
+    type: "custom_tool_call",
+    id: ctcId,
+    call_id: callId,
+    ...(call.namespace !== undefined ? { namespace: call.namespace } : {}),
+    name: call.name,
+    input,
+    status,
+  };
+}
+
+/**
+ * A `toolCalls` entry as earlier releases served it: a function call whose
+ * `type`, `input` and `namespace` are ignored. The exported builders take
+ * fixtures in that form; the handler passes `namespace` (extended mode) and
+ * custom calls to the internal builders instead.
+ */
+function legacyFunctionCall(call: ToolCall): FixtureToolCall {
+  if (call === null || typeof call !== "object") return call;
+  const { name, arguments: args, id } = call;
+  return id !== undefined ? { name, arguments: args, id } : { name, arguments: args };
+}
+
+/**
+ * The exported builders' `toolCalls` as legacy function calls. It walks
+ * `toolCalls` by index up to `toolCalls.length`, as earlier releases did, so an
+ * untyped caller's non-array value gives the same calls: none for an object
+ * without `length`, and entries by index for a string or array-like.
+ */
+function legacyFunctionCalls(toolCalls: ToolCall[]): FixtureToolCall[] {
+  const calls: FixtureToolCall[] = [];
+  for (let idx = 0; idx < toolCalls.length; idx++) {
+    calls.push(legacyFunctionCall(toolCalls[idx]));
+  }
+  return calls;
+}
+
+/** Resolve exported-builder `blocks` as earlier releases did (no namespace emitted). */
+function legacyOrderedBlocks(
+  blocks: FixtureBlock[] | undefined,
+): ResponsesFixtureBlock[] | undefined {
+  if (!blocks || blocks.length === 0) return undefined;
+  return resolveFixtureBlocks(blocks).map((block) => {
+    if (block.type === "text" || block.namespace === undefined) return block;
+    const copy = { ...block };
+    delete copy.namespace;
+    return copy;
+  });
 }
 
 export function buildToolCallStreamEvents(
@@ -345,6 +755,31 @@ export function buildToolCallStreamEvents(
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
+  return toolCallStreamEvents(
+    legacyFunctionCalls(toolCalls),
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    overrides,
+    emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
+  );
+}
+
+export function toolCallStreamEvents(
+  toolCalls: FixtureToolCall[],
+  model: string,
+  chunkSize: number,
+  reasoning?: string,
+  webSearches?: string[],
+  overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
+): ResponsesSSEEvent[] {
+  assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
     chunkSize,
@@ -358,62 +793,13 @@ export function buildToolCallStreamEvents(
   const fcOutputItems: object[] = [];
 
   for (let idx = 0; idx < toolCalls.length; idx++) {
-    const tc = toolCalls[idx];
-    const callId = tc.id || generateToolCallId();
-    const fcId = generateId("fc");
-    const outputIndex = nextOutputIndex + idx;
-
-    // output_item.added (function_call)
-    events.push({
-      type: "response.output_item.added",
-      output_index: outputIndex,
-      item: {
-        type: "function_call",
-        id: fcId,
-        call_id: callId,
-        name: tc.name,
-        arguments: "",
-        status: "in_progress",
-      },
-    });
-
-    // function_call_arguments.delta
-    const args = tc.arguments;
-    for (let i = 0; i < args.length; i += chunkSize) {
-      const slice = args.slice(i, i + chunkSize);
-      events.push({
-        type: "response.function_call_arguments.delta",
-        item_id: fcId,
-        output_index: outputIndex,
-        delta: slice,
-      });
-    }
-
-    // function_call_arguments.done
-    events.push({
-      type: "response.function_call_arguments.done",
-      item_id: fcId,
-      output_index: outputIndex,
-      arguments: args,
-    });
-
-    const doneItem = {
-      type: "function_call",
-      id: fcId,
-      call_id: callId,
-      name: tc.name,
-      arguments: args,
-      status: "completed",
-    };
-
-    // output_item.done
-    events.push({
-      type: "response.output_item.done",
-      output_index: outputIndex,
-      item: doneItem,
-    });
-
-    fcOutputItems.push(doneItem);
+    const { events: callEvents, item } = buildToolCallOutputEvents(
+      toolCalls[idx],
+      chunkSize,
+      nextOutputIndex + idx,
+    );
+    events.push(...callEvents);
+    fcOutputItems.push(item);
   }
 
   // response.completed
@@ -426,7 +812,7 @@ export function buildToolCallStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, ...fcOutputItems],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
@@ -668,6 +1054,91 @@ function buildWebSearchStreamEvents(
   return events;
 }
 
+/**
+ * A Responses `image_generation_call` output item for one fixture file (see
+ * `ResponseOutputItem.ImageGenerationCall` in the openai SDK): `result` holds
+ * the base64 bytes once completed and is null while in progress.
+ */
+function imageGenerationCallItem(
+  id: string,
+  file: FixtureGeneratedFile,
+  status: "in_progress" | "completed",
+): object {
+  return {
+    type: "image_generation_call",
+    id,
+    status,
+    result: status === "completed" ? file.data : null,
+  };
+}
+
+/**
+ * A fixture file that is not `image/*` reached the Responses API, which
+ * carries generated files only as `image_generation_call` items. Surfaces as
+ * the same coded 500 (`aimock_unsupported_generated_file`), naming `mimeType`.
+ */
+class NonImageGeneratedFileError extends UnsupportedGeneratedFileError {
+  constructor(mimeType: string) {
+    super("the OpenAI Responses API");
+    this.message =
+      `aimock: fixture "files" on the OpenAI Responses API carry only image/* files ` +
+      `(as image_generation_call items); got mimeType "${mimeType}"`;
+  }
+}
+
+/**
+ * Throw {@link NonImageGeneratedFileError} for the first fixture file whose
+ * `mimeType` is not `image/*`. Called before any output item is built, so
+ * nothing reaches the client.
+ */
+function requireImageFiles(files: FixtureGeneratedFile[]): void {
+  const nonImage = files.find((f) => !f.mimeType.toLowerCase().startsWith("image/"));
+  if (nonImage) throw new NonImageGeneratedFileError(nonImage.mimeType);
+}
+
+/** Fixture `files` as completed `image_generation_call` items (non-streaming). */
+function imageGenerationCallItems(files?: FixtureGeneratedFile[]): object[] {
+  const validated = fixtureFiles(files);
+  requireImageFiles(validated);
+  return validated.map((f) => imageGenerationCallItem(generateId("ig"), f, "completed"));
+}
+
+/**
+ * Streamed form of {@link imageGenerationCallItems}: per file, the item's
+ * `output_item.added`, the `image_generation_call` `in_progress`,
+ * `generating` and `completed` events, then `output_item.done` carrying the
+ * completed item.
+ */
+function buildImageGenerationStreamEvents(
+  files: FixtureGeneratedFile[],
+  startOutputIndex: number,
+): ResponsesSSEEvent[] {
+  requireImageFiles(files);
+  const events: ResponsesSSEEvent[] = [];
+  files.forEach((file, i) => {
+    const id = generateId("ig");
+    const outputIndex = startOutputIndex + i;
+    events.push({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "in_progress"),
+    });
+    for (const phase of ["in_progress", "generating", "completed"]) {
+      events.push({
+        type: `response.image_generation_call.${phase}`,
+        output_index: outputIndex,
+        item_id: id,
+      });
+    }
+    events.push({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item: imageGenerationCallItem(id, file, "completed"),
+    });
+  });
+  return events;
+}
+
 // ─── Shared streaming helpers ────────────────────────────────────────────────
 
 interface PreambleResult {
@@ -686,6 +1157,7 @@ function buildResponsePreamble(
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
+  forceReasoning = false,
 ): PreambleResult {
   const respId = overrides?.id ?? responseId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
@@ -719,6 +1191,7 @@ function buildResponsePreamble(
 
   if (
     reasoning ||
+    forceReasoning ||
     shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
   ) {
     const reasoningEvents = buildReasoningStreamEvents(
@@ -748,6 +1221,16 @@ function buildResponsePreamble(
     nextOutputIndex += webSearches.length;
   }
 
+  const files = fixtureFiles(overrides?.files);
+  if (files.length > 0) {
+    const fileEvents = buildImageGenerationStreamEvents(files, nextOutputIndex);
+    events.push(...fileEvents);
+    for (const e of fileEvents) {
+      if (e.type === "response.output_item.done") prefixOutputItems.push(e.item as object);
+    }
+    nextOutputIndex += files.length;
+  }
+
   return { respId, created, events, prefixOutputItems, nextOutputIndex };
 }
 
@@ -756,10 +1239,127 @@ interface MessageBlockResult {
   msgItem: object;
 }
 
+/**
+ * Fixture `citations` as `output_text` annotations for each text in `texts`
+ * (one per message item), in fixture order: a URL citation becomes
+ * `url_citation`, a file citation (`type: "file"`) becomes `file_citation`
+ * (`file_id`, `filename`, `index`; see `ResponseOutputText.FileCitation` in
+ * the openai SDK). Offsets index the joined text of all texts, as on every
+ * other provider. A URL citation is a range and goes only to the text holding
+ * its `startIndex`. A file citation is a point after the cited text, so it
+ * goes to the last text starting before its `index`: an `index` equal to a
+ * text's end stays at the end of that text (not at 0 of the next text), and
+ * an `index` of 0 goes to the first text. Each citation is rebased onto its
+ * text since Responses offsets are per `output_text`, with `end_index`
+ * clamped to it. Anthropic and Gemini need no point rule: they have no file
+ * citation. Anthropic URL citations follow the same start-owns-range rule;
+ * Gemini does not, and splits a citation that spans several text parts into
+ * one grounding support per part (see geminiGroundingSupports).
+ * Missing offsets take the defaults `resolveCitations` applies: a URL
+ * citation starts at 0 and ends at the end of the joined text, so one without
+ * offsets goes on the first text and covers all of it; a file citation's
+ * `index` defaults to the end of the joined text (the last text).
+ */
+function blockAnnotations(texts: string[], citations?: ResponseOverrides["citations"]): object[][] {
+  const perText: object[][] = texts.map(() => []);
+  if (texts.length === 0) {
+    // Blocks with no text block: a turn with no text for `citations` to point at.
+    fixtureCitations("", citations);
+    return perText;
+  }
+  const starts: number[] = [];
+  let offset = 0;
+  for (const text of texts) {
+    starts.push(offset);
+    offset += text.length;
+  }
+  const joinedLength = offset;
+  // A range goes to the last text starting at or before its start.
+  const ownerOf = (start: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] <= start) owner = k;
+    return owner;
+  };
+  // A point goes to the last text starting before it, so a point on a
+  // boundary stays at the end of the text before the boundary.
+  const pointOwnerOf = (index: number): number => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] < index) owner = k;
+    return owner;
+  };
+  for (const c of fixtureCitations(texts.join(""), citations)) {
+    if (c.type === "file") {
+      const index = c.index ?? joinedLength;
+      const owner = pointOwnerOf(index);
+      perText[owner].push({
+        type: "file_citation",
+        file_id: c.fileId,
+        filename: c.filename,
+        index: index - starts[owner],
+      });
+      continue;
+    }
+    // The defaults `resolveCitations` applies on every other provider.
+    const start = c.startIndex ?? 0;
+    const end = c.endIndex ?? joinedLength;
+    const owner = ownerOf(start);
+    perText[owner].push({
+      type: "url_citation",
+      url: c.url,
+      title: c.title ?? c.url,
+      start_index: start - starts[owner],
+      end_index: Math.min(end - starts[owner], texts[owner].length),
+    });
+  }
+  return perText;
+}
+
+/** {@link blockAnnotations} for a turn with a single text. */
+function buildAnnotations(content: string, citations?: ResponseOverrides["citations"]): object[] {
+  return blockAnnotations([content], citations)[0];
+}
+
+/** The annotations of each text block in `blocks`, in block order. */
+function orderedBlockAnnotations(
+  blocks: ResponsesFixtureBlock[],
+  citations?: ResponseOverrides["citations"],
+): object[][] {
+  return blockAnnotations(
+    blocks.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+    citations,
+  );
+}
+
 function buildMessageOutputEvents(
   content: string,
   chunkSize: number,
   outputIndex: number,
+  phase: ResponseOverrides["phase"] | undefined,
+  annotations: object[],
+): MessageBlockResult {
+  return buildMessagePartsOutputEvents(
+    [{ text: content, annotations }],
+    chunkSize,
+    outputIndex,
+    phase,
+  );
+}
+
+/** One `output_text` content part of a message item. */
+interface MessagePart {
+  text: string;
+  annotations: object[];
+}
+
+/**
+ * {@link buildMessageOutputEvents} for a message item holding one or more
+ * `output_text` parts, each streamed at its own `content_index`.
+ */
+function buildMessagePartsOutputEvents(
+  parts: MessagePart[],
+  chunkSize: number,
+  outputIndex: number,
+  phase: ResponseOverrides["phase"] | undefined,
 ): MessageBlockResult {
   const msgId = itemId();
   const events: ResponsesSSEEvent[] = [];
@@ -767,39 +1367,59 @@ function buildMessageOutputEvents(
   events.push({
     type: "response.output_item.added",
     output_index: outputIndex,
-    item: { type: "message", id: msgId, status: "in_progress", role: "assistant", content: [] },
-  });
-  events.push({
-    type: "response.content_part.added",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: "", annotations: [] },
+    item: {
+      type: "message",
+      id: msgId,
+      status: "in_progress",
+      role: "assistant",
+      ...(phase !== undefined ? { phase } : {}),
+      content: [],
+    },
   });
 
-  for (let i = 0; i < content.length; i += chunkSize) {
+  parts.forEach(({ text: content, annotations }, contentIndex) => {
     events.push({
-      type: "response.output_text.delta",
+      type: "response.content_part.added",
       item_id: msgId,
       output_index: outputIndex,
-      content_index: 0,
-      delta: content.slice(i, i + chunkSize),
+      content_index: contentIndex,
+      part: { type: "output_text", text: "", annotations: [] },
     });
-  }
 
-  events.push({
-    type: "response.output_text.done",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    text: content,
-  });
-  events.push({
-    type: "response.content_part.done",
-    item_id: msgId,
-    output_index: outputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: content, annotations: [] },
+    for (let i = 0; i < content.length; i += chunkSize) {
+      events.push({
+        type: "response.output_text.delta",
+        item_id: msgId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        delta: content.slice(i, i + chunkSize),
+      });
+    }
+
+    events.push({
+      type: "response.output_text.done",
+      item_id: msgId,
+      output_index: outputIndex,
+      content_index: contentIndex,
+      text: content,
+    });
+    annotations.forEach((annotation, annotationIndex) => {
+      events.push({
+        type: "response.output_text.annotation.added",
+        item_id: msgId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        annotation_index: annotationIndex,
+        annotation,
+      });
+    });
+    events.push({
+      type: "response.content_part.done",
+      item_id: msgId,
+      output_index: outputIndex,
+      content_index: contentIndex,
+      part: { type: "output_text", text: content, annotations },
+    });
   });
 
   const msgItem = {
@@ -807,7 +1427,8 @@ function buildMessageOutputEvents(
     id: msgId,
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    ...(phase !== undefined ? { phase } : {}),
+    content: parts.map(({ text, annotations }) => ({ type: "output_text", text, annotations })),
   };
 
   events.push({ type: "response.output_item.done", output_index: outputIndex, item: msgItem });
@@ -815,40 +1436,69 @@ function buildMessageOutputEvents(
   return { events, msgItem };
 }
 
-interface FunctionCallBlockResult {
+/** An output item of an ordered block turn: a message (one or more text parts) or a tool call. */
+type OrderedOutputItem =
+  | { type: "message"; parts: MessagePart[] }
+  | { type: "tool"; block: Exclude<ResponsesFixtureBlock, { type: "text" }> };
+
+/**
+ * Groups ordered blocks into output items. Each text block opens its own
+ * message item unless it sets `continuesMessage` directly after another text
+ * block, in which case it becomes that message's next part. Native
+ * `annotations` win over the portable citations mapped onto the same text.
+ */
+function groupOrderedOutputs(
+  blocks: ResponsesFixtureBlock[],
+  citations?: ResponseOverrides["citations"],
+): OrderedOutputItem[] {
+  const textAnnotations = orderedBlockAnnotations(blocks, citations);
+  const items: OrderedOutputItem[] = [];
+  let textPos = 0;
+  for (const block of blocks) {
+    if (block.type === "text") {
+      const part = { text: block.text, annotations: block.annotations ?? textAnnotations[textPos] };
+      textPos++;
+      const previous = items[items.length - 1];
+      if (block.continuesMessage === true && previous?.type === "message") {
+        previous.parts.push(part);
+      } else {
+        items.push({ type: "message", parts: [part] });
+      }
+    } else {
+      items.push({ type: "tool", block });
+    }
+  }
+  return items;
+}
+
+/** One streamed tool-call item: a `function_call` or a `custom_tool_call`. */
+interface ToolCallBlockResult {
   events: ResponsesSSEEvent[];
-  fcItem: object;
+  item: object;
 }
 
 /**
  * Emit the output_item.added → arguments deltas → arguments.done →
  * output_item.done events for a single function_call at `outputIndex`,
- * returning the completed item for the final `output` array. Behavior is
- * identical to the inline per-tool-call loop in the legacy path; both the
- * legacy branch and the ordered-blocks branch share this so wire output stays
- * byte-identical for a given (tool, outputIndex).
+ * returning the completed item for the final `output` array. Every Responses
+ * streaming builder (tool-only, legacy content+toolCalls and ordered blocks)
+ * reaches this through {@link buildToolCallOutputEvents}, so a given
+ * (tool, outputIndex) has the same wire output on every path.
  */
 function buildFunctionCallOutputEvents(
-  toolCall: ToolCall,
+  toolCall: { name: string; arguments: string; id?: string; namespace?: string },
   chunkSize: number,
   outputIndex: number,
-): FunctionCallBlockResult {
+): ToolCallBlockResult {
   const callId = toolCall.id || generateToolCallId();
   const fcId = generateId("fc");
-  const args = toolCall.arguments;
+  const args = requireFixtureToolArguments(toolCall.arguments);
   const events: ResponsesSSEEvent[] = [];
 
   events.push({
     type: "response.output_item.added",
     output_index: outputIndex,
-    item: {
-      type: "function_call",
-      id: fcId,
-      call_id: callId,
-      name: toolCall.name,
-      arguments: "",
-      status: "in_progress",
-    },
+    item: functionCallItem(toolCall, fcId, callId, "", "in_progress"),
   });
 
   for (let i = 0; i < args.length; i += chunkSize) {
@@ -867,17 +1517,65 @@ function buildFunctionCallOutputEvents(
     arguments: args,
   });
 
-  const fcItem = {
-    type: "function_call",
-    id: fcId,
-    call_id: callId,
-    name: toolCall.name,
-    arguments: args,
-    status: "completed",
-  };
-  events.push({ type: "response.output_item.done", output_index: outputIndex, item: fcItem });
+  const item = functionCallItem(toolCall, fcId, callId, args, "completed");
+  events.push({ type: "response.output_item.done", output_index: outputIndex, item });
 
-  return { events, fcItem };
+  return { events, item };
+}
+
+/**
+ * Emit output_item.added → custom_tool_call_input.delta×N →
+ * custom_tool_call_input.done → output_item.done for one `custom_tool_call` at
+ * `outputIndex`, returning the completed item. An empty `input`
+ * yields no delta event.
+ */
+function buildCustomToolCallOutputEvents(
+  call: { name: string; input: string; id?: string; namespace?: string },
+  chunkSize: number,
+  outputIndex: number,
+): ToolCallBlockResult {
+  const callId = call.id || generateToolCallId();
+  const ctcId = customToolCallItemId();
+  const input = requireFixtureToolInput(call.input);
+  const events: ResponsesSSEEvent[] = [];
+
+  events.push({
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: customToolCallItem(call, ctcId, callId, "", "in_progress"),
+  });
+
+  for (const delta of surrogateSafeChunks(input, chunkSize)) {
+    events.push({
+      type: "response.custom_tool_call_input.delta",
+      item_id: ctcId,
+      output_index: outputIndex,
+      delta,
+    });
+  }
+
+  events.push({
+    type: "response.custom_tool_call_input.done",
+    item_id: ctcId,
+    output_index: outputIndex,
+    input,
+  });
+
+  const item = customToolCallItem(call, ctcId, callId, input, "completed");
+  events.push({ type: "response.output_item.done", output_index: outputIndex, item });
+
+  return { events, item };
+}
+
+/** Streaming dispatcher: one function or custom tool call at `outputIndex`. */
+function buildToolCallOutputEvents(
+  call: EmittableToolCall,
+  chunkSize: number,
+  outputIndex: number,
+): ToolCallBlockResult {
+  return isCustomEmittable(call)
+    ? buildCustomToolCallOutputEvents(call, chunkSize, outputIndex)
+    : buildFunctionCallOutputEvents(call, chunkSize, outputIndex);
 }
 
 // ─── Non-streaming response builders ────────────────────────────────────────
@@ -889,6 +1587,9 @@ function buildOutputPrefix(
   webSearches?: string[],
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
+  phase?: ResponseOverrides["phase"],
+  citations?: ResponseOverrides["citations"],
+  files?: ResponseOverrides["files"],
 ): object[] {
   const output: object[] = [];
 
@@ -915,12 +1616,17 @@ function buildOutputPrefix(
     }
   }
 
+  output.push(...imageGenerationCallItems(files));
+
   output.push({
     type: "message",
     id: itemId(),
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    ...(phase !== undefined ? { phase } : {}),
+    content: [
+      { type: "output_text", text: content, annotations: buildAnnotations(content, citations) },
+    ],
   });
 
   return output;
@@ -938,11 +1644,11 @@ function buildResponseEnvelope(
     model: overrides?.model ?? model,
     status: responsesStatus(overrides?.finishReason, "completed"),
     output,
-    usage: responsesUsage(overrides),
+    usage: renderResponsesUsage(overrides),
   };
 }
 
-function buildTextResponse(
+export function buildTextResponse(
   content: string,
   model: string,
   reasoning?: string,
@@ -960,13 +1666,16 @@ function buildTextResponse(
       webSearches,
       emitEncryptedReasoning,
       synthesizeSummarylessReasoning,
+      overrides?.phase,
+      overrides?.citations,
+      overrides?.files,
     ),
     overrides,
   );
 }
 
 function buildToolCallResponse(
-  toolCalls: ToolCall[],
+  toolCalls: FixtureToolCall[],
   model: string,
   reasoning?: string,
   webSearches?: string[],
@@ -974,6 +1683,9 @@ function buildToolCallResponse(
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): object {
+  assertResponsesToolCalls(toolCalls);
+  // A tool-only turn has no text for `citations` to point at.
+  fixtureCitations("", overrides?.citations);
   const output: object[] = [];
   if (
     reasoning ||
@@ -996,15 +1708,9 @@ function buildToolCallResponse(
       });
     }
   }
+  output.push(...imageGenerationCallItems(overrides?.files));
   for (const tc of toolCalls) {
-    output.push({
-      type: "function_call",
-      id: generateId("fc"),
-      call_id: tc.id || generateToolCallId(),
-      name: tc.name,
-      arguments: tc.arguments,
-      status: "completed",
-    });
+    output.push(buildToolCallOutputItem(tc));
   }
   return buildResponseEnvelope(model, output, overrides);
 }
@@ -1018,6 +1724,39 @@ export function buildContentWithToolCallsStreamEvents(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
+  emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
+): ResponsesSSEEvent[] {
+  const ordered = legacyOrderedBlocks(blocks);
+  // With blocks, earlier releases never read `toolCalls`, so neither does this.
+  return contentWithToolCallsStreamEvents(
+    content,
+    ordered && ordered.length > 0 ? [] : legacyFunctionCalls(toolCalls),
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    overrides,
+    ordered,
+    emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
+  );
+}
+
+/**
+ * Internal content+tool-calls builder. `ordered` is already resolved (see
+ * {@link resolveServedBlockOutcome}); when non-empty it is streamed in array
+ * order, otherwise the legacy message-first path runs over `toolCalls`.
+ */
+export function contentWithToolCallsStreamEvents(
+  content: string,
+  toolCalls: FixtureToolCall[],
+  model: string,
+  chunkSize: number,
+  reasoning?: string,
+  webSearches?: string[],
+  overrides?: ResponseOverrides,
+  ordered?: ResponsesFixtureBlock[],
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
@@ -1037,52 +1776,56 @@ export function buildContentWithToolCallsStreamEvents(
   // matches that item's slot in the final `response.completed.output` array.
   const orderedOutputItems: object[] = [];
 
-  if (blocks && blocks.length > 0) {
-    // NEW PATH: stream items in the fixture's block ARRAY ORDER. A toolCall
-    // block placed before a text block therefore yields a function_call item at
+  if (ordered && ordered.length > 0) {
+    // NEW PATH: stream items in the fixture's block ARRAY ORDER. A tool block
+    // placed before a text block therefore yields a tool call item at
     // a LOWER output_index than the message — it leads the output array.
-    const ordered = resolveFixtureBlocks(blocks);
     let outputIndex = nextOutputIndex;
-    for (const block of ordered) {
-      if (block.type === "text") {
-        const { events: msgEvents, msgItem } = buildMessageOutputEvents(
-          block.text,
+    for (const entry of groupOrderedOutputs(ordered, overrides?.citations)) {
+      if (entry.type === "message") {
+        const { events: msgEvents, msgItem } = buildMessagePartsOutputEvents(
+          entry.parts,
           chunkSize,
           outputIndex,
+          overrides?.phase,
         );
         events.push(...msgEvents);
         orderedOutputItems.push(msgItem);
       } else {
-        const { events: fcEvents, fcItem } = buildFunctionCallOutputEvents(
-          { name: block.name, arguments: block.arguments, id: block.id },
+        const { events: callEvents, item } = buildToolCallOutputEvents(
+          entry.block,
           chunkSize,
           outputIndex,
         );
-        events.push(...fcEvents);
-        orderedOutputItems.push(fcItem);
+        events.push(...callEvents);
+        orderedOutputItems.push(item);
       }
       outputIndex += 1;
     }
   } else {
-    // LEGACY PATH: message item first, then function_call items — byte-for-byte
-    // unchanged from the pre-blocks behavior (message always leads the output).
+    assertResponsesToolCalls(toolCalls);
+    // LEGACY PATH: message item first, then tool call items (function_call or
+    // custom_tool_call). The message always leads the output; for fixtures
+    // without custom calls or namespaces this is byte-for-byte the pre-blocks
+    // output.
     const { events: msgEvents, msgItem } = buildMessageOutputEvents(
       content,
       chunkSize,
       nextOutputIndex,
+      overrides?.phase,
+      buildAnnotations(content, overrides?.citations),
     );
     events.push(...msgEvents);
     orderedOutputItems.push(msgItem);
 
     for (let idx = 0; idx < toolCalls.length; idx++) {
-      const fcOutputIndex = nextOutputIndex + 1 + idx;
-      const { events: fcEvents, fcItem } = buildFunctionCallOutputEvents(
+      const { events: callEvents, item } = buildToolCallOutputEvents(
         toolCalls[idx],
         chunkSize,
-        fcOutputIndex,
+        nextOutputIndex + 1 + idx,
       );
-      events.push(...fcEvents);
-      orderedOutputItems.push(fcItem);
+      events.push(...callEvents);
+      orderedOutputItems.push(item);
     }
   }
 
@@ -1095,52 +1838,64 @@ export function buildContentWithToolCallsStreamEvents(
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
       output: [...prefixOutputItems, ...orderedOutputItems],
-      usage: responsesUsage(overrides),
+      usage: renderResponsesUsage(overrides),
     },
   });
 
   return events;
 }
 
-function buildFunctionCallOutputItem(tc: { name: string; arguments: string; id?: string }): object {
-  return {
-    type: "function_call",
-    id: generateId("fc"),
-    call_id: tc.id || generateToolCallId(),
-    name: tc.name,
-    arguments: tc.arguments,
-    status: "completed",
-  };
+/** Non-streaming dispatcher: the completed function or custom tool call item. */
+function buildToolCallOutputItem(tc: EmittableToolCall): object {
+  if (isCustomEmittable(tc)) {
+    return customToolCallItem(
+      tc,
+      customToolCallItemId(),
+      tc.id || generateToolCallId(),
+      requireFixtureToolInput(tc.input),
+      "completed",
+    );
+  }
+  return functionCallItem(
+    tc,
+    generateId("fc"),
+    tc.id || generateToolCallId(),
+    requireFixtureToolArguments(tc.arguments),
+    "completed",
+  );
 }
 
-function buildMessageOutputItem(content: string): object {
+function buildMessagePartsOutputItem(
+  parts: MessagePart[],
+  phase: ResponseOverrides["phase"] | undefined,
+): object {
   return {
     type: "message",
     id: itemId(),
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: content, annotations: [] }],
+    ...(phase !== undefined ? { phase } : {}),
+    content: parts.map(({ text, annotations }) => ({ type: "output_text", text, annotations })),
   };
 }
 
 function buildContentWithToolCallsResponse(
   content: string,
-  toolCalls: ToolCall[],
+  toolCalls: FixtureToolCall[],
   model: string,
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
-  blocks?: FixtureBlock[],
+  ordered?: ResponsesFixtureBlock[],
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): object {
-  if (blocks && blocks.length > 0) {
+  if (ordered && ordered.length > 0) {
     // NEW PATH: the non-streaming `output[]` array is positionally observable,
     // so emit the prefix (reasoning / web_search_call), then the blocks in
-    // fixture ARRAY ORDER. A toolCall block before a text block therefore
-    // yields a function_call item ahead of the message — matching the streaming
+    // fixture ARRAY ORDER. A tool block before a text block therefore
+    // yields a tool call item ahead of the message — matching the streaming
     // path's ordering for the same `blocks` fixture.
-    const ordered = resolveFixtureBlocks(blocks);
     const output: object[] = [];
     if (
       reasoning ||
@@ -1163,23 +1918,20 @@ function buildContentWithToolCallsResponse(
         });
       }
     }
-    for (const block of ordered) {
-      if (block.type === "text") {
-        output.push(buildMessageOutputItem(block.text));
-      } else {
-        output.push(
-          buildFunctionCallOutputItem({
-            name: block.name,
-            arguments: block.arguments,
-            id: block.id,
-          }),
-        );
-      }
+    output.push(...imageGenerationCallItems(overrides?.files));
+    for (const entry of groupOrderedOutputs(ordered, overrides?.citations)) {
+      output.push(
+        entry.type === "message"
+          ? buildMessagePartsOutputItem(entry.parts, overrides?.phase)
+          : buildToolCallOutputItem(entry.block),
+      );
     }
     return buildResponseEnvelope(model, output, overrides);
   }
 
-  // LEGACY PATH: message item first, then function_call items — unchanged.
+  // LEGACY PATH: message item first, then tool call items (function_call or
+  // custom_tool_call), as before blocks existed.
+  assertResponsesToolCalls(toolCalls);
   const output = buildOutputPrefix(
     content,
     model,
@@ -1187,66 +1939,14 @@ function buildContentWithToolCallsResponse(
     webSearches,
     emitEncryptedReasoning,
     synthesizeSummarylessReasoning,
+    overrides?.phase,
+    overrides?.citations,
+    overrides?.files,
   );
   for (const tc of toolCalls) {
-    output.push(buildFunctionCallOutputItem(tc));
+    output.push(buildToolCallOutputItem(tc));
   }
   return buildResponseEnvelope(model, output, overrides);
-}
-
-// ─── SSE writer for Responses API ───────────────────────────────────────────
-
-interface ResponsesStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  jitterSource?: JitterSource;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeResponsesSSEStream(
-  res: http.ServerResponse,
-  events: ResponsesSSEEvent[],
-  optionsOrLatency?: number | ResponsesStreamOptions,
-): Promise<boolean> {
-  const opts: ResponsesStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(
-      chunkIndex,
-      profile,
-      latency,
-      recordedTimings,
-      replaySpeed,
-      opts.jitterSource,
-    );
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -1277,19 +1977,88 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `responsesReq.model` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(responsesReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Guard only shapes consumed by input conversion. Other item fields may be
+  // intentionally ignored, and falsy message content normalizes to empty text.
+  let inputError: string | undefined;
+  if (typeof responsesReq.input !== "string" && !Array.isArray(responsesReq.input)) {
+    inputError = "input must be a string or an array";
+  } else if (Array.isArray(responsesReq.input)) {
+    for (const [index, item] of responsesReq.input.entries()) {
+      if (item === null) {
+        inputError = `input[${index}] must not be null`;
+        break;
+      }
+      if (
+        (item.role === "system" ||
+          item.role === "developer" ||
+          item.role === "user" ||
+          item.role === "assistant") &&
+        item.content &&
+        typeof item.content !== "string" &&
+        !Array.isArray(item.content)
+      ) {
+        inputError = `input[${index}].content must be a string or an array`;
+        break;
+      }
+    }
+  }
+  const validationError = inputError ?? validateResponsesTools(responsesReq.tools);
+  if (validationError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: responsesReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: validationError,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   // Convert to ChatCompletionRequest for fixture matching
-  const completionReq = responsesToCompletionRequest(responsesReq);
+  const extendedTools = defaults.responsesTools === "extended";
+  const completionReq = responsesToCompletionRequest(responsesReq, {
+    extended: extendedTools,
+    logger: defaults.logger,
+  });
   completionReq._endpointType = "chat";
   completionReq._context = getContext(req);
 
@@ -1315,7 +2084,7 @@ export async function handleResponses(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "openai-responses" },
   );
 
   if (fixture) {
@@ -1329,29 +2098,30 @@ export async function handleResponses(
     );
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/responses",
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/responses",
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const decisions = resolveRequestDecisions(defaults.strict, req.headers);
+    if (decisions.fixtureMiss) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
@@ -1375,26 +2145,26 @@ export async function handleResponses(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "openai",
-        req.url ?? "/v1/responses",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "openai",
+          req.url ?? "/v1/responses",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1403,7 +2173,12 @@ export async function handleResponses(
           path: req.url ?? "/v1/responses",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1422,32 +2197,172 @@ export async function handleResponses(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  // Without responsesTools "extended", a namespace on a toolCalls entry or a
+  // toolCall block is not emitted, as in earlier releases.
+  const resolvedResponse = await resolveResponse(fixture, completionReq);
+  const response = extendedTools ? resolvedResponse : withoutLegacyNamespaces(resolvedResponse);
+  const misbehavior = planMisbehavior({
+    wire: "openai-responses",
+    fixture,
+    response,
+    request: completionReq,
+    stream: responsesReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.some((evaluation) => evaluation.outcome === "error")) {
+      defaults.logger.error(misbehavior.message);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("openai", "misbehavior", {
+        message: misbehavior.message,
+        type: "invalid_request_error",
+        code: misbehavior.code,
+      }).body,
+    );
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const fixtureTimings = fixture.recordedTimings;
   const effectiveReplaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixtureTimings,
+    replaySpeed: effectiveReplaySpeed,
+  };
+  // The payload length only sizes the opt-in wait. With timing off it is not
+  // read, so it is not computed: a malformed fixture then fails in its builder,
+  // with the same error as before.
+  const timedJson = nonStreamingTimingEnabled(fixture, "other");
+  // The JSON reply's payload: the served text and calls, plus one chunk per
+  // stream frame its citations and generated files add (responsesOutputFrames).
+  const jsonPayloadLength = (r: FixtureResponse, reasoning?: string): number =>
+    responsesPayloadLength(r, reasoning) + responsesOutputFrames(r) * chunkSize;
+  const jsonOpts = (payloadLength: () => number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength: timedJson ? payloadLength() : 0,
+    chunkSize,
+    recordedTimings: fixtureTimings,
+    duplicateId,
+    replaySpeed: effectiveReplaySpeed,
+  });
+
+  if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // while building leaves a 500 entry that keeps the fixture. Record the
+    // fault only once the reply is built: a thrown error was not served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const build = () =>
+      buildResponsesMisbehavior(prepared, completionReq, chunkSize, emitEncryptedReasoning);
+    const record = () =>
+      recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    // A timed JSON reply is built after the wait (inside deliverJson, still
+    // before writeHead), so `created_at` is the write time, and its outcome is
+    // recorded there, once the build succeeds. Every other reply is built
+    // here, before the outcome is recorded.
+    const output = timedJson && responsesReq.stream !== true ? undefined : build();
+    if (output) record();
+    if (responsesReq.stream !== true) {
+      // The reasoning buildResponsesMisbehavior serves: the fault's, else the fixture's.
+      const servedReasoning =
+        prepared.reasoning ??
+        ("reasoning" in prepared.response ? prepared.response.reasoning : undefined);
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => {
+          if (output) return output.response;
+          const built = build();
+          record();
+          return built.response;
+        },
+        jsonOpts(
+          () => misbehaviorPayloadLength(prepared, servedReasoning, jsonPayloadLength),
+          !!prepared.duplicateId,
+        ),
+      );
+    } else {
+      // Always built above for a stream.
+      const { events } = output ?? build();
+      await deliverStream(res, entry, fixture, typedSseCodec(), events, {
+        ...streamTiming,
+        recordedTimings: extendRecordedTimings(
+          fixtureTimings,
+          events.length,
+          !!prepared.duplicateId,
+        ),
+      });
+    }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "openai-responses",
+      stream: responsesReq.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "openai",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(res, status, serializeErrorResponse(response), {
       retryAfter: response.retryAfter,
@@ -1456,10 +2371,13 @@ export async function handleResponses(
   }
 
   // Combined content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1473,49 +2391,50 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // Resolve the served blocks (responsesBlocks, else legacy blocks) after
+    // journaling, where earlier releases' builders resolved them.
+    const ordered = resolveServedBlockOutcome(response)?.ordered;
+    if (!ordered) assertCustomToolCalls(response);
+    const toolCalls = servedToolCalls(response);
     if (responsesReq.stream !== true) {
-      const body = buildContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        response.blocks,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildContentWithToolCallsResponse(
+            response.content ?? "",
+            toolCalls,
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            ordered,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
-      const events = buildContentWithToolCallsStreamEvents(
+      const events = contentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        toolCalls,
         completionReq.model,
         chunkSize,
         effReasoning,
         response.webSearches,
         overrides,
-        response.blocks,
+        ordered,
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -1524,7 +2443,10 @@ export async function handleResponses(
   if (isTextResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1538,18 +2460,29 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (responsesReq.stream !== true) {
-      const body = buildTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildTextResponse(
+            response.content,
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildTextStreamEvents(
         response.content,
@@ -1561,22 +2494,7 @@ export async function handleResponses(
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -1585,7 +2503,10 @@ export async function handleResponses(
   if (isToolCallResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1599,21 +2520,33 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    assertCustomToolCalls(response);
     if (responsesReq.stream !== true) {
-      const body = buildToolCallResponse(
-        response.toolCalls,
-        completionReq.model,
-        effReasoning,
-        response.webSearches,
-        overrides,
-        emitEncryptedReasoning,
-        synthesizeSummarylessReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildToolCallResponse(
+            servedToolCalls(response),
+            completionReq.model,
+            effReasoning,
+            response.webSearches,
+            overrides,
+            emitEncryptedReasoning,
+            synthesizeSummarylessReasoning,
+          ),
+        jsonOpts(() => jsonPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
-      const events = buildToolCallStreamEvents(
-        response.toolCalls,
+      const events = toolCallStreamEvents(
+        servedToolCalls(response),
         completionReq.model,
         chunkSize,
         effReasoning,
@@ -1622,39 +2555,171 @@ export async function handleResponses(
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixtureTimings,
-        replaySpeed: effectiveReplaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v1/responses",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: { message: "Fixture response did not match any known type", type: "server_error" },
-    }),
+    renderError("openai", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
+}
+
+/** Prepare call IDs once, retaining the engine's effective blocks and exact served-call metadata. */
+export function prepareResponsesMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
+  return prepareOpenAIChatMisbehavior(plan);
+}
+
+/** Build one faulted payload/event sequence for both HTTP and Responses WebSocket consumers. */
+export function buildResponsesMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  chunkSize: number,
+  emitEncryptedReasoning = false,
+) {
+  const response = plan.response;
+  if (
+    !(
+      isCombinedFixtureResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  ) {
+    throw new Error("Responses misbehavior requires a prepared chat response");
+  }
+  const overrides = extractOverrides(response);
+  const reasoning = plan.reasoning ?? ("reasoning" in response ? response.reasoning : undefined);
+  const webSearches = "webSearches" in response ? response.webSearches : undefined;
+  // Refusal, empty-response, content-filter and reasoning-only withhold the
+  // turn's normal output. Their candidates already drop text, tool calls and
+  // web searches, so the fixture's generated images are withheld too.
+  const outputWithheld =
+    plan.refusal !== undefined ||
+    plan.summary.fault === "empty-response" ||
+    plan.stop === "content_filter" ||
+    plan.reasoning !== undefined;
+  const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
+    request.model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    outputWithheld ? { ...overrides, files: undefined } : overrides,
+    emitEncryptedReasoning,
+    false,
+    plan.reasoning !== undefined,
+  );
+  const output = [...prefixOutputItems];
+  let outputIndex = nextOutputIndex;
+  const incomplete = plan.stop === "length" || plan.stop === "content_filter";
+
+  if (plan.refusal !== undefined) {
+    const id = itemId();
+    const part = { type: "refusal", refusal: plan.refusal };
+    const item = {
+      id,
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      ...(overrides.phase !== undefined ? { phase: overrides.phase } : {}),
+      content: [part],
+    };
+    const position = { item_id: id, output_index: outputIndex, content_index: 0 };
+    events.push(
+      {
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: { ...item, status: "in_progress", content: [] },
+      },
+      { type: "response.content_part.added", ...position, part: { type: "refusal", refusal: "" } },
+    );
+    for (let i = 0; i < plan.refusal.length; i += chunkSize) {
+      events.push({
+        type: "response.refusal.delta",
+        ...position,
+        delta: plan.refusal.slice(i, i + chunkSize),
+      });
+    }
+    events.push(
+      { type: "response.refusal.done", ...position, refusal: plan.refusal },
+      { type: "response.content_part.done", ...position, part },
+      { type: "response.output_item.done", output_index: outputIndex, item },
+    );
+    output.push(item);
+  } else if (!outputWithheld) {
+    const combined = isCombinedFixtureResponse(response);
+    // Custom tool calls and namespaces pass through a fault unchanged.
+    const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
+    const blocks: ResponsesFixtureBlock[] = outcome?.ordered ?? [
+      ...("content" in response && typeof response.content === "string"
+        ? [{ type: "text" as const, text: response.content }]
+        : []),
+      ...(combined || isToolCallResponse(response)
+        ? servedToolCalls(response).map(toolCallFixtureBlock)
+        : []),
+    ];
+    let callIndex = 0;
+    for (const entry of groupOrderedOutputs(blocks, overrides.citations)) {
+      if (entry.type === "message") {
+        const message = buildMessagePartsOutputEvents(
+          entry.parts,
+          chunkSize,
+          outputIndex,
+          overrides.phase,
+        );
+        events.push(...message.events);
+        output.push(message.msgItem);
+      } else {
+        const block = entry.block;
+        const call =
+          block.type === "customToolCall"
+            ? buildCustomToolCallOutputEvents(block, chunkSize, outputIndex)
+            : buildFunctionCallOutputEvents(block, chunkSize, outputIndex);
+        const cut =
+          plan.summary.fault === "stop-length-mid-tool" && callIndex === plan.target?.index;
+        const item = cut ? { ...call.item, status: "incomplete" } : call.item;
+        // Live K5 capture retains both done events, with an incomplete call item.
+        events.push(
+          ...call.events.map((event) =>
+            cut && event.type === "response.output_item.done" ? { ...event, item } : event,
+          ),
+        );
+        output.push(item);
+        callIndex++;
+      }
+      outputIndex++;
+    }
+  }
+  const usage = resolveOpenAIChatMisbehaviorUsage(plan, request);
+  const body = {
+    id: respId,
+    object: "response",
+    created_at: created,
+    model: overrides?.model ?? request.model,
+    status: incomplete ? "incomplete" : responsesStatus(overrides?.finishReason, "completed"),
+    ...(incomplete
+      ? {
+          incomplete_details: {
+            reason: plan.stop === "content_filter" ? "content_filter" : "max_output_tokens",
+          },
+        }
+      : {}),
+    output,
+    usage: renderResponsesUsage({ usage }),
+  };
+  events.push({ type: incomplete ? "response.incomplete" : "response.completed", response: body });
+  return { response: body, events };
 }

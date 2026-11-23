@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moderation — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Moderation</h1>
+        <p class="lead">
+          The <code>POST /v1/moderations</code> endpoint is an OpenAI-compatible content moderation
+          mock. Register fixture patterns on the LLMock instance and the request
+          <code>input</code> is matched against them — first match wins, no match returns a default
+          unflagged result.
+        </p>
+
+        <h2>Endpoint</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Request Body</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/moderations</code></td>
+              <td><code>{ "input": "..." }</code></td>
+              <td><code>{ "id": "...", "model": "...", "results": [...] }</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>How It Works</h2>
+        <ul>
+          <li>
+            The <code>input</code> field is matched against registered patterns — string patterns
+            are case-insensitive substring matches, RegExp patterns are tested as-is
+          </li>
+          <li>First matching fixture wins, so register specific patterns before catch-alls</li>
+          <li>
+            Unmatched inputs return a default result with <code>flagged: false</code> and every
+            category (and category score) set to <code>false</code> / <code>0</code>
+          </li>
+          <li>
+            Under strict mode (<code>--strict</code>, or <code>X-AIMock-Strict: true</code> on the
+            request), an unmatched input returns <code>503 no_fixture_match</code> instead of the
+            unflagged default
+          </li>
+          <li>
+            An array <code>input</code> is joined with spaces for matching, and multimodal
+            <code>text</code> parts contribute their text
+          </li>
+        </ul>
+
+        <h2>Unit Test: Flagged Content</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            moderation-fixture.test.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
+<span class="op">mock</span>.<span class="fn">onModerate</span>(<span class="str">"violent"</span>, {
+  <span class="prop">flagged</span>: <span class="kw">true</span>,
+  <span class="prop">categories</span>: { <span class="prop">violence</span>: <span class="kw">true</span>, <span class="prop">hate</span>: <span class="kw">false</span> },
+  <span class="prop">category_scores</span>: { <span class="prop">violence</span>: <span class="num">0.95</span>, <span class="prop">hate</span>: <span class="num">0.01</span> },
+});
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/moderations`</span>, {
+  <span class="prop">method</span>: <span class="str">"POST"</span>,
+  <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({ <span class="prop">input</span>: <span class="str">"a violent threat"</span> }),
+});
+
+<span class="kw">const</span> <span class="op">body</span> = <span class="kw">await</span> <span class="op">res</span>.<span class="fn">json</span>();
+<span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">results</span>[<span class="num">0</span>].<span class="prop">flagged</span>).<span class="fn">toBe</span>(<span class="kw">true</span>);
+<span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">model</span>).<span class="fn">toBe</span>(<span class="str">"omni-moderation-latest"</span>);</code></pre>
+        </div>
+
+        <h2>Response Format</h2>
+        <p>Matches the OpenAI <code>/v1/moderations</code> response format:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">Response shape <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"id"</span>: <span class="str">"modr-..."</span>,
+  <span class="key">"model"</span>: <span class="str">"omni-moderation-latest"</span>,
+  <span class="key">"results"</span>: [
+    {
+      <span class="key">"flagged"</span>: <span class="kw">true</span>,
+      <span class="key">"categories"</span>: { <span class="key">"violence"</span>: <span class="kw">true</span>, <span class="key">"hate"</span>: <span class="kw">false</span> },
+      <span class="key">"category_scores"</span>: { <span class="key">"violence"</span>: <span class="num">0.95</span>, <span class="key">"hate"</span>: <span class="num">0.01</span> }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h2>Validation</h2>
+        <ul>
+          <li>Malformed JSON bodies are rejected with <code>400</code></li>
+          <li>
+            An <code>input</code> that is neither a string, an array of strings, nor multimodal
+            parts is rejected with <code>400</code>
+          </li>
+          <li>A missing <code>input</code> matches against the empty string (usually a miss)</li>
+        </ul>
+
+        <h2>Journal Integration</h2>
+        <p>
+          Moderation requests are recorded in the LLMock journal with
+          <code>service: "moderation"</code>:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Journal entries <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">const</span> entries = mock.getRequests();
+<span class="kw">const</span> moderationRequests = entries.filter((e) =&gt; e.service === <span class="str">"moderation"</span>);</code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            See also the <a href="/services">Services</a> overview, plus the sibling pages
+            <a href="/search">Web Search</a> and <a href="/rerank">Rerank</a>.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

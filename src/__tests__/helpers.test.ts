@@ -13,7 +13,9 @@ import {
   buildTextCompletion,
   buildToolCallCompletion,
   getContext,
+  describeMatch,
 } from "../helpers.js";
+import type { FixtureMatch } from "../types.js";
 
 describe("generateId", () => {
   it("generates IDs with default prefix", () => {
@@ -388,5 +390,45 @@ describe("buildToolCallCompletion", () => {
     const tc = result.choices[0].message.tool_calls![0];
     expect(tc.id).toMatch(/^call_/);
     expect(tc.id.length).toBeGreaterThan(5);
+  });
+});
+
+describe("describeMatch renders predicates and nested objects readably (F4)", () => {
+  it("marks a predicate matcher with [predicate]", () => {
+    expect(describeMatch({ predicate: () => true }, -1)).toBe("{ [predicate] }");
+    expect(describeMatch({ predicate: () => true, turnIndex: 2 }, 3)).toBe(
+      "#3 { [predicate], turnIndex=2 }",
+    );
+  });
+
+  it("renders a nested object as JSON, not [object Object]", () => {
+    const match = { userMessage: "x", endpoint: { nested: 1 } } as unknown as FixtureMatch;
+    const out = describeMatch(match, -1);
+    expect(out).not.toContain("[object Object]");
+    expect(out).toContain('endpoint({"nested":1})');
+  });
+
+  it("truncates at a matcher boundary with an ellipsis, never mid-token", () => {
+    const out = describeMatch(
+      {
+        userMessage: "u".repeat(50),
+        systemMessage: "s".repeat(50),
+        inputText: "i".repeat(50),
+        toolName: "tool-name-here",
+        model: "model-name-here",
+      },
+      0,
+    );
+    expect(out.length).toBeLessThanOrEqual(160);
+    expect(out.endsWith(", … }")).toBe(true);
+    // Every retained matcher is complete: the text before the ellipsis is a
+    // whole `key(...)` token, so re-adding the terminator parses cleanly.
+    const kept = out.slice(0, -", … }".length);
+    expect(kept).toMatch(/\)$/);
+    expect(kept).not.toContain("inputText");
+  });
+
+  it("leaves a short description untouched", () => {
+    expect(describeMatch({ userMessage: "hello" }, -1)).toBe('{ userMessage("hello") }');
   });
 });

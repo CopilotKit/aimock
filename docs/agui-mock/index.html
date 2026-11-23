@@ -123,6 +123,15 @@ agui.<span class="fn">onToolCall</span>(<span class="op">/search/</span>, <span 
           </tbody>
         </table>
 
+        <p>
+          <code>onMessage</code>, <code>onToolCall</code>, <code>onStateKey</code>, and
+          <code>onReasoning</code> build events for each request. Run events use the caller's
+          <code>threadId</code>, <code>runId</code>, and optional <code>parentRunId</code>; message
+          and tool-call IDs are fresh for each run. Explicit event arrays passed to
+          <code>addFixture</code>, <code>onRun</code>, <code>onPredicate</code>, and
+          <code>onToolResult</code> keep their authored IDs.
+        </p>
+
         <h2>Event Types</h2>
         <p>AG-UI protocol event categories:</p>
         <table class="endpoint-table">
@@ -238,6 +247,25 @@ agui.<span class="fn">enableRecording</span>({
   proxyOnly: <span class="kw">true</span>, <span class="cm">// false to save fixtures</span>
 });</code></pre>
         </div>
+        <p>
+          The proxy is transparent: inbound request headers are forwarded to the upstream agent, and
+          the request body is relayed byte-for-byte. Hop-by-hop headers (<code>connection</code>,
+          <code>transfer-encoding</code>, &hellip;), headers the proxy must own (<code>host</code>,
+          <code>content-length</code>, <code>accept-encoding</code>), <code>cookie</code>, and
+          aimock's own control headers are stripped. <code>Content-Type</code> is supplied only when
+          the caller did not set it, since the caller owns it and a request signature may cover it;
+          <code>Accept</code> is always forced to <code>text/event-stream</code>, because AG-UI is
+          an SSE protocol and a forwarded <code>*/*</code> would let a content-negotiating upstream
+          answer with JSON. This keeps runtime contracts that live in headers &mdash; session
+          affinity, per-request agent configuration &mdash; and request signatures computed over the
+          payload (AWS SigV4) intact across the hop.
+        </p>
+        <p>
+          A recording is refused, loudly, when a <code>2xx</code> upstream answers with something
+          other than an event stream or with a stream holding no parseable events. The response is
+          still relayed to the client in full; only the fixture is skipped, so an empty tape can
+          never replay as a silently empty agent turn.
+        </p>
 
         <h2>CLI Usage</h2>
         <div class="code-block">

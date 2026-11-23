@@ -51,8 +51,8 @@
         <h1>Chaos Testing</h1>
         <p class="lead">
           aimock provides probabilistic failure injection to test how your application handles
-          unreliable LLM APIs. Three failure modes can be configured at the server, fixture, or
-          per-request level.
+          unreliable LLM APIs. Four probabilistic failure modes and one deterministic delay can be
+          configured at the server, fixture, or per-request level.
         </p>
 
         <h2>Failure Modes</h2>
@@ -85,12 +85,58 @@
               </td>
             </tr>
             <tr>
+              <td><code>rateLimit</code></td>
+              <td>HTTP 429</td>
+              <td>
+                Returns a 429 with
+                <code
+                  >{"error":{"message":"Chaos: rate limit
+                  exceeded","type":"rate_limit_error","code":"chaos_ratelimit"}}</code
+                >
+                plus <code>Retry-After: 1</code> and the static OpenAI-style
+                <code>x-ratelimit-*</code> headers every aimock 429 carries
+              </td>
+            </tr>
+            <tr>
               <td><code>disconnect</code></td>
               <td>Connection destroyed</td>
               <td>Destroys the TCP connection immediately with no response</td>
             </tr>
           </tbody>
         </table>
+        <p>
+          The four modes are rolled from rates. A fifth field, <code>latencyMs</code>, is not a mode
+          and is not rolled: when set it always fires, delaying the request by that many
+          milliseconds <em>before</em> the four rates are drawn, so the delay applies to a request
+          whether or not a fault then fires.
+        </p>
+
+        <h2 id="model-misbehavior">Combining Chaos with Model Misbehavior</h2>
+        <p>
+          <a href="/model-misbehavior">Model misbehavior</a> changes a matched response, such as its
+          tool arguments or refusal. The current implementation supports the
+          <code>openai-chat</code> wire, including Azure and OpenRouter Chat Completions.
+        </p>
+        <p>
+          Chaos latency runs first. If a terminal chaos action sends an error, malformed response,
+          or disconnect, semantic faults do not run. With misbehavior configured, the journal's
+          <code>response.misbehavior</code> reports <code>applied: false</code>,
+          <code>reason: "chaos-fired"</code>, and an empty <code>evaluations</code> array. This
+          bypass consumes no misbehavior roll or <code>times</code> budget.
+        </p>
+        <p>
+          A latency delay alone allows semantic faults to run afterward. Fixture
+          <code>truncateAfterChunks</code> and <code>disconnectAfterMs</code> can still interrupt
+          the resulting stream. A malformed <code>X-AIMock-Misbehavior</code> header returns HTTP
+          400 before chaos runs.
+        </p>
+        <p>
+          For a model that stops partway through tool arguments, use
+          <code>stop-length-mid-tool</code>. It sends a clean
+          <code>finish_reason: "length"</code> terminal and <code>[DONE]</code> on OpenAI chat
+          streams. See <a href="/error-injection#model-length-stop">model length stops</a> for the
+          difference from an interrupted connection.
+        </p>
 
         <h2>Precedence</h2>
         <p>
@@ -103,8 +149,33 @@
           <li><strong>Server-level defaults</strong> (lowest)</li>
         </ol>
         <p>
-          Within a single level, modes are evaluated in order: drop, malformed, disconnect. The
-          first mode that triggers (based on its probability) wins.
+          Each level overrides the one below <em>field by field</em>: a fixture that sets only
+          <code>dropRate</code> leaves the server's <code>latencyMs</code> in place, and a request
+          header that sets only <code>x-aimock-chaos-disconnect</code> leaves the rest of the
+          fixture's rates alone.
+        </p>
+        <p>
+          Within a single level, modes are rolled in order &mdash; drop, malformed, rateLimit,
+          disconnect &mdash; as four separate draws, and the first draw that hits wins and
+          short-circuits the rest. Each rate is therefore the chance that <em>its</em> draw hits
+          <em>given that no earlier mode fired</em>, not the share of requests that end in that
+          fault; only <code>dropRate</code>, first in the chain, is unconditional. So
+          <code>{ "dropRate": 0.5, "rateLimitRate": 0.5 }</code> produces about 50% drops and about
+          25% rate limits (0.5 &times; 0.5), not 50% of each &mdash; to exercise two faults at their
+          nominal frequency, configure them on separate requests.
+        </p>
+        <p>
+          <strong>One exception: the per-test scope.</strong> The server level is scoped by
+          <code>X-Test-Id</code> &mdash; a runtime override installed with
+          <code>POST /__aimock/chaos</code> applies only to traffic carrying the same tag (see the
+          <a href="/control-api">Control API</a>). Picking that scope is a <em>selection</em>, not a
+          merge: a scoped override <strong>replaces</strong> the server-wide baseline wholesale
+          rather than layering on it. A server started with <code>--chaos-latency 500</code> whose
+          test installs <code>{ "dropRate": 1 }</code> sees drops with <em>no</em> latency on that
+          test's traffic &mdash; restate <code>latencyMs</code> in the override to keep it.
+          <code>GET /__aimock/chaos</code> with the same tag always reports the config actually in
+          effect for the scope, and the server warns when an install drops a field that was in
+          effect.
         </p>
 
         <h2>Quick Start</h2>
@@ -135,7 +206,9 @@
 <span class="op">mock</span>.<span class="fn">setChaos</span>({
   <span class="prop">dropRate</span>: <span class="num">0.1</span>,        <span class="cm">// 10% drop rate</span>
   <span class="prop">malformedRate</span>: <span class="num">0.05</span>,  <span class="cm">// 5% malformed rate</span>
+  <span class="prop">rateLimitRate</span>: <span class="num">0.05</span>,  <span class="cm">// 5% rate-limit (429) rate</span>
   <span class="prop">disconnectRate</span>: <span class="num">0.02</span>, <span class="cm">// 2% disconnect rate</span>
+  <span class="prop">latencyMs</span>: <span class="num">250</span>,       <span class="cm">// always delay 250 ms first</span>
 });
 
 <span class="cm">// Remove all server-level chaos</span>
@@ -171,31 +244,54 @@
 
         <h2>Per-Request Headers</h2>
         <p>
-          Override chaos rates on individual requests using HTTP headers. Values are floats between
-          0 and 1:
+          Override chaos on individual requests using HTTP headers &mdash; one header per field,
+          each carrying the same value the corresponding <code>chaos</code> field takes:
         </p>
         <table class="endpoint-table">
           <thead>
             <tr>
               <th>Header</th>
               <th>Controls</th>
+              <th>Accepted values</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td><code>x-aimock-chaos-drop</code></td>
-              <td>Drop rate (0&ndash;1)</td>
+              <td><code>dropRate</code> &mdash; 500 with an error body</td>
+              <td>0&ndash;1</td>
             </tr>
             <tr>
               <td><code>x-aimock-chaos-malformed</code></td>
-              <td>Malformed rate (0&ndash;1)</td>
+              <td><code>malformedRate</code> &mdash; truncated/invalid JSON</td>
+              <td>0&ndash;1</td>
             </tr>
             <tr>
               <td><code>x-aimock-chaos-disconnect</code></td>
-              <td>Disconnect rate (0&ndash;1)</td>
+              <td><code>disconnectRate</code> &mdash; socket destroyed mid-flight</td>
+              <td>0&ndash;1</td>
+            </tr>
+            <tr>
+              <td><code>x-aimock-chaos-ratelimit</code></td>
+              <td><code>rateLimitRate</code> &mdash; 429 with <code>Retry-After</code></td>
+              <td>0&ndash;1</td>
+            </tr>
+            <tr>
+              <td><code>x-aimock-chaos-latency</code></td>
+              <td><code>latencyMs</code> &mdash; delay before the response</td>
+              <td>0&ndash;30000, whole ms</td>
             </tr>
           </tbody>
         </table>
+        <p>
+          Header values are read as plain decimal text and are <strong>never clamped</strong>: a
+          value that is out of range, not a plain decimal (<code>1e3</code>, <code>0x1f</code>,
+          <code>Infinity</code>), or fractional where a whole number of milliseconds is required is
+          rejected with a warning and simply does not apply &mdash; the level below it (fixture,
+          then server default) still does. The same rule governs values set in a fixture, in the
+          server defaults, on the <code>--chaos-*</code> CLI flags and through
+          <code>POST /__aimock/chaos</code>.
+        </p>
 
         <div class="code-block">
           <div class="code-block-header">
@@ -213,18 +309,24 @@
         </div>
 
         <h2>CLI Flags</h2>
-        <p>Set server-level chaos from the command line:</p>
+        <p>
+          Set server-level chaos from the command line. The <code>--chaos-*</code> flags belong to
+          the <code>llmock</code> binary (the fixtures-and-flags CLI), which is also what the Docker
+          image runs.
+        </p>
 
         <div class="cli-docker-tabs">
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">
-                CLI chaos flags <span class="lang-tag">shell</span>
+                llmock chaos flags <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx -p @copilotkit/aimock aimock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
-  --chaos-disconnect 0.02</code></pre>
+  --chaos-ratelimit 0.05 \
+  --chaos-disconnect 0.02 \
+  --chaos-latency 250</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -238,10 +340,21 @@
   -f /fixtures -h 0.0.0.0 \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
-  --chaos-disconnect 0.02</code></pre>
+  --chaos-ratelimit 0.05 \
+  --chaos-disconnect 0.02 \
+  --chaos-latency 250</code></pre>
             </div>
           </div>
         </div>
+
+        <p>
+          The <code>aimock</code> binary takes no chaos flags &mdash; its options are
+          <code>--config</code>, <code>--port</code>, <code>--host</code> and
+          <code>-h, --help</code>. With <code>aimock --config</code>, set the server-level chaos
+          under <code>llm.chaos</code> in the config file (the same five fields, the same bounds),
+          or install it at runtime with <code>POST /__aimock/chaos</code> (see the
+          <a href="/control-api">Control API</a>).
+        </p>
 
         <h2>Proxy Mode</h2>
         <p>
@@ -264,6 +377,11 @@
               <td><code>drop</code></td>
               <td>Never &mdash; upstream not contacted</td>
               <td>HTTP 500 chaos body; upstream is not called</td>
+            </tr>
+            <tr>
+              <td><code>rateLimit</code></td>
+              <td>Never &mdash; upstream not contacted</td>
+              <td>HTTP 429 chaos body; upstream is not called</td>
             </tr>
             <tr>
               <td><code>disconnect</code></td>
@@ -314,9 +432,11 @@
 }</code></pre>
         </div>
         <p>
-          The <code>chaosAction</code> values are <code>"drop"</code>, <code>"malformed"</code>, or
-          <code>"disconnect"</code>. The status codes are 500 for drop, 200 for malformed, and 0 for
-          disconnect (connection destroyed).
+          The <code>chaosAction</code> values are <code>"drop"</code>, <code>"malformed"</code>,
+          <code>"rateLimit"</code> and <code>"disconnect"</code>. The recorded status codes are 500
+          for drop, 200 for malformed, 429 for rateLimit, and 0 for disconnect (connection
+          destroyed). A latency delay alone leaves no <code>chaosAction</code>: the entry is the
+          ordinary one for whatever the request then received.
         </p>
 
         <h2>Prometheus Metrics</h2>

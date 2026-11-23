@@ -1,0 +1,7 @@
+{
+  "status": 400,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0: when `thinking` is enabled, a tool-loop continuation assistant turn must begin with a `thinking` block; got `tool_use`.\"}}"
+}

@@ -1,9 +1,27 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type ServerInstance } from "../server.js";
-import type { Fixture } from "../types.js";
+import type { ChatCompletionRequest, Fixture, JournalEntry } from "../types.js";
+import { isChatCompletionBody } from "../journal.js";
 import { connectWebSocket } from "./ws-test-client.js";
 
 // --- fixtures ---
+
+/**
+ * The chat request a journal entry recorded.
+ *
+ * `JournalEntry.body` is a union — not every service journals a chat request —
+ * so reading `messages` off one needs a narrowing step. Throwing here names the
+ * problem ("this entry is not a chat request") at the point it exists, instead
+ * of letting a non-chat entry surface as an undefined property inside an
+ * expectation.
+ */
+function chatBodyOf(entry: JournalEntry | null | undefined): ChatCompletionRequest {
+  const body = entry?.body;
+  if (!isChatCompletionBody(body)) {
+    throw new Error(`journal entry has no chat-completion body: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
 
 const textFixture: Fixture = {
   match: { userMessage: "hello" },
@@ -779,10 +797,46 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
 
     const raw = await ws.waitForMessages(2);
     const msg = JSON.parse(raw[1]);
-    // Should still produce a toolCall with empty args object
+    // By default (as in 1.44.0) the malformed arguments are served as {}
     expect(msg.toolCall).toBeDefined();
     expect(msg.toolCall.functionCalls[0].name).toBe("search");
     expect(msg.toolCall.functionCalls[0].args).toEqual({});
+
+    ws.close();
+  });
+
+  it("rejects malformed JSON arguments with an error frame under strictToolArguments", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-args" },
+      response: {
+        toolCalls: [{ name: "search", arguments: "not-json{{{" }],
+      },
+    };
+    instance = await createServer([badArgsFixture], { strictToolArguments: true });
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("bad-args"));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg).toEqual({
+      error: {
+        code: 13,
+        status: "INTERNAL",
+        message: expect.stringContaining('fixture tool call "search" has invalid JSON arguments'),
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "AIMOCK_INVALID_TOOL_ARGUMENTS",
+            domain: "aimock",
+            metadata: { code: "aimock_invalid_tool_arguments" },
+          },
+        ],
+      },
+    });
 
     ws.close();
   });
@@ -1055,7 +1109,7 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     // Inspect the journal to verify the generated tool_call_id starts with call_
     const entry = instance.journal.getLast();
     expect(entry).not.toBeNull();
-    const messages = entry!.body!.messages;
+    const messages = chatBodyOf(entry).messages;
     const toolMsg = messages.find((m) => m.role === "tool");
     expect(toolMsg).toBeDefined();
     expect(toolMsg!.tool_call_id).toMatch(/^call_/);
@@ -1104,7 +1158,7 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     // Inspect the journal to verify the generated tool_call_id starts with call_
     const entry = instance.journal.getLast();
     expect(entry).not.toBeNull();
-    const messages = entry!.body!.messages;
+    const messages = chatBodyOf(entry).messages;
     const toolMsg = messages.find((m) => m.role === "tool");
     expect(toolMsg).toBeDefined();
     expect(toolMsg!.tool_call_id).toMatch(/^call_/);

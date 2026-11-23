@@ -3,6 +3,7 @@ import * as http from "node:http";
 import { MCPMock } from "../mcp-mock.js";
 import { LLMock } from "../llmock.js";
 import type { MCPContent } from "../mcp-types.js";
+import { ReadResourceResultSchema } from "@modelcontextprotocol/sdk/types.js";
 
 // ---- HTTP Helpers ----
 
@@ -372,7 +373,48 @@ describe("MCPMock", () => {
       expect(data.result.tools[1]).toEqual({
         name: "calc",
         description: "Calculator",
+        inputSchema: { type: "object" },
       });
+    });
+
+    it("tools/list gives every tool an inputSchema, as the MCP schema requires", async () => {
+      // The official SDK clients reject the whole list when one tool lacks
+      // inputSchema. Both of these register a tool without one.
+      mcp = new MCPMock();
+      mcp.addTool({ name: "search", description: "Search the web" });
+      mcp.onToolCall("lookup", () => "x");
+      const url = await mcp.start();
+      const sessionId = await initSession(url);
+
+      const res = await jsonRpc(url, "/", "tools/list", {}, 1, { "mcp-session-id": sessionId });
+      const data = JSON.parse(res.body);
+      expect(data.result.tools).toEqual([
+        { name: "search", description: "Search the web", inputSchema: { type: "object" } },
+        { name: "lookup", inputSchema: { type: "object" } },
+      ]);
+    });
+
+    it("tools/list adds type object to an inputSchema without a type", async () => {
+      // The official SDK clients also reject the whole list when a tool's
+      // inputSchema has no `type`. Other keys are kept; an explicit type is not
+      // rewritten.
+      mcp = new MCPMock();
+      mcp.addTool({ name: "empty", inputSchema: {} });
+      mcp.addTool({ name: "props", inputSchema: { properties: { q: { type: "string" } } } });
+      mcp.addTool({ name: "typed", inputSchema: { type: "object", required: [] } });
+      const url = await mcp.start();
+      const sessionId = await initSession(url);
+
+      const res = await jsonRpc(url, "/", "tools/list", {}, 1, { "mcp-session-id": sessionId });
+      const data = JSON.parse(res.body);
+      expect(data.result.tools).toEqual([
+        { name: "empty", inputSchema: { type: "object" } },
+        {
+          name: "props",
+          inputSchema: { type: "object", properties: { q: { type: "string" } } },
+        },
+        { name: "typed", inputSchema: { type: "object", required: [] } },
+      ]);
     });
 
     it("tools/call with function handler", async () => {
@@ -741,8 +783,33 @@ describe("MCPMock", () => {
       });
       const data = JSON.parse(res.body);
       expect(data.result.contents[0].uri).toBe("file:///empty");
-      expect(data.result.contents[0].text).toBeUndefined();
+      // MCP resource contents must carry text or blob, so no content reads as empty text.
+      expect(data.result.contents[0].text).toBe("");
       expect(data.result.contents[0].blob).toBeUndefined();
+      expect(ReadResourceResultSchema.safeParse(data.result).success).toBe(true);
+    });
+
+    it("resources/read falls back to the definition's mimeType", async () => {
+      mcp = new MCPMock();
+      mcp.addResource({ uri: "file:///notes.md", name: "Notes", mimeType: "text/markdown" });
+      mcp.addResource(
+        { uri: "file:///data.csv", name: "Data", mimeType: "text/csv" },
+        { text: "a,b" },
+      );
+      const url = await mcp.start();
+      const sessionId = await initSession(url);
+
+      for (const [uri, mimeType] of [
+        ["file:///notes.md", "text/markdown"],
+        ["file:///data.csv", "text/csv"],
+      ]) {
+        const res = await jsonRpc(url, "/", "resources/read", { uri }, 1, {
+          "mcp-session-id": sessionId,
+        });
+        const data = JSON.parse(res.body);
+        expect(data.result.contents[0].mimeType).toBe(mimeType);
+        expect(ReadResourceResultSchema.safeParse(data.result).success).toBe(true);
+      }
     });
   });
 

@@ -731,6 +731,175 @@ describe("response overrides: Responses API", () => {
   });
 });
 
+describe("response overrides: Responses message phase", () => {
+  const phases = [undefined, "commentary", "final_answer"] as const;
+  const responses: Array<[string, TextResponse | ContentWithToolCallsResponse]> = [
+    ["text", { content: "Hi!", reasoning: "Thinking." }],
+    [
+      "content with tool calls",
+      { content: "Hi!", toolCalls: [{ name: "lookup", arguments: "{}" }] },
+    ],
+    [
+      "ordered blocks",
+      {
+        blocks: [
+          { type: "toolCall", name: "lookup", arguments: "{}" },
+          { type: "text", text: "Hi!" },
+        ],
+      },
+    ],
+    [
+      "Responses blocks",
+      {
+        responsesBlocks: [
+          { type: "toolCall", name: "lookup", arguments: "{}" },
+          { type: "text", text: "Hi!" },
+          { type: "text", text: "Again." },
+        ],
+      },
+    ],
+  ];
+
+  for (const [shape, response] of responses) {
+    for (const phase of phases) {
+      for (const stream of [false, true]) {
+        it(`${shape}: ${phase ?? "absent"} phase, stream=${stream}`, async () => {
+          instance = await createServer(
+            [
+              {
+                match: { userMessage: "phase" },
+                response: { ...response, ...(phase !== undefined ? { phase } : {}) },
+                chunkSize: 100,
+              },
+            ],
+            { responsesTools: shape === "Responses blocks" ? "extended" : "legacy" },
+          );
+          const res = await httpPost(`${instance.url}/v1/responses`, {
+            model: "gpt-5-test",
+            input: [{ role: "user", content: "phase" }],
+            stream,
+          });
+          expect(res.status).toBe(200);
+
+          const events = stream
+            ? (parseResponsesSSE(res.body) as Array<Record<string, unknown>>)
+            : [];
+          const body = stream
+            ? (events.find((event) => event.type === "response.completed")!.response as Record<
+                string,
+                unknown
+              >)
+            : (JSON.parse(res.body) as Record<string, unknown>);
+          expect(body).not.toHaveProperty("phase");
+          const output = body.output as Array<Record<string, unknown>>;
+          if (shape === "text") {
+            expect(output.some((item) => item.type === "reasoning")).toBe(true);
+          }
+          const messages = output.filter((item) => item.type === "message");
+          expect(messages).toHaveLength(shape === "Responses blocks" ? 2 : 1);
+          expect(
+            messages.flatMap((item) =>
+              (item.content as Array<{ text: string }>).map((part) => part.text),
+            ),
+          ).toEqual(shape === "Responses blocks" ? ["Hi!", "Again."] : ["Hi!"]);
+
+          const added = events
+            .filter((event) => event.type === "response.output_item.added")
+            .map((event) => event.item as Record<string, unknown>);
+          const done = events
+            .filter((event) => event.type === "response.output_item.done")
+            .map((event) => event.item as Record<string, unknown>);
+          if (stream) {
+            expect(added.filter((item) => item.type === "message").map((item) => item.id)).toEqual(
+              messages.map((item) => item.id),
+            );
+            expect(done).toEqual(output);
+          }
+          for (const item of [...output, ...added, ...done]) {
+            if (item.type === "message" && phase !== undefined) {
+              expect(item.phase).toBe(phase);
+            } else {
+              expect(item).not.toHaveProperty("phase");
+            }
+          }
+        });
+      }
+    }
+  }
+
+  for (const fault of ["refusal", "tool-unknown-name"] as const) {
+    it.each([false, true])(`preserves phase through ${fault}, stream=%s`, async (stream) => {
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "phase" },
+            response: {
+              content: "Hi!",
+              toolCalls: [{ name: "lookup", arguments: "{}" }],
+              phase: "final_answer",
+            },
+            misbehavior: fault,
+            chunkSize: 100,
+          },
+        ],
+        { enableMisbehavior: true },
+      );
+      const res = await httpPost(`${instance.url}/v1/responses`, {
+        model: "gpt-4o",
+        input: [{ role: "user", content: "phase" }],
+        stream,
+      });
+      expect(res.status).toBe(200);
+      const events = stream ? (parseResponsesSSE(res.body) as Array<Record<string, unknown>>) : [];
+      const body = stream
+        ? (events.find((event) => event.type === "response.completed")!.response as Record<
+            string,
+            unknown
+          >)
+        : (JSON.parse(res.body) as Record<string, unknown>);
+      const output = body.output as Array<Record<string, unknown>>;
+      const messages = output.filter((item) => item.type === "message");
+      expect(messages).toHaveLength(1);
+      if (fault === "refusal") {
+        expect(messages[0].content).toEqual([
+          expect.objectContaining({ type: "refusal", refusal: expect.any(String) }),
+        ]);
+      } else {
+        expect(output.find((item) => item.type === "function_call")!.name).not.toBe("lookup");
+      }
+      const items = events
+        .filter(
+          (event) =>
+            event.type === "response.output_item.added" ||
+            event.type === "response.output_item.done",
+        )
+        .map((event) => event.item as Record<string, unknown>);
+      for (const item of [...output, ...items]) {
+        if (item.type === "message") expect(item.phase).toBe("final_answer");
+        else expect(item).not.toHaveProperty("phase");
+      }
+    });
+  }
+
+  it("does not put a Responses phase onto Chat Completions messages", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "phase" },
+        response: { content: "Hi!", phase: "final_answer" },
+      },
+    ]);
+    const res = await httpPost(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "phase" }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].message).toMatchObject({ role: "assistant", content: "Hi!" });
+    expect(body.choices[0].message).not.toHaveProperty("phase");
+  });
+});
+
 describe("response overrides: cross-provider tool call coverage", () => {
   it("Gemini tool call finishReason maps to FUNCTION_CALL", async () => {
     const fixtures: Fixture[] = [

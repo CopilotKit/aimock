@@ -1,0 +1,14 @@
+{
+  "mcpFakes": {
+    "scope": { "context": "docs-search" },
+    "tools": [
+      {
+        "name": "search_docs",
+        "calls": [
+          { "anyArgs": true, "result": [{ "type": "text", "text": "Doc A: refunds take 5 days" }] },
+          { "anyArgs": true, "result": [{ "type": "text", "text": "Doc B: contact support" }] }
+        ]
+      }
+    ]
+  }
+}

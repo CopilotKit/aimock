@@ -1,0 +1,851 @@
+{
+  "provenance": "Sanitized native HTTP receipts and collector assertions from CI run 38659541343, 2026-10-15. Request IDs replaced; unrelated surfaces removed. Legacy cursor behavior supplies the historical base control.",
+  "report": {
+    "timestamp": "2026-10-15T00:27:00.554Z",
+    "generatedAt": "2026-10-15T00:27:00.554Z",
+    "conclusion": "critical",
+    "entries": [
+      {
+        "provider": "Anthropic native authentication and version",
+        "scenario": "Anthropic vendor auth",
+        "builderFile": "src/response/errors.ts",
+        "builderFunctions": ["renderError"],
+        "typesFile": null,
+        "sdkShapesFile": "src/__tests__/drift/sdk-shapes.ts",
+        "diffs": [
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "request_id",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "request_id"
+          }
+        ]
+      },
+      {
+        "provider": "Anthropic native authentication and version",
+        "scenario": "intentional default divergence",
+        "builderFile": "src/response/errors.ts",
+        "builderFunctions": ["renderError"],
+        "typesFile": null,
+        "sdkShapesFile": "src/__tests__/drift/sdk-shapes.ts",
+        "diffs": [
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "type",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "error",
+            "expected": "<absent>",
+            "real": "object { type: string, message: string }",
+            "mock": "<absent>",
+            "id": "error"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "request_id",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "request_id"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "input_tokens",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "number",
+            "id": "input_tokens"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "status",
+            "expected": "400",
+            "real": "400",
+            "mock": "200",
+            "id": "status"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "type",
+            "expected": "\"error\"",
+            "real": "\"error\"",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "error.type",
+            "expected": "\"invalid_request_error\"",
+            "real": "\"invalid_request_error\"",
+            "mock": "<absent>",
+            "id": "error.type"
+          }
+        ]
+      },
+      {
+        "provider": "Gemini native authentication",
+        "scenario": "inbound policy divergence",
+        "builderFile": "src/response/errors.ts",
+        "builderFunctions": ["renderError"],
+        "typesFile": null,
+        "sdkShapesFile": "src/__tests__/drift/sdk-shapes.ts",
+        "diffs": [
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "status",
+            "expected": "403",
+            "real": "403",
+            "mock": "401",
+            "id": "status"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "error.code",
+            "expected": "403",
+            "real": "403",
+            "mock": "401",
+            "id": "error.code"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "error.status",
+            "expected": "\"PERMISSION_DENIED\"",
+            "real": "\"PERMISSION_DENIED\"",
+            "mock": "\"UNAUTHENTICATED\"",
+            "id": "error.status"
+          }
+        ]
+      },
+      {
+        "provider": "Anthropic native catalog",
+        "scenario": "Native catalog comparison anthropic-after-unknown",
+        "builderFile": "src/response/catalog/anthropic-page.ts",
+        "builderFunctions": ["anthropicPage", "renderAnthropicModels"],
+        "typesFile": null,
+        "sdkShapesFile": "src/__tests__/drift/sdk-shapes.ts",
+        "diffs": [
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "type",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "error",
+            "expected": "<absent>",
+            "real": "object { type: string, message: string }",
+            "mock": "<absent>",
+            "id": "error"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "request_id",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "request_id"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "data",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "array<<absent>>",
+            "id": "data"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "has_more",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "boolean",
+            "id": "has_more"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "first_id",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "null",
+            "id": "first_id"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "last_id",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "null",
+            "id": "last_id"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "status",
+            "expected": "400",
+            "real": "400",
+            "mock": "200",
+            "id": "status"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "type",
+            "expected": "\"error\"",
+            "real": "\"error\"",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "error.type",
+            "expected": "\"invalid_request_error\"",
+            "real": "\"invalid_request_error\"",
+            "mock": "<absent>",
+            "id": "error.type"
+          }
+        ]
+      },
+      {
+        "provider": "Anthropic native catalog",
+        "scenario": "Native catalog comparison anthropic-before-unknown",
+        "builderFile": "src/response/catalog/anthropic-page.ts",
+        "builderFunctions": ["anthropicPage", "renderAnthropicModels"],
+        "typesFile": null,
+        "sdkShapesFile": "src/__tests__/drift/sdk-shapes.ts",
+        "diffs": [
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "type",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "error",
+            "expected": "<absent>",
+            "real": "object { type: string, message: string }",
+            "mock": "<absent>",
+            "id": "error"
+          },
+          {
+            "severity": "warning",
+            "issue": "PROVIDER ADDED FIELD \u2014 in real API but not in SDK or mock",
+            "path": "request_id",
+            "expected": "<absent>",
+            "real": "string",
+            "mock": "<absent>",
+            "id": "request_id"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "data",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "array<<absent>>",
+            "id": "data"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "has_more",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "boolean",
+            "id": "has_more"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "first_id",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "null",
+            "id": "first_id"
+          },
+          {
+            "severity": "info",
+            "issue": "MOCK EXTRA FIELD \u2014 in mock but not in real API",
+            "path": "last_id",
+            "expected": "<absent>",
+            "real": "<absent>",
+            "mock": "null",
+            "id": "last_id"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "status",
+            "expected": "400",
+            "real": "400",
+            "mock": "200",
+            "id": "status"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "type",
+            "expected": "\"error\"",
+            "real": "\"error\"",
+            "mock": "<absent>",
+            "id": "type"
+          },
+          {
+            "severity": "critical",
+            "issue": "Native response value differs",
+            "path": "error.type",
+            "expected": "\"invalid_request_error\"",
+            "real": "\"invalid_request_error\"",
+            "mock": "<absent>",
+            "id": "error.type"
+          }
+        ]
+      }
+    ]
+  },
+  "observations": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-10-15T00:27:00.554Z",
+    "observations": [
+      {
+        "surface": "anthropic-native-errors",
+        "caseId": "local:anthropic-count-auth",
+        "expected": {
+          "status": 401,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "authentication_error",
+              "message": "Invalid API key"
+            }
+          }
+        },
+        "actual": {
+          "status": 401,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "authentication_error",
+              "message": "Invalid API key"
+            }
+          }
+        },
+        "matched": true
+      },
+      {
+        "surface": "anthropic-native-errors",
+        "caseId": "vendor:anthropic-auth",
+        "expected": {
+          "status": 401,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "authentication_error",
+              "message": "x-api-key header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 401,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "authentication_error",
+              "message": "Invalid API key"
+            }
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-native-errors",
+        "caseId": "vendor:anthropic-missing-version",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 200,
+          "body": {
+            "input_tokens": 1
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-native-errors",
+        "caseId": "vendor:anthropic-messages-missing-version-enforce",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_local_receipt"
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-native-errors",
+        "caseId": "vendor:anthropic-count-missing-version-enforce",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_local_receipt"
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "local:anthropic-after-unknown",
+        "expected": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "actual": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "matched": true
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "local:anthropic-before-unknown",
+        "expected": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "actual": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "matched": true
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "vendor:anthropic-models-missing-version-enforce",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_local_receipt"
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "vendor:anthropic-model-detail-missing-version-enforce",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "anthropic-version: header is required"
+            },
+            "request_id": "req_sanitized_local_receipt"
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "vendor:anthropic-after-unknown",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "Model with id aimock-nonexistent-model not found"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "anthropic-catalog",
+        "caseId": "vendor:anthropic-before-unknown",
+        "expected": {
+          "status": 400,
+          "body": {
+            "type": "error",
+            "error": {
+              "type": "invalid_request_error",
+              "message": "Model with id aimock-nonexistent-model not found"
+            },
+            "request_id": "req_sanitized_vendor_receipt"
+          }
+        },
+        "actual": {
+          "status": 200,
+          "body": {
+            "data": [],
+            "has_more": false,
+            "first_id": null,
+            "last_id": null
+          }
+        },
+        "matched": false
+      },
+      {
+        "surface": "gemini-native-auth",
+        "caseId": "local:gemini-count-auth",
+        "expected": {
+          "status": 401,
+          "body": {
+            "error": {
+              "code": 401,
+              "message": "Invalid API key",
+              "status": "UNAUTHENTICATED"
+            }
+          }
+        },
+        "actual": {
+          "status": 401,
+          "body": {
+            "error": {
+              "code": 401,
+              "message": "Invalid API key",
+              "status": "UNAUTHENTICATED"
+            }
+          }
+        },
+        "matched": true
+      },
+      {
+        "surface": "gemini-native-auth",
+        "caseId": "vendor:gemini-auth",
+        "expected": {
+          "status": 403,
+          "body": {
+            "error": {
+              "code": 403,
+              "message": "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API.",
+              "status": "PERMISSION_DENIED"
+            }
+          }
+        },
+        "actual": {
+          "status": 401,
+          "body": {
+            "error": {
+              "code": 401,
+              "message": "Invalid API key",
+              "status": "UNAUTHENTICATED"
+            }
+          }
+        },
+        "matched": false
+      }
+    ]
+  },
+  "invocation": {
+    "schemaVersion": 1,
+    "invocationId": "sanitized-cursor-policy",
+    "timestamp": "2026-10-15T00:24:40.562Z",
+    "githubRunId": "sanitized-ci-run",
+    "githubRunAttempt": "1",
+    "drift": {
+      "availability": "available",
+      "exitCode": 1,
+      "assertions": [
+        {
+          "ancestors": ["native provider Anthropic auth and missing-version local contracts"],
+          "title": "local auth /v1/messages/count_tokens",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic vendor errors"],
+          "title": "Anthropic vendor auth received status/body (evidence only)",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic vendor errors"],
+          "title": "Anthropic vendor auth comparison",
+          "status": "failed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": [
+            "native provider Anthropic vendor errors",
+            "vendor missing-version status and body"
+          ],
+          "title": "Anthropic vendor missing-version (intentional default divergence) comparison",
+          "status": "failed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": [
+            "native provider Anthropic vendor errors",
+            "vendor missing-version compared with enforced policy"
+          ],
+          "title": "Anthropic vendor enforced missing-version /v1/messages comparison",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": [
+            "native provider Anthropic vendor errors",
+            "vendor missing-version compared with enforced policy"
+          ],
+          "title": "Anthropic vendor enforced missing-version /v1/messages/count_tokens comparison",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": ["native provider Gemini auth local contracts"],
+          "title": "local auth /v1beta/models/gemini-test:countTokens",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Gemini vendor auth observation"],
+          "title": "vendor unauthenticated received status/body (evidence only)",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Gemini vendor auth observation"],
+          "title": "vendor unauthenticated comparison",
+          "status": "failed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": ["native provider catalog local contracts"],
+          "title": "'anthropic-after-unknown'",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider catalog local contracts"],
+          "title": "'anthropic-before-unknown'",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "Anthropic catalog vendor enforced missing-version /v1/models comparison",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "Anthropic catalog vendor enforced missing-version /v1/models/:model comparison",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "anthropic-after-unknown received status/body (evidence only)",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "anthropic-after-unknown comparison",
+          "status": "failed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "anthropic-before-unknown received status/body (evidence only)",
+          "status": "passed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 1
+          }
+        },
+        {
+          "ancestors": ["native provider Anthropic catalog vendor observations"],
+          "title": "anthropic-before-unknown comparison",
+          "status": "failed",
+          "consoleContext": {
+            "availability": "available",
+            "recordCount": 0
+          }
+        }
+      ]
+    },
+    "agui": {
+      "availability": "available",
+      "exitCode": 0
+    }
+  }
+}

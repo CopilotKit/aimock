@@ -54,6 +54,10 @@
           different URL routing pattern. Vertex AI requests are handled by the same Gemini handler
           internally.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with <code>wire: "gemini"</code>.
+        </p>
 
         <h2>Endpoints</h2>
         <table class="endpoint-table">
@@ -81,6 +85,16 @@
             </tr>
           </tbody>
         </table>
+
+        <p>
+          If the client hangs up before the reply is complete, aimock stops delivery and journals
+          the request with <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>). To delay
+          <code>generateContent</code> replies, set
+          <code>nonStreamingTimingAllProviders: true</code> with a <code>streamingProfile</code> or
+          <code>recordedTimings</code> (see
+          <a href="/streaming-physics#non-streaming-all-providers">All Providers</a>).
+        </p>
 
         <h2>URL Pattern Difference</h2>
         <p>

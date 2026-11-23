@@ -139,7 +139,7 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
         prompt: "a sunset over the ocean",
       }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const data = await res.json();
     expect(typeof data.id).toBe("string");
     expect(data.id.length).toBeGreaterThan(0);
@@ -160,7 +160,7 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "anything" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
   });
 
   test("malformed JSON body returns 400 invalid_json", async () => {
@@ -606,7 +606,7 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
       response: { video: { id: "v1", status: "completed" } },
     });
     mock.addFixture({
-      match: { model: "openai/sora-2", endpoint: "video" },
+      match: { model: "google/veo-3.1", endpoint: "video" },
       response: { video: { id: "v2", status: "completed" } },
     });
     // Non-video fixture model must NOT appear
@@ -627,7 +627,7 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     const ids = data.data.map((m: { id: string }) => m.id);
     // Order-insensitive: ids come from Set iteration, not a documented order.
     expect(ids).toHaveLength(2);
-    expect(ids).toEqual(expect.arrayContaining(["bytedance/seedance-2.0", "openai/sora-2"]));
+    expect(ids).toEqual(expect.arrayContaining(["bytedance/seedance-2.0", "google/veo-3.1"]));
     for (const entry of data.data) {
       expect(typeof entry.name).toBe("string");
       expect(Array.isArray(entry.supported_durations)).toBe(true);
@@ -677,6 +677,93 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
   });
 });
 
+// ─── Sunset: openai/sora-2 removed from OpenRouter ─────────────────────────
+//
+// OpenRouter removed openai/sora-2 from its video catalog (absent from the live
+// /api/v1/videos/models listing; /api/v1/models/openai/sora-2/endpoints is a
+// 404). A live submit observed on 2026-10-10 is rejected with:
+//   HTTP 400, content-type: application/json
+//   {"error":{"message":"Model openai/sora-2 does not exist","code":400}}
+// Per the deprecation policy the mock serves that rejection and never success.
+
+describe("OpenRouter video — sunset openai/sora-2", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("default listing no longer advertises openai/sora-2", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const ids = (await res.json()).data.map((m: { id: string }) => m.id);
+    expect(ids).toContain("bytedance/seedance-2.0");
+    expect(ids).not.toContain("openai/sora-2");
+  });
+
+  test("a fixture for openai/sora-2 does not put it back in the listing", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "openai/sora-2", endpoint: "video" },
+      response: { video: { id: "v_sora", status: "completed" } },
+    });
+    mock.addFixture({
+      match: { model: "bytedance/seedance-2.0", endpoint: "video" },
+      response: { video: { id: "v_sd", status: "completed" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    const ids = (await res.json()).data.map((m: { id: string }) => m.id);
+    expect(ids).toEqual(["bytedance/seedance-2.0"]);
+  });
+
+  test("submit for openai/sora-2 returns the live 400 rejection even when a fixture matches", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "openai/sora-2", endpoint: "video" },
+      response: { video: { id: "v_sora", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({ model: "openai/sora-2", prompt: "a cat" }),
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({
+      error: { message: "Model openai/sora-2 does not exist", code: 400 },
+    });
+
+    const entries = mock.getRequests();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].response.status).toBe(400);
+    expect(entries[0].response.fixture).toBeNull();
+  });
+
+  test("submit for openai/sora-2 never reaches a record-mode upstream", async () => {
+    mock = new LLMock({
+      port: 0,
+      record: { providers: { openrouter: UPSTREAM_DOWN_URL } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({ model: "openai/sora-2", prompt: "a cat" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toBe("Model openai/sora-2 does not exist");
+  });
+});
+
 // ─── Task 6: cross-cutting conformance ──────────────────────────────────────
 
 describe("OpenRouter video — strict mode diagnostics", () => {
@@ -700,7 +787,7 @@ describe("OpenRouter video — strict mode diagnostics", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "once only" }),
     });
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(202);
 
     const second = await fetch(`${mock.url}/api/v1/videos`, {
       method: "POST",
@@ -762,7 +849,7 @@ describe("OpenRouter video — journal coverage", () => {
 
     const entries = mock.journal.getAll();
     const byPathStatus = entries.map((e) => `${e.method} ${e.path} ${e.response.status}`);
-    expect(byPathStatus).toContain(`POST /api/v1/videos 200`);
+    expect(byPathStatus).toContain(`POST /api/v1/videos 202`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id} 200`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 200`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 401`);
@@ -916,7 +1003,7 @@ describe("OpenRouter video — logger observability", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "still processing" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     // Assert the coercion warn specifically — the fixture text itself contains
     // "processing", so a bare includes("processing") could match any log line
     // that echoes the prompt.
@@ -1274,7 +1361,7 @@ describe("OpenRouter video — logger observability", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "typo status" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const { id } = (await submit.json()) as { id: string };
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes('"FAILED"'))).toBe(true);
 
@@ -1299,9 +1386,11 @@ describe("OpenRouter video — logger observability", () => {
       body: JSON.stringify({ model: "m/v", prompt: "boom" }),
     });
     expect(res.status).toBe(500);
-    expect(errorSpy.mock.calls.some((c) => c.join(" ").includes("openrouter-video submit"))).toBe(
-      true,
-    );
+    expect(
+      errorSpy.mock.calls.some((c) =>
+        c.join(" ").includes("POST /api/v1/videos: Response factory threw: factory boom"),
+      ),
+    ).toBe(true);
   });
 
   test("submit error 500s carry CORS headers", async () => {
@@ -1362,7 +1451,7 @@ describe("OpenRouter video — full lifecycle integration", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "full lifecycle" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = await submit.json();
     expect(envelope.status).toBe("pending");
 
@@ -2499,7 +2588,7 @@ describe("OpenRouter video — pinned existing behavior", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "processing lifecycle" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = await submit.json();
     expect(envelope.status).toBe("pending");
 
@@ -3175,7 +3264,7 @@ describe("OpenRouter video submit — fixtures reset during a slow ResponseFacto
     // The envelope still relays (mirrors the record-submit guard's
     // documented choice)...
     const res = await submitPromise;
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const envelope = (await res.json()) as { polling_url: string };
 
     // ...but the job was NOT inserted into the new world — its poll 404s

@@ -711,105 +711,69 @@ describe("GA Realtime conformance", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7b. Beta Realtime conformance (OpenAI-Beta: realtime=v1)
+// 7b. Beta Realtime SUNSET conformance (OpenAI-Beta: realtime=v1)
+//
+// The Realtime Beta shape no longer serves upstream. Per aimock's deprecation
+// policy (https://aimock.copilotkit.dev/deprecation-policy/) the removed surface
+// is mocked as REMOVED — these tests pin the real sunset rejection, captured
+// firsthand from wss://api.openai.com/v1/realtime on 2026-09-15. They replace
+// the Beta translation-shim conformance tests that used to live here; that shim
+// graded a successful handshake the real API stopped serving.
 // ---------------------------------------------------------------------------
 
-describe("Beta Realtime conformance (OpenAI-Beta: realtime=v1)", () => {
-  it("session.created uses flat config (no nested audio, no type, no reasoning)", async () => {
+describe("Beta Realtime sunset conformance (OpenAI-Beta: realtime=v1)", () => {
+  const BETA_MESSAGE =
+    "The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.";
+
+  it("rejects the Beta shape with the real sunset error frame (no session.created)", async () => {
     const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
       "OpenAI-Beta": "realtime=v1",
     });
     const raw = await ws.waitForMessages(1);
+    const frame = JSON.parse(raw[0]) as any;
+    expect(frame.type).toBe("error");
+    expect(typeof frame.event_id).toBe("string");
+    expect(frame.error).toEqual({
+      type: "invalid_request_error",
+      code: "beta_api_shape_disabled",
+      message: BETA_MESSAGE,
+      param: null,
+      event_id: null,
+    });
+    // The upgrade itself succeeds — the rejection is a WS frame, not an HTTP error.
+    await ws.waitForCloseFrame();
+  });
+
+  it("closes with the real close frame (4000 / invalid_request_error.beta_api_shape_disabled)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    const close = await ws.waitForCloseFrame();
+    expect(close.code).toBe(4000);
+    expect(close.reason).toBe("invalid_request_error.beta_api_shape_disabled");
+  });
+
+  it("emits no Beta-translated events at all — the error frame is the only frame", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    ws.send(realtimeItemCreate("hello"));
+    ws.send(realtimeResponseCreate());
+    await ws.waitForCloseFrame();
+    const types = ws.getMessages().map((m) => (JSON.parse(m) as any).type);
+    expect(types).toEqual(["error"]);
+    expect(types).not.toContain("session.created");
+    expect(types).not.toContain("conversation.item.created");
+    expect(types).not.toContain("response.text.delta");
+  });
+
+  it("GUARD: the GA shape (no Beta header) is untouched and still serves", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    const raw = await ws.waitForMessages(1);
     ws.close();
     const frame = JSON.parse(raw[0]) as any;
     expect(frame.type).toBe("session.created");
-    const session = frame.session;
-    // Beta: flat config — voice at top level, no nested audio object
-    expect(session).toHaveProperty("voice");
-    expect(session).not.toHaveProperty("audio");
-    expect(session).not.toHaveProperty("type");
-    expect(session).not.toHaveProperty("reasoning");
-  });
-
-  it("flattens turn_detection for default, nested GA, and legacy updates", async () => {
-    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
-      "OpenAI-Beta": "realtime=v1",
-    });
-    const created = JSON.parse((await ws.waitForMessages(1))[0]) as any;
-    expect(created.session.turn_detection).toBeNull();
-
-    ws.send(
-      JSON.stringify({
-        type: "session.update",
-        session: { audio: { input: { turn_detection: { type: "server_vad", threshold: 0.7 } } } },
-      }),
-    );
-    const nested = JSON.parse((await ws.waitForMessages(2))[1]) as any;
-    expect(nested.session.turn_detection).toEqual({ type: "server_vad", threshold: 0.7 });
-
-    ws.send(
-      JSON.stringify({
-        type: "session.update",
-        session: { turn_detection: { type: "semantic_vad" } },
-      }),
-    );
-    const legacy = JSON.parse((await ws.waitForMessages(3))[2]) as any;
-    expect(legacy.session.turn_detection).toEqual({ type: "semantic_vad" });
-    ws.close();
-  });
-
-  it("emits Beta event names (response.text.delta, conversation.item.created)", async () => {
-    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
-      "OpenAI-Beta": "realtime=v1",
-    });
-    await ws.waitForMessages(1); // session.created
-    ws.send(realtimeItemCreate("hello"));
-    await ws.waitForMessages(2); // + conversation.item.created (Beta name)
-    ws.send(realtimeResponseCreate());
-    // Beta: no conversation.item.done, so fewer events than GA
-    const raw = await ws.waitForMessages(10);
-    ws.close();
-    const types = raw.map((m) => (JSON.parse(m) as any).type);
-    expect(types).toContain("conversation.item.created");
-    expect(types).not.toContain("conversation.item.added");
-    expect(types).toContain("response.text.delta");
-    expect(types).not.toContain("response.output_text.delta");
-    expect(types).toContain("response.text.done");
-    expect(types).not.toContain("response.output_text.done");
-  });
-
-  it("does NOT emit conversation.item.done (suppressed in Beta)", async () => {
-    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
-      "OpenAI-Beta": "realtime=v1",
-    });
-    await ws.waitForMessages(1); // session.created
-    ws.send(realtimeItemCreate("hello"));
-    await ws.waitForMessages(2); // + conversation.item.created
-    ws.send(realtimeResponseCreate());
-    const raw = await ws.waitForMessages(10);
-    ws.close();
-    const types = raw.map((m) => (JSON.parse(m) as any).type);
-    expect(types).not.toContain("conversation.item.done");
-  });
-
-  it("uses Beta content type names (text, not output_text)", async () => {
-    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
-      "OpenAI-Beta": "realtime=v1",
-    });
-    await ws.waitForMessages(1); // session.created
-    ws.send(realtimeItemCreate("hello"));
-    await ws.waitForMessages(2); // + conversation.item.created
-    ws.send(realtimeResponseCreate());
-    const raw = await ws.waitForMessages(10);
-    ws.close();
-    const frames = raw.map((m) => JSON.parse(m) as any);
-    const contentPartAdded = frames.find((f: any) => f.type === "response.content_part.added");
-    expect(contentPartAdded).toBeDefined();
-    expect(contentPartAdded.part.type).toBe("text");
-
-    const contentPartDone = frames.find((f: any) => f.type === "response.content_part.done");
-    expect(contentPartDone).toBeDefined();
-    expect(contentPartDone.part.type).toBe("text");
+    expect(frame.session.type).toBe("realtime");
   });
 });
 

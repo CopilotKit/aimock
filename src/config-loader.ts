@@ -3,16 +3,36 @@ import * as path from "node:path";
 import { LLMock, createLLMockWithResolvedAuth } from "./llmock.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
 import { MCPMock } from "./mcp-mock.js";
+import { configToolHandlers } from "./mcp-handler.js";
 import { A2AMock } from "./a2a-mock.js";
 import { AGUIMock } from "./agui-mock.js";
-import type { ApiKeyAuthConfig, ChaosConfig, RecordConfig } from "./types.js";
+import type {
+  AimockPolicy,
+  ApiKeyAuthConfig,
+  ChaosConfig,
+  McpRecordConfig,
+  MisbehaviorConfig,
+  MisbehaviorFaultId,
+  Mountable,
+  RecordConfig,
+  ResponsesToolsMode,
+} from "./types.js";
+import { parseMisbehavior } from "./misbehavior.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
-import type { A2AAgentDefinition, A2APart, A2AArtifact, A2AStreamEvent } from "./a2a-types.js";
+import type {
+  A2AAgentDefinition,
+  A2APart,
+  A2AArtifact,
+  A2AStreamEvent,
+  A2AConversationTurn,
+} from "./a2a-types.js";
 import type { AGUIEvent } from "./agui-types.js";
 import { buildTextResponse } from "./agui-handler.js";
 import { VectorMock } from "./vector-mock.js";
 import type { QueryResult } from "./vector-types.js";
 import { Logger } from "./logger.js";
+import { wireMcpRecording } from "./mcp-recorder.js";
+import { assignPolicyEntry, parsePolicy, parsePolicyEntry } from "./response/policy.js";
 
 export interface MCPConfigTool extends MCPToolDefinition {
   result?: string;
@@ -50,6 +70,10 @@ export interface A2AConfigPattern {
 }
 
 export interface A2AConfigAgent extends A2AAgentDefinition {
+  conversations?: Array<{
+    turns: Array<Omit<A2AConversationTurn, "pattern"> & { pattern: string }>;
+    replayLimit?: number;
+  }>;
   messages?: A2AConfigPattern[];
   tasks?: A2AConfigPattern[];
   streamingTasks?: A2AConfigPattern[];
@@ -88,6 +112,12 @@ export interface VectorConfig {
   collections?: VectorConfigCollection[];
 }
 
+/** `llm.record` in a config file: the LLM `RecordConfig`, plus MCP record mounts (C10). */
+export interface AimockRecordConfig extends RecordConfig {
+  /** MR1: mount path → upstream URL, or a full MCP record config. */
+  mcp?: Record<string, string | McpRecordConfig>;
+}
+
 export interface AimockConfig {
   auth?: ApiKeyAuthConfig;
   llm?: {
@@ -97,7 +127,26 @@ export interface AimockConfig {
     replaySpeed?: number;
     logLevel?: "silent" | "warn" | "info" | "debug";
     chaos?: ChaosConfig;
-    record?: RecordConfig;
+    /**
+     * Server-wide misbehavior defaults. Read only when misbehavior is enabled
+     * (`llm.enableMisbehavior: true` or `aimock --misbehavior`); otherwise the
+     * key is ignored with a warning, as 1.44.0 ignored it.
+     */
+    misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
+    /** See `MockServerOptions.enableMisbehavior`. */
+    enableMisbehavior?: boolean;
+    record?: AimockRecordConfig;
+    /**
+     * Turns on `llm.record.mcp`. Without it the key is ignored with a warning,
+     * as 1.44.0 ignored it.
+     */
+    enableMcpRecording?: boolean;
+    /** See `MockServerOptions.strictToolArguments`. */
+    strictToolArguments?: boolean;
+    /** See `MockServerOptions.responsesTools`. */
+    responsesTools?: ResponsesToolsMode;
+    /** See `MockServerOptions.policy`. Independent of `strict`. */
+    policy?: AimockPolicy;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -110,16 +159,141 @@ export interface AimockConfig {
   host?: string;
 }
 
+/** C10: the LLM part of `llm.record`. `mcp` is MCP-only; no `providers` means no LLM recording. */
+function llmRecordOf(record: AimockRecordConfig | undefined): RecordConfig | undefined {
+  if (!record) return undefined;
+  const { mcp: _mcp, ...llm } = record;
+  void _mcp; // repo pattern for an intentionally unused binding (byteplus-video.ts:1379-1380)
+  return llm.providers === undefined ? undefined : llm;
+}
+
 export function loadConfig(configPath: string): AimockConfig {
   const raw = fs.readFileSync(configPath, "utf-8");
   return JSON.parse(raw) as AimockConfig;
 }
 
+/** C3: `llm.record.mcp` is an object with at least one mount. */
+function hasMcpRecordMount(mcp: unknown): boolean {
+  return (
+    typeof mcp === "object" && mcp !== null && !Array.isArray(mcp) && Object.keys(mcp).length > 0
+  );
+}
+
+/**
+ * Command-line overrides for `startFromConfig`. The opt-in flags win over the
+ * matching `llm.*` config keys.
+ */
+export interface StartFromConfigOverrides {
+  port?: number;
+  host?: string;
+  /** `aimock --misbehavior`: overrides `llm.enableMisbehavior`. */
+  enableMisbehavior?: boolean;
+  /** `aimock --strict-tool-arguments`: overrides `llm.strictToolArguments`. */
+  strictToolArguments?: boolean;
+  /** `aimock --responses-tools`: overrides `llm.responsesTools`. */
+  responsesTools?: ResponsesToolsMode;
+  /** `aimock --policy`: overrides individual keys from `llm.policy`. */
+  policy?: AimockPolicy;
+}
+
+/** Both CLI entry points use the shared policy parser and treat failures as usage errors. */
+export function parsePolicyFlags(entries: string[]) {
+  const policy: AimockPolicy = {};
+  for (const entry of entries) {
+    const separator = entry.indexOf("=");
+    if (separator < 0) {
+      return {
+        ok: false,
+        error: `Invalid --policy ${JSON.stringify(entry)}: expected key=value.`,
+      } as const;
+    }
+    const parsed = parsePolicyEntry(entry.slice(0, separator), entry.slice(separator + 1));
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: `Invalid --policy ${JSON.stringify(entry)}: ${parsed.reason} Use key=value.`,
+      } as const;
+    }
+    assignPolicyEntry(policy, parsed);
+  }
+  return { ok: true, policy } as const;
+}
+
 export async function startFromConfig(
   config: AimockConfig,
-  overrides?: { port?: number; host?: string },
+  overrides?: StartFromConfigOverrides,
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  const policy = {
+    ...parsePolicy(config.llm?.policy, (message) => logger.warn(message)),
+    ...parsePolicy(overrides?.policy, (message) => logger.warn(message)),
+  };
+  // 1.44.0 ignored these keys, so a non-boolean value (such as the string
+  // "true") is ignored with a warning, as `llm.misbehavior` is, and the
+  // option stays off unless a CLI flag turns it on (`llm.enableMcpRecording`
+  // has no CLI flag).
+  const booleanOptIn = (
+    key: "enableMisbehavior" | "enableMcpRecording" | "strictToolArguments",
+  ): boolean | undefined => {
+    const value: unknown = config.llm?.[key];
+    if (value === undefined || typeof value === "boolean") return value;
+    logger.warn(
+      `Ignoring llm.${key} because it must be true or false, got ${JSON.stringify(value)}.`,
+    );
+    return undefined;
+  };
+  const configEnableMisbehavior = booleanOptIn("enableMisbehavior");
+  const configStrictToolArguments = booleanOptIn("strictToolArguments");
+  // MCP recording also needs an explicit opt-in. 1.44.0 ignored
+  // `llm.record.mcp`, so without `llm.enableMcpRecording: true` the key is
+  // ignored (with a warning): nothing is mounted or validated and the log level
+  // is unchanged. With the opt-in, an invalid value fails startup.
+  const enableMcpRecording = booleanOptIn("enableMcpRecording") === true;
+  const mcpRecord = enableMcpRecording ? config.llm?.record?.mcp : undefined;
+  // Misbehavior needs an explicit opt-in that a 1.44.0 config cannot contain.
+  // 1.44.0 ignored `llm.misbehavior`, so without the opt-in the key is ignored
+  // (with a warning) and the server serves exactly what 1.44.0 served. With the
+  // opt-in, an invalid value fails startup like any other enabled-mode error.
+  const enableMisbehavior = (overrides?.enableMisbehavior ?? configEnableMisbehavior) === true;
+  let misbehavior: MisbehaviorConfig | undefined;
+  if (config.llm?.misbehavior !== undefined) {
+    if (!enableMisbehavior) {
+      logger.warn(
+        "Ignoring llm.misbehavior because misbehavior is not enabled. Set llm.enableMisbehavior: true or pass --misbehavior to use it.",
+      );
+    } else {
+      const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
+      if (!parsed.ok) {
+        throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+      }
+      misbehavior = parsed.config;
+    }
+  }
+  if (config.llm?.record?.mcp !== undefined && !enableMcpRecording) {
+    logger.warn(
+      "Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.",
+    );
+  }
+
+  // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
+  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode,
+  // unless `--responses-tools` sets the mode. The warning names the mode that
+  // actually runs.
+  let responsesTools = config.llm?.responsesTools;
+  if (
+    responsesTools !== undefined &&
+    responsesTools !== "legacy" &&
+    responsesTools !== "extended"
+  ) {
+    const effective =
+      overrides?.responsesTools !== undefined
+        ? `"${overrides.responsesTools}" from --responses-tools`
+        : '"legacy"';
+    logger.warn(
+      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using ${effective}.`,
+    );
+    responsesTools = undefined;
+  }
 
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the
   // full delay rather than none. Mirrors the fixture-level guard in fixture-loader.ts.
@@ -138,14 +312,25 @@ export async function startFromConfig(
       latency: config.llm?.latency,
       chunkSize: config.llm?.chunkSize,
       replaySpeed,
-      logLevel: config.llm?.logLevel,
+      // llm.record.mcp reports skipped or failed recordings only as MCP-RECORD: warnings,
+      // so an enabled config with at least one mount defaults to "warn" rather than the silent
+      // default. An empty llm.record.mcp records nothing. An explicit logLevel wins.
+      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(mcpRecord) ? "warn" : undefined),
       chaos: config.llm?.chaos,
-      record: config.llm?.record,
+      misbehavior,
+      ...(enableMisbehavior ? { enableMisbehavior: true } : {}),
+      record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
+      strictToolArguments: overrides?.strictToolArguments ?? configStrictToolArguments,
+      responsesTools: overrides?.responsesTools ?? responsesTools,
+      policy,
     },
     resolvedAuth,
   );
+
+  // What this function mounted, by path (MR1: llm.record.mcp records through an MCP mount).
+  const configMounts = new Map<string, Mountable>();
 
   if (config.llm?.fixtures) {
     const fixturePath = path.resolve(config.llm.fixtures);
@@ -169,7 +354,9 @@ export async function startFromConfig(
         const { result, ...def } = tool;
         mcp.addTool(def);
         if (result !== undefined) {
-          mcp.onToolCall(def.name, () => result);
+          const answer = () => result;
+          configToolHandlers.add(answer);
+          mcp.onToolCall(def.name, answer);
         }
       }
     }
@@ -198,6 +385,7 @@ export async function startFromConfig(
 
     const mcpPath = mcpConfig.path ?? "/mcp";
     llmock.mount(mcpPath, mcp);
+    configMounts.set(mcpPath, mcp);
     logger.info(`MCPMock mounted at ${mcpPath}`);
   }
 
@@ -208,7 +396,7 @@ export async function startFromConfig(
 
     if (a2aConfig.agents) {
       for (const agentConfig of a2aConfig.agents) {
-        const { messages, tasks, streamingTasks, ...def } = agentConfig;
+        const { messages, tasks, streamingTasks, conversations, ...def } = agentConfig;
         a2a.registerAgent(def);
 
         if (messages) {
@@ -228,11 +416,17 @@ export async function startFromConfig(
             a2a.onStreamingTask(def.name, s.pattern, s.events ?? [], s.delayMs);
           }
         }
+        for (const conversation of conversations ?? []) {
+          a2a.onConversation(def.name, conversation.turns, {
+            replayLimit: conversation.replayLimit,
+          });
+        }
       }
     }
 
     const a2aPath = a2aConfig.path ?? "/a2a";
     llmock.mount(a2aPath, a2a);
+    configMounts.set(a2aPath, a2a);
     logger.info(`A2AMock mounted at ${a2aPath}`);
   }
 
@@ -286,6 +480,7 @@ export async function startFromConfig(
 
     const aguiPath = aguiConfig.path ?? "/agui";
     llmock.mount(aguiPath, agui);
+    configMounts.set(aguiPath, agui);
     logger.info(`AGUIMock mounted at ${aguiPath}`);
   }
 
@@ -310,7 +505,22 @@ export async function startFromConfig(
 
     const vectorPath = vectorConfig.path ?? "/vector";
     llmock.mount(vectorPath, vector);
+    configMounts.set(vectorPath, vector);
     logger.info(`VectorMock mounted at ${vectorPath}`);
+  }
+
+  // MR1: llm.record.mcp — record mounts (auto-mount an MCPMock where none is).
+  // Read only with llm.enableMcpRecording: true. Any value that is present is then
+  // validated, so null, false, 0 and "" fail at start too.
+  if (mcpRecord !== undefined) {
+    wireMcpRecording(llmock, mcpRecord, {
+      mounted: configMounts,
+      mcpMock: MCPMock,
+      fixtures: config.llm?.fixtures,
+      fixturePath: config.llm?.record?.fixturePath,
+      strict: config.strict,
+      env: process.env,
+    });
   }
 
   // Services — configure default catch-all responses

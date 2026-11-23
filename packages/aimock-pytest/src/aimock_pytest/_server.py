@@ -10,12 +10,27 @@ import re
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import requests
 
 from aimock_pytest._node_manager import NodeManager
+
+
+@dataclass(frozen=True)
+class FakesTarget:
+    """Where an MCP client reaches the fakes for one test (spec RP8).
+
+    ``mcp_url`` carries the identity in its query string; ``headers`` carry
+    the same identity for a client that connects to the bare mount URL.
+    """
+
+    test_id: str
+    mcp_url: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class AIMockServer:
@@ -28,11 +43,23 @@ class AIMockServer:
         port: int = 0,
         fixtures_path: str | Path | None = None,
         api_key: str | None = None,
+        enable_misbehavior: bool = False,
+        responses_tools: str | None = None,
     ) -> None:
         self.node_manager = node_manager
         self.port = port
         self.fixtures_path = fixtures_path
         self.api_key = api_key
+        # Model misbehavior is opt-in on the aimock CLI (``--misbehavior``).
+        # Off by default, so fixture ``misbehavior`` keys, the
+        # ``X-AIMock-Misbehavior`` header and ``/__aimock/misbehavior`` do not
+        # apply, as in 1.44.0.
+        self.enable_misbehavior = enable_misbehavior
+        # OpenAI Responses tool handling (``--responses-tools``): "legacy" or
+        # "extended". Unset by default, so the CLI runs in "legacy" mode and
+        # ``match.toolNamespace``, ``customToolCalls`` and ``responsesBlocks``
+        # are ignored, as in 1.44.0.
+        self.responses_tools = responses_tools
         self._proc: subprocess.Popen[str] | None = None
         self._base_url: str | None = None
         # Background stdout drainer state. The reader thread continuously
@@ -45,6 +72,10 @@ class AIMockServer:
         # supplied; ``None`` until ``start()`` creates one. Always defined so
         # ``stop()`` can clean up without a ``hasattr`` guard.
         self._tmp_fixtures: str | None = None
+        # The current test's id (spec TI3). The function-scoped ``aimock``
+        # fixture sets it to ``request.node.nodeid``; it stays ``None`` for
+        # ``aimock_session``. Only the fakes helpers below read it (TI4).
+        self._default_test_id: str | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
@@ -82,6 +113,10 @@ class AIMockServer:
             "--fixtures",
             fixtures_arg,
         ]
+        if self.enable_misbehavior:
+            cmd.append("--misbehavior")
+        if self.responses_tools is not None:
+            cmd.extend(["--responses-tools", self.responses_tools])
 
         child_env = os.environ.copy()
         # The plugin option owns child auth. Do not inherit a developer's or
@@ -200,9 +235,11 @@ class AIMockServer:
             "userMessage",
             "systemMessage",
             "inputText",
+            "embeddingRequest",
             "toolCallId",
             "toolResultContains",
             "toolName",
+            "toolNamespace",
             "model",
             "responseFormat",
             "endpoint",
@@ -294,29 +331,102 @@ class AIMockServer:
         - A JSON array of fixture objects
         - A single fixture object (wrapped into a list automatically)
 
+        An object with an ``"mcpFakes"`` key has that value posted next to
+        ``"fixtures"`` (an object with ``"mcpFakes"`` and no ``"fixtures"``
+        is posted as ``{"mcpFakes": ...}`` alone).
+
         Raises :class:`ValueError` if the parsed JSON is not a dict or list.
+        Raises :class:`requests.HTTPError` carrying the server's ``error``
+        and ``details`` when the server rejects the load with a 400, and
+        :class:`RuntimeError` when the file has ``mcpFakes`` and the server
+        is too old to serve fakes. In that case nothing from the file is
+        added: a file with both ``fixtures`` and ``mcpFakes`` is preceded by
+        a probe that adds nothing, because an old server would add the
+        fixtures and ignore ``mcpFakes``.
         """
         with open(path) as f:
             data = json.load(f)
 
+        body: dict[str, Any]
         if isinstance(data, list):
-            fixtures = data
-        elif isinstance(data, dict) and "fixtures" in data:
-            fixtures = data["fixtures"]
+            body = {"fixtures": data}
+        elif isinstance(data, dict) and ("fixtures" in data or "mcpFakes" in data):
+            body = {key: data[key] for key in ("fixtures", "mcpFakes") if key in data}
         elif isinstance(data, dict):
-            fixtures = [data]
+            body = {"fixtures": [data]}
         else:
             raise ValueError(
                 f"Invalid fixture file {path}: expected a JSON object or array, "
                 f"got {type(data).__name__}"
             )
 
+        if "mcpFakes" in body and isinstance(body.get("fixtures"), list) and body["fixtures"]:
+            # An old server adds the fixtures and ignores mcpFakes, so a
+            # mixed file is checked first with a body that adds nothing on
+            # any server: an empty mcpFakes array is a bad block to a server
+            # that serves fakes, and has no fixtures array for an old one.
+            probe = self._control_request("POST", "/fixtures",
+                json={"mcpFakes": []},
+                timeout=5,
+            )
+            if self._rejects_missing_fixtures(probe):
+                raise RuntimeError(
+                    f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                    f"the server needs a fixtures array ({probe.text})"
+                )
+            if probe.status_code != 400:
+                probe.raise_for_status()
+
         r = self._control_request("POST", "/fixtures",
-            json={"fixtures": fixtures},
+            json=body,
             timeout=5,
         )
+        if "fixtures" not in body and self._rejects_missing_fixtures(r):
+            # A fakes-only body needs no fixtures array on a server that
+            # serves fakes, so this answer comes from an older server.
+            raise RuntimeError(
+                f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                f"the server needs a fixtures array ({r.text})"
+            )
+        if r.status_code == 400:
+            payload = self._json_or_none(r)
+            if isinstance(payload, dict):
+                lines = [f"aimock rejected fixtures from {path}: {payload.get('error')}"]
+                details = payload.get("details")
+                if isinstance(details, list):
+                    for item in details:
+                        lines.append(f"  - {json.dumps(item, ensure_ascii=False)}")
+                elif details is not None:
+                    lines.append(f"  - {json.dumps(details, ensure_ascii=False)}")
+                raise requests.HTTPError("\n".join(lines), response=r)
         r.raise_for_status()
+        if "mcpFakes" in body:
+            payload = self._json_or_none(r)
+            if not isinstance(payload, dict) or "mcpFakesAdded" not in payload:
+                raise RuntimeError(
+                    f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                    f"the server's answer has no mcpFakesAdded ({r.text})"
+                )
         return self
+
+    @staticmethod
+    def _json_or_none(r: requests.Response) -> Any:
+        try:
+            return r.json()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _rejects_missing_fixtures(cls, r: requests.Response) -> bool:
+        """True for the 400 an aimock gives a body with no ``fixtures`` array."""
+        if r.status_code != 400:
+            return False
+        payload = cls._json_or_none(r)
+        return (
+            isinstance(payload, dict)
+            and payload.get("error") == 'Missing or invalid "fixtures" array'
+            and not payload.get("details")
+        )
 
     def clear_fixtures(self) -> AIMockServer:
         """Delete all fixtures via ``DELETE /__aimock/fixtures``."""
@@ -366,6 +476,78 @@ class AIMockServer:
             timeout=5,
         ).raise_for_status()
         return self
+
+    # ── MCP fakes (spec RP6-RP8, TI3, TI4) ──────────────────────────────
+
+    def _resolve_test_id(self, test_id: str | None) -> str:
+        """An explicit ``test_id`` wins; ``None`` uses the current test's id."""
+        if test_id is not None:
+            return test_id
+        if self._default_test_id is None:
+            raise ValueError(
+                "no default test id here (aimock_session or outside a test); "
+                "pass an explicit test_id"
+            )
+        return self._default_test_id
+
+    def fakes_for(
+        self,
+        test_id: str | None = None,
+        context: str | None = None,
+        mount: str = "/mcp",
+    ) -> FakesTarget:
+        """The MCP URL and headers that select the fakes for one test.
+
+        A ``None`` ``test_id`` uses the current test's
+        ``request.node.nodeid`` (the function-scoped ``aimock`` fixture
+        only). The default id is used by the fakes helpers only; LLM and
+        control traffic is not tagged.
+        """
+        tid = self._resolve_test_id(test_id)
+        query = {"testId": tid, **({"context": context} if context else {})}
+        headers = {"X-Test-Id": quote(tid, safe="")}
+        if context:
+            headers["X-AIMock-Context"] = quote(context, safe="")
+        return FakesTarget(tid, f"{self.base_url}{mount}?{urlencode(query)}", headers)
+
+    def fakes_report(
+        self,
+        test_id: str | None = None,
+        context: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the MCP fake report via ``GET /__aimock/mcp/fakes/report``.
+
+        A ``None`` ``test_id`` uses the current test's id, as in
+        :meth:`fakes_for`.
+        """
+        tid = self._resolve_test_id(test_id)
+        params = {"testId": tid, **({"context": context} if context else {})}
+        r = self._control_request("GET", "/mcp/fakes/report", params=params, timeout=5)
+        r.raise_for_status()
+        return r.json()  # type: ignore[no-any-return]
+
+    def assert_fakes_report(
+        self,
+        report: dict[str, Any] | None = None,
+        *,
+        test_id: str | None = None,
+        context: str | None = None,
+        fail_on_unfaked: bool = False,
+    ) -> None:
+        """Raise :class:`AssertionError` when the MCP fake report fails.
+
+        A report fails when it is not ``ok`` (a failure, an unconsumed
+        entry, or evicted state) or, with ``fail_on_unfaked``, when a call
+        was answered without a fake. With no ``report``, it is read with
+        :meth:`fakes_report`. The message has the same lines, in the same
+        order, as aimock's ``formatFakesReport``.
+        """
+        if report is None:
+            report = self.fakes_report(test_id, context)
+        unfaked_fails = fail_on_unfaked and bool(report.get("unfaked"))
+        if report.get("ok") is True and not unfaked_fails:
+            return
+        raise AssertionError(format_fakes_report(report, fail_on_unfaked=fail_on_unfaked))
 
     # ── internal ────────────────────────────────────────────────────────
 
@@ -477,3 +659,41 @@ class AIMockServer:
             f"aimock did not start within {timeout}s"
             f"{': ' + output if output else ''}"
         )
+
+
+
+def _json_text(value: Any) -> str:
+    """``value`` as one line of JSON, as ``JSON.stringify`` writes it."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def format_fakes_report(report: dict[str, Any], *, fail_on_unfaked: bool = False) -> str:
+    """The report failure message: aimock's ``formatFakesReport``, line for line.
+
+    A header naming the test id (and context), then one line per failure,
+    one per unconsumed entry, the evicted line, and, with
+    ``fail_on_unfaked``, one line per unfaked call.
+    """
+    test_id = report.get("testId")
+    context = report.get("context")
+    who = "no test id" if test_id is None else f"testId {_json_text(test_id)}"
+    ctx = "" if context is None else f", context {_json_text(context)}"
+    lines = [f"aimock MCP fakes report failed ({who}{ctx}):"]
+    for f in report.get("failures", []):
+        # A call sent with no ``arguments`` has no ``args`` key; aimock writes
+        # ``undefined`` for it.
+        args = _json_text(f["args"]) if "args" in f else "undefined"
+        lines.append(
+            f"  failure {f['code']}: tools/call {f['tool']} on {f['mount']} with {args}"
+        )
+    for u in report.get("unconsumed", []):
+        lines.append(f"  unconsumed: {u['entryId']} ({u['mount']} {u['tool']})")
+    if report.get("evicted"):
+        lines.append(
+            "  evicted: this test id's fake state was evicted by the per-mount test-id cap, "
+            "or its event log overflowed (1000 events); the report is incomplete"
+        )
+    if fail_on_unfaked:
+        for u in report.get("unfaked", []):
+            lines.append(f"  unfaked: tools/call {u['tool']} on {u['mount']} answered by {u['answeredBy']}")
+    return "\n".join(lines)

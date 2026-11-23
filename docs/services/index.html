@@ -54,6 +54,10 @@
           fixture patterns on the LLMock instance and requests are matched by query/input text. No
           separate server needed — services are built into the LLMock HTTP server.
         </p>
+        <p>
+          Each service has a dedicated reference page: <a href="/search">Web Search</a>,
+          <a href="/rerank">Rerank</a>, and <a href="/moderation">Moderation</a>.
+        </p>
 
         <h2>Search (Tavily-Compatible)</h2>
         <p>
@@ -140,7 +144,7 @@ mock.onSearch(<span class="kw">/</span>.*<span class="kw">/</span>, []);</code><
         <p>
           Mock content moderation API at <code>POST /v1/moderations</code>. Matches the request
           <code>input</code> field against registered patterns. Unmatched requests return a default
-          unflagged result.
+          unflagged result — or <code>503 no_fixture_match</code> under strict mode.
         </p>
         <div class="code-block">
           <div class="code-block-header">
@@ -202,8 +206,9 @@ mock.onModerate(<span class="kw">/</span>.*<span class="kw">/</span>, {
         </div>
         <p>
           When enabled via config, each service registers a <code>/.*/</code> catch-all pattern.
-          Search and rerank return empty results; moderation returns unflagged. For custom
-          responses, use the programmatic API.
+          Search and rerank return empty results; moderation returns unflagged. Because the
+          catch-all always matches, these config-enabled services never hit the strict-mode
+          <code>503 no_fixture_match</code> path. For custom responses, use the programmatic API.
         </p>
 
         <h2>Journal Integration</h2>

@@ -136,6 +136,15 @@ function parseFrames(buf: Buffer): ParsedFrame[] {
     let payload: unknown = null;
     if (payloadBuf.length > 0) {
       payload = JSON.parse(payloadBuf.toString("utf8"));
+      if (
+        headers[":event-type"] === "chunk" &&
+        payload !== null &&
+        typeof payload === "object" &&
+        "bytes" in payload &&
+        typeof payload.bytes === "string"
+      ) {
+        payload = JSON.parse(Buffer.from(payload.bytes, "base64").toString("utf8"));
+      }
     }
 
     frames.push({

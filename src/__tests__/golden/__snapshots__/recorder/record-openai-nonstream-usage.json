@@ -1,0 +1,27 @@
+{
+  "fixtures": [
+    {
+      "match": {
+        "userMessage": "record openai nonstream",
+        "model": "gpt-4o-mini",
+        "turnIndex": 0,
+        "hasToolResult": false
+      },
+      "response": {
+        "content": "Hello world",
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 5,
+          "total_tokens": 17,
+          "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 2
+          }
+        }
+      }
+    }
+  ]
+}

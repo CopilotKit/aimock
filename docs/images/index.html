@@ -55,6 +55,11 @@
           <code>POST /v1beta/models/{model}:predict</code> formats. Return single or multiple images
           as URLs or base64-encoded data.
         </p>
+        <p>
+          <code>POST /v1/images/variations</code> is <strong>not</strong> in that list &mdash;
+          OpenAI removed the endpoint, and aimock mocks it as removed. See
+          <a href="#variations-removed">Variations: mocked as removed</a>.
+        </p>
 
         <h2>Endpoints</h2>
         <table class="endpoint-table">
@@ -78,6 +83,14 @@
             </tr>
           </tbody>
         </table>
+
+        <p>
+          OpenAI image generation and Gemini Imagen requests accept a string or a nonempty array of
+          content parts for <code>prompt</code>. Each part must be an object with a string
+          <code>type</code>. If a part includes <code>text</code>, that value must be a string.
+          Mixed parts, nontext parts, and empty text remain accepted. Unsupported values return HTTP
+          400 before fixture matching and do not consume a fixture sequence position.
+        </p>
 
         <h2>Unit Test: Single Image URL</h2>
         <p>
@@ -252,6 +265,46 @@
             for substring matches.
           </p>
         </div>
+
+        <h2 id="variations-removed">Variations: mocked as removed</h2>
+        <div class="info-box">
+          <p>
+            <strong><code>POST /v1/images/variations</code> no longer exists upstream.</strong> It
+            only ever served <code>dall-e-2</code>, which OpenAI removed on 2026-05-12, and the
+            endpoint went with it. aimock answers the path with the removal the real API returns
+            today rather than a plausible image envelope, so the removal surfaces in your tests
+            instead of in production. This follows aimock&rsquo;s
+            <a href="/deprecation-policy">deprecated &amp; removed APIs policy</a> &mdash; a removed
+            surface is mocked as removed, never as a success.
+          </p>
+        </div>
+        <p>
+          A live request to <code>https://api.openai.com/v1/images/variations</code> returns a bare
+          <code>404</code> with a
+          <strong>zero-byte body and no <code>Content-Type</code></strong> &mdash; not a JSON error
+          envelope. The 404 arrives before authentication (a keyless call to
+          <code>/v1/images/generations</code> still returns <code>401</code>), which is how you can
+          tell the path itself is gone rather than the model being rejected. aimock replays exactly
+          that.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Variations request &rarr; removal 404 <span class="lang-tag">sh</span>
+          </div>
+          <pre><code>curl -i -X POST $MOCK_URL/v1/images/variations -F image=@cat.png
+
+<span class="cm">HTTP/1.1 404 Not Found</span>
+<span class="cm">&lt;no Content-Type, empty body&gt;</span></code></pre>
+        </div>
+
+        <p>
+          Tests that drove variations should move to <code>POST /v1/images/edits</code>, which
+          OpenAI still serves and aimock still mocks normally &mdash; along with
+          <code>POST /v1/images/generations</code>. Only variations is affected. The endpoint is
+          also excluded from aimock&rsquo;s drift pipeline, because there is no live endpoint left
+          to compare against.
+        </p>
 
         <h2>Record &amp; Replay</h2>
         <p>

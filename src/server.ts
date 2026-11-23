@@ -1,19 +1,72 @@
 import * as http from "node:http";
+import {
+  parsePolicy,
+  resolvePolicy,
+  resolveRequestDecisions,
+  strictOverrideField,
+} from "./response/policy.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   Fixture,
   FixtureFileEntry,
   ChatCompletionRequest,
+  ChaosConfig,
+  ChaosDefaults,
   HandlerDefaults,
+  MisbehaviorScope,
+  MisbehaviorConfig,
+  JournalEntry,
   MockServerOptions,
   Mountable,
   RecordProviderKey,
+  ResponsesToolsMode,
 } from "./types.js";
-import { Journal } from "./journal.js";
-import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { validateFixtures, entryToFixture } from "./fixture-loader.js";
-import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
 import {
+  getFixtureMisbehaviorPosition,
+  setFixtureMisbehaviorPosition,
+  MISBEHAVIOR_CATALOG,
+  WIRE_SUPPORT,
+  parseMisbehavior,
+  parseMisbehaviorHeader,
+  resolveMisbehaviorSeed,
+  planMisbehavior,
+  recordMisbehaviorOutcome,
+  resolveMisbehaviorShortCircuit,
+} from "./misbehavior.js";
+import { Journal } from "./journal.js";
+import { matchFixtureDiagnostic, recordMatchOptions, type MatchOptions } from "./router.js";
+import {
+  validateFixtures,
+  entryToFixture,
+  isInjectableStatus,
+  INJECTED_STATUS_RANGE,
+  queueOneShotError,
+  isOneShotError,
+  claimOneShotError,
+  clearFixtureQueue,
+  releaseOneShotError,
+  FixtureLoadError,
+  MisbehaviorConfigError,
+  enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
+  responsesToolsExtendedView,
+  responsesToolsViewSource,
+} from "./fixture-loader.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { CLIENT_ABORTED } from "./response/lifecycle.js";
+import { serveRawResponse } from "./response/raw.js";
+import { extendRecordedTimings, misbehaviorPayloadLength } from "./response/timing.js";
+import {
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
+  buildOpenAIRefusalChunks,
+  buildOpenAIRefusalCompletion,
+  buildOpenAIContentFilterChunks,
+  buildOpenAIContentFilterCompletion,
+  buildOpenAIReasoningChunks,
+  buildOpenAIReasoningCompletion,
   buildTextChunks,
   buildToolCallChunks,
   buildTextCompletion,
@@ -22,25 +75,67 @@ import {
   buildContentWithToolCallsCompletion,
   buildUsageChunk,
   resolveUsage,
-  resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   serializeErrorResponse,
   isAudioResponse,
+  isResponseFactory,
+  isVideoResponse,
+  isTranscriptionResponse,
+  isImageResponse,
+  isEmbeddingResponse,
+  isJSONResponse,
+  isRawResponse,
   flattenHeaders,
+  isJsonObject,
+  validateToolsField,
   getTestId,
+  resolveTestId,
   readBody,
+  readBodyBufferBounded,
+  readBodyBuffer,
+  RequestBodyTooLargeError,
+  fixtureToolCallErrorCode,
+  googleFixtureToolCallErrorDetails,
+  isFixtureToolCallError,
+  requireServedFunctionToolCalls,
+  requireEmittedFunctionToolCalls,
+  rejectGeneratedFiles,
+  resolveRequestId,
+  markMintedRequestId,
   resolveResponse,
-  resolveStrictMode,
+  wouldProxyMiss,
   resolveReasoningForModel,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  runWithToolArgumentsScope,
+  createServerFixtureList,
+  isExtendedResponsesToolsList,
+  isServerOwnedFixtures,
+  withoutResponsesToolKeys,
   getContext,
+  describeMatch,
 } from "./helpers.js";
+import { DEFAULT_TEST_ID } from "./constants.js";
+import { collect, idsFor } from "./response/catalog/collect.js";
+import { anthropicPage } from "./response/catalog/anthropic-page.js";
+import { geminiPage } from "./response/catalog/gemini-page.js";
+import { isAnthropicModelRequest, missingRequiredHeader } from "./response/profiles.js";
+import {
+  coreModelIds,
+  renderOpenAIModel,
+  renderOpenAIModels,
+  renderAnthropicModel,
+  renderAnthropicModels,
+  renderGeminiModel,
+  renderGeminiModels,
+  renderOllamaTags,
+} from "./response/catalog/render.js";
+import { renderError } from "./response/errors.js";
 import {
   isOpenRouterPath,
   buildOpenRouterCandidates,
@@ -52,15 +147,10 @@ import {
   handleOpenRouterKey,
   handleOpenRouterCredits,
 } from "./openrouter-chat.js";
-import type {
-  FixtureResponse,
-  ErrorResponse,
-  ChatCompletion,
-  SSEChunk,
-  ResponseOverrides,
-} from "./types.js";
+import type { FixtureResponse, ChatCompletion, SSEChunk, ResponseOverrides } from "./types.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
+import { handleCountTokens } from "./count-tokens.js";
 import { handleGemini } from "./gemini.js";
 import { handleGeminiEmbedContent } from "./gemini-embeddings.js";
 import { handleBedrock, handleBedrockStream } from "./bedrock.js";
@@ -91,39 +181,185 @@ import {
   BytePlusVideoJobMap,
 } from "./byteplus-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
+import {
+  handleElevenLabsVoiceDesign,
+  handleElevenLabsVoiceCreate,
+  handleElevenLabsVoiceGet,
+  handleElevenLabsVoiceDelete,
+  clearElevenLabsVoices,
+} from "./elevenlabs-voice.js";
+import { handleAudioPipeline, AUDIO_PIPELINE_MAX_BODY_BYTES } from "./audio-pipeline.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
-import { handleFal, falQueueStates } from "./fal.js";
+import { handleFal, falQueueStates, falWillHandle } from "./fal.js";
 import { handleOllama, handleOllamaGenerate, handleOllamaEmbeddings } from "./ollama.js";
 import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
+import {
+  handleBatchesCreate,
+  handleBatchesList,
+  handleBatchesRetrieve,
+  handleBatchesCancel,
+  clearBatchStore,
+} from "./batches.js";
+import {
+  handleFilesCreate,
+  handleFilesList,
+  handleFilesRetrieve,
+  handleFilesContent,
+  handleFilesDelete,
+  clearFileStore,
+  FILES_BODY_DRAIN_MAX_BYTES,
+  FILES_BODY_MAX_BYTES,
+  FILES_BODY_OVERSIZED,
+} from "./files.js";
+import {
+  handleFineTuningCreate,
+  handleFineTuningList,
+  handleFineTuningRetrieve,
+  handleFineTuningCancel,
+  handleFineTuningEvents,
+  clearFineTuningStore,
+} from "./fine-tuning.js";
+import {
+  handleVectorStoresCreate,
+  handleVectorStoresList,
+  handleVectorStoresRetrieve,
+  handleVectorStoresModify,
+  handleVectorStoresDelete,
+  handleVectorStoreFilesCreate,
+  handleVectorStoreFilesList,
+  handleVectorStoreFilesRetrieve,
+  handleVectorStoreFilesDelete,
+  handleVectorFileBatchesCreate,
+  handleVectorFileBatchesRetrieve,
+  handleVectorFileBatchesCancel,
+  handleVectorFileBatchesFiles,
+  handleVectorStoresSearch,
+  clearVectorStoreStore,
+} from "./vector-stores.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
+import { handleLiveSession } from "./ws-live.js";
+import { normalizeLiveOptions } from "./live-fixture.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
 import {
   applyChaosAction,
-  chaosIdentity,
-  decideChaos,
-  effectiveChaosRates,
-  reportChaosSeedHeader,
-  chaosJitterFor,
+  awaitChaosLatency,
+  describeUnwritableReason,
+  evaluateChaos,
+  responseGoneReason,
+  isChaosScope,
+  resolveChaosConfig,
+  resetChaosWarnings,
+  parseChaosField,
+  CHAOS_FIELDS,
+  CHAOS_FIELD_NAMES,
 } from "./chaos.js";
-import { ChaosRandomizer, normalizeChaosSeed } from "./chaos-random.js";
+import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
+// Route paths/patterns are the router's single source of truth — shared with
+// the machine-readable catalog (`route-registry.ts` → `openapi.ts`), so the
+// catalog cannot drift from the dispatcher. Every literal and pattern matched
+// below comes from this module: adding a surface means adding it there, and
+// `matchRouteDefinition` (used by the terminal-404 drift guard) resolves
+// against the same table the catalog is derived from.
 import {
-  createMetricsRegistry,
-  normalizePathLabel,
-  BYTEPLUS_VIDEO_STATUS_RE,
-  BYTEPLUS_VIDEO_SUBMIT_RE,
-  OPENROUTER_VIDEO_CONTENT_RE,
-  OPENROUTER_VIDEO_STATUS_RE,
-  VEO_PREDICT_LRO_RE,
-  VEO_OPERATION_RE,
+  BATCHES_PATH,
+  BATCHES_ID_RE,
+  BATCHES_CANCEL_RE,
+  COMPLETIONS_PATH,
+  RESPONSES_PATH,
+  REALTIME_PATH,
+  LIVE_PATH,
+  GEMINI_LIVE_PATH,
+  MESSAGES_PATH,
+  MESSAGES_COUNT_PATH,
+  EMBEDDINGS_PATH,
+  COHERE_CHAT_PATH,
+  COHERE_EMBED_PATH,
+  SEARCH_PATH,
+  RERANK_PATH,
+  MODERATIONS_PATH,
+  IMAGES_PATH,
+  IMAGES_EDIT_PATH,
+  IMAGES_VARIATIONS_PATH,
+  SPEECH_PATH,
+  TRANSCRIPTIONS_PATH,
+  TRANSLATIONS_PATH,
+  VIDEOS_PATH,
   GROK_VIDEO_SUBMIT_PATH,
   GROK_VIDEO_STATUS_RE,
-} from "./metrics.js";
+  VEO_PREDICT_LRO_RE,
+  VEO_OPERATION_RE,
+  GEMINI_PREDICT_RE,
+  ELEVENLABS_SOUND_GENERATION_PATH,
+  ELEVENLABS_TTS_RE,
+  ELEVENLABS_MUSIC_RE,
+  ELEVENLABS_VOICE_DESIGN_PATH,
+  ELEVENLABS_VOICE_CREATE_PATH,
+  ELEVENLABS_VOICE_RE,
+  ELEVENLABS_STT_PATH,
+  ELEVENLABS_AUDIO_ISOLATION_PATH,
+  BYTEPLUS_TTS_PATH,
+  FAL_QUEUE_SUBMIT_RE,
+  FAL_QUEUE_REQUESTS_RE,
+  FAL_RUN_RE,
+  FAL_ROUTE_RE,
+  GEMINI_INTERACTIONS_PATH,
+  GEMINI_PATH_RE,
+  GEMINI_COUNT_RE,
+  GEMINI_EMBED_RE,
+  AZURE_DEPLOYMENT_RE,
+  BEDROCK_INVOKE_RE,
+  BEDROCK_STREAM_RE,
+  BEDROCK_CONVERSE_RE,
+  BEDROCK_CONVERSE_STREAM_RE,
+  VERTEX_AI_RE,
+  OLLAMA_CHAT_PATH,
+  OLLAMA_GENERATE_PATH,
+  OLLAMA_EMBEDDINGS_PATH,
+  OLLAMA_EMBED_PATH,
+  OLLAMA_TAGS_PATH,
+  OPENROUTER_VIDEOS_PATH,
+  OPENROUTER_VIDEO_MODELS_PATH,
+  OPENROUTER_MODELS_PATH,
+  OPENROUTER_KEY_PATH,
+  OPENROUTER_CREDITS_PATH,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+  HEALTH_PATH,
+  READY_PATH,
+  METRICS_PATH,
+  MODELS_PATH,
+  MODELS_DETAIL_RE,
+  GEMINI_MODELS_PATH,
+  GEMINI_MODEL_DETAIL_RE,
+  REQUESTS_PATH,
+  FILES_PATH,
+  FILES_ID_RE,
+  FILES_CONTENT_RE,
+  VECTOR_STORES_PATH,
+  VECTOR_STORES_SEARCH_RE,
+  VECTOR_STORES_BATCH_FILES_RE,
+  VECTOR_STORES_BATCH_CANCEL_RE,
+  VECTOR_STORES_BATCH_RE,
+  VECTOR_STORES_FILE_RE,
+  VECTOR_STORES_ID_RE,
+  VECTOR_STORES_FILES_RE,
+  VECTOR_STORES_FILE_BATCHES_RE,
+  BYTEPLUS_VIDEO_SUBMIT_RE,
+  BYTEPLUS_VIDEO_STATUS_RE,
+  FINE_TUNING_JOBS_PATH,
+  FINE_TUNING_ID_RE,
+  FINE_TUNING_CANCEL_RE,
+  FINE_TUNING_EVENTS_RE,
+  CONTROL_PREFIX,
+  matchRouteDefinition,
+} from "./route-registry.js";
+import { createMetricsRegistry, normalizePathLabel, DESTROYED_STATUS_LABEL } from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 import {
   resolveInboundAuth,
@@ -133,15 +369,26 @@ import {
   writeApiKeyUpgradeRejection,
   type ResolvedInboundAuth,
 } from "./api-key-auth.js";
+import type { McpFakeSource } from "./types.js";
+import {
+  ensureFakeMount,
+  findFakeMount,
+  handOffMcpFakes,
+  isFakeMount,
+  mountConflictDetail,
+  type MountList,
+} from "./mcp-fakes-mount.js";
+import { handleFakesReportRoute } from "./mcp-fakes-report.js";
+import { MCP_FAKES_DEFAULT_MOUNT, McpFakeStore, McpFakesAddError, blockIdOf } from "./mcp-fakes.js";
+import { MCPMock } from "./mcp-mock.js";
+import { build, msg, quote } from "./message-text.js";
+
+const liveClosers = new WeakMap<HandlerDefaults, (testId?: string) => void>();
 
 export interface ServerInstance {
+  closeLiveSessions(testId?: string): void;
   server: http.Server;
   journal: Journal;
-  /**
-   * The seed behind this run's chaos verdicts: whatever was configured, or the
-   * one generated at startup. Pass it back as `chaos.seed` to replay the run.
-   */
-  chaosSeed: string;
   url: string;
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
@@ -151,33 +398,6 @@ export interface ServerInstance {
   bytePlusVideoJobs: BytePlusVideoJobMap;
 }
 
-const COMPLETIONS_PATH = "/v1/chat/completions";
-const RESPONSES_PATH = "/v1/responses";
-const REALTIME_PATH = "/v1/realtime";
-const GEMINI_LIVE_PATH =
-  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
-const MESSAGES_PATH = "/v1/messages";
-const EMBEDDINGS_PATH = "/v1/embeddings";
-const COHERE_CHAT_PATH = "/v2/chat";
-const COHERE_EMBED_PATH = "/v2/embed";
-const SEARCH_PATH = "/search";
-const RERANK_PATH = "/v2/rerank";
-const MODERATIONS_PATH = "/v1/moderations";
-const IMAGES_PATH = "/v1/images/generations";
-const IMAGES_EDIT_PATH = "/v1/images/edits";
-const IMAGES_VARIATIONS_PATH = "/v1/images/variations";
-const SPEECH_PATH = "/v1/audio/speech";
-const TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions";
-const TRANSLATIONS_PATH = "/v1/audio/translations";
-const VIDEOS_PATH = "/v1/videos";
-const GEMINI_PREDICT_RE = /^\/v1beta\/models\/([^:]+):predict$/;
-const ELEVENLABS_SOUND_GENERATION_PATH = "/v1/sound-generation";
-const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
-const ELEVENLABS_MUSIC_RE = /^\/v1\/music(?:\/(.+))?$/;
-const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/(.+)$/;
-const FAL_QUEUE_REQUESTS_RE = /^\/fal\/queue\/requests\/(.+)$/;
-const FAL_RUN_RE = /^\/fal\/run\/(.+)$/;
-const FAL_PREFIX_RE = /^\/fal(?:\/.*)?$/;
 const DEFAULT_CHUNK_SIZE = 20;
 
 // OpenAI-compatible endpoint suffixes for path prefix normalization.
@@ -223,48 +443,23 @@ function normalizeCompatPath(pathname: string, logger?: Logger): string {
   return pathname;
 }
 
-const GEMINI_INTERACTIONS_PATH = "/v1beta/interactions";
-const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
-const GEMINI_EMBED_RE = /^\/v1beta\/models\/([^:]+):embedContent$/;
-const AZURE_DEPLOYMENT_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
-const BEDROCK_INVOKE_RE = /^\/model\/([^/]+)\/invoke$/;
-const BEDROCK_STREAM_RE = /^\/model\/([^/]+)\/invoke-with-response-stream$/;
-const BEDROCK_CONVERSE_RE = /^\/model\/([^/]+)\/converse$/;
-const BEDROCK_CONVERSE_STREAM_RE = /^\/model\/([^/]+)\/converse-stream$/;
-const VERTEX_AI_RE =
-  /^\/v1\/projects\/[^/]+\/locations\/[^/]+\/publishers\/google\/models\/([^/:]+):(generateContent|streamGenerateContent)$/;
-
-const OLLAMA_CHAT_PATH = "/api/chat";
-const OLLAMA_GENERATE_PATH = "/api/generate";
-const OLLAMA_EMBEDDINGS_PATH = "/api/embeddings";
-const OLLAMA_EMBED_PATH = "/api/embed";
-const OLLAMA_TAGS_PATH = "/api/tags";
-
 // OpenRouter async video lifecycle (/api/v1/videos). Dispatch order matters:
 // content RE → models exact → status RE → submit exact. The status RE's
 // `[^/]+` segment would otherwise swallow the `models` listing path. The
-// content/status REs are shared with metrics.ts path-label normalization
-// (imported above).
-const OPENROUTER_VIDEOS_PATH = "/api/v1/videos";
-const OPENROUTER_VIDEO_MODELS_PATH = "/api/v1/videos/models";
-
-const HEALTH_PATH = "/health";
-const READY_PATH = "/ready";
-const MODELS_PATH = "/v1/models";
-const REQUESTS_PATH = "/v1/_requests";
-
-const DEFAULT_MODELS = [
-  "gpt-4",
-  "gpt-4o",
-  "claude-3-5-sonnet-20241022",
-  "gemini-2.0-flash",
-  "text-embedding-3-small",
-];
+// content/status REs are shared with the route registry and metrics.ts
+// path-label normalization (imported above).
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  // Every method the dispatcher serves: PUT is dispatched for
+  // `/fal/queue/requests/{requestId}` (status/cancel/result), so a preflight
+  // that omits it makes browsers refuse that call.
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "*",
+  // Response headers are invisible to cross-origin JS unless exposed. The
+  // journal's pagination total is a response header (the body stays a bare
+  // array for back-compat), so a browser harness needs this to read it.
+  "Access-Control-Expose-Headers": "X-Total-Count, X-Request-Id",
 };
 
 function setCorsHeaders(res: http.ServerResponse): void {
@@ -281,7 +476,14 @@ function handleOptions(res: http.ServerResponse): void {
 
 function handleNotFound(res: http.ServerResponse, message: string): void {
   setCorsHeaders(res);
-  writeErrorResponse(res, 404, JSON.stringify({ error: { message, type: "not_found" } }));
+  writeErrorResponse(
+    res,
+    404,
+    renderError("openai", "route-failure", {
+      message: message,
+      type: "not_found",
+    }).body,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +492,20 @@ function handleNotFound(res: http.ServerResponse, message: string): void {
 // server.
 // ---------------------------------------------------------------------------
 
-const CONTROL_PREFIX = "/__aimock";
+/** The complete `GET /__aimock/fixtures` query-param vocabulary; anything else 400s. */
+const FIXTURES_PARAMS: ReadonlySet<string> = new Set(["include"]);
+
+/** The complete `GET /__aimock/journal` query-param vocabulary; anything else 400s. */
+const JOURNAL_PARAMS: ReadonlySet<string> = new Set([
+  "limit",
+  "offset",
+  "path",
+  "method",
+  "status",
+  "service",
+  "testId",
+  "requestId",
+]);
 
 /**
  * The per-server state a full reset clears. `ServerInstance` structurally
@@ -305,13 +520,22 @@ export interface FullResetTargets {
   grokVideoJobs: GrokVideoJobMap;
   bytePlusVideoJobs: BytePlusVideoJobMap;
   defaults: HandlerDefaults;
+  /**
+   * The server's mounts. A full reset unloads every MCP fake on them (R1, R2);
+   * the entry-id counters and MCP sessions are kept.
+   */
+  mounts?: MountList;
 }
 
 /**
  * Perform a full reset: clear the fixtures array, the journal (entries *and*
  * per-test fixture match-counts, i.e. sequence position), the video and fal.ai
- * job/queue state, and the Gemini interaction/event-id counters, then re-zero
- * the `aimock_fixtures_loaded` gauge.
+ * job/queue state, the fine-tuning store (jobs, their append-only event logs,
+ * their poll counts, the create-time suffixes their model names are built from,
+ * and the module's monotonic clock), the ElevenLabs Voice Design store, the
+ * Gemini interaction/event-id counters, and any runtime chaos override
+ * (reverting to the construction-time chaos config), then re-zero the
+ * `aimock_fixtures_loaded` gauge.
  *
  * `targets` is `null` when no server is running (an in-process `reset()` before
  * `start()`). The process-global generation state is reset either way, since it
@@ -321,26 +545,351 @@ export interface FullResetTargets {
  * `POST /__aimock/reset/fixtures` alias, and `LLMock.reset()`.
  */
 export function performFullReset(fixtures: Fixture[], targets: FullResetTargets | null): void {
-  fixtures.length = 0;
+  // Also invalidates one-shot claims parked in flight (see `clearFixtureQueue`).
+  clearFixtureQueue(fixtures);
   falJobs.clear();
   falQueueStates.clear();
+  clearBatchStore();
+  clearElevenLabsVoices();
+  clearFileStore();
+  clearFineTuningStore();
+  clearVectorStoreStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
+  liveClosers.get(targets.defaults)?.();
   targets.journal.clear();
+  // Chaos warning latches are per-server state too: a suite that resets between
+  // tests must see a bad static chaos value reported again, not inherit the
+  // latch the previous test left armed. Scoped by the server's logger, so this
+  // clears THIS server's latch and cannot re-arm a concurrent server's.
+  resetChaosWarnings(targets.defaults.logger);
+  // Drop any runtime chaos override installed via POST /__aimock/chaos, so the
+  // server returns to the chaos configuration it was STARTED with. Reset is the
+  // isolation barrier every parallel harness leans on; chaos leaking past it
+  // poisons later tests with 500s that look like application bugs.
+  targets.defaults.chaos = undefined;
+  targets.defaults.misbehavior?.byTestId.clear();
   targets.videoStates.clear();
   targets.openRouterVideoJobs.clear();
   targets.veoVideoJobs.clear();
   targets.grokVideoJobs.clear();
   targets.bytePlusVideoJobs.clear();
-  // Rewind the occurrence counters and forget every tracked pair, keeping the
-  // seed: after a reset the next request for a key draws as that key's first
-  // again, which is what makes a reset-between-tests harness reproducible.
-  targets.defaults.chaosRandom?.reset();
+  for (const { handler } of targets.mounts ?? []) handler.clearMcpFakes?.();
   if (targets.defaults.registry) {
     targets.defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
 }
+
+/**
+ * JSON-safe redaction for control-API inspection output. Functions (fixture
+ * `predicate`s, response factories) and RegExps do not survive
+ * JSON.stringify as anything useful, so they become marker strings.
+ */
+function redactForInspection(value: unknown): unknown {
+  if (typeof value === "function") return "[function]";
+  if (value instanceof RegExp) return String(value);
+  if (Array.isArray(value)) return value.map(redactForInspection);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = redactForInspection(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * One-line kind label for a fixture response used by
+ * `GET /__aimock/fixtures?include=fixtures` (e.g. "text", "error").
+ * Response factories are reported as "factory".
+ *
+ * Discriminates with the same `is*Response` guards the request handlers use,
+ * in the same order — NOT by inspecting keys. Every response shape extends
+ * `ResponseOverrides` (`id`/`created`/`model`/`usage`), so a recorded fixture's
+ * first key is usually an envelope override rather than the discriminant. The
+ * audio-before-content/toolCalls order is the ORDERING CONTRACT documented on
+ * `AudioResponse` in types.ts: those shapes structurally overlap.
+ */
+function fixtureResponseKind(response: Fixture["response"]): string {
+  if (isResponseFactory(response)) return "factory";
+  if (isErrorResponse(response)) return "error";
+  if (isAudioResponse(response)) return "audio";
+  if (isVideoResponse(response)) return "video";
+  if (isTranscriptionResponse(response)) return "transcription";
+  if (isImageResponse(response)) return "image";
+  if (isEmbeddingResponse(response)) return "embedding";
+  if (isJSONResponse(response)) return "json";
+  if (isCombinedFixtureResponse(response)) return "contentWithToolCalls";
+  if (isToolCallResponse(response)) return "toolCalls";
+  if (isTextResponse(response)) return "text";
+  if (isRawResponse(response)) return "raw";
+  return "unknown";
+}
+
+/**
+ * The testId a journal entry was scoped under — `resolveTestId` applied to the
+ * journaled headers and path, i.e. the SAME function that scoped the request
+ * (fixture match-counts, chaos) when it arrived. Node folds a repeated
+ * `X-Test-Id` into one string ("a, a") before either side sees it, and the
+ * request is counted and chaos-evaluated under that folded string, so the
+ * `?testId=` filter matches it verbatim too: no token-splitting here that the
+ * scoping path does not also do. (Splitting on "," additionally broke every
+ * legitimately comma-bearing id.) A raw `path.includes("testId=t1")` both
+ * prefix-collides with `t10` and matches unrelated params like `notTestId`.
+ *
+ * An MCP mount records the test id it resolved on the entry (I9, B3): a
+ * decoded header or query value, or the one bound to the session at
+ * `initialize`. That value wins; LLM entries carry none and are attributed as
+ * before.
+ */
+function journalEntryTestId(entry: JournalEntry): string {
+  return entry.testId ?? resolveTestId(entry.headers, entry.path);
+}
+
+/**
+ * The testId a chaos override is stored under, and read back with — resolved by
+ * `getTestId`, i.e. `X-Test-Id` header then `?testId=`, exactly as
+ * `resolveScopedDefaults` resolves the traffic being evaluated. A control call
+ * and the requests it is meant to affect can then never land in different
+ * scopes. `DEFAULT_TEST_ID` (neither header nor param) means the server-wide
+ * baseline.
+ *
+ * Returns `null` when `X-Test-Id` is PRESENT but blank. `String(testId ?? "")`
+ * in a harness produces that trivially, and silently treating it as "untagged"
+ * would install a server-wide baseline that fails every other test — the exact
+ * cross-test leak per-testId scoping exists to prevent. Callers must 400.
+ */
+function chaosScopeId(req: http.IncomingMessage): string | null {
+  const headerValue = req.headers["x-test-id"];
+  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (typeof raw === "string" && raw.trim() === "") return null;
+  return getTestId(req);
+}
+
+/** 400 for a control call whose `X-Test-Id` is present but blank. */
+function writeBlankTestId(res: http.ServerResponse): true {
+  res.writeHead(400, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Invalid 'X-Test-Id': header is present but empty" }));
+  return true;
+}
+
+/**
+ * The chaos config in effect for one testId: its override, else the baseline —
+ * one or the other, never the two merged. Mirrors `resolveScopedDefaults` in
+ * chaos.ts, so what `GET /__aimock/chaos` reports for a scope is exactly what
+ * that scope's traffic is evaluated against.
+ */
+function effectiveChaos(defaults: HandlerDefaults, scopeId: string): ChaosConfig {
+  // `has`, not truthiness — an installed-but-empty override is a selection (see
+  // `resolveScopedDefaults`), so it must shadow the baseline here too or `GET`
+  // would report a config the traffic is not evaluated against.
+  if (defaults.chaosByTestId?.has(scopeId)) return defaults.chaosByTestId.get(scopeId) ?? {};
+  const current = defaults.chaos;
+  if (!current) return {};
+  return isChaosScope(current) ? (current.base ?? {}) : current;
+}
+
+/** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
+const MCP_FAKES_PARAMS = new Set(["testId", "context", "mount"]);
+
+/** A block's `mount` path, read without running getters; the add validates it. */
+function controlFakeMountOf(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return MCP_FAKES_DEFAULT_MOUNT;
+  const value: unknown = Object.getOwnPropertyDescriptor(raw, "mount")?.value;
+  return typeof value === "string" ? value : MCP_FAKES_DEFAULT_MOUNT;
+}
+
+/** The blocks of one control-API `mcpFakes` value that go to one mount path. */
+interface ControlFakeGroup {
+  path: string;
+  /** Position of each block in the request's `mcpFakes` value. */
+  positions: number[];
+  sources: McpFakeSource[];
+}
+
+/** What the after-start auto-mount of a control-API add is wired with (W6, as W4). */
+interface ControlFakeWiring {
+  journal: Journal;
+  defaults: HandlerDefaults;
+}
+
+/**
+ * Check one `POST /__aimock/fixtures` `mcpFakes` value against the live
+ * mounts (F10, W6) without changing anything. Returns every error in input
+ * order (an empty list when the value can be added), and `apply`, which adds
+ * the blocks (auto-mounting an MCPMock where no mount serves a block's path)
+ * and returns the number of blocks added.
+ *
+ * The whole value is checked before any mount is touched, and the check
+ * never adds to a real mount: each group is added to a throwaway store,
+ * whose errors are the ones reported (it numbers the add `control-api#1`, as
+ * a new mount would; for an existing MCPMock the rejected group is re-run on
+ * its atomic add, so the errors name that mount's next `<n>`, I7). A group
+ * whose path no request to it can reach (a mount that is not an MCPMock
+ * serves it, an MCPMock answers it as its root, or it is under the control
+ * prefix) is a mount conflict (one error per block).
+ */
+function planControlApiFakes(
+  raw: unknown,
+  mounts: MountList,
+): { errors: FixtureLoadError[]; apply(wiring: ControlFakeWiring): number } {
+  const items: Array<{ position: number; source: McpFakeSource }> = Array.isArray(raw)
+    ? raw.map((block: unknown, position) => ({
+        position,
+        source: { source: "control-api", blockIndex: position, raw: block },
+      }))
+    : [{ position: 0, source: { source: "control-api", blockIndex: null, raw } }];
+
+  const groups = new Map<string, ControlFakeGroup>();
+  // An empty `mcpFakes` array is one (bad) add to the default mount.
+  if (items.length === 0) {
+    groups.set(MCP_FAKES_DEFAULT_MOUNT, {
+      path: MCP_FAKES_DEFAULT_MOUNT,
+      positions: [],
+      sources: [],
+    });
+  }
+  for (const { position, source } of items) {
+    const path = controlFakeMountOf(source.raw);
+    const group = groups.get(path) ?? { path, positions: [], sources: [] };
+    group.positions.push(position);
+    group.sources.push(source);
+    groups.set(path, group);
+  }
+
+  const found: Array<{ position: number; error: FixtureLoadError }> = [];
+  /** The paths `apply` auto-mounts, in order. */
+  const pending: string[] = [];
+  for (const group of groups.values()) {
+    const target = findFakeMount(mounts, group.path, pending);
+    if (target.kind === "conflict") {
+      group.positions.forEach((position) => {
+        const where = Array.isArray(raw) ? msg`mcpFakes[${position}]` : msg`mcpFakes`;
+        found.push({
+          position,
+          error: new FixtureLoadError({
+            rule: "mcp-fakes/mount-conflict",
+            file: null,
+            blockId: null,
+            entryId: null,
+            detail: msg`${where}: ${mountConflictDetail(group.path, target)}`,
+          }),
+        });
+      });
+      continue;
+    }
+    let failure = addFailure(() => new McpFakeStore().add(group.sources, { kind: "control-api" }));
+    if (target.kind === "none") pending.push(group.path);
+    if (!failure) continue;
+    // The throwaway numbers the add `control-api#1`; an existing MCPMock's
+    // errors must name its own next `<n>` (I7). Its add is atomic (a throw
+    // adds nothing and consumes no `<n>`), so the same rejected input is
+    // re-run on it for the numbered errors. A mount with any other add is
+    // never called here (A2).
+    if (target.kind === "mcp" && target.handler.addMcpFakes === MCPMock.prototype.addMcpFakes) {
+      const handler = target.handler;
+      failure =
+        addFailure(() => handler.addMcpFakes?.(group.sources, { kind: "control-api" })) ?? failure;
+    }
+    for (const error of failure.errors) {
+      found.push({ position: positionOf(error, group), error });
+    }
+  }
+  found.sort((a, b) => a.position - b.position);
+
+  return {
+    errors: found.map((f) => f.error),
+    apply(wiring: ControlFakeWiring): number {
+      let added = 0;
+      for (const group of groups.values()) {
+        const target = ensureFakeMount(
+          mounts,
+          group.path,
+          {
+            journal: wiring.journal,
+            registry: wiring.defaults.registry,
+            logger: wiring.defaults.logger,
+            replaySpeed: wiring.defaults.replaySpeed,
+          },
+          wiring.defaults.logger,
+        );
+        // The plan found no conflict, and nothing else runs in between.
+        if ("conflict" in target) continue;
+        const result = target.handler.addMcpFakes?.(group.sources, { kind: "control-api" });
+        for (const warning of result?.warnings ?? []) wiring.defaults.logger.warn(warning.message);
+        added += group.sources.length;
+      }
+      return added;
+    },
+  };
+}
+
+/** The `McpFakesAddError` that `add` throws, or `null` when it adds. */
+function addFailure(add: () => unknown): McpFakesAddError | null {
+  try {
+    add();
+    return null;
+  } catch (err) {
+    if (err instanceof McpFakesAddError) return err;
+    throw err;
+  }
+}
+
+/**
+ * The request position of the block an add error names. The add numbers a
+ * run-time group's blocks by their place in the group (`[<j>]`), or gives no
+ * index to a single-object value; an error tied to no block sorts with the
+ * group's first block.
+ */
+function positionOf(error: FixtureLoadError, group: ControlFakeGroup): number {
+  const first = group.positions[0] ?? 0;
+  if (error.blockId == null || error.file === null) return first;
+  const at = group.positions.findIndex(
+    (_, j) => error.blockId === blockIdOf(error.file ?? "", "", j),
+  );
+  return at === -1 ? first : group.positions[at];
+}
+
+/** The listing half of an MCP mount, as `MCPMock` has it. */
+interface FakesSnapshotSource {
+  fakesSnapshot: MCPMock["fakesSnapshot"];
+}
+
+function hasFakesSnapshot(handler: Mountable): handler is Mountable & FakesSnapshotSource {
+  return "fakesSnapshot" in handler && typeof handler.fakesSnapshot === "function";
+}
+
+/**
+ * `GET /__aimock/mcp/fakes` (spec 6.5, I9): for each MCP mount (or the one
+ * named by `mount`), the blocks that apply to the requested test id and
+ * context, with every entry id and its consumed state for that test id.
+ * A mount is listed when it takes fakes (it implements `addMcpFakes`, the
+ * check every other fakes path uses); one with no `fakesSnapshot` lists no
+ * blocks.
+ */
+function listControlApiFakes(
+  mounts: MountList,
+  testId: string | null,
+  context: string | null,
+  mount: string | null,
+): Array<{ mount: string; blocks: ReturnType<MCPMock["fakesSnapshot"]> }> | null {
+  const listed = mounts.flatMap(({ path, handler }) =>
+    isFakeMount(handler) && (mount === null || path === mount)
+      ? [
+          {
+            mount: path,
+            blocks: hasFakesSnapshot(handler) ? handler.fakesSnapshot(testId, context) : [],
+          },
+        ]
+      : [],
+  );
+  return mount !== null && listed.length === 0 ? null : listed;
+}
+
+// Per-server addition identities survive fixture deletion and full resets.
+const controlFixtureAdditions = new WeakMap<HandlerDefaults, number>();
 
 /**
  * Handle requests under `/__aimock/`. Returns `true` if the request was
@@ -350,6 +899,7 @@ async function handleControlAPI(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   pathname: string,
+  searchParams: URLSearchParams,
   fixtures: Fixture[],
   journal: Journal,
   videoStates: VideoStateMap,
@@ -358,6 +908,7 @@ async function handleControlAPI(
   grokVideoJobs: GrokVideoJobMap,
   bytePlusVideoJobs: BytePlusVideoJobMap,
   defaults: HandlerDefaults,
+  mounts: MountList,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
 
@@ -371,18 +922,384 @@ async function handleControlAPI(
     return true;
   }
 
-  // GET /__aimock/journal
-  if (subPath === "/journal" && req.method === "GET") {
+  // GET /__aimock/openapi.json — machine-readable route catalog.
+  if (subPath === "/openapi.json" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(journal.getAll()));
+    res.end(JSON.stringify(buildOpenApiDocument()));
     return true;
   }
 
-  // GET /__aimock/fixtures — inspect current fixture count
-  if (subPath === "/fixtures" && req.method === "GET") {
+  // GET /__aimock/routes — flat method+path list for shells.
+  if (subPath === "/routes" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ count: fixtures.length }));
+    res.end(JSON.stringify({ count: CATALOG_ROUTES.length, routes: CATALOG_ROUTES }));
     return true;
+  }
+
+  // GET /__aimock/journal — optionally filtered/paginated.
+  // No query params → full array (historical behaviour, unchanged).
+  // Supported params: limit (int >= 0), offset (int >= 0, default 0),
+  // path (SUBSTRING), method (exact, case-insensitive), status (int),
+  // service (EXACT), testId (resolved exactly as the server resolves it).
+  // Anything else is a 400: silently ignoring an unknown param would let
+  // `?statusCode=404` return the whole journal and pass a caller's assertion
+  // against traffic it never meant to select.
+  if (subPath === "/journal" && req.method === "GET") {
+    const bad = (message: string): true => {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: message }));
+      return true;
+    };
+    for (const key of searchParams.keys()) {
+      if (!JOURNAL_PARAMS.has(key)) {
+        return bad(
+          `Unknown query parameter: '${key}'. Supported: ${[...JOURNAL_PARAMS].join(", ")}`,
+        );
+      }
+    }
+    const parseNonNegativeInt = (name: string, fallback: number): number | null => {
+      const raw = searchParams.get(name);
+      if (raw === null) return fallback;
+      if (!/^\d+$/.test(raw.trim())) return null;
+      return Number(raw);
+    };
+    const limit = parseNonNegativeInt("limit", -1);
+    const offset = parseNonNegativeInt("offset", 0);
+    if (limit === null) return bad("Invalid 'limit': must be an integer >= 0");
+    if (offset === null) return bad("Invalid 'offset': must be an integer >= 0");
+    let statusFilter: number | undefined;
+    const statusRaw = searchParams.get("status");
+    if (statusRaw !== null) {
+      if (!/^\d+$/.test(statusRaw.trim())) return bad("Invalid 'status': must be an integer");
+      statusFilter = Number(statusRaw);
+    }
+    const pathFilter = searchParams.get("path");
+    const methodFilter = searchParams.get("method");
+    const serviceFilter = searchParams.get("service");
+    const testIdFilter = searchParams.get("testId");
+    const requestIdFilter = searchParams.get("requestId");
+
+    let entries: JournalEntry[] = journal.getAll();
+    if (methodFilter !== null) {
+      const want = methodFilter.toUpperCase();
+      entries = entries.filter((e) => e.method.toUpperCase() === want);
+    }
+    if (pathFilter !== null) {
+      entries = entries.filter((e) => e.path.includes(pathFilter));
+    }
+    if (statusFilter !== undefined) {
+      entries = entries.filter((e) => e.response.status === statusFilter);
+    }
+    if (serviceFilter !== null) {
+      entries = entries.filter((e) => e.service === serviceFilter);
+    }
+    if (testIdFilter !== null) {
+      entries = entries.filter((e) => journalEntryTestId(e) === testIdFilter);
+    }
+    if (requestIdFilter !== null) {
+      entries = entries.filter((e) => e.headers["x-request-id"] === requestIdFilter);
+    }
+    // Count AFTER filtering but BEFORE pagination, so a paging caller can tell
+    // when it is done. It ships as a header because the body is a bare array
+    // for back-compat and can never grow an envelope.
+    const total = entries.length;
+    if (offset > 0) entries = entries.slice(offset);
+    if (limit >= 0) entries = entries.slice(0, limit);
+
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "X-Total-Count": String(total),
+    });
+    res.end(journalJson(entries, journal));
+    return true;
+  }
+
+  // GET /__aimock/fixtures — inspect current fixture count. With
+  // ?include=fixtures, also dump each fixture's (redacted) match criteria
+  // and response kind so harnesses can assert what would match.
+  if (subPath === "/fixtures" && req.method === "GET") {
+    // Unknown params 400 for the same reason `/journal` does: a typo like
+    // `?incluide=fixtures` must never quietly return the count-only body and
+    // pass an assertion against a dump the caller never received.
+    for (const key of searchParams.keys()) {
+      if (!FIXTURES_PARAMS.has(key)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: `Unknown query parameter: '${key}'. Supported: ${[...FIXTURES_PARAMS].join(", ")}`,
+          }),
+        );
+        return true;
+      }
+    }
+    const include = searchParams.get("include");
+    if (include === null) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ count: fixtures.length }));
+      return true;
+    }
+    if (include !== "fixtures") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid 'include': expected 'fixtures'" }));
+      return true;
+    }
+    // Only a server with responsesTools "extended" reads `match.toolNamespace`,
+    // `customToolCalls` and `responsesBlocks`; elsewhere they do not change
+    // the kind, as in 1.44.0.
+    const extendedTools = isExtendedResponsesToolsList(fixtures);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        count: fixtures.length,
+        fixtures: fixtures.map((fixture, index) => ({
+          index,
+          match: redactForInspection(fixture.match),
+          // NOT `response` — that name already means the response ITSELF on
+          // `Fixture`, and this is only a one-word kind label. A queued
+          // one-shot error carries a FACTORY response (the factory performs
+          // the idempotent claim), so the shape test alone reports "factory"
+          // and this surface loses the one signal it exists to give: that an
+          // injection is armed. Take the kind from the one-shot MARKER.
+          responseKind: isOneShotError(fixture)
+            ? "error"
+            : fixtureResponseKind(
+                extendedTools || typeof fixture.response === "function"
+                  ? fixture.response
+                  : withoutResponsesToolKeys(fixture.response),
+              ),
+          ...(fixture.latency !== undefined ? { latency: fixture.latency } : {}),
+          ...(fixture.chaos !== undefined ? { chaos: fixture.chaos } : {}),
+        })),
+      }),
+    );
+    return true;
+  }
+
+  if (subPath === "/misbehavior/catalog" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ catalog: MISBEHAVIOR_CATALOG, WIRE_SUPPORT }));
+    return true;
+  }
+
+  if (
+    subPath === "/misbehavior" &&
+    (req.method === "GET" || req.method === "POST" || req.method === "DELETE")
+  ) {
+    const scopeId = chaosScopeId(req);
+    if (scopeId === null) return writeBlankTestId(res);
+    const reply = (status: number, body: unknown): true => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return true;
+    };
+    const scope = defaults.misbehavior;
+    if (!scope && req.method !== "GET") {
+      return reply(409, {
+        error:
+          "misbehavior is not enabled: start aimock with enableMisbehavior: true (CLI: --misbehavior)",
+      });
+    }
+    if (req.method === "POST") {
+      let raw: string;
+      try {
+        raw = await readBody(req);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        defaults.logger.error(`POST /__aimock/misbehavior: failed to read body: ${msg}`);
+        return reply(400, { error: `Failed to read request body: ${msg}` });
+      }
+      let input: unknown;
+      try {
+        input = JSON.parse(raw);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        defaults.logger.error(`POST /__aimock/misbehavior: invalid JSON: ${msg}`);
+        return reply(400, { error: `Invalid JSON: ${msg}` });
+      }
+      // Only this route treats an empty object as an explicit opt-out.
+      if (isJsonObject(input) && Object.keys(input).length === 0) input = { faults: [] };
+      const parsed = parseMisbehavior(input);
+      if (!parsed.ok) {
+        return reply(400, {
+          error: "Validation failed",
+          rule: parsed.issue.rule,
+          message: parsed.issue.message,
+        });
+      }
+      const config =
+        parsed.config.seed === "random"
+          ? { ...parsed.config, seed: resolveMisbehaviorSeed(parsed.config.seed, defaults.logger) }
+          : parsed.config;
+      scope?.byTestId.set(scopeId, config);
+    } else if (req.method === "DELETE") {
+      scope?.byTestId.delete(scopeId);
+    }
+    return reply(200, {
+      misbehavior: scope?.byTestId.get(scopeId) ?? scope?.baseline ?? { faults: [] },
+    });
+  }
+
+  // GET /__aimock/chaos — read the chaos config in effect for THIS caller's
+  // testId: its own override if one is installed, else the server-wide
+  // baseline (the construction config, or an untagged override).
+  if (subPath === "/chaos" && req.method === "GET") {
+    const scopeId = chaosScopeId(req);
+    if (scopeId === null) return writeBlankTestId(res);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
+    return true;
+  }
+
+  // DELETE /__aimock/chaos — drop the override for this caller's testId (or the
+  // server-wide baseline when untagged), falling back to what it shadowed.
+  // `POST {}` means "explicitly no chaos"; this means "forget I said anything".
+  //
+  // SYMMETRIC with POST: an untagged DELETE drops the untagged baseline ONLY.
+  // Dropping every per-testId override too would let one test's cleanup revoke
+  // a concurrently-running test's opt-out. `POST /__aimock/reset` is the one
+  // route that clears everything.
+  if (subPath === "/chaos" && req.method === "DELETE") {
+    const scopeId = chaosScopeId(req);
+    if (scopeId === null) return writeBlankTestId(res);
+    defaults.chaosByTestId?.delete(scopeId);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
+    return true;
+  }
+
+  // POST /__aimock/chaos — replace the server chaos config at runtime (no
+  // restart). Accepts any subset of dropRate/malformedRate/disconnectRate as
+  // numbers in [0, 1]; `{}` means explicitly no chaos. Unknown fields and
+  // out-of-range values are rejected with 400.
+  //
+  // SCOPED to the caller's testId (`X-Test-Id`, else `?testId=`), like every
+  // other mutable axis in the server (fixture match-counts, video job maps): an
+  // override installed by test `t1` applies only to traffic resolving to `t1`.
+  // An untagged call sets the server-wide baseline. `POST /__aimock/reset`
+  // drops all of it, restoring the chaos config the server was STARTED with.
+  //
+  // REPLACES WHOLESALE — the body is not merged over the config it shadows. A
+  // server started with `--chaos-latency 500` that is sent `{ "dropRate": 1 }`
+  // for `t1` gives `t1` drops and NO latency: restate `latencyMs` to keep it.
+  // That is what makes `POST {}` ("explicitly no chaos") different from
+  // `DELETE` ("fall back to what I was shadowing"); under a merge, `POST {}`
+  // would be a no-op. The 200 body echoes the config actually in effect for the
+  // scope, and any field that WAS in effect and is not restated is named in a
+  // warning, so a dropped baseline rate is never silent.
+  if (subPath === "/chaos" && req.method === "POST") {
+    const scopeId = chaosScopeId(req);
+    if (scopeId === null) return writeBlankTestId(res);
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/chaos: failed to read body: ${msg}`);
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Failed to read request body: ${msg}` }));
+      return true;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/chaos: invalid JSON: ${msg}`);
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Invalid JSON: ${msg}` }));
+      return true;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid body: expected a JSON object" }));
+      return true;
+    }
+    // The set of fields and their bounds come from `CHAOS_FIELDS`, and each
+    // value is validated by the same `parseChaosField` every other chaos source
+    // uses. Re-typing the limits here is how this endpoint used to accept
+    // `{ latencyMs: 250.5 }` with a 200 and echo it back from `GET`, while the
+    // resolver silently discarded it at request time as a non-integer: the
+    // control API reported a config the traffic never saw.
+    for (const key of Object.keys(parsed)) {
+      if (!(CHAOS_FIELD_NAMES as readonly string[]).includes(key)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Unknown chaos field: '${key}'` }));
+        return true;
+      }
+    }
+    const next: ChaosConfig = {};
+    for (const key of CHAOS_FIELD_NAMES) {
+      const value = parsed[key];
+      if (value === undefined) continue;
+      // JSON body: the field must be a number. A numeric STRING is a
+      // client-side type error here, not a wire spelling to be parsed — the
+      // header API is the surface that takes text.
+      const accepted = typeof value === "number" ? parseChaosField(key, value) : undefined;
+      if (accepted === undefined) {
+        const shape = CHAOS_FIELDS[key].integer ? "a whole number of ms" : "a number";
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: `Invalid '${key}': must be ${shape} between 0 and ${CHAOS_FIELDS[key].max}`,
+          }),
+        );
+        return true;
+      }
+      next[key] = accepted;
+    }
+    // The install REPLACES what was in effect for this scope; it does not merge
+    // over it. Name every field that was in effect and is not restated, so a
+    // baseline rate a test silently loses (the classic case: a server-wide
+    // `--chaos-latency` vanishing under a scoped `{ dropRate: 1 }`) shows up in
+    // the log instead of as a mystery in the timings.
+    const shadowed = effectiveChaos(defaults, scopeId);
+    const droppedFields = (Object.keys(shadowed) as (keyof ChaosConfig)[]).filter(
+      (key) => shadowed[key] !== undefined && next[key] === undefined,
+    );
+    if (droppedFields.length > 0) {
+      const lost = droppedFields.map((key) => `${key}=${shadowed[key]}`).join(", ");
+      defaults.logger.warn(
+        `[chaos] POST /__aimock/chaos (testId '${scopeId}') replaces the chaos config for this ` +
+          `scope wholesale, it is not merged: ${lost} no longer applies here. ` +
+          `Restate the field in the body to keep it.`,
+      );
+    }
+    defaults.chaosByTestId?.set(scopeId, next);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
+    return true;
+  }
+
+  // GET /__aimock/mcp/fakes — the MCP fakes that apply to a test id/context,
+  // per mount, with each entry's consumed state (spec 6.5, I9).
+  if (subPath === "/mcp/fakes" && req.method === "GET") {
+    const reply = (status: number, body: unknown): true => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return true;
+    };
+    for (const key of searchParams.keys()) {
+      if (!MCP_FAKES_PARAMS.has(key)) {
+        return reply(400, {
+          error: `Unknown query parameter: '${key}'. Supported: ${[...MCP_FAKES_PARAMS].join(", ")}`,
+        });
+      }
+    }
+    // Empty values are not supplied (I1, I2).
+    const testId = searchParams.get("testId") || null;
+    const context = searchParams.get("context") || null;
+    const mount = searchParams.get("mount") || null;
+    const listed = listControlApiFakes(mounts, testId, context, mount);
+    if (listed === null) {
+      return reply(404, { error: build(msg`No MCP mount at ${quote(mount ?? "")}`) });
+    }
+    return reply(200, { testId, context, mounts: listed });
+  }
+
+  // GET /__aimock/mcp/fakes/report — the per-test fake report (RP6).
+  if (subPath === "/mcp/fakes/report" && req.method === "GET") {
+    return handleFakesReportRoute(res, searchParams, mounts);
   }
 
   // POST /__aimock/fixtures — add fixtures dynamically
@@ -398,9 +1315,9 @@ async function handleControlAPI(
       return true;
     }
 
-    let parsed: { fixtures?: FixtureFileEntry[] };
+    let parsed: { fixtures?: FixtureFileEntry[]; mcpFakes?: unknown } | null;
     try {
-      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[] };
+      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[]; mcpFakes?: unknown } | null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       defaults.logger.error(`POST /__aimock/fixtures: invalid JSON: ${msg}`);
@@ -409,33 +1326,123 @@ async function handleControlAPI(
       return true;
     }
 
-    if (!Array.isArray(parsed.fixtures)) {
+    // F10, B6: `fixtures` is optional when the body carries `mcpFakes`.
+    const withFakes =
+      typeof parsed === "object" && parsed !== null && Object.hasOwn(parsed, "mcpFakes");
+    if (
+      parsed === null ||
+      (!Array.isArray(parsed.fixtures) && !(withFakes && parsed.fixtures === undefined))
+    ) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
       return true;
     }
+    const entries: FixtureFileEntry[] = Array.isArray(parsed.fixtures) ? parsed.fixtures : [];
 
-    const converted = parsed.fixtures.map((e) => entryToFixture(e));
-    const issues = validateFixtures(converted);
-    const errors = issues.filter((i) => i.severity === "error");
-    if (errors.length > 0) {
+    const missingMatchIndex = entries.findIndex(
+      (entry) =>
+        entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.match == null,
+    );
+    if (missingMatchIndex !== -1) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Validation failed", details: errors }));
+      res.end(JSON.stringify({ error: `Fixture at index ${missingMatchIndex} is missing match` }));
       return true;
     }
 
+    const invalidMatchIndex = entries.findIndex(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        entry.match != null &&
+        (typeof entry.match !== "object" || Array.isArray(entry.match)),
+    );
+    if (invalidMatchIndex !== -1) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({ error: `Fixture at index ${invalidMatchIndex}: match must be an object` }),
+      );
+      return true;
+    }
+
+    // An extended server changes the fixtures it makes in place only in an
+    // array no other server reads (LLMock's). In a caller's array, which a
+    // legacy server may share, they stay as 1.44.0 made them and this server
+    // reads them through its view, as it reads the caller's own fixtures.
+    const extendedResponsesTools = defaults.responsesTools === "extended";
+    const markInPlace = extendedResponsesTools && isServerOwnedFixtures(fixtures);
+    const addition = controlFixtureAdditions.get(defaults) ?? 0;
+    controlFixtureAdditions.set(defaults, addition + 1);
+    const converted: Fixture[] = [];
+    const loadErrors: (FixtureLoadError | MisbehaviorConfigError)[] = [];
+    for (const [index, entry] of entries.entries()) {
+      try {
+        const fixture = entryToFixture(entry, undefined, undefined, {
+          file: `control-api#${addition}`,
+          index,
+        });
+        if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
+        if (markInPlace) markFixtureResponsesToolsExtended(fixture);
+        converted.push(fixture);
+      } catch (error) {
+        if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {
+          throw error;
+        }
+        loadErrors.push(error);
+      }
+    }
+    // Only a fully converted batch preserves the original validation indices.
+    const issues =
+      loadErrors.length === 0
+        ? validateFixtures(
+            extendedResponsesTools ? converted.map(responsesToolsExtendedView) : converted,
+          )
+        : [];
+    const errors = issues.filter((i) => i.severity === "error");
+    // The whole body is checked before anything is added (W6): the LLM
+    // fixtures, then every `mcpFakes` block against the live mounts.
+    const fakes = withFakes ? planControlApiFakes(parsed.mcpFakes, mounts) : null;
+    const fakeErrors = fakes?.errors ?? [];
+    const validationFailed = (details: unknown[]): true => {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Validation failed", details }));
+      return true;
+    };
+    if (loadErrors.length > 0 || errors.length > 0 || fakeErrors.length > 0) {
+      return validationFailed([
+        ...loadErrors.map((e) => e.toJSON()),
+        ...errors,
+        ...fakeErrors.map((e) => e.toJSON()),
+      ]);
+    }
+
+    let mcpFakesAdded = 0;
+    if (fakes) {
+      try {
+        mcpFakesAdded = fakes.apply({ journal, defaults });
+      } catch (err) {
+        if (!(err instanceof McpFakesAddError)) throw err;
+        return validationFailed(err.errors.map((e) => e.toJSON()));
+      }
+    }
     fixtures.push(...converted);
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ added: converted.length }));
+    res.end(
+      JSON.stringify(
+        withFakes ? { added: converted.length, mcpFakesAdded } : { added: converted.length },
+      ),
+    );
     return true;
   }
 
-  // DELETE /__aimock/fixtures — clear all fixtures
+  // DELETE /__aimock/fixtures — clear all fixtures, and every MCP fake (R3)
   if (subPath === "/fixtures" && req.method === "DELETE") {
-    fixtures.length = 0;
+    clearFixtureQueue(fixtures);
+    journal.clearMisbehaviorCounters();
+    for (const { handler } of mounts) handler.clearMcpFakes?.();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
@@ -452,45 +1459,13 @@ async function handleControlAPI(
     grokVideoJobs,
     bytePlusVideoJobs,
     defaults,
+    mounts,
   });
-
-  // GET /__aimock/chaos — the run's seed, the rates as they will actually
-  // fire, and how many pairs are being tracked. A harness reads the seed off a
-  // red run and passes it back to reproduce the same faults.
-  if (subPath === "/chaos" && req.method === "GET") {
-    const rates = effectiveChaosRates(defaults.chaos);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        seed: defaults.chaosRandom?.seed ?? null,
-        dropRate: rates.dropRate,
-        malformedRate: rates.malformedRate,
-        disconnectRate: rates.disconnectRate,
-        trackedKeys: defaults.chaosRandom?.trackedKeys ?? 0,
-      }),
-    );
-    return true;
-  }
-
-  // POST /__aimock/chaos/reset — rewind the occurrence counters alone, leaving
-  // fixtures, the journal and the seed untouched.
-  if (subPath === "/chaos/reset" && req.method === "POST") {
-    defaults.chaosRandom?.reset();
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ reset: true, seed: defaults.chaosRandom?.seed ?? null }));
-    return true;
-  }
 
   // POST /__aimock/reset — full reset (fixtures, journal entries + fixture
   // match-counts, video/fal job state, Gemini counters)
   if (subPath === "/reset" && req.method === "POST") {
     performFullReset(fixtures, resetTargets());
-    // The rewind keeps the seed, so the reply names it. It rides the header
-    // rather than the body because the canonical reset body is `{ reset: true }`
-    // and nothing else, and the header is the one every chaos-affected
-    // response already carries.
-    const keptSeed = defaults.chaosRandom?.seed;
-    if (keptSeed !== undefined) reportChaosSeedHeader(res, keptSeed);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -515,8 +1490,6 @@ async function handleControlAPI(
     defaults.logger.warn(
       "POST /__aimock/reset/fixtures is deprecated; use /__aimock/reset or /__aimock/reset/journal",
     );
-    const keptSeed = defaults.chaosRandom?.seed;
-    if (keptSeed !== undefined) reportChaosSeedHeader(res, keptSeed);
     res.writeHead(200, { "Content-Type": "application/json", Deprecation: "true" });
     res.end(JSON.stringify({ reset: true, deprecated: true, deprecation }));
     return true;
@@ -546,39 +1519,49 @@ async function handleControlAPI(
       return true;
     }
 
+    // Validate the payload — an unchecked `status` reaches
+    // `res.writeHead(status)` on the next matched request and throws
+    // ERR_HTTP_INVALID_STATUS_CODE for 99, 0, 1000 or 99.5, losing the
+    // injected error and degrading to a generic 500.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid body: expected a JSON object" }));
+      return true;
+    }
+    // Omitted — or an explicit null, which is how a serializer spells an absent
+    // optional — keeps the historic default of 500.
     const status = parsed.status ?? 500;
+    if (!isInjectableStatus(status)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Invalid 'status': must be ${INJECTED_STATUS_RANGE}` }));
+      return true;
+    }
     const errorBody = parsed.body;
-    const errorFixture: Fixture = {
-      match: { predicate: () => true },
-      response: {
-        error: {
-          message: errorBody?.message ?? "Injected error",
-          type: errorBody?.type ?? "server_error",
-          code: errorBody?.code,
-        },
-        status,
-      },
-    };
-    // Insert at front so it matches before everything else
-    fixtures.unshift(errorFixture);
-    // One-shot: match once then self-remove.  We use a `consumed` flag to
-    // prevent double-matching from concurrent requests and defer the actual
-    // splice via queueMicrotask so it never mutates the fixtures array while
-    // matchFixture is iterating over it.
-    let consumed = false;
-    const original = errorFixture.match.predicate!;
-    errorFixture.match.predicate = (req) => {
-      if (consumed) return false;
-      const result = original(req);
-      if (result) {
-        consumed = true;
-        queueMicrotask(() => {
-          const idx = fixtures.indexOf(errorFixture);
-          if (idx !== -1) fixtures.splice(idx, 1);
-        });
+    // `body: null` is an absent body, not a malformed one — same rule as the
+    // fields below and as `status`. Rejecting it broke a call that worked
+    // (main defaulted every field) for a shape any serializer emits for an
+    // unset optional.
+    if (errorBody !== undefined && errorBody !== null) {
+      if (typeof errorBody !== "object" || Array.isArray(errorBody)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid 'body': must be an object" }));
+        return true;
       }
-      return result;
-    };
+      for (const field of ["message", "type", "code"] as const) {
+        const value = errorBody[field];
+        // null means absent, not invalid: aimock's own error envelope
+        // (`serializeErrorResponse`) emits `code: null`, and so does a real
+        // OpenAI error, so a captured body can be pasted back verbatim.
+        if (value !== undefined && value !== null && typeof value !== "string") {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Invalid 'body.${field}': must be a string` }));
+          return true;
+        }
+      }
+    }
+    // Shared with `LLMock.nextRequestError`: same endpoint gate, consumed when
+    // served rather than when its predicate is evaluated.
+    queueOneShotError(fixtures, status, errorBody ?? undefined);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ queued: true }));
@@ -590,17 +1573,50 @@ async function handleControlAPI(
   return true;
 }
 
+/**
+ * The client tore the connection down before its request body had fully
+ * arrived. Node rejects the pending body read with `aborted` (ECONNRESET) and
+ * destroys the response, so the rejection surfaces in the handler's read arm
+ * looking like any other thrown error. It is caller behaviour, not a server
+ * fault: no status can reach the client, so none must be journaled as
+ * delivered. A body that blew its size cap also leaves the request destroyed
+ * and incomplete, but that one is aimock's own decision, not a peer abort.
+ */
+function clientAbortedMidBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  err: unknown,
+): boolean {
+  if (err instanceof RequestBodyTooLargeError) return false;
+  return res.destroyed && !req.complete;
+}
+
 async function handleCompletions(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   fixtures: Fixture[],
   journal: Journal,
   defaults: HandlerDefaults,
+  getRequestEntry: () => JournalEntry | null,
   modelFallback?: string,
   providerKey?: RecordProviderKey,
   openRouter = false,
+  beforeFixtureSelection?: () => void,
+  bytePlusPath = false,
 ): Promise<void> {
   setCorsHeaders(res);
+  // Named in fixture tool-call rejections, so the message says which door the
+  // request came through. The BytePlus door is the `/api/v3/` path itself
+  // (`bytePlusPath`), not the record-gated `providerKey`, so a replay-only
+  // request is named the same as a recording one.
+  const wire =
+    providerKey === "azure"
+      ? "Azure OpenAI Chat Completions"
+      : providerKey === "openrouter"
+        ? "OpenRouter Chat Completions"
+        : providerKey === "byteplus" || bytePlusPath
+          ? "BytePlus ModelArk Chat Completions"
+          : "OpenAI Chat Completions";
 
   // Read request body
   let raw: string;
@@ -608,24 +1624,60 @@ async function handleCompletions(
     raw = await readBody(req);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to read request body";
+    // Same classification every `routeError` route applies to this failure: a
+    // body that blew its size cap is the CALLER's fault, logged at warn.
+    // If the reader destroyed the socket, no status was delivered.
+    // This arm catches the read itself
+    // rather than letting it reach `routeError`, so it has to say so on its
+    // own — and it logs either way, because a read failure answered in
+    // silence is a request that vanishes from the logs.
+    const clientFault = err instanceof RequestBodyTooLargeError;
+    const route = `${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`;
+    const clientAbort = clientAbortedMidBody(req, res, err);
+    const bodyLimitDisconnect = clientFault && (req.destroyed || res.destroyed);
+    if (clientAbort || bodyLimitDisconnect) {
+      // The body reader or caller destroyed the socket: nothing can be
+      // delivered and nothing crashed. Journal the torn socket the way the proxy arm
+      // and chaos `disconnect` do, never a status the client did not get.
+      const interruptReason = bodyLimitDisconnect
+        ? "request body exceeded size limit"
+        : CLIENT_ABORTED;
+      defaults.logger.warn(
+        bodyLimitDisconnect ? `${route}: ${msg}` : `${route}: client aborted mid-body (${msg})`,
+      );
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? COMPLETIONS_PATH,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: {
+          status: 0,
+          fixture: null,
+          interrupted: true,
+          interruptReason,
+        },
+      });
+      return;
+    }
+    const status = clientFault ? 400 : 500;
+    if (clientFault) defaults.logger.warn(`${route}: ${msg}`);
+    else defaults.logger.error(`${route}: ${msg}`);
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body: null,
-      response: { status: 500, fixture: null },
+      response: { status, fixture: null },
     });
     writeErrorResponse(
       res,
-      500,
+      status,
       openRouter
-        ? serializeOpenRouterError(500, `Request body read failed: ${msg}`)
-        : JSON.stringify({
-            error: {
-              message: `Request body read failed: ${msg}`,
-              type: "server_error",
-            },
-          }),
+        ? serializeOpenRouterError(status, `Request body read failed: ${msg}`)
+        : renderError("openai", "transport-failure", {
+            message: `Request body read failed: ${msg}`,
+            type: clientFault ? "invalid_request_error" : "server_error",
+          }).body,
     );
     return;
   }
@@ -634,10 +1686,6 @@ async function handleCompletions(
   let body: ChatCompletionRequest;
   try {
     body = JSON.parse(raw) as ChatCompletionRequest;
-    // Azure deployments may omit model from body — use deployment ID as fallback
-    if (modelFallback && !body.model) {
-      body.model = modelFallback;
-    }
   } catch (parseErr: unknown) {
     const detail = parseErr instanceof Error ? parseErr.message : "unknown parse error";
     journal.add({
@@ -652,16 +1700,44 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, `Malformed JSON: ${detail}`)
-        : JSON.stringify({
-            error: {
-              message: `Malformed JSON: ${detail}`,
-              type: "invalid_request_error",
-              param: null,
-              code: "invalid_json",
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: `Malformed JSON: ${detail}`,
+            type: "invalid_request_error",
+            param: null,
+            code: "invalid_json",
+            includeParam: true,
+          }).body,
     );
     return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `body.messages` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(body)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      openRouter
+        ? serializeOpenRouterError(400, "Request body must be a JSON object")
+        : renderError("openai", "validation", {
+            message: "Request body must be a JSON object",
+            type: "invalid_request_error",
+          }).body,
+    );
+    return;
+  }
+
+  // Azure deployments may omit model from body — use deployment ID as fallback
+  if (modelFallback && !body.model) {
+    body.model = modelFallback;
   }
 
   // Validate messages array
@@ -678,16 +1754,71 @@ async function handleCompletions(
       400,
       openRouter
         ? serializeOpenRouterError(400, "Missing required parameter: 'messages'")
-        : JSON.stringify({
-            error: {
-              message: "Missing required parameter: 'messages'",
-              type: "invalid_request_error",
-              param: null,
-              code: null,
-            },
-          }),
+        : renderError("openai", "validation", {
+            message: "Missing required parameter: 'messages'",
+            type: "invalid_request_error",
+            param: null,
+            code: null,
+            includeParam: true,
+          }).body,
     );
     return;
+  }
+
+  const nullMessageIndex = body.messages.findIndex((message) => message === null);
+  if (nullMessageIndex !== -1) {
+    const message = `Invalid request: messages[${nullMessageIndex}] must be an object`;
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      openRouter
+        ? serializeOpenRouterError(400, message)
+        : renderError("openai", "validation", {
+            message: message,
+            type: "invalid_request_error",
+            param: null,
+            code: null,
+            includeParam: true,
+          }).body,
+    );
+    return;
+  }
+
+  // Only native OpenAI ingress applies this shape rule; compatible routes
+  // retain their own tool conventions. Missing-function shorthand stays valid.
+  if (new URL(req.url ?? COMPLETIONS_PATH, "http://localhost").pathname === COMPLETIONS_PATH) {
+    let toolsError = validateToolsField(body.tools);
+    if (!toolsError && Array.isArray(body.tools)) {
+      const nullFunctionIndex = body.tools.findIndex((tool) => tool?.function === null);
+      if (nullFunctionIndex !== -1) {
+        toolsError = `tools[${nullFunctionIndex}].function must not be null`;
+      }
+    }
+    if (toolsError) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? COMPLETIONS_PATH,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null },
+      });
+      writeErrorResponse(
+        res,
+        400,
+        renderError("openai", "validation", {
+          message: toolsError,
+          type: "invalid_request_error",
+        }).body,
+      );
+      return;
+    }
   }
 
   const method = req.method ?? "POST";
@@ -702,14 +1833,17 @@ async function handleCompletions(
   // (headers > fixture.chaos > server defaults), so the fixture has to be
   // known before we can roll with the right config.
   const testId = getTestId(req);
-  const matchOptions = recordMatchOptions(
-    // In record mode a miss proxies upstream to capture a fresh turn, so an
-    // earlier-turn capture must not shadow a longer request via the relaxed
-    // turnIndex disambiguator — keep turnIndex a strict gate while recording.
-    // This handler's record gate (below) is `defaults.record && providerKey`.
-    !!(defaults.record && providerKey),
-    defaults.logger,
-  );
+  const matchOptions: MatchOptions = {
+    ...recordMatchOptions(
+      // In record mode a miss proxies upstream to capture a fresh turn, so an
+      // earlier-turn capture must not shadow a longer request via the relaxed
+      // turnIndex disambiguator — keep turnIndex a strict gate while recording.
+      // This handler's record gate (below) is `defaults.record && providerKey`.
+      !!(defaults.record && providerKey),
+      defaults.logger,
+    ),
+    wire: "openai-chat",
+  };
 
   // OpenRouter `models[]` fallback simulation. When the request arrived on the
   // OpenRouter base AND carries a fallback array, attempt the candidate list
@@ -740,6 +1874,34 @@ async function handleCompletions(
   // (so the shared increment below does not double-count it).
   let fixtureCountIncremented = false;
   const openRouterFallback = openRouter && Array.isArray(body.models) && body.models.length > 0;
+  // Select the fixture to serve for `probe`, CLAIMING a one-shot injected error
+  // the instant it is selected — synchronously, before any chaos-latency await
+  // and before its factory runs — so exactly one request consumes it. A
+  // one-shot another in-flight request already claimed is no longer in
+  // `fixtures`, so re-running the match falls through to the next candidate.
+  const selectFixture = (
+    probe: ChatCompletionRequest,
+    counts: ReturnType<typeof journal.getFixtureMatchCountsForTest>,
+  ): ReturnType<typeof matchFixtureDiagnostic> => {
+    for (;;) {
+      beforeFixtureSelection?.();
+      const attempt = matchFixtureDiagnostic(
+        fixtures,
+        probe,
+        counts,
+        defaults.requestTransform,
+        matchOptions,
+      );
+      if (
+        attempt.fixture &&
+        isOneShotError(attempt.fixture) &&
+        !claimOneShotError(fixtures, attempt.fixture)
+      ) {
+        continue;
+      }
+      return attempt;
+    }
+  };
 
   if (openRouterFallback) {
     const candidates = buildOpenRouterCandidates(body);
@@ -766,17 +1928,16 @@ async function handleCompletions(
       candidate: string,
     ): Promise<{ fixture: Fixture; response: FixtureResponse; isError: boolean } | null> => {
       const probe: ChatCompletionRequest = { ...body, model: candidate };
-      const attempt = matchFixtureDiagnostic(
-        fixtures,
-        probe,
-        matchCounts,
-        defaults.requestTransform,
-        matchOptions,
-      );
+      const attempt = selectFixture(probe, matchCounts);
       skippedBySequenceOrTurn = Math.max(skippedBySequenceOrTurn, attempt.skippedBySequenceOrTurn);
       if (!attempt.fixture) return null;
       const response = await resolveResponse(attempt.fixture, probe);
-      return { fixture: attempt.fixture, response, isError: isErrorResponse(response) };
+      // A raw fixture with an error status is a provider failure, like a typed
+      // error fixture with the same status, so it fails over the same way.
+      const isError =
+        isErrorResponse(response) ||
+        (isRawResponse(response) && (response.raw.status ?? 200) >= 400);
+      return { fixture: attempt.fixture, response, isError };
     };
     for (const candidate of candidates) {
       const outcome = await resolveCandidate(candidate);
@@ -804,7 +1965,9 @@ async function handleCompletions(
         // (openclaw #60191). Absent / `true` keeps the default fall-through.
         // Composes with the request-level `allowFallbacks` gate: fail over only
         // when BOTH allow it (if EITHER says don't, this candidate is terminal).
-        const errorFallsThrough = (outcome.response as ErrorResponse).fallthrough !== false;
+        // A raw fixture has no `fallthrough` field, so it keeps the default.
+        const errorFallsThrough =
+          !isErrorResponse(outcome.response) || outcome.response.fallthrough !== false;
         if (allowFallbacks && errorFallsThrough) {
           // Runtime provider failure — remember it and fail over to the next.
           lastErrorFixture = outcome.fixture;
@@ -824,13 +1987,7 @@ async function handleCompletions(
       preResolvedResponse = lastErrorResponse;
     }
   } else {
-    const single = matchFixtureDiagnostic(
-      fixtures,
-      body,
-      journal.getFixtureMatchCountsForTest(testId),
-      defaults.requestTransform,
-      matchOptions,
-    );
+    const single = selectFixture(body, journal.getFixtureMatchCountsForTest(testId));
     fixture = single.fixture;
     skippedBySequenceOrTurn = single.skippedBySequenceOrTurn;
   }
@@ -839,7 +1996,11 @@ async function handleCompletions(
     // The fallback loop already advanced the served fixture's count; only the
     // single-match path still needs to increment here (never double-count).
     if (!fixtureCountIncremented) journal.incrementFixtureMatchCount(fixture, fixtures, testId);
-    defaults.logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
+    // `JSON.stringify` drops functions/RegExps, so a predicate fixture logged
+    // as `{}`; `describeMatch` names every present matcher by kind.
+    defaults.logger.debug(
+      `Fixture matched: ${describeMatch(fixture.match, fixtures.indexOf(fixture))}`,
+    );
   } else {
     const lastUserMsg = body.messages.filter((m) => m.role === "user").pop();
     const snippet =
@@ -849,51 +2010,140 @@ async function handleCompletions(
     );
   }
 
-  // Decide once per request and apply any verdict before fixture or proxy
-  // delivery, including when a progressive upstream would never finish.
-  const chaosContext = { method, path, headers: flatHeaders, body };
-  const chaosDecision = decideChaos(
+  // Roll chaos once per request. Dispatch by action + path:
+  //   drop / disconnect → apply immediately; upstream is never called and no
+  //                       response body is produced.
+  //   malformed, fixture path → write invalid JSON instead of the fixture.
+  //   malformed, proxy path  → proxy to upstream, then swap body via the
+  //                            beforeWriteResponse hook (passed only when the
+  //                            action is malformed, so the hook doesn't need
+  //                            to re-check the action).
+  // Deterministic latency is injected BEFORE the terminal actions are rolled,
+  // so a configured delay applies to every outcome (served fixture, proxied
+  // response, streamed response, and each chaos failure alike) — and, being
+  // resolved from the same per-testId scope as the rates, never leaks into a
+  // concurrently-running test that did not configure it.
+  // Resolved ONCE and threaded into both the latency await and the action roll:
+  // re-resolving would re-parse the chaos headers and emit every invalid/out-of-range
+  // warning twice per request.
+  const chaosConfig = resolveChaosConfig(
     fixture,
     defaults.chaos,
     req.headers,
-    chaosIdentity(req, raw),
-    defaults.chaosRandom ?? new ChaosRandomizer(),
     defaults.logger,
+    req.url,
   );
-  const chaosAction = chaosDecision.action;
-
-  if (chaosAction === "drop" || chaosAction === "disconnect") {
-    applyChaosAction(
-      chaosAction,
-      res,
-      fixture,
-      journal,
-      chaosContext,
-      fixture ? "fixture" : "proxy",
-      defaults.registry,
-      chaosDecision,
+  await awaitChaosLatency(
+    fixture,
+    defaults.chaos,
+    req.headers,
+    defaults.logger,
+    req.url,
+    res,
+    chaosConfig,
+  );
+  // C13: the latency await resolves EARLY when the client hangs up mid-delay
+  // (the timer is cancelled off `res`'s `close`). `applyChaosAsync` re-checks
+  // writability at exactly this point; a SPLIT gate has to do it itself.
+  // Without this the handler carries on and builds, "serves" and JOURNALS a
+  // full response into a dead socket — a phantom entry for bytes no client
+  // ever received.
+  const goneAfterLatency = responseGoneReason(res);
+  if (goneAfterLatency !== null) {
+    // Claimed at selection, but no error body ever reached a client — re-arm
+    // so the injection is not burned by a client that walked away.
+    releaseOneShotError(fixtures, fixture);
+    defaults.logger.debug(
+      `[chaos] ${method} ${path}: ${describeUnwritableReason(goneAfterLatency)} after the ` +
+        `latency delay — not served, not journalled`,
     );
     return;
   }
+  const chaosAction = evaluateChaos(
+    fixture,
+    defaults.chaos,
+    req.headers,
+    defaults.logger,
+    req.url,
+    chaosConfig,
+  );
+  const chaosContext = { method, path, headers: flatHeaders, body };
+  // With no fixture, the response is aimock's own unless this request was
+  // going to be proxied — so the journal source is "internal", not "proxy",
+  // on the non-proxied path. A miss is only proxied when record mode has an
+  // upstream for THIS provider and strict is not refusing it first; the
+  // shared rule lives in `wouldProxyMiss` (also used by elevenlabs-voice.ts).
+  const missDecisions = resolveRequestDecisions(defaults.strict, req.headers);
+  const effectiveStrict = missDecisions.fixtureMiss;
+  const missWouldProxy = wouldProxyMiss(!missDecisions.upstream, defaults.record, providerKey);
+  const noFixtureSource = missWouldProxy ? "proxy" : "internal";
+  // Chaos writes its own entry. Resolve by request identity, including after
+  // awaited proxy hooks, so concurrent requests cannot receive each other's marker.
+  const recordBypass = (reason: "proxied" | "chaos-fired"): void => {
+    const entry = getRequestEntry();
+    if (!entry) return; // A skipped chaos action did not write a response.
+    recordMisbehaviorOutcome({
+      entry,
+      summary: resolveMisbehaviorShortCircuit({
+        wire: "openai-chat",
+        fixture: fixture ?? undefined,
+        defaults,
+        rawHeaders: req.headers,
+        url: req.url,
+        reason,
+      }),
+      defaults,
+      testId,
+    });
+  };
 
-  // Apply malformed before proxying so a forced verdict cannot disappear behind
-  // progressive upstream streams or setup failures.
-  if (chaosAction === "malformed") {
+  if (chaosAction === "drop" || chaosAction === "disconnect" || chaosAction === "rateLimit") {
     applyChaosAction(
       chaosAction,
       res,
       fixture,
       journal,
       chaosContext,
-      fixture ? "fixture" : "proxy",
+      fixture ? "fixture" : noFixtureSource,
       defaults.registry,
-      chaosDecision,
+      defaults.logger,
     );
+    recordBypass("chaos-fired");
+    // The chaos action, not the fixture, answered this request — a claimed
+    // one-shot's error body was never written, so put it back in the queue.
+    releaseOneShotError(fixtures, fixture);
+    return;
+  }
+
+  // `malformed` is applied here whenever there is no upstream response to
+  // mutate: a matched fixture, or a miss that would not be proxied (the 404
+  // and strict-503 paths). Only the proxied no-fixture case defers, to the
+  // `beforeWriteResponse` hook below — the same `wouldProxyMiss` rule as the
+  // source label above, so a strict-mode miss with an upstream configured is
+  // answered here rather than skipped for a 503 that never rolled. Before
+  // this, a rolled `malformed` on the no-fixture non-proxied path fell through
+  // to a plain 404 — never applied, journalled or counted. With no fixture,
+  // nothing here was ever proxied, so the source is aimock itself:
+  // `"internal"`, never `"proxy"`.
+  if (chaosAction === "malformed" && (fixture || !missWouldProxy)) {
+    applyChaosAction(
+      chaosAction,
+      res,
+      fixture,
+      journal,
+      chaosContext,
+      fixture ? "fixture" : "internal",
+      defaults.registry,
+      defaults.logger,
+    );
+    recordBypass("chaos-fired");
+    // Same as the terminal actions above: malformed replaces the body, so a
+    // claimed one-shot's error was never served.
+    releaseOneShotError(fixtures, fixture);
     return;
   }
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -920,42 +2170,117 @@ async function handleCompletions(
         strictStatus,
         openRouter
           ? serializeOpenRouterError(strictStatus, strictMessage)
-          : JSON.stringify({
-              error: {
-                message: strictMessage,
-                type: "invalid_request_error",
-                param: null,
-                code: "no_fixture_match",
-              },
-            }),
+          : renderError("openai", "strict-miss", {
+              message: strictMessage,
+              type: "invalid_request_error",
+              param: null,
+              code: "no_fixture_match",
+              includeParam: true,
+            }).body,
       );
       return;
     }
 
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        body,
-        providerKey,
-        req.url ?? COMPLETIONS_PATH,
-        fixtures,
-        defaults,
-        raw,
+      // Hook is only passed when chaos wants to mutate the response. When
+      // it's passed, it unconditionally applies malformed + journals + tells
+      // proxyAndRecord to skip its default relay. The hook has no branching
+      // logic — that decision is made here, at the call site.
+      const hookOptions =
+        chaosAction === "malformed"
+          ? {
+              // Malformed is emitted as a hardcoded invalid-JSON body, so the
+              // captured upstream response isn't used here (the parameter is
+              // intentionally omitted rather than declared-and-ignored).
+              // Future dispatch (phase 3: non-JSON / streaming) will accept
+              // the response and branch on contentType.
+              beforeWriteResponse: () => {
+                applyChaosAction(
+                  chaosAction,
+                  res,
+                  null,
+                  journal,
+                  chaosContext,
+                  "proxy",
+                  defaults.registry,
+                  defaults.logger,
+                );
+                recordBypass("chaos-fired");
+                return true;
+              },
+              // Streaming responses can't be mutated post-facto (bytes already
+              // on the wire). Record the bypass so the rolled action isn't
+              // invisible in logs / Prometheus.
+              onHookBypassed: (reason: "sse_streamed" | "ndjson_streamed" | "binary_streamed") => {
+                defaults.logger.warn(
+                  `[chaos] malformed bypassed on proxy: upstream returned streaming response (${reason})`,
+                );
+                defaults.registry?.incrementCounter("aimock_chaos_bypassed_total", {
+                  action: "malformed",
+                  source: "proxy",
+                  reason,
+                });
+              },
+            }
+          : undefined;
+
+      // A client hang-up and a recorder tear-down look identical after the
+      // fact; withHangUpDetection watches the request socket while relaying.
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          body,
+          providerKey,
+          req.url ?? COMPLETIONS_PATH,
+          fixtures,
+          defaults,
+          raw,
+          hookOptions,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
+        // A proxied response torn down before it finished is marked
+        // interrupted, so the journal shows what the client actually got
+        // rather than a clean success, and names the side that killed it — a
+        // client hang-up is normal caller behaviour, an upstream/recorder
+        // tear-down is a fault worth chasing. Its status is the one it opened
+        // with (`res.statusCode`, e.g. 200) when its status line reached the
+        // socket, and 0 when it did not: the client never got a status.
         journal.add({
           method: req.method ?? "POST",
           path: req.url ?? COMPLETIONS_PATH,
           headers: flattenHeaders(req.headers),
           body,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
+        recordBypass("proxied");
         return;
       }
-      // outcome === "not_configured" — fall through to 404
+      // outcome === "not_configured" — nothing was written; fall through to
+      // 404, unless a rolled `malformed` is still owed to the client. Nothing
+      // was proxied, so the source is `"internal"`.
+      if (chaosAction === "malformed") {
+        applyChaosAction(
+          chaosAction,
+          res,
+          null,
+          journal,
+          chaosContext,
+          "internal",
+          defaults.registry,
+          defaults.logger,
+        );
+        recordBypass("chaos-fired");
+        return;
+      }
     }
 
     journal.add({
@@ -974,21 +2299,96 @@ async function handleCompletions(
       404,
       openRouter
         ? serializeOpenRouterError(404, "No fixture matched")
-        : JSON.stringify({
-            error: {
-              message: "No fixture matched",
-              type: "invalid_request_error",
-              param: null,
-              code: "no_fixture_match",
-            },
-          }),
+        : renderError("openai", "fixture-miss", {
+            message: "No fixture matched",
+            type: "invalid_request_error",
+            param: null,
+            code: "no_fixture_match",
+            includeParam: true,
+          }).body,
     );
     return;
   }
 
   // Reuse the response already resolved by the OpenRouter fallback loop (so a
   // response factory is not invoked twice); otherwise resolve it now.
-  const response = preResolvedResponse ?? (await resolveResponse(fixture, body));
+  const resolvedResponse = preResolvedResponse ?? (await resolveResponse(fixture, body));
+  const evaluation = planMisbehavior({
+    wire: "openai-chat",
+    fixture,
+    response: resolvedResponse,
+    request: body,
+    stream: body.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (evaluation.kind === "error") {
+    const entry = journal.add({
+      method,
+      path,
+      headers: flatHeaders,
+      body,
+      response: { status: evaluation.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: evaluation.summary, defaults, testId });
+    if (!evaluation.summary?.evaluations.some((row) => row.outcome === "error")) {
+      defaults.logger.error(`${evaluation.code}: ${evaluation.message}`);
+    }
+
+    writeErrorResponse(
+      res,
+      evaluation.status,
+      openRouter
+        ? serializeOpenRouterError(evaluation.status, `${evaluation.code}: ${evaluation.message}`)
+        : renderError("openai", "misbehavior", {
+            message: evaluation.message,
+            type: "invalid_request_error",
+            param: null,
+            code: evaluation.code,
+            includeParam: true,
+          }).body,
+    );
+    return;
+  }
+  const appliedPlan =
+    evaluation.kind === "applied" ? prepareOpenAIChatMisbehavior(evaluation) : undefined;
+  const response = appliedPlan?.response ?? resolvedResponse;
+  const summary = appliedPlan?.summary ?? evaluation.summary;
+  // On Chat Completions the success branches journal first (so a coded 500
+  // keeps the fixture), then validate and build, and record the outcome only
+  // once the response is built: a fixture error thrown on the way is not a
+  // fault that was served. A non-stream reply records it before its timing
+  // wait (see commitNonStream). Anthropic Messages, Gemini and the Responses
+  // API do this on their applied-fault path only; their success branches
+  // record the outcome before validating and building.
+  const recordOutcome = (entry: JournalEntry): void => {
+    recordMisbehaviorOutcome({ entry, summary, defaults, testId });
+  };
+  // Resolve ordinary applied reasoning once, before usage and delivery, using
+  // the same strict/model gate as the selected response builder.
+  const appliedReasoning =
+    appliedPlan &&
+    appliedPlan.reasoning === undefined &&
+    (isTextResponse(response) ||
+      isToolCallResponse(response) ||
+      isCombinedFixtureResponse(response))
+      ? resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+          defaults.logger,
+        )
+      : undefined;
+  // Only the existing OpenRouter route exposes K9 reasoning. Use that same
+  // decision for full-output estimation, before any transport interruption.
+  const appliedUsage = appliedPlan
+    ? resolveOpenAIChatMisbehaviorUsage(
+        appliedPlan,
+        body,
+        appliedPlan.reasoning === undefined ? appliedReasoning !== undefined : openRouter,
+      )
+    : undefined;
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   // OpenRouter always accounts usage (cost) in the response, including as the
@@ -1017,7 +2417,48 @@ async function handleCompletions(
     overrides: ResponseOverrides | undefined,
     completionText: string,
   ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } =>
-    resolveUsage(overrides, streamingPromptText, completionText);
+    appliedUsage ?? resolveUsage(overrides, streamingPromptText, completionText);
+
+  // Non-streaming (`stream: false`) timing is opt-in per fixture: only a
+  // fixture with `nonStreamingTiming: true` (OpenAI chat only) or
+  // `nonStreamingTimingAllProviders: true`, AND an explicit `streamingProfile`
+  // or `recordedTimings`, delays the single JSON write, by the total a streamed
+  // reply at the same chunkSize would take. Without it the reply returns
+  // immediately. Bare `latency` / `--latency` is the gap between SSE chunks
+  // only and never delays this path. deliverJson owns the wait, which a client
+  // hang-up cancels. A K4 duplicate-id plan extends the recorded gaps.
+  const nonStreamingOpts = (payloadLength: number) => ({
+    surface: "openai-chat" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!appliedPlan?.duplicateId,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
+  const streamTiming = (frameCount: number) => ({
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: extendRecordedTimings(
+      fixture.recordedTimings,
+      frameCount,
+      !!appliedPlan?.duplicateId,
+    ),
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
+
+  // A built non-stream reply is committed to be served: record the outcome
+  // before deliverJson's timing wait, so the journal carries it while the reply
+  // waits. deliverJson journals a client that hangs up during the wait as a
+  // torn socket (status 0, interrupted, "client aborted"), as routeError does
+  // for one that hangs up before its body arrives, and then writes nothing.
+  const commitNonStream = async (
+    entry: JournalEntry,
+    reply: unknown,
+    payloadLength: number,
+  ): Promise<void> => {
+    recordOutcome(entry);
+    await deliverJson(res, entry, fixture, () => reply, nonStreamingOpts(payloadLength));
+  };
 
   // OpenRouter response shaping (no-op for OpenAI callers). Applied as a
   // post-pass over the objects the shared OpenAI builders produce so the
@@ -1028,6 +2469,7 @@ async function handleCompletions(
     completion: ChatCompletion,
     overrides: ResponseOverrides | undefined,
   ): ChatCompletion => {
+    if (appliedUsage) completion.usage = appliedUsage;
     if (!openRouter) return completion;
     return shapeOpenRouterCompletion(
       completion,
@@ -1050,16 +2492,38 @@ async function handleCompletions(
   // Opt-in `: OPENROUTER PROCESSING` keepalive comment lines (default off).
   const openRouterProcessing = !!(openRouter && fixture.openRouterProcessing);
 
+  // Raw passthrough (#549): the authored chunks or JSON, framed for this wire.
+  // OpenRouter requests get OpenRouter's error dialect.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "openai-chat",
+      stream: body.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: evaluation.summary,
+      errorWire: "openai",
+      openRouter,
+    });
+    return;
+  }
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
       response: { status, fixture },
     });
+    recordOutcome(entry);
     writeErrorResponse(
       res,
       status,
@@ -1075,13 +2539,14 @@ async function handleCompletions(
 
   // Audio responses are not supported on the chat completions endpoint
   if (isAudioResponse(response)) {
-    journal.add({
+    const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
       response: { status: 422, fixture },
     });
+    recordOutcome(entry);
     writeErrorResponse(
       res,
       422,
@@ -1090,47 +2555,121 @@ async function handleCompletions(
             422,
             "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
           )
-        : JSON.stringify({
-            error: {
-              message:
-                "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
-              type: "invalid_request_error",
-            },
-          }),
+        : renderError("openai", "validation", {
+            message:
+              "Audio responses are not supported on the chat completions endpoint. Use Gemini generateContent or a dedicated audio endpoint.",
+            type: "invalid_request_error",
+          }).body,
     );
     return;
   }
 
+  // Fault-specific terminals have distinct native message/delta shapes. Keep
+  // ordinary builders and their historical finishReason mapping unchanged.
+  if (
+    appliedPlan &&
+    isTextResponse(response) &&
+    (appliedPlan.stop === "refusal" ||
+      appliedPlan.stop === "content_filter" ||
+      appliedPlan.reasoning !== undefined)
+  ) {
+    const overrides = extractOverrides(response);
+    const entry = journal.add({
+      method,
+      path,
+      headers: flatHeaders,
+      body,
+      response: { status: 200, fixture },
+    });
+    // Safety net: the planner already skips a fixture with generated `files`
+    // (they have no Chat Completions projection), so it is never faulted.
+    // Reject here anyway, before any byte is written, if one gets through.
+    rejectGeneratedFiles(response, wire);
+    if (body.stream !== true) {
+      const completion =
+        appliedPlan.stop === "refusal"
+          ? buildOpenAIRefusalCompletion(
+              appliedPlan.refusal ?? "",
+              responseModel,
+              overrides,
+              body.messages,
+            )
+          : appliedPlan.stop === "content_filter"
+            ? buildOpenAIContentFilterCompletion(responseModel, overrides, body.messages)
+            : buildOpenAIReasoningCompletion(
+                appliedPlan.reasoning ?? "",
+                responseModel,
+                openRouter,
+                overrides,
+                body.messages,
+              );
+      await commitNonStream(
+        entry,
+        shapeORCompletion(completion, overrides),
+        misbehaviorPayloadLength(appliedPlan, appliedReasoning),
+      );
+    } else {
+      const chunks =
+        appliedPlan.stop === "refusal"
+          ? buildOpenAIRefusalChunks(appliedPlan.refusal ?? "", responseModel, chunkSize, overrides)
+          : appliedPlan.stop === "content_filter"
+            ? buildOpenAIContentFilterChunks(responseModel, overrides)
+            : buildOpenAIReasoningChunks(
+                appliedPlan.reasoning ?? "",
+                responseModel,
+                chunkSize,
+                openRouter,
+                overrides,
+              );
+      const usageChunk = emitStreamingUsage
+        ? buildUsageChunk(
+            chunks[0].id,
+            overrides?.model ?? responseModel,
+            chunks[0].created,
+            resolveStreamingUsageTokens(overrides, ""),
+            overrides?.systemFingerprint,
+          )
+        : undefined;
+      shapeORChunks(chunks, usageChunk, overrides);
+      recordOutcome(entry);
+      await deliverStream(
+        res,
+        entry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
+    }
+    return;
+  }
+
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       defaults.logger.warn(
         "webSearches in fixture response are not supported for Chat Completions API — ignoring",
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
-    // Resolve the ordered streaming blocks ONCE, BEFORE recording success in the
-    // journal. resolveFixtureBlocks validates and can throw on a malformed
-    // `blocks` array; doing it here (rather than inside the chunk builder AND a
-    // second time for the usage estimate, both of which previously ran AFTER
-    // journal.add) guarantees a malformed fixture never leaves a spurious
-    // status-200 journal entry. The single resolved array is reused for both
-    // chunk emission and the completion-token estimate — the builder re-normalizes
-    // it idempotently (a can't-fail pass on already-validated blocks), so this is
-    // the only resolution that can throw. Only the streaming path consumes blocks
-    // (the non-streaming builder ignores them), so gate on `stream` to leave the
-    // non-streaming path's behavior byte-identical.
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
+    // Validate authoritative blocks before recording success in either mode.
+    // Reuse their normalized payload for nonstream responses and usage estimates.
     const streaming = body.stream === true;
-    const streamingBlocks =
-      streaming && response.blocks && response.blocks.length > 0
-        ? resolveFixtureBlocks(response.blocks)
+    const blockOutcome =
+      response.blocks && response.blocks.length > 0
+        ? resolveFixtureBlockOutcome(response.blocks)
         : undefined;
     const journalEntry = journal.add({
       method: req.method ?? "POST",
@@ -1139,37 +2678,46 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
+    // A Responses-only custom tool call (customToolCalls / responsesBlocks) is
+    // rejected before any byte is written. It runs after journaling so the 500
+    // entry keeps the request body and the matched fixture (routeError amends
+    // it).
+    const toolCalls = requireEmittedFunctionToolCalls(response, wire);
+    // The same authoritative payload the streamed reply would carry: text
+    // content plus each tool call's name and arguments.
+    const completionText = blockOutcome
+      ? blockOutcome.content + blockOutcome.toolCalls.map((tc) => tc.name + tc.arguments).join("")
+      : (response.content ?? "") + toolCalls.map((tc) => tc.name + tc.arguments).join("");
     if (!streaming) {
       const completion = buildContentWithToolCallsCompletion(
-        response.content ?? "",
-        response.toolCalls ?? [],
+        blockOutcome?.content ?? response.content ?? "",
+        blockOutcome?.toolCalls ?? toolCalls,
         responseModel,
         effReasoning,
-        overrides,
+        blockOutcome
+          ? {
+              ...overrides,
+              finishReason:
+                overrides?.finishReason ?? (blockOutcome.hasToolCalls ? "tool_calls" : "stop"),
+            }
+          : overrides,
         body.messages,
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      const contentLength = (effReasoning?.length ?? 0) + completionText.length;
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildContentWithToolCallsChunks(
-        response.content ?? "",
-        response.toolCalls ?? [],
+        blockOutcome?.content ?? response.content ?? "",
+        blockOutcome?.toolCalls ?? toolCalls,
         responseModel,
         chunkSize,
         effReasoning,
         overrides,
-        streamingBlocks,
+        blockOutcome?.ordered,
       );
-      // Build usage chunk for stream_options.include_usage (always for OpenRouter).
-      // When the fixture is blocks-driven, the streamed text comes from the
-      // ordered blocks (content/toolCalls are ignored by the chunk builder), so
-      // the completion-token estimate must derive from the SAME block text —
-      // otherwise a blocks-only fixture reports ~1 completion token. Reuse the
-      // single pre-resolved `streamingBlocks` (no second resolveFixtureBlocks).
-      const completionText = streamingBlocks
-        ? streamingBlocks.map((b) => (b.type === "text" ? b.text : b.name + b.arguments)).join("")
-        : (response.content ?? "") +
-          (response.toolCalls ?? []).map((tc) => tc.name + tc.arguments).join("");
+      // Estimate usage from the same authoritative payload sent to the client.
       const usageChunk = emitStreamingUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",
@@ -1180,24 +2728,15 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      recordOutcome(journalEntry);
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -1210,13 +2749,18 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -1224,6 +2768,8 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
     if (body.stream !== true) {
       const completion = buildTextCompletion(
         response.content,
@@ -1232,8 +2778,8 @@ async function handleCompletions(
         overrides,
         body.messages,
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      const contentLength = (effReasoning?.length ?? 0) + response.content.length;
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildTextChunks(
         response.content,
@@ -1252,24 +2798,15 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      recordOutcome(journalEntry);
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
@@ -1282,13 +2819,18 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -1296,25 +2838,29 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    // Generated `files` have no Chat Completions projection: reject before any byte is written.
+    rejectGeneratedFiles(response, wire);
+    const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
+      const toolCallText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const completion = buildToolCallCompletion(
-        response.toolCalls,
+        toolCalls,
         responseModel,
         effReasoning,
         overrides,
         body.messages,
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+      const contentLength = (effReasoning?.length ?? 0) + toolCallText.length;
+      await commitNonStream(journalEntry, shapeORCompletion(completion, overrides), contentLength);
     } else {
       const chunks = buildToolCallChunks(
-        response.toolCalls,
+        toolCalls,
         responseModel,
         chunkSize,
         effReasoning,
         overrides,
       );
-      const completionText = response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      const completionText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = emitStreamingUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",
@@ -1325,47 +2871,37 @@ async function handleCompletions(
           )
         : undefined;
       shapeORChunks(chunks, usageChunk, overrides);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeSSEStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-        usageChunk,
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        openRouterProcessing,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      recordOutcome(journalEntry);
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        sseCodec({ done: true, usageChunk, openRouterProcessing }),
+        chunks,
+        streamTiming(chunks.length),
+      );
     }
     return;
   }
 
   // Fixture response matched no known type — guard against silent hang
-  journal.add({
+  const entry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? COMPLETIONS_PATH,
     headers: flattenHeaders(req.headers),
     body,
     response: { status: 500, fixture },
   });
+  recordOutcome(entry);
   writeErrorResponse(
     res,
     500,
     openRouter
       ? serializeOpenRouterError(500, "Fixture response did not match any known type")
-      : JSON.stringify({
-          error: {
-            message: "Fixture response did not match any known type",
-            type: "server_error",
-          },
-        }),
+      : renderError("openai", "unknown-response", {
+          message: "Fixture response did not match any known type",
+          type: "server_error",
+        }).body,
   );
 }
 
@@ -1373,6 +2909,8 @@ export interface ServiceFixtures {
   search: SearchFixture[];
   rerank: RerankFixture[];
   moderation: ModerationFixture[];
+  /** MCP fake blocks, handed off at start to the MCPMock serving each block's `mount` (F2). */
+  mcpFakes?: McpFakeSource[];
 }
 
 // NOTE: The fixtures array is read by reference on each request. Callers
@@ -1396,35 +2934,202 @@ export async function createServerWithResolvedAuth(
   mounts?: Array<{ path: string; handler: Mountable }>,
   serviceFixtures?: ServiceFixtures,
 ): Promise<ServerInstance> {
+  const logger = new Logger(options?.logLevel ?? "silent");
+  // Mounts-array rule (spec 5.2): one server-owned array for every use below.
+  // A caller's array is that array, so a later `LLMock.mount()` push is seen.
+  const mountList = mounts ?? [];
+  // F2: hand MCP fakes off before the mount loop; a bad input rejects start().
+  // A start that fails later takes the hand-off back, so a retry loads each
+  // block once.
+  const handOff =
+    serviceFixtures?.mcpFakes && serviceFixtures.mcpFakes.length > 0
+      ? handOffMcpFakes(mountList, serviceFixtures.mcpFakes, logger)
+      : null;
+  try {
+    return await startServer(
+      fixtures,
+      options,
+      resolvedAuth,
+      mountList,
+      logger,
+      serviceFixtures,
+      () => handOff?.commit(),
+    );
+  } catch (err) {
+    handOff?.undo();
+    throw err;
+  }
+}
+
+/**
+ * The journal as JSON. An entry names the caller's fixture; the JSON shows
+ * the fixture the request was served from (`Journal.servedFixture`): an
+ * extended server's view, with the held keys applied, or LLMock's
+ * per-addition copy with misbehavior enabled. The journal therefore reads as
+ * it did when the entries held those objects.
+ */
+function journalJson(entries: JournalEntry[], journal: Journal): string {
+  if (!entries.some((entry) => journal.servedFixture(entry) !== entry.response.fixture)) {
+    return JSON.stringify(entries);
+  }
+  return JSON.stringify(
+    entries.map((entry) => {
+      const fixture = entry.response.fixture;
+      let served = journal.servedFixture(entry);
+      if (served === fixture || !served) return entry;
+      // A view is rebuilt from its fixture, as the extended server reads it now.
+      const viewSource = responsesToolsViewSource(served);
+      if (viewSource !== served) served = responsesToolsExtendedView(viewSource);
+      return { ...entry, response: { ...entry.response, fixture: served } };
+    }),
+  );
+}
+
+/**
+ * The server of `createServerWithResolvedAuth`, after the MCP fakes hand-off.
+ * `commitHandOff` runs once the server listens; if it throws, the server is
+ * closed and start rejects.
+ */
+async function startServer(
+  fixtures: Fixture[],
+  options: MockServerOptions | undefined,
+  resolvedAuth: ResolvedInboundAuth,
+  mountList: MountList,
+  logger: Logger,
+  serviceFixtures: ServiceFixtures | undefined,
+  commitHandOff: () => void,
+): Promise<ServerInstance> {
+  const callerFixtures = fixtures;
+  // Keep raw entries in the caller's live array, assigning only absent identities.
+  let rawFixtureAddition = 0;
+  function ensureRawFixturePositions(): void {
+    const existingPositions = new Set(
+      callerFixtures
+        .map(getFixtureMisbehaviorPosition)
+        .filter((position) => position !== undefined),
+    );
+    for (const fixture of callerFixtures) {
+      if (getFixtureMisbehaviorPosition(fixture) !== undefined) continue;
+      let position: string;
+      do {
+        position = `createServer#${rawFixtureAddition++}`;
+      } while (existingPositions.has(position));
+      setFixtureMisbehaviorPosition(fixture, position);
+      existingPositions.add(position);
+    }
+  }
+  ensureRawFixturePositions();
+
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
-  const logger = new Logger(options?.logLevel ?? "silent");
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
-  // One randomizer per server. It owns the run's seed and the per-key
-  // occurrence counters, so two servers built with the same seed agree on every
-  // verdict and neither is disturbed by the other's traffic.
-  const chaosRandom = new ChaosRandomizer(serverOptions.chaos?.seed);
-
-  // Published whether or not chaos is configured: the run still has a seed, and
-  // a scrape of a red run is one of the places it has to be readable from.
-  registry?.setGauge("aimock_chaos_seed_info", { seed: chaosRandom.seed }, 1);
+  // Invalid JavaScript options warn even when ordinary server logging is silent.
+  parsePolicy(serverOptions.policy, (message) => new Logger("warn").warn(message));
+  // 1.44.0 ignored an unknown `responsesTools` option, so an invalid value is
+  // ignored with a warning (at any logLevel, as aimock --config warns) and the
+  // server runs in "legacy" mode.
+  const validResponsesTools = (mode: unknown): mode is ResponsesToolsMode =>
+    mode === "legacy" || mode === "extended";
+  if (
+    serverOptions.responsesTools !== undefined &&
+    !validResponsesTools(serverOptions.responsesTools)
+  ) {
+    new Logger("warn").warn(
+      `Ignoring responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}. Using "legacy".`,
+    );
+  }
+  // From here on the server reads and writes the caller's array through its
+  // own list, which carries this server's responsesTools mode (and, when
+  // "extended", each fixture's extended view). Nothing is written to the
+  // caller's fixtures for the mode, so servers that share them stay apart.
+  fixtures = createServerFixtureList(
+    callerFixtures,
+    () => serverOptions.responsesTools,
+    responsesToolsExtendedView,
+  );
+  // Runtime-mutable server chaos config. Reads fall through to the construction
+  // options until POST /__aimock/chaos installs an override, which is scoped to
+  // the caller's testId. The untagged baseline lives in the SAME map under
+  // DEFAULT_TEST_ID, so "drop the baseline" and "drop one test's override" are
+  // one operation and neither can accidentally take the other's overrides with
+  // it; only assigning `undefined` (a full reset) clears the map.
+  const chaosByTestId = new Map<string, ChaosConfig>();
+  let misbehaviorBaseline: MisbehaviorConfig | undefined;
+  const misbehavior: MisbehaviorScope = {
+    byTestId: new Map(),
+    // The default-ID override is the runtime baseline for every unnamed scope.
+    // Keep its construction/setter fallback separate so DELETE reveals it.
+    get baseline() {
+      return this.byTestId.get(DEFAULT_TEST_ID) ?? misbehaviorBaseline;
+    },
+    set baseline(config: MisbehaviorConfig | undefined) {
+      misbehaviorBaseline = config;
+      if (config === undefined) this.byTestId.delete(DEFAULT_TEST_ID);
+      else if (this.byTestId.has(DEFAULT_TEST_ID)) this.byTestId.set(DEFAULT_TEST_ID, config);
+    },
+  };
+  // Misbehavior is opt-in (enableMisbehavior). Without it there is no scope,
+  // so no fault is planned, and the `misbehavior` option, fixture keys and the
+  // X-AIMock-Misbehavior header are ignored, as in 1.44.0.
+  const misbehaviorEnabled = serverOptions.enableMisbehavior === true;
+  if (misbehaviorEnabled) callerFixtures.forEach(enableHeldFixtureMisbehavior);
+  if (misbehaviorEnabled && serverOptions.misbehavior !== undefined) {
+    const parsed = parseMisbehavior(serverOptions.misbehavior);
+    if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
+    misbehavior.baseline =
+      parsed.config.seed === "random"
+        ? { ...parsed.config, seed: resolveMisbehaviorSeed(parsed.config.seed, logger) }
+        : parsed.config;
+  }
 
   const defaults = {
     latency: serverOptions.latency ?? 0,
     chunkSize: Math.max(1, serverOptions.chunkSize ?? DEFAULT_CHUNK_SIZE),
     replaySpeed: serverOptions.replaySpeed ?? 1.0,
     logger,
-    get chaos() {
-      return serverOptions.chaos;
+    chaosByTestId,
+    misbehavior: misbehaviorEnabled ? misbehavior : undefined,
+    get misbehaviorCounters(): Journal {
+      return journal;
     },
-    chaosRandom,
+    // Handlers get a SCOPE, not a flat config: chaos.ts picks the override for
+    // the request's X-Test-Id and falls back to the baseline.
+    get chaos(): ChaosDefaults {
+      return {
+        base: chaosByTestId.get(DEFAULT_TEST_ID) ?? serverOptions.chaos,
+        byTestId: chaosByTestId,
+      };
+    },
+    // Assigning `undefined` drops EVERY runtime override instead of latching an
+    // empty one, so the construction-time chaos config is always recoverable
+    // (that is what `POST /__aimock/reset` does). `POST {}` still installs a
+    // real, empty override: "explicitly no chaos".
+    set chaos(value: ChaosDefaults | undefined) {
+      if (value === undefined) {
+        chaosByTestId.clear();
+        return;
+      }
+      const base = isChaosScope(value) ? value.base : value;
+      if (base === undefined) chaosByTestId.delete(DEFAULT_TEST_ID);
+      else chaosByTestId.set(DEFAULT_TEST_ID, base);
+    },
     registry,
     get record() {
       return serverOptions.record;
     },
     get strict() {
       return serverOptions.strict;
+    },
+    get policy() {
+      return serverOptions.policy;
+    },
+    get strictToolArguments() {
+      return serverOptions.strictToolArguments;
+    },
+    get responsesTools() {
+      const mode = serverOptions.responsesTools;
+      return validResponsesTools(mode) ? mode : undefined;
     },
     get requestTransform() {
       return serverOptions.requestTransform;
@@ -1446,30 +3151,22 @@ export async function createServerWithResolvedAuth(
     },
   };
 
-  // Validate chaos config rates
+  // Validate chaos defaults through the ONE chaos table, so what startup warns
+  // about is exactly what the runtime rejects (same fields, same bounds, same
+  // words). The hand-rolled range check this replaces said nothing for
+  // `latencyMs: 250.5`, which the runtime then rejected on every request.
   if (options?.chaos) {
-    const chaosRates = [
-      { name: "dropRate", value: options.chaos.dropRate },
-      { name: "malformedRate", value: options.chaos.malformedRate },
-      { name: "disconnectRate", value: options.chaos.disconnectRate },
-    ];
-    for (const { name, value } of chaosRates) {
-      if (value !== undefined && (value < 0 || value > 1)) {
-        logger.warn(`Chaos ${name} (${value}) is outside 0-1 range — will be clamped at runtime`);
-      }
-    }
-    const configuredSeed = options.chaos.seed;
-    if (configuredSeed !== undefined && normalizeChaosSeed(configuredSeed) === null) {
+    const chaosDefaults = options.chaos as Record<string, unknown>;
+    for (const field of CHAOS_FIELD_NAMES) {
+      const value = chaosDefaults[field];
+      if (value === undefined) continue;
+      // Typed config, like the control API's JSON body: a numeric string is a
+      // type error, not a wire spelling to be parsed.
+      if (typeof value === "number" && parseChaosField(field, value) !== undefined) continue;
+      const shape = CHAOS_FIELDS[field].integer ? "a whole number of ms" : "a number";
       logger.warn(
-        `Chaos seed ${JSON.stringify(configuredSeed)} is blank or cannot be reported ` +
-          `on a header, so a generated one is in use instead`,
+        `Chaos default ${field} value ${JSON.stringify(value)} — must be ${shape} in [0,${CHAOS_FIELDS[field].max}]; rejected at runtime, never clamped: this default is ignored`,
       );
-    }
-    // Announce the seed only when chaos can actually fire: on a server with
-    // every rate at zero it is noise, and the value is still readable from
-    // GET /__aimock/chaos and the metrics endpoint either way.
-    if (chaosRates.some(({ value }) => value !== undefined && value > 0)) {
-      logger.info(`Chaos seed: ${chaosRandom.seed} — pass it back as chaos.seed to replay`);
     }
   }
 
@@ -1551,46 +3248,367 @@ export async function createServerWithResolvedAuth(
     }
   }
 
+  /**
+   * The in-flight request, scoped to the async execution that serves it.
+   * Entered once in the `http.createServer` callback, so every handler —
+   * including the ones in other modules that only ever see the shared
+   * `journal` — runs inside it.
+   */
+  const requestScope = new AsyncLocalStorage<http.IncomingMessage>();
+  /** The journal entry each request produced, keyed by the request object. */
+  const ownJournalEntry = new WeakMap<http.IncomingMessage, JournalEntry>();
+
   // Programmatic default: finite caps so long-running embedders don't inherit
   // an unbounded journal / fixture-count map. Callers that need unbounded
   // retention (e.g. short-lived test harnesses) can opt in by passing 0.
   const journal = new Journal({
     maxEntries: options?.journalMaxEntries ?? 1000,
     fixtureCountsMaxTestIds: options?.fixtureCountsMaxTestIds ?? 500,
+    onAdd: (entry) => {
+      const req = requestScope.getStore();
+      if (req) ownJournalEntry.set(req, entry);
+    },
   });
+  // An extended server matches each fixture through its view; the journal
+  // counts and records the caller's fixture behind it, as before the views.
+  if (serverOptions.responsesTools === "extended") {
+    journal.configureFixtureViewSource(responsesToolsViewSource);
+  }
   const videoStates = new VideoStateMap();
   const openRouterVideoJobs = new OpenRouterVideoJobMap();
   const veoVideoJobs = new VeoVideoJobMap();
   const grokVideoJobs = new GrokVideoJobMap();
   const bytePlusVideoJobs = new BytePlusVideoJobMap();
 
-  // Share journal and metrics registry with mounted services
-  if (mounts) {
-    for (const { handler } of mounts) {
-      if (handler.setJournal) handler.setJournal(journal);
-      if (registry && handler.setRegistry) handler.setRegistry(registry);
+  /**
+   * The OpenAI error `type` that goes with a status: 4xx is the caller's
+   * fault, everything else is ours. Shared by `routeError` and the envelopes
+   * it calls so the body can never disagree with the status line.
+   */
+  function errorTypeForStatus(status: number): string {
+    return status >= 400 && status < 500 ? "invalid_request_error" : "server_error";
+  }
+
+  /**
+   * Envelope for a fixture error (see isFixtureToolCallError: invalid JSON
+   * arguments on an object wire, a custom tool call on a non-Responses wire, a
+   * malformed fixture tool call, generated `files` on a wire that cannot carry
+   * them, or a malformed fixture `citations` or `files` value). It is the
+   * provider envelope aimock emits for that route, with the aimock `code` in
+   * it: Google's
+   * `google.rpc.ErrorInfo` detail on Gemini and Vertex AI, a string
+   * `error.code` on Gemini Interactions and Anthropic Messages, a `reason`
+   * member on Bedrock (a `code` member would replace `__type` as the AWS SDK's
+   * error name), and a sibling `code` on Ollama's bare string error. Every
+   * other route, Cohere included, gets the OpenAI-style
+   * `{error: {message, type, code}}`. OpenRouter routes pass their own
+   * `toolCallEnvelope` instead of using this one.
+   */
+  function invalidToolArgumentsEnvelope(pathname: string, message: string, code: string): string {
+    if (pathname === OLLAMA_CHAT_PATH)
+      return renderError("ollama", "tool-argument", { message, code }).body;
+    if (pathname === GEMINI_INTERACTIONS_PATH) {
+      return renderError("interactions", "tool-argument", { message, code }).body;
     }
+    if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
+      return renderError("gemini", "tool-argument", {
+        message,
+        code,
+        googleDetails: googleFixtureToolCallErrorDetails(code),
+      }).body;
+    }
+    if (pathname === MESSAGES_PATH) {
+      return renderError("messages", "tool-argument", { message, code }).body;
+    }
+    if (
+      BEDROCK_INVOKE_RE.test(pathname) ||
+      BEDROCK_STREAM_RE.test(pathname) ||
+      BEDROCK_CONVERSE_RE.test(pathname) ||
+      BEDROCK_CONVERSE_STREAM_RE.test(pathname)
+    ) {
+      return renderError("bedrock", "tool-argument", { message, code }).body;
+    }
+    return renderError("openai", "tool-argument", { message, code }).body;
+  }
+
+  function invalidMisbehaviorHeaderEnvelope(pathname: string, detail: string): string {
+    const code = "aimock_misbehavior_invalid";
+    const message = `${code}: ${detail}`;
+    if (pathname === OLLAMA_CHAT_PATH || pathname === OLLAMA_GENERATE_PATH) {
+      return renderError("ollama", "invalid-misbehavior-header", { message, code }).body;
+    }
+    if (pathname === COHERE_CHAT_PATH)
+      return renderError("cohere", "invalid-misbehavior-header", { message, code }).body;
+    if (pathname === GEMINI_INTERACTIONS_PATH) {
+      return renderError("interactions", "invalid-misbehavior-header", { message, code }).body;
+    }
+    if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
+      return renderError("gemini", "invalid-misbehavior-header", { message, code }).body;
+    }
+    if (pathname === MESSAGES_PATH) {
+      return renderError("messages", "invalid-misbehavior-header", { message, code }).body;
+    }
+    if (
+      BEDROCK_INVOKE_RE.test(pathname) ||
+      BEDROCK_STREAM_RE.test(pathname) ||
+      BEDROCK_CONVERSE_RE.test(pathname) ||
+      BEDROCK_CONVERSE_STREAM_RE.test(pathname)
+    ) {
+      return renderError("bedrock", "invalid-misbehavior-header", { message, code }).body;
+    }
+    return renderError("openai", "invalid-misbehavior-header", { message, code }).body;
+  }
+
+  /**
+   * The newest journal entry this request already produced, or null.
+   *
+   * Attribution is by the identity of the `IncomingMessage` the entry was
+   * written under — never by `x-request-id`. That header is CALLER-supplied
+   * (`resolveRequestId` echoes a well-formed one) and nothing makes it
+   * unique: a retry, a harness that pins one id, or a load generator sends
+   * the same id on many requests, and keying off it made a crash rewrite an
+   * EARLIER request's entry while leaving the crashing request untraced. The
+   * request object cannot be collided by a caller, so one entry belongs to
+   * exactly one request. A handler writes at most one entry; if it writes
+   * more, the newest wins, which is the entry the old scan would have found.
+   */
+  function lastJournalEntryFor(req: http.IncomingMessage): JournalEntry | null {
+    return ownJournalEntry.get(req) ?? null;
+  }
+
+  /**
+   * Uniform terminal arm for a route handler that threw. Every route error
+   * path logs the route, journals the failure, sets CORS and answers the error
+   * envelope — so a handler crash is never invisible in the logs or in
+   * `/__aimock/journal`.
+   *
+   * ONE request produces ONE entry. `res.headersSent` is not the test for that:
+   * a handler that journaled its 200 and then threw before `writeHead` has
+   * sent no headers, and journaling again would leave two contradicting
+   * entries for one request. So the existing entry is looked up by request
+   * identity ({@link lastJournalEntryFor}) and AMENDED — status to what the
+   * client actually got when the response is still changeable, or interrupted
+   * when it isn't — and a fresh entry is
+   * added only when the handler journaled nothing. That holds after the
+   * response too: a handler that answered and then crashed before its own
+   * journal write gets an entry carrying the status already sent, so a
+   * post-response crash is never invisible.
+   *
+   * Once headers are on the wire the status can't change, so the socket is
+   * destroyed: a clean `end()` reads as EOF and the client treats a truncated
+   * stream as a complete response. The chat-style SSE routes whose clients
+   * surface an error frame pass `streamEvent`; that frame is written first,
+   * but the tear-down still follows it.
+   *
+   * A body that blew its size cap is the CALLER's fault, not a server fault:
+   * it logs at warn, but if the reader destroyed the socket it journals an
+   * interruption with status 0 because no 4xx reached the client. A client
+   * that hung up before its body arrived
+   * ({@link clientAbortedMidBody}) is not a fault at all: it logs at warn and
+   * journals a torn socket (`interrupted`, status 0), never a 500 the client
+   * could not have received.
+   */
+  function routeError(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    err: unknown,
+    pathname: string,
+    opts?: {
+      service?: string;
+      /**
+       * Provider-shaped error body. Takes the STATUS routeError settled on —
+       * a client-fault body cap answers 400, and an envelope that hardcoded
+       * 500 would contradict the status line it is sent with.
+       */
+      envelope?: (msg: string, status: number) => string;
+      /**
+       * Provider-shaped body for a fixture error (always a 500),
+       * carrying the aimock `code`. Defaults to the envelope the pathname
+       * implies ({@link invalidToolArgumentsEnvelope}).
+       */
+      toolCallEnvelope?: (msg: string, code: string) => string;
+      streamEvent?: (msg: string, status: number) => string;
+    },
+  ): void {
+    const route = `${req.method ?? "?"} ${pathname}`;
+    const msg = err instanceof Error ? err.message : "Internal error";
+    const invalidToolArguments = isFixtureToolCallError(err);
+    const clientFault = err instanceof RequestBodyTooLargeError;
+    const clientAbort = clientAbortedMidBody(req, res, err);
+    const status = clientFault ? 400 : 500;
+    if (clientAbort) logger.warn(`${route}: client aborted mid-body (${msg})`);
+    else if (clientFault) logger.warn(`${route}: ${msg}`);
+    else logger.error(`${route}: ${msg}`);
+    if (err instanceof Error && err.stack) logger.debug(err.stack);
+    const existing = lastJournalEntryFor(req);
+    const bodyLimitDisconnect = clientFault && (req.destroyed || res.destroyed);
+    if ((clientAbort || bodyLimitDisconnect) && !res.headersSent) {
+      const interruptReason = bodyLimitDisconnect
+        ? "request body exceeded size limit"
+        : CLIENT_ABORTED;
+      // Nothing reached the client and nothing crashed: the entry records a
+      // torn socket (status 0, same as chaos `disconnect` before headers), and
+      // there is no socket left to answer on.
+      if (existing) {
+        if (!existing.response.interrupted) {
+          existing.response.status = 0;
+          existing.response.interrupted = true;
+          existing.response.interruptReason = interruptReason;
+        }
+        return;
+      }
+      try {
+        journal.add({
+          method: req.method ?? "?",
+          path: req.url ?? "?",
+          headers: flattenHeaders(req.headers),
+          body: null,
+          ...(opts?.service ? { service: opts.service } : {}),
+          response: {
+            status: 0,
+            fixture: null,
+            source: "internal",
+            interrupted: true,
+            interruptReason,
+          },
+        });
+      } catch (jErr) {
+        logger.warn(
+          `${route}: journal write failed after body-read interruption: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+        );
+      }
+      return;
+    }
+    if (!res.headersSent) {
+      if (existing) {
+        // The handler's own entry, corrected to the status the client gets.
+        // `source`/`fixture` are left alone: they record what was going to
+        // serve this request, which the crash didn't change.
+        existing.response.status = status;
+        if (invalidToolArguments) existing.response.error = msg;
+      } else {
+        // Wrapped so journaling can never mask the error write below.
+        try {
+          journal.add({
+            method: req.method ?? "?",
+            path: req.url ?? "?",
+            headers: flattenHeaders(req.headers),
+            body: null,
+            ...(opts?.service ? { service: opts.service } : {}),
+            response: {
+              status,
+              fixture: null,
+              source: "internal",
+              ...(invalidToolArguments ? { error: msg } : {}),
+            },
+          });
+        } catch (jErr) {
+          logger.warn(
+            `${route}: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+          );
+        }
+      }
+      setCorsHeaders(res);
+      writeErrorResponse(
+        res,
+        status,
+        invalidToolArguments
+          ? (opts?.toolCallEnvelope ?? ((m, c) => invalidToolArgumentsEnvelope(pathname, m, c)))(
+              msg,
+              fixtureToolCallErrorCode(err),
+            )
+          : opts?.envelope
+            ? opts.envelope(msg, status)
+            : renderError("openai", "route-failure", {
+                message: msg,
+                type: errorTypeForStatus(status),
+              }).body,
+      );
+    } else {
+      // Headers are on the wire, so the status the client got is fixed. If the
+      // handler already journaled, mark its entry so the journal and the
+      // metrics finish hook agree with the torn socket instead of reporting a
+      // clean success. If it journaled nothing (it crashed on the way to
+      // journaling, after the response went out), ADD the entry now — a
+      // post-response crash must never leave a request without a trace.
+      //
+      // `interrupted` means the client did not get a complete body. Once
+      // `end()` has run it did, so a crash after that point is recorded in
+      // `error` with the status that was delivered, never as an interruption.
+      const midStreamReason = clientAbort ? CLIENT_ABORTED : "handler crashed mid-stream";
+      if (existing) {
+        if (res.writableEnded) {
+          if (existing.response.error === undefined) existing.response.error = msg;
+        } else if (!existing.response.interrupted) {
+          existing.response.interrupted = true;
+          existing.response.interruptReason = midStreamReason;
+        }
+      } else {
+        try {
+          journal.add({
+            method: req.method ?? "?",
+            path: req.url ?? "?",
+            headers: flattenHeaders(req.headers),
+            body: null,
+            ...(opts?.service ? { service: opts.service } : {}),
+            response: {
+              status: res.statusCode,
+              fixture: null,
+              source: "internal",
+              ...(res.writableEnded
+                ? { error: msg }
+                : { interrupted: true, interruptReason: midStreamReason }),
+            },
+          });
+        } catch (jErr) {
+          logger.warn(
+            `${route}: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+          );
+        }
+      }
+      // A response that already completed has nothing left to tear down.
+      if (res.writableEnded) return;
+      if (opts?.streamEvent) {
+        try {
+          // Destroy once the frame is flushed — written, then torn down, never
+          // ended cleanly.
+          res.write(opts.streamEvent(msg, status), () => {
+            if (!res.destroyed) res.destroy();
+          });
+        } catch (writeErr) {
+          logger.debug("Failed to write error recovery response:", writeErr);
+          res.destroy();
+        }
+      } else {
+        res.destroy();
+      }
+    }
+  }
+
+  // Share journal and metrics registry with mounted services
+  for (const { handler } of mountList) {
+    if (handler.setJournal) handler.setJournal(journal);
+    if (registry && handler.setRegistry) handler.setRegistry(registry);
+    if (handler.setLogger) handler.setLogger(logger);
+    // B11/R12: only aimock's own MCPMock takes the replay speed; a custom
+    // Mountable is never called (1.44.0 had no such hook).
+    if (handler instanceof MCPMock) handler.setReplaySpeed(defaults.replaySpeed);
   }
 
   // Set initial fixtures-loaded gauge
   if (registry) {
     registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
-
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
-    // Delegate to async handler — catch unhandled rejections to prevent Node.js crashes
-    handleHttpRequest(req, res).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : "Internal error";
-      const stack = err instanceof Error ? (err.stack ?? msg) : msg;
-      const method = req.method ?? "?";
-      const url = req.url ?? "?";
-      defaults.logger.warn(`Unhandled request error on ${method} ${url}: ${msg}\n${stack}`);
-      if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: { message: msg, type: "server_error" } }));
-      } else if (!res.writableEnded) {
-        res.end();
-      }
+    // Delegate to async handler — catch unhandled rejections to prevent Node.js crashes.
+    // Run inside the request scope so every journal write made while serving
+    // this request (in any handler module) is attributed back to it.
+    requestScope.run(req, () => {
+      runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
+        handleHttpRequest(req, res).catch((err: unknown) => {
+          routeError(req, res, err, req.url ?? "?");
+        }),
+      );
     });
   });
 
@@ -1601,9 +3619,104 @@ export async function createServerWithResolvedAuth(
     // Record start time for metrics
     const startTime = registry ? process.hrtime.bigint() : 0n;
 
+    // Request-id propagation: echo a well-formed caller id, else mint one.
+    // Normalized back onto `req.headers` so every downstream
+    // `flattenHeaders` journal snapshot carries it with zero per-handler
+    // edits, and echoed on the response for trace correlation. A MINTED id is
+    // aimock's own invention and must never reach a real provider, so the
+    // provenance is marked for `buildForwardHeaders` to strip on egress; a
+    // caller-supplied id is the caller's header and forwards untouched.
+    const { id: requestId, generated: requestIdMinted } = resolveRequestId(req.headers);
+    req.headers["x-request-id"] = requestId;
+    markMintedRequestId(req, requestIdMinted);
+    res.setHeader("X-Request-Id", requestId);
+
+    let pathname = "";
+
+    // Instrument response completion for metrics. The callbacks read pathname
+    // via closure after normalizeCompatPath has rewritten it, so metrics
+    // record the canonical /v1/... path. Registered BEFORE the URL is parsed:
+    // a request whose target or `Host` header will not parse is answered 400,
+    // and hooking after the parse would leave that response
+    // uncounted. It reaches `normalizePathLabel` with the empty pre-parse
+    // pathname and lands in `{unknown}`, like every other pre-routing reject.
+    //
+    // Two terminal events, one count. `finish` fires only when the body was
+    // ended; a response torn down by `res.destroy()` — the `disconnect` chaos
+    // action, a body-cap reset, a catch-arm teardown — never finishes and only
+    // ever emits `close`. Those were invisible to `/metrics`, so the request
+    // total under-counted by exactly the failures worth watching. `close`
+    // also follows every `finish`, hence the guard: a normal response counts
+    // once, under its status; a destroyed one counts once, as `destroyed`.
+    if (registry) {
+      let recorded = false;
+      const recordOutcome = (status: string): void => {
+        if (recorded) return;
+        recorded = true;
+        try {
+          // Read the mount table at record time, not at start: `LLMock.mount()`
+          // after `start()` pushes onto this same array, and a snapshot taken
+          // here at startup labelled that (correctly routed) traffic `{unknown}`.
+          const normalizedPath = normalizePathLabel(
+            pathname,
+            mountList.map((m) => m.path),
+          );
+          const method = req.method ?? "UNKNOWN";
+          registry.incrementCounter("aimock_requests_total", {
+            method,
+            path: normalizedPath,
+            status,
+          });
+          const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
+          registry.observeHistogram(
+            "aimock_request_duration_seconds",
+            { method, path: normalizedPath },
+            elapsed,
+          );
+        } catch (err) {
+          defaults.logger.warn("metrics instrumentation error", err);
+        }
+      };
+      res.on("finish", () => recordOutcome(String(res.statusCode)));
+      res.on("close", () => {
+        if (!res.writableFinished) recordOutcome(DESTROYED_STATUS_LABEL);
+      });
+    }
+
     // Parse the URL pathname (strip query string)
-    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    let pathname = parsedUrl.pathname;
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    } catch (err: unknown) {
+      const route = `${req.method ?? "?"} ${req.url ?? "?"}`;
+      const msg = err instanceof Error ? err.message : "Internal error";
+      logger.error(`${route}: ${msg}`);
+      if (err instanceof Error && err.stack) logger.debug(err.stack);
+      try {
+        journal.add({
+          method: req.method ?? "?",
+          path: req.url ?? "?",
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 400, fixture: null, source: "internal" },
+        });
+      } catch (jErr) {
+        logger.warn(
+          `${route}: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+        );
+      }
+      setCorsHeaders(res);
+      writeErrorResponse(
+        res,
+        400,
+        renderError("openai", "route-failure", {
+          message: "Invalid request target",
+          type: "invalid_request_error",
+        }).body,
+      );
+      return;
+    }
+    pathname = parsedUrl.pathname;
     // Capture the ORIGINAL path before normalizeCompatPath rewrites it — the
     // OpenRouter `/api/v1/` base is the detection signal and would otherwise be
     // erased (`/api/v1/chat/completions` → `/v1/chat/completions`).
@@ -1620,32 +3733,6 @@ export async function createServerWithResolvedAuth(
     const isBytePlusArk =
       defaults.record?.providers.byteplus !== undefined && originalPathname.startsWith("/api/v3/");
 
-    // Instrument response completion for metrics. The finish callback reads
-    // pathname via closure after normalizeCompatPath has rewritten it, so
-    // metrics record the canonical /v1/... path.
-    if (registry) {
-      res.on("finish", () => {
-        try {
-          const normalizedPath = normalizePathLabel(pathname);
-          const method = req.method ?? "UNKNOWN";
-          const status = String(res.statusCode);
-          registry.incrementCounter("aimock_requests_total", {
-            method,
-            path: normalizedPath,
-            status,
-          });
-          const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
-          registry.observeHistogram(
-            "aimock_request_duration_seconds",
-            { method, path: normalizedPath },
-            elapsed,
-          );
-        } catch (err) {
-          defaults.logger.warn("metrics instrumentation error", err);
-        }
-      });
-    }
-
     // Browser CORS preflights do not carry application credentials. A bare
     // OPTIONS is still a route request and must pass the normal auth boundary.
     if (
@@ -1660,10 +3747,15 @@ export async function createServerWithResolvedAuth(
 
     const isPublicProbe =
       req.method === "GET" &&
-      (pathname === HEALTH_PATH || pathname === READY_PATH || pathname === "/metrics");
+      (pathname === HEALTH_PATH || pathname === READY_PATH || pathname === METRICS_PATH);
     if (!isPublicProbe) {
       if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
-        writeApiKeyHttpRejection(res, setCorsHeaders);
+        writeApiKeyHttpRejection(
+          res,
+          setCorsHeaders,
+          pathname,
+          resolvePolicy(defaults, req.headers).authErrors,
+        );
         return;
       }
       markAuthenticatedRequest(req, resolvedAuth.policy);
@@ -1671,10 +3763,12 @@ export async function createServerWithResolvedAuth(
 
     // Control API — must be checked before mounts and path rewrites
     if (pathname.startsWith(CONTROL_PREFIX)) {
+      ensureRawFixturePositions();
       await handleControlAPI(
         req,
         res,
         pathname,
+        parsedUrl.searchParams,
         fixtures,
         journal,
         videoStates,
@@ -1683,28 +3777,44 @@ export async function createServerWithResolvedAuth(
         grokVideoJobs,
         bytePlusVideoJobs,
         defaults,
+        mountList,
+      );
+      return;
+    }
+
+    // Validate the entire Node-normalized value before any provider can serve
+    // or skip unsupported faults. Repeated fields must parse as one grammar;
+    // never select only the first value. Keep valid headers intact for planning.
+    const misbehaviorHeader = defaults.misbehavior
+      ? parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"])
+      : undefined;
+    if (misbehaviorHeader && !misbehaviorHeader.ok) {
+      const detail = misbehaviorHeader.issue.message;
+      const message = `aimock_misbehavior_invalid: ${detail}`;
+      logger.error(`${req.method ?? "?"} ${pathname}: ${message}`);
+      journal.add({
+        method: req.method ?? "?",
+        path: req.url ?? pathname,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null, source: "internal", error: message },
+      });
+      setCorsHeaders(res);
+      writeErrorResponse(
+        res,
+        400,
+        invalidMisbehaviorHeaderEnvelope(normalizeCompatPath(pathname), detail),
       );
       return;
     }
 
     // Dispatch to mounted services before any path rewrites
-    if (mounts) {
-      for (const { path: mountPath, handler } of mounts) {
-        if (pathname === mountPath || pathname.startsWith(mountPath + "/")) {
-          const subPath = pathname.slice(mountPath.length) || "/";
-          const handled = await handler.handleRequest(req, res, subPath);
-          if (handled) return;
-        }
+    for (const { path: mountPath, handler } of mountList) {
+      if (pathname === mountPath || pathname.startsWith(mountPath + "/")) {
+        const subPath = pathname.slice(mountPath.length) || "/";
+        const handled = await handler.handleRequest(req, res, subPath);
+        if (handled) return;
       }
-    }
-
-    // Lifecycle requests can carry bodies too; preserve their wire identity.
-    if (
-      (req.method === "GET" || req.method === "DELETE") &&
-      (req.headers["content-length"] !== undefined ||
-        req.headers["transfer-encoding"] !== undefined)
-    ) {
-      await readBody(req);
     }
 
     // Ollama /api/* routes must be dispatched BEFORE normalizeCompatPath, which
@@ -1718,18 +3828,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -1737,18 +3839,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -1759,41 +3853,19 @@ export async function createServerWithResolvedAuth(
     ) {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllamaEmbeddings(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
 
     if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
-      }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const models = ids.map((name) => ({
-        name,
-        model: name,
-        modified_at: new Date().toISOString(),
-        size: 0,
-        digest: "",
-        details: {},
-      }));
+      const body = renderOllamaTags(collect(fixtures, "all").ids, () => new Date().toISOString());
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ models }));
+      res.end(JSON.stringify(body));
       return;
     }
 
@@ -1817,34 +3889,7 @@ export async function createServerWithResolvedAuth(
           openRouterVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`openrouter-video content: ${msg}`);
-        if (!res.headersSent) {
-          // Journal the failed request so it isn't invisible to consumers —
-          // guarded on headersSent so a throw after a successful journal +
-          // response does not double-journal. Wrapped so journaling can
-          // never mask the 500 write below.
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `openrouter-video content: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -1853,36 +3898,10 @@ export async function createServerWithResolvedAuth(
     // status RE, whose [^/]+ segment would otherwise capture "models")
     if (pathname === OPENROUTER_VIDEO_MODELS_PATH && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleOpenRouterVideoModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`openrouter-video models: ${msg}`);
-        if (!res.headersSent) {
-          // Journal the failed request so it isn't invisible to consumers —
-          // guarded on headersSent so a throw after a successful journal +
-          // response does not double-journal. Wrapped so journaling can
-          // never mask the 500 write below.
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `openrouter-video models: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -1891,6 +3910,7 @@ export async function createServerWithResolvedAuth(
     const openRouterVideoStatusMatch = pathname.match(OPENROUTER_VIDEO_STATUS_RE);
     if (openRouterVideoStatusMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleOpenRouterVideoStatus(
           req,
           res,
@@ -1902,39 +3922,12 @@ export async function createServerWithResolvedAuth(
           openRouterVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`openrouter-video status: ${msg}`);
-        if (!res.headersSent) {
-          // Journal the failed request so it isn't invisible to consumers —
-          // guarded on headersSent so a throw after a successful journal +
-          // response does not double-journal. Wrapped so journaling can
-          // never mask the 500 write below.
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `openrouter-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
 
-    // POST /api/v1/videos — submit a video generation job
+    // POST /api/v1/videos — submit a video generation job (202 Accepted)
     if (pathname === OPENROUTER_VIDEOS_PATH && req.method === "POST") {
       // CORS headers before the body is read: a readBody throw (e.g. the
       // body-size cap) lands in the catch below, which must not write a 500
@@ -1943,6 +3936,7 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOpenRouterVideoCreate(
           req,
           res,
@@ -1954,39 +3948,7 @@ export async function createServerWithResolvedAuth(
           openRouterVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`openrouter-video submit: ${msg}`);
-        if (!res.headersSent) {
-          // Journal the failed request so it isn't invisible to consumers —
-          // on submit a throw may have already consumed a fixture-sequence
-          // slot, which would otherwise leave no trace. Guarded on
-          // headersSent so a throw after a successful journal + response
-          // does not double-journal (the guard only covers post-write
-          // throws — a throw between the handler's journal.add and its
-          // writeHead would still double-journal, though that window is
-          // effectively throw-free today). Wrapped so journaling can never
-          // mask the 500 write below.
-          try {
-            journal.add({
-              method: req.method ?? "POST",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `openrouter-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2007,6 +3969,7 @@ export async function createServerWithResolvedAuth(
     const bytePlusVideoStatusMatch = pathname.match(BYTEPLUS_VIDEO_STATUS_RE);
     if (bytePlusVideoStatusMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleBytePlusVideoStatus(
           req,
           res,
@@ -2018,30 +3981,7 @@ export async function createServerWithResolvedAuth(
           bytePlusVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`byteplus-video status: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `byteplus-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2050,6 +3990,7 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBytePlusVideoCreate(
           req,
           res,
@@ -2061,30 +4002,21 @@ export async function createServerWithResolvedAuth(
           bytePlusVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`byteplus-video submit: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "POST",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `byteplus-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
+      }
+      return;
+    }
+
+    // BytePlus Seed Speech TTS (voice.*.bytepluses.com). Same pre-rewrite
+    // band as the Ark video routes above, for the same reason.
+    if (pathname === BYTEPLUS_TTS_PATH && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const body = await readBodyBuffer(req, AUDIO_PIPELINE_MAX_BODY_BYTES);
+        ensureRawFixturePositions();
+        await handleAudioPipeline("byteplus-tts", req, res, body, fixtures, defaults, journal);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "byteplus-speech" });
       }
       return;
     }
@@ -2093,15 +4025,16 @@ export async function createServerWithResolvedAuth(
     // (which does not rewrite these — /models etc. are excluded from
     // COMPAT_SUFFIXES — so they would otherwise 404), mirroring the
     // /api/v1/videos ordering above. Read-only metadata; no body.
-    if (pathname === "/api/v1/models" && req.method === "GET") {
+    if (pathname === OPENROUTER_MODELS_PATH && req.method === "GET") {
+      ensureRawFixturePositions();
       handleOpenRouterModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       return;
     }
-    if (pathname === "/api/v1/key" && req.method === "GET") {
+    if (pathname === OPENROUTER_KEY_PATH && req.method === "GET") {
       handleOpenRouterKey(req, res, journal, setCorsHeaders);
       return;
     }
-    if (pathname === "/api/v1/credits" && req.method === "GET") {
+    if (pathname === OPENROUTER_CREDITS_PATH && req.method === "GET") {
       handleOpenRouterCredits(req, res, journal, setCorsHeaders);
       return;
     }
@@ -2124,11 +4057,11 @@ export async function createServerWithResolvedAuth(
     // Health / readiness probes
     if (pathname === HEALTH_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      if (mounts && mounts.length > 0) {
+      if (mountList.length > 0) {
         const services: Record<string, unknown> = {
           llm: { status: "ok", fixtures: fixtures.length },
         };
-        for (const { path: mountPath, handler } of mounts) {
+        for (const { path: mountPath, handler } of mountList) {
           if (handler.health) {
             const name = mountPath.replace(/^\//, "");
             services[name] = handler.health();
@@ -2151,7 +4084,7 @@ export async function createServerWithResolvedAuth(
     }
 
     // Prometheus metrics
-    if (pathname === "/metrics" && req.method === "GET") {
+    if (pathname === METRICS_PATH && req.method === "GET") {
       if (!registry) {
         handleNotFound(res, "Not found");
         return;
@@ -2162,24 +4095,502 @@ export async function createServerWithResolvedAuth(
       return;
     }
 
-    // Models listing
-    if (pathname === MODELS_PATH && req.method === "GET") {
+    // Catalog GETs are synthesized in every mode, without journal or egress.
+    const modelDetailMatch = pathname.match(MODELS_DETAIL_RE);
+    const geminiModelDetailMatch = pathname.match(GEMINI_MODEL_DETAIL_RE);
+    if (
+      req.method === "GET" &&
+      (pathname === MODELS_PATH ||
+        pathname === GEMINI_MODELS_PATH ||
+        modelDetailMatch ||
+        geminiModelDetailMatch)
+    ) {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
+      const google = pathname === GEMINI_MODELS_PATH || geminiModelDetailMatch !== null;
+      const policy = resolvePolicy(defaults, req.headers);
+      // The 1.45 list route stays OpenAI-format unless opted in; the newer detail route
+      // selects its dialect from the request headers.
+      const anthropic =
+        !google &&
+        (modelDetailMatch !== null || policy.modelCatalog === "native") &&
+        isAnthropicModelRequest(req.headers);
+      const missingHeader =
+        anthropic && policy.requiredHeaders === "enforce"
+          ? missingRequiredHeader("messages", req.headers)
+          : undefined;
+      if (missingHeader) {
+        writeErrorResponse(
+          res,
+          400,
+          renderError("messages", "thinking", {
+            message: `${missingHeader}: header is required`,
+            requestId,
+          }).body,
+        );
+        return;
       }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const data = ids.map((id) => ({
-        id,
-        object: "model" as const,
-        created: 1686935002,
-        owned_by: "aimock",
-      }));
+      const ids = coreModelIds(collect(fixtures, "all").ids);
+      const visible = google ? idsFor(ids, "google") : anthropic ? idsFor(ids, "anthropic") : ids;
+      const catalogError = (status: number, message: string): void => {
+        const rendered = google
+          ? renderError("gemini", "fixture", {
+              bodyCode: status,
+              status: status === 404 ? "NOT_FOUND" : "INVALID_ARGUMENT",
+              message,
+            })
+          : anthropic
+            ? renderError("messages", "thinking", {
+                type: status === 404 ? "not_found_error" : "invalid_request_error",
+                message,
+              })
+            : renderError("openai", "validation", { message });
+        res.writeHead(status, { "Content-Type": "application/json", ...rendered.headers });
+        res.end(rendered.body);
+      };
+      let body: unknown;
+      const detail = modelDetailMatch ?? geminiModelDetailMatch;
+      if (detail) {
+        let id: string;
+        try {
+          id = decodeURIComponent(detail[1]);
+        } catch {
+          catalogError(404, "Model not found");
+          return;
+        }
+        if (!visible.includes(id)) {
+          catalogError(404, `Model not found: ${id}`);
+          return;
+        }
+        body = google
+          ? renderGeminiModel(id)
+          : anthropic
+            ? renderAnthropicModel(id)
+            : renderOpenAIModel(id);
+      } else if (google) {
+        const result = geminiPage(visible, parsedUrl.searchParams);
+        if (result.error !== undefined) {
+          catalogError(400, result.error);
+          return;
+        }
+        body = renderGeminiModels(result.page);
+      } else if (anthropic) {
+        const result = anthropicPage(visible, parsedUrl.searchParams);
+        if (result.error !== undefined) {
+          catalogError(400, result.error);
+          return;
+        }
+        body = renderAnthropicModels(result.page);
+      } else {
+        body = renderOpenAIModels(ids);
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ object: "list", data }));
+      res.end(JSON.stringify(body));
+      return;
+    }
+
+    // Batches API — cancel RE before id RE (the id RE would swallow /cancel).
+    // Cancel takes no payload — the `openai` SDK posts an empty body — but the
+    // body is still read, and discarded, before the handler runs. Reading it is
+    // what applies `readBody`'s 10 MB ceiling: a POST route that never touches
+    // the stream lets node quietly dump whatever the client sends, so this one
+    // route would accept an unbounded upload while the create route beside it
+    // (the sibling pattern followed here, down to the error arm) rejects the
+    // same bytes.
+    const batchesCancelMatch = pathname.match(BATCHES_CANCEL_RE);
+    if (batchesCancelMatch && req.method === "POST") {
+      try {
+        await readBody(req);
+        await handleBatchesCancel(
+          req,
+          res,
+          batchesCancelMatch[1],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "batches" });
+      }
+      return;
+    }
+    const batchesIdMatch = pathname.match(BATCHES_ID_RE);
+    if (batchesIdMatch && req.method === "GET") {
+      try {
+        await handleBatchesRetrieve(req, res, batchesIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "batches" });
+      }
+      return;
+    }
+    if (pathname === BATCHES_PATH && req.method === "GET") {
+      try {
+        await handleBatchesList(req, res, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "batches" });
+      }
+      return;
+    }
+    if (pathname === BATCHES_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleBatchesCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: "batches",
+        });
+      }
+      return;
+    }
+
+    // Files API mock — dispatch order matters: content RE → id RE → collection.
+    // The id RE's `[^/]+` would otherwise swallow `/content`, and the
+    // collection exact match must not claim an id path.
+    //
+    // Every branch is method-guarded, so an unhandled method on a files path
+    // (`PATCH /v1/files/{id}`, and also `HEAD`, which nothing here implements)
+    // falls through to the shared 404. That is this server's convention, not a
+    // files-specific gap: there is no `405` anywhere in this file, the BytePlus
+    // block above documents the same fallthrough by name, and measured against
+    // a live server `HEAD /health` and `PATCH /v1/models` answer 404 exactly
+    // like their files equivalents. Answering 405 + `Allow` here — or serving
+    // HEAD — would make files the only surface in the mock that behaves that
+    // way, which is a bigger inconsistency than the one it fixes. Changing it
+    // is a server-wide change and belongs in its own pass.
+    const filesContentMatch = pathname.match(FILES_CONTENT_RE);
+    if (filesContentMatch && req.method === "GET") {
+      try {
+        await handleFilesContent(req, res, filesContentMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "files" });
+      }
+      return;
+    }
+    const filesIdMatch = pathname.match(FILES_ID_RE);
+    if (filesIdMatch && req.method === "GET") {
+      try {
+        await handleFilesRetrieve(req, res, filesIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "files" });
+      }
+      return;
+    }
+    if (filesIdMatch && req.method === "DELETE") {
+      try {
+        await handleFilesDelete(req, res, filesIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "files" });
+      }
+      return;
+    }
+    if (pathname === FILES_PATH && req.method === "GET") {
+      // `purpose` is NOT read here. It used to be, with `searchParams.get`,
+      // which silently first-wins a repeat and hands `""` through for
+      // `?purpose=`; the files module reads all four list parameters itself so
+      // one rule covers them all.
+      try {
+        await handleFilesList(req, res, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "files" });
+      }
+      return;
+    }
+    if (pathname === FILES_PATH && req.method === "POST") {
+      try {
+        // A Buffer, not readBody's string: a multipart upload can carry
+        // arbitrary binary and a utf8 decode here would corrupt it before
+        // files.ts ever sees the bytes. Every other route keeps using readBody
+        // unchanged.
+        //
+        // Bounded, not readBodyBuffer: this route must answer a
+        // 400 for a body that is *over* its content cap, and readBodyBuffer's
+        // only answer to over-size is destroying the socket — which the caller
+        // reads as ECONNRESET, with no status and no CORS. Here the bound is
+        // on memory, not on the socket. See the constants' doc comments.
+        const body = await readBodyBufferBounded(
+          req,
+          FILES_BODY_MAX_BYTES,
+          FILES_BODY_DRAIN_MAX_BYTES,
+        );
+        await handleFilesCreate(
+          req,
+          res,
+          body.buffer ?? FILES_BODY_OVERSIZED,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: "files",
+        });
+      }
+      return;
+    }
+
+    // Fine-tuning jobs — cancel/events REs before id RE.
+    // Cancel takes no payload — the `openai` SDK posts an empty body — but the
+    // body is still read, and discarded, before the handler runs. Reading it is
+    // what applies `readBody`'s 10 MB ceiling: a POST route that never touches
+    // the stream lets node quietly dump whatever the client sends, so this one
+    // route would accept an unbounded upload while the create route beside it
+    // (the sibling pattern followed here, down to the error arm) rejects the
+    // same bytes.
+    const ftCancelMatch = pathname.match(FINE_TUNING_CANCEL_RE);
+    if (ftCancelMatch && req.method === "POST") {
+      try {
+        await readBody(req);
+        await handleFineTuningCancel(req, res, ftCancelMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: "fine-tuning",
+        });
+      }
+      return;
+    }
+    const ftEventsMatch = pathname.match(FINE_TUNING_EVENTS_RE);
+    if (ftEventsMatch && req.method === "GET") {
+      try {
+        await handleFineTuningEvents(req, res, ftEventsMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "fine-tuning" });
+      }
+      return;
+    }
+    const ftIdMatch = pathname.match(FINE_TUNING_ID_RE);
+    if (ftIdMatch && req.method === "GET") {
+      try {
+        await handleFineTuningRetrieve(req, res, ftIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "fine-tuning" });
+      }
+      return;
+    }
+    if (pathname === FINE_TUNING_JOBS_PATH && req.method === "GET") {
+      try {
+        await handleFineTuningList(req, res, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "fine-tuning" });
+      }
+      return;
+    }
+    if (pathname === FINE_TUNING_JOBS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleFineTuningCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: "fine-tuning",
+        });
+      }
+      return;
+    }
+
+    // Vector Stores — most-specific REs before the id RE, collection last.
+    // The id RE's `[^/]+` would otherwise swallow `/files`, `/search` and
+    // the file-batch suffixes, and the collection exact match must not claim
+    // an id path. Every branch is method-guarded so unhandled methods fall
+    // through to the shared 404, the server-wide convention (see the files
+    // block above).
+    const vsSearchMatch = pathname.match(VECTOR_STORES_SEARCH_RE);
+    if (vsSearchMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresSearch(
+          req,
+          res,
+          vsSearchMatch[1],
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchFilesMatch = pathname.match(VECTOR_STORES_BATCH_FILES_RE);
+    if (vsBatchFilesMatch && req.method === "GET") {
+      try {
+        await handleVectorFileBatchesFiles(
+          req,
+          res,
+          vsBatchFilesMatch[1],
+          vsBatchFilesMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchCancelMatch = pathname.match(VECTOR_STORES_BATCH_CANCEL_RE);
+    if (vsBatchCancelMatch && req.method === "POST") {
+      try {
+        await readBody(req);
+        await handleVectorFileBatchesCancel(
+          req,
+          res,
+          vsBatchCancelMatch[1],
+          vsBatchCancelMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchMatch = pathname.match(VECTOR_STORES_BATCH_RE);
+    if (vsBatchMatch && req.method === "GET") {
+      try {
+        await handleVectorFileBatchesRetrieve(
+          req,
+          res,
+          vsBatchMatch[1],
+          vsBatchMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsFileMatch = pathname.match(VECTOR_STORES_FILE_RE);
+    if (vsFileMatch && req.method === "GET") {
+      try {
+        await handleVectorStoreFilesRetrieve(
+          req,
+          res,
+          vsFileMatch[1],
+          vsFileMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsFileMatch && req.method === "DELETE") {
+      try {
+        await handleVectorStoreFilesDelete(
+          req,
+          res,
+          vsFileMatch[1],
+          vsFileMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    // Note: VECTOR_STORES_ID_RE only matches the exact 3-segment id path,
+    // so it can never swallow the /files, /search or /file_batches suffixes
+    // handled above — no extra depth guards needed.
+    const vsIdMatch = pathname.match(VECTOR_STORES_ID_RE);
+    if (vsIdMatch && req.method === "GET") {
+      try {
+        await handleVectorStoresRetrieve(req, res, vsIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsIdMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresModify(
+          req,
+          res,
+          vsIdMatch[1],
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsIdMatch && req.method === "DELETE") {
+      try {
+        await handleVectorStoresDelete(req, res, vsIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILES_RE.test(pathname) && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        const storeId = pathname.split("/")[3];
+        await handleVectorStoreFilesCreate(
+          req,
+          res,
+          storeId,
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILES_RE.test(pathname) && req.method === "GET") {
+      try {
+        const storeId = pathname.split("/")[3];
+        await handleVectorStoreFilesList(req, res, storeId, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILE_BATCHES_RE.test(pathname) && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        const storeId = pathname.split("/")[3];
+        await handleVectorFileBatchesCreate(
+          req,
+          res,
+          storeId,
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (pathname === VECTOR_STORES_PATH && req.method === "GET") {
+      try {
+        await handleVectorStoresList(req, res, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (pathname === VECTOR_STORES_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
       return;
     }
 
@@ -2190,17 +4601,15 @@ export async function createServerWithResolvedAuth(
         const limitParam = parsedUrl.searchParams.get("limit");
         let opts: { limit: number } | undefined;
         if (limitParam) {
-          const limit = parseInt(limitParam, 10);
-          if (Number.isNaN(limit) || limit <= 0) {
+          const limit = Number(limitParam);
+          if (!/^\+?\d+$/.test(limitParam.trim()) || !Number.isSafeInteger(limit) || limit <= 0) {
             writeErrorResponse(
               res,
               400,
-              JSON.stringify({
-                error: {
-                  message: `Invalid limit parameter: "${limitParam}"`,
-                  type: "invalid_request_error",
-                },
-              }),
+              renderError("openai", "validation", {
+                message: `Invalid limit parameter: "${limitParam}"`,
+                type: "invalid_request_error",
+              }).body,
             );
             return;
           }
@@ -2208,7 +4617,7 @@ export async function createServerWithResolvedAuth(
         }
         const entries = journal.getAll(opts);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(entries));
+        res.end(journalJson(entries, journal));
         return;
       }
       if (req.method === "DELETE") {
@@ -2229,23 +4638,48 @@ export async function createServerWithResolvedAuth(
     if (pathname === RESPONSES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleResponses(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
+      }
+      return;
+    }
+
+    // Counts are synthesized before generation dispatch in every mode.
+    const geminiCountMatch = pathname.match(GEMINI_COUNT_RE);
+    if (req.method === "POST" && (pathname === MESSAGES_COUNT_PATH || geminiCountMatch)) {
+      const google = geminiCountMatch !== null;
+      try {
+        const raw = await readBody(req);
+        handleCountTokens(
+          req,
+          res,
+          raw,
+          google,
+          geminiCountMatch?.[1] ?? "",
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, {
+          service: google ? "gemini" : "anthropic",
+          envelope: (message, status) =>
+            google
+              ? renderError("gemini", "fixture", {
+                  message,
+                  bodyCode: status,
+                  status: status === 400 ? "INVALID_ARGUMENT" : "INTERNAL",
+                }).body
+              : renderError("messages", "thinking", {
+                  message,
+                  type: status === 400 ? "invalid_request_error" : "api_error",
+                }).body,
+        });
       }
       return;
     }
@@ -2254,23 +4688,13 @@ export async function createServerWithResolvedAuth(
     if (pathname === MESSAGES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleMessages(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
       }
       return;
     }
@@ -2279,23 +4703,13 @@ export async function createServerWithResolvedAuth(
     if (pathname === COHERE_CHAT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleCohere(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
       }
       return;
     }
@@ -2304,18 +4718,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === COHERE_EMBED_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleCohereEmbed(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2325,8 +4731,7 @@ export async function createServerWithResolvedAuth(
       try {
         const deploymentId = azureDeploymentId;
         const embeddingsProvider: RecordProviderKey = azureDeploymentId ? "azure" : "openai";
-        const wireBody = await readBody(req);
-        let raw = wireBody;
+        let raw = await readBody(req);
         // Azure deployments may omit model from body — use deployment ID as fallback
         if (deploymentId) {
           try {
@@ -2344,6 +4749,7 @@ export async function createServerWithResolvedAuth(
             // Fall through for parse errors — let handleEmbeddings report them
           }
         }
+        ensureRawFixturePositions();
         await handleEmbeddings(
           req,
           res,
@@ -2353,19 +4759,10 @@ export async function createServerWithResolvedAuth(
           defaults,
           setCorsHeaders,
           embeddingsProvider,
-          wireBody,
+          originalPathname === EMBEDDINGS_PATH,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2374,6 +4771,7 @@ export async function createServerWithResolvedAuth(
     if (pathname === IMAGES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImages(
           req,
           res,
@@ -2387,16 +4785,7 @@ export async function createServerWithResolvedAuth(
           isBytePlusArk ? "byteplus" : undefined,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2405,18 +4794,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === IMAGES_EDIT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImageEdit(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2425,18 +4806,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === IMAGES_VARIATIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImageVariations(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2445,18 +4818,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === SPEECH_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleSpeech(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2465,18 +4830,10 @@ export async function createServerWithResolvedAuth(
     if (pathname === TRANSCRIPTIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleTranscription(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2485,6 +4842,7 @@ export async function createServerWithResolvedAuth(
     if (pathname === TRANSLATIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleTranscription(
           req,
           res,
@@ -2496,16 +4854,7 @@ export async function createServerWithResolvedAuth(
           "translation",
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2519,6 +4868,7 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGrokVideoCreate(
           req,
           res,
@@ -2530,30 +4880,7 @@ export async function createServerWithResolvedAuth(
           grokVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`grok-video submit: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "POST",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `grok-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2562,6 +4889,7 @@ export async function createServerWithResolvedAuth(
     if (pathname === VIDEOS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleVideoCreate(
           req,
           res,
@@ -2573,16 +4901,7 @@ export async function createServerWithResolvedAuth(
           videoStates,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2596,6 +4915,7 @@ export async function createServerWithResolvedAuth(
     const grokVideoStatusMatch = pathname.match(GROK_VIDEO_STATUS_RE);
     if (grokVideoStatusMatch && grokVideoStatusMatch[1] !== "generations" && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleGrokVideoStatus(
           req,
           res,
@@ -2608,30 +4928,7 @@ export async function createServerWithResolvedAuth(
           videoStates,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`grok-video status: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `grok-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2644,6 +4941,7 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleVeoVideoCreate(
           req,
           res,
@@ -2656,30 +4954,7 @@ export async function createServerWithResolvedAuth(
           veoVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`veo-video submit: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "POST",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `veo-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2689,6 +4964,7 @@ export async function createServerWithResolvedAuth(
     const veoOperationMatch = pathname.match(VEO_OPERATION_RE);
     if (veoOperationMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleVeoVideoStatus(
           req,
           res,
@@ -2700,30 +4976,7 @@ export async function createServerWithResolvedAuth(
           veoVideoJobs,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        defaults.logger.error(`veo-video status: ${msg}`);
-        if (!res.headersSent) {
-          try {
-            journal.add({
-              method: req.method ?? "GET",
-              path: req.url ?? pathname,
-              headers: flattenHeaders(req.headers),
-              body: null,
-              response: { status: 500, fixture: null },
-            });
-          } catch (jErr) {
-            defaults.logger.warn(
-              `veo-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
-            );
-          }
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2734,6 +4987,7 @@ export async function createServerWithResolvedAuth(
       const predictModel = geminiPredictMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImages(
           req,
           res,
@@ -2746,16 +5000,7 @@ export async function createServerWithResolvedAuth(
           predictModel,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2764,23 +5009,13 @@ export async function createServerWithResolvedAuth(
     if (pathname === GEMINI_INTERACTIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGeminiInteractions(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
       }
       return;
     }
@@ -2791,6 +5026,7 @@ export async function createServerWithResolvedAuth(
       const embedModel = geminiEmbedMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGeminiEmbedContent(
           req,
           res,
@@ -2802,16 +5038,7 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2823,6 +5050,7 @@ export async function createServerWithResolvedAuth(
       const streaming = geminiMatch[2] === "streamGenerateContent";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGemini(
           req,
           res,
@@ -2835,21 +5063,10 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
       }
       return;
     }
@@ -2861,6 +5078,7 @@ export async function createServerWithResolvedAuth(
       const streaming = vertexMatch[2] === "streamGenerateContent";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGemini(
           req,
           res,
@@ -2874,21 +5092,10 @@ export async function createServerWithResolvedAuth(
           "vertexai",
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          try {
-            res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            res.end();
-          } catch (writeErr) {
-            logger.debug("Failed to write error recovery response:", writeErr);
-          }
-        }
+        routeError(req, res, err, pathname, {
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
+        });
       }
       return;
     }
@@ -2899,6 +5106,7 @@ export async function createServerWithResolvedAuth(
       const bedrockModelId = bedrockMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBedrock(
           req,
           res,
@@ -2910,16 +5118,7 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2930,6 +5129,7 @@ export async function createServerWithResolvedAuth(
       const bedrockModelId = bedrockStreamMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBedrockStream(
           req,
           res,
@@ -2941,16 +5141,7 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2961,6 +5152,7 @@ export async function createServerWithResolvedAuth(
       const converseModelId = converseMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleConverse(
           req,
           res,
@@ -2972,16 +5164,7 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -2992,6 +5175,7 @@ export async function createServerWithResolvedAuth(
       const converseStreamModelId = converseStreamMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleConverseStream(
           req,
           res,
@@ -3003,16 +5187,7 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -3031,16 +5206,9 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname, {
+          service: "search",
+        });
       }
       return;
     }
@@ -3059,16 +5227,9 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname, {
+          service: "rerank",
+        });
       }
       return;
     }
@@ -3087,16 +5248,9 @@ export async function createServerWithResolvedAuth(
           setCorsHeaders,
         );
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname, {
+          service: "moderation",
+        });
       }
       return;
     }
@@ -3106,18 +5260,112 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, "sound-generation");
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
+        routeError(req, res, err, pathname);
+      }
+      return;
+    }
+
+    // POST /v1/speech-to-text (Scribe) and /v1/audio-isolation — multipart,
+    // read as a Buffer so the audio bytes survive to the hash and the proxy.
+    if (
+      (pathname === ELEVENLABS_STT_PATH || pathname === ELEVENLABS_AUDIO_ISOLATION_PATH) &&
+      req.method === "POST"
+    ) {
+      setCorsHeaders(res);
+      try {
+        const body = await readBodyBuffer(req, AUDIO_PIPELINE_MAX_BODY_BYTES);
+        ensureRawFixturePositions();
+        await handleAudioPipeline(
+          pathname === ELEVENLABS_STT_PATH ? "elevenlabs-stt" : "elevenlabs-audio-isolation",
+          req,
+          res,
+          body,
+          fixtures,
+          defaults,
+          journal,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "elevenlabs-speech" });
+      }
+      return;
+    }
+
+    // POST /v1/text-to-voice/design — ElevenLabs Voice Design (must precede create)
+    if (pathname === ELEVENLABS_VOICE_DESIGN_PATH && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const raw = await readBody(req);
+        ensureRawFixturePositions();
+        await handleElevenLabsVoiceDesign(req, res, raw, fixtures, defaults, journal);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "elevenlabs-voice" });
+      }
+      return;
+    }
+
+    // POST /v1/text-to-voice — save a designed preview as a permanent voice
+    if (pathname === ELEVENLABS_VOICE_CREATE_PATH && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const raw = await readBody(req);
+        ensureRawFixturePositions();
+        await handleElevenLabsVoiceCreate(req, res, raw, fixtures, defaults, journal);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "elevenlabs-voice" });
+      }
+      return;
+    }
+
+    // GET|DELETE /v1/voices/{voice_id} — slot management after Voice Design save
+    const elevenLabsVoiceMatch = pathname.match(ELEVENLABS_VOICE_RE);
+    if (elevenLabsVoiceMatch && (req.method === "GET" || req.method === "DELETE")) {
+      setCorsHeaders(res);
+      // The id arrives percent-encoded on the wire while the voice store is
+      // keyed by the id exactly as it appears in JSON, so the raw path segment
+      // made any id carrying a space or a slash permanently unreachable.
+      // `decodeURIComponent` throws `URIError` on a malformed escape — that is
+      // a bad request, not a server fault, so it is answered 400 rather than
+      // falling into the 500 handler below.
+      let voiceId: string;
+      try {
+        voiceId = decodeURIComponent(elevenLabsVoiceMatch[1]);
+      } catch {
+        writeErrorResponse(
+          res,
+          400,
+          renderError("openai", "validation", {
+            message: `Invalid voice id '${elevenLabsVoiceMatch[1]}': malformed percent-encoding`,
+            type: "invalid_request_error",
+          }).body,
+        );
+        // Journaled AFTER the write, like every other terminal arm in this
+        // batch: the caller's answer never waits on bookkeeping. Tagged with
+        // the service so this rejection is selectable under
+        // `?service=elevenlabs-voice` with the rest of the route's branches —
+        // it was the one voice branch that left no journal entry at all.
+        journal.add({
+          method: req.method ?? "GET",
+          path: req.url ?? pathname,
+          headers: flattenHeaders(req.headers),
+          service: "elevenlabs-voice",
+          body: null,
+          response: { status: 400, fixture: null },
+        });
+        return;
+      }
+      try {
+        if (req.method === "GET") {
+          ensureRawFixturePositions();
+          await handleElevenLabsVoiceGet(req, res, voiceId, fixtures, defaults, journal);
+        } else {
+          ensureRawFixturePositions();
+          await handleElevenLabsVoiceDelete(req, res, voiceId, fixtures, defaults, journal);
         }
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "elevenlabs-voice" });
       }
       return;
     }
@@ -3129,18 +5377,10 @@ export async function createServerWithResolvedAuth(
       const voiceId = elevenLabsTTSMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsTTS(req, res, raw, fixtures, defaults, journal, voiceId);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -3152,18 +5392,10 @@ export async function createServerWithResolvedAuth(
       const musicSubType = musicMatch[1] ?? "music";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, musicSubType);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -3176,25 +5408,97 @@ export async function createServerWithResolvedAuth(
     // (queue.fal.run, fal.run, rest.fal.ai, rest.alpha.fal.ai).
     // Matches the requestMiddleware path-mirror convention used by
     // @fal-ai/client when proxyUrl can't be honoured server-side.
-    if (FAL_PREFIX_RE.test(pathname) && req.headers["x-fal-target-host"]) {
+    if (FAL_ROUTE_RE.test(pathname) && req.headers["x-fal-target-host"]) {
       setCorsHeaders(res);
       try {
         falBody = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
         const raw = falBody;
+        // Chaos is rolled EXACTLY ONCE per fal request. This gate owns the roll
+        // only when the general handler is actually going to own the request;
+        // if `handleFal` would return "passthrough" the request continues to
+        // the legacy `/fal/queue/...` / `/fal/run/...` routes below, and THEIR
+        // `applyChaosAsync` (or the queue-requests gate) is the single roll.
+        // Rolling here unconditionally would double-roll every passthrough
+        // (observed: 0.72 effective drop rate for a configured 0.5).
+        //
+        // The deterministic latency is awaited BEFORE the roll, so a configured
+        // delay applies to every outcome on this path — served state, proxied
+        // response and each chaos failure alike — exactly as the completions
+        // path does, and resolved from the same per-testId scope as the rates.
+        //
+        // `source` is "internal": the roll happens before any fixture match or
+        // upstream call, so nothing was going to serve this but aimock's own
+        // fal logic. Mirrors the veo/grok/openrouter lifecycle gates.
+        if (falWillHandle(req, pathname)) {
+          // Resolved ONCE and threaded into both the latency await and the
+          // action roll — re-resolving would re-parse the chaos headers and
+          // warn twice per request. `res` is passed so a client that hangs up
+          // mid-delay CANCELS the pending timer instead of leaving the handler
+          // waiting out the full latency. Both mirror the completions path.
+          const chaosConfig = resolveChaosConfig(
+            null,
+            defaults.chaos,
+            req.headers,
+            defaults.logger,
+            req.url,
+          );
+          await awaitChaosLatency(
+            null,
+            defaults.chaos,
+            req.headers,
+            defaults.logger,
+            req.url,
+            res,
+            chaosConfig,
+          );
+          // C13: the latency await resolves EARLY when the client hangs up
+          // mid-delay (the timer is cancelled off `res`'s `close`).
+          // `applyChaosAsync` re-checks writability at exactly this point; a
+          // SPLIT gate has to do it itself. Without this the handler carries
+          // on and builds, "serves" and JOURNALS a full response into a dead
+          // socket — a phantom entry for bytes no client ever received.
+          const goneAfterLatency = responseGoneReason(res);
+          if (goneAfterLatency !== null) {
+            defaults.logger.debug(
+              `[chaos] ${req.method ?? "GET"} ${pathname}: ` +
+                `${describeUnwritableReason(goneAfterLatency)} after the latency delay — ` +
+                `not served, not journalled`,
+            );
+            return;
+          }
+          const chaosAction = evaluateChaos(
+            null,
+            defaults.chaos,
+            req.headers,
+            defaults.logger,
+            req.url,
+            chaosConfig,
+          );
+          if (chaosAction) {
+            applyChaosAction(
+              chaosAction,
+              res,
+              null,
+              journal,
+              {
+                method: req.method ?? "GET",
+                path: pathname,
+                headers: flattenHeaders(req.headers),
+                body: null,
+              },
+              "internal",
+              defaults.registry,
+              defaults.logger,
+            );
+            return;
+          }
+        }
+        ensureRawFixturePositions();
         const outcome = await handleFal(req, res, raw, pathname, fixtures, defaults, journal);
         if (outcome === "handled") return;
         // passthrough: fall through to legacy fal-audio routes below
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
         return;
       }
     }
@@ -3205,18 +5509,10 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = falBody ?? (await readBody(req));
+        ensureRawFixturePositions();
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -3229,22 +5525,77 @@ export async function createServerWithResolvedAuth(
     ) {
       setCorsHeaders(res);
       try {
-        // Read whatever the client sent whatever the method, so the chaos key
-        // sees the wire body rather than the `"{}"` the sub-handlers parse.
-        const wireBody = falBody ?? (await readBody(req));
-        const raw = req.method === "POST" || req.method === "PUT" ? wireBody : "{}";
-        await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal, wireBody);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+        const raw =
+          req.method === "POST" || req.method === "PUT" ? (falBody ?? (await readBody(req))) : "{}";
+        // Status / cancel / result are pure state lookups: `handleFalQueue`
+        // rolls no chaos for them, so this gate is their single roll. Latency
+        // first, then the roll — same order as every other handler path.
+        // `source` is "internal" (no fixture, no upstream: aimock's own queue
+        // state was going to serve this), matching the veo status gate.
+        // Resolved ONCE and threaded into both the latency await and the action
+        // roll; `res` makes the delay cancellable on client disconnect. Same
+        // shape as the completions path and the `x-fal-target-host` gate above.
+        const chaosConfig = resolveChaosConfig(
+          null,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+          req.url,
+        );
+        await awaitChaosLatency(
+          null,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+          req.url,
+          res,
+          chaosConfig,
+        );
+        // C13: the latency await resolves EARLY when the client hangs up
+        // mid-delay (the timer is cancelled off `res`'s `close`).
+        // `applyChaosAsync` re-checks writability at exactly this point; a
+        // SPLIT gate has to do it itself. Without this the handler carries on
+        // and builds, "serves" and JOURNALS a full response into a dead
+        // socket — a phantom entry for bytes no client ever received.
+        const goneAfterLatency = responseGoneReason(res);
+        if (goneAfterLatency !== null) {
+          defaults.logger.debug(
+            `[chaos] ${req.method ?? "GET"} ${pathname}: ` +
+              `${describeUnwritableReason(goneAfterLatency)} after the latency delay — ` +
+              `not served, not journalled`,
           );
-        } else if (!res.writableEnded) {
-          res.destroy();
+          return;
         }
+        const chaosAction = evaluateChaos(
+          null,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+          req.url,
+          chaosConfig,
+        );
+        if (chaosAction) {
+          applyChaosAction(
+            chaosAction,
+            res,
+            null,
+            journal,
+            {
+              method: req.method ?? "GET",
+              path: pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+            },
+            "internal",
+            defaults.registry,
+            defaults.logger,
+          );
+          return;
+        }
+        ensureRawFixturePositions();
+        await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname);
       }
       return;
     }
@@ -3255,24 +5606,30 @@ export async function createServerWithResolvedAuth(
       setCorsHeaders(res);
       try {
         const raw = falBody ?? (await readBody(req));
+        ensureRawFixturePositions();
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+        routeError(req, res, err, pathname);
       }
       return;
     }
 
     // POST /v1/chat/completions — Chat Completions API
     if (pathname !== COMPLETIONS_PATH) {
+      // Registry drift guard: the catalog claims every ROUTE_DEFINITIONS
+      // entry is mounted. If the registry matches a request the dispatcher
+      // just fell through, the two have drifted — warn loudly (the 404
+      // stands; this never changes serving behavior). Exempt: /metrics 404s
+      // by design when the server runs with `metrics: false`.
+      const catalogMatch = matchRouteDefinition(req.method ?? "", pathname);
+      if (catalogMatch && !(pathname === METRICS_PATH && !registry)) {
+        defaults.logger.warn(
+          `Route drift: ${req.method ?? "?"} ${pathname} matches the route catalog ` +
+            `(${catalogMatch.method} ${catalogMatch.path} — ${catalogMatch.description}) ` +
+            `but no dispatcher branch served it. The catalog entry or the dispatcher ` +
+            `is stale — see route-registry.ts.`,
+        );
+      }
       handleNotFound(res, "Not found");
       return;
     }
@@ -3297,46 +5654,51 @@ export async function createServerWithResolvedAuth(
         fixtures,
         journal,
         defaults,
+        () => lastJournalEntryFor(req),
         azureDeploymentId,
         completionsProvider,
         isOpenRouter,
+        ensureRawFixturePositions,
+        originalPathname.startsWith("/api/v3/"),
       );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Internal error";
-      if (!res.headersSent) {
-        writeErrorResponse(
-          res,
-          500,
+      routeError(req, res, err, pathname, {
+        envelope: (m, status) =>
           isOpenRouter
-            ? serializeOpenRouterError(500, msg)
-            : JSON.stringify({
-                error: {
-                  message: msg,
-                  type: "server_error",
-                },
-              }),
-        );
-      } else if (!res.writableEnded) {
-        // Headers already sent (SSE stream in progress) — write error event then close
-        try {
-          res.write(
-            `data: ${
-              isOpenRouter
-                ? serializeOpenRouterError(500, msg)
-                : JSON.stringify({ error: { message: msg, type: "server_error" } })
-            }\n\n`,
-          );
-          res.end();
-        } catch (writeErr) {
-          logger.debug("Failed to write error recovery response:", writeErr);
-        }
-      }
+            ? serializeOpenRouterError(status, m)
+            : renderError("openai", "route-failure", {
+                message: m,
+                type: errorTypeForStatus(status),
+              }).body,
+        // OpenRouter's numeric `error.code` is the HTTP status, so the aimock
+        // code rides in its free-form `metadata`.
+        ...(isOpenRouter
+          ? { toolCallEnvelope: (m, code) => serializeOpenRouterError(500, m, { reason: code }) }
+          : {}),
+        streamEvent: (m, status) =>
+          `data: ${
+            isOpenRouter
+              ? serializeOpenRouterError(status, m)
+              : renderError("openai", "route-failure", {
+                  message: m,
+                  type: errorTypeForStatus(status),
+                }).body
+          }\n\n`,
+      });
     }
   }
 
   // ─── WebSocket upgrade handling ──────────────────────────────────────────
 
   const activeConnections = new Set<WebSocketConnection>();
+  const liveLimits = normalizeLiveOptions(options?.live);
+  const liveSessions = new Map<symbol, { testId: string; dispose: () => void }>();
+  const closeLiveSessions = (testId?: string) => {
+    for (const session of [...liveSessions.values()]) {
+      if (testId === undefined || session.testId === testId) session.dispose();
+    }
+  };
+  liveClosers.set(defaults, closeLiveSessions);
 
   server.on(
     "upgrade",
@@ -3418,7 +5780,15 @@ export async function createServerWithResolvedAuth(
       return;
     }
 
-    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Internal error";
+      defaults.logger.warn(`Unhandled upgrade error: ${msg}`);
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      return;
+    }
     let pathname = parsedUrl.pathname;
 
     if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
@@ -3427,15 +5797,13 @@ export async function createServerWithResolvedAuth(
     }
 
     // Dispatch to mounted services before any path rewrites
-    if (mounts) {
-      for (const { path: mountPath, handler } of mounts) {
-        if (
-          (pathname === mountPath || pathname.startsWith(mountPath + "/")) &&
-          handler.handleUpgrade
-        ) {
-          const subPath = pathname.slice(mountPath.length) || "/";
-          if (await handler.handleUpgrade(socket, head, subPath)) return;
-        }
+    for (const { path: mountPath, handler } of mountList) {
+      if (
+        (pathname === mountPath || pathname.startsWith(mountPath + "/")) &&
+        handler.handleUpgrade
+      ) {
+        const subPath = pathname.slice(mountPath.length) || "/";
+        if (await handler.handleUpgrade(socket, head, subPath)) return;
       }
     }
 
@@ -3448,11 +5816,56 @@ export async function createServerWithResolvedAuth(
     if (
       pathname !== RESPONSES_PATH &&
       pathname !== REALTIME_PATH &&
-      pathname !== GEMINI_LIVE_PATH
+      pathname !== GEMINI_LIVE_PATH &&
+      pathname !== LIVE_PATH
     ) {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
+    }
+
+    if (
+      defaults.misbehavior &&
+      pathname !== LIVE_PATH &&
+      req.headers["x-aimock-misbehavior"] !== undefined
+    ) {
+      const code = "aimock_misbehavior_invalid";
+      const message = "use the runtime scope: POST /__aimock/misbehavior with X-Test-Id";
+      const body = JSON.stringify({
+        error:
+          pathname === GEMINI_LIVE_PATH
+            ? { code: 400, status: "INVALID_ARGUMENT", message: `${code}: ${message}` }
+            : { type: "invalid_request_error", code, message },
+      });
+      socket.end(
+        "HTTP/1.1 400 Bad Request\r\n" +
+          "Content-Type: application/json\r\n" +
+          `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+          "Connection: close\r\n\r\n" +
+          body,
+      );
+      return;
+    }
+
+    let liveId: symbol | undefined;
+    if (pathname === LIVE_PATH) {
+      if (req.method !== "GET" || parsedUrl.searchParams.has("model")) {
+        socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (liveSessions.size >= liveLimits.maxSessions) {
+        socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      liveId = Symbol("live-session");
+      const reservedId = liveId;
+      liveSessions.set(reservedId, {
+        testId: getTestId(req),
+        dispose: () => {
+          socket.destroy();
+          liveSessions.delete(reservedId);
+        },
+      });
     }
 
     // Push any buffered data back before upgrading
@@ -3462,9 +5875,10 @@ export async function createServerWithResolvedAuth(
 
     let ws: WebSocketConnection;
     try {
-      ws = upgradeToWebSocket(req, socket);
+      ws = upgradeToWebSocket(req, socket, pathname === LIVE_PATH ? liveLimits : undefined);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "WebSocket upgrade failed";
+      if (liveId !== undefined) liveSessions.delete(liveId);
       logger.error(`WebSocket upgrade error: ${msg}`);
       if (!socket.destroyed) socket.destroy();
       return;
@@ -3483,12 +5897,27 @@ export async function createServerWithResolvedAuth(
 
     // Route to handler
     const wsTestId = getTestId(req);
-    if (pathname === RESPONSES_PATH) {
+    if (pathname === LIVE_PATH && liveId !== undefined) {
+      const sessionId = liveId;
+      const dispose = handleLiveSession(ws, fixtures, journal, {
+        defaults,
+        limits: liveLimits,
+        localApiKeys: resolvedAuth.publicConfig?.apiKeys,
+        testId: wsTestId,
+        headers: req.headers,
+        onDispose: () => {
+          liveSessions.delete(sessionId);
+          activeConnections.delete(ws);
+        },
+      });
+      liveSessions.set(sessionId, { testId: wsTestId, dispose });
+    } else if (pathname === RESPONSES_PATH) {
       handleWebSocketResponses(ws, fixtures, journal, {
         ...defaults,
         model: "gpt-4",
         testId: wsTestId,
         upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
       });
     } else if (pathname === REALTIME_PATH) {
       const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
@@ -3499,9 +5928,9 @@ export async function createServerWithResolvedAuth(
         ...defaults,
         model,
         transcriptionIntent,
-        upgradePath: req.url ?? REALTIME_PATH,
         testId: wsTestId,
         upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
       });
     } else if (pathname === GEMINI_LIVE_PATH) {
       handleWebSocketGeminiLive(ws, fixtures, journal, {
@@ -3509,6 +5938,7 @@ export async function createServerWithResolvedAuth(
         model: "gemini-2.0-flash",
         testId: wsTestId,
         upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
       });
     }
   }
@@ -3516,6 +5946,7 @@ export async function createServerWithResolvedAuth(
   // Close active WS connections when server shuts down
   const originalClose = server.close.bind(server);
   server.close = function (this: http.Server, callback?: (err?: Error) => void) {
+    closeLiveSessions();
     for (const ws of activeConnections) {
       ws.close(1001, "Server shutting down");
     }
@@ -3539,17 +5970,22 @@ export async function createServerWithResolvedAuth(
       }
       const url = `http://${addr.address}:${addr.port}`;
 
+      try {
+        commitHandOff();
+      } catch (err) {
+        server.close(() => reject(err));
+        return;
+      }
+
       // Set base URL on mounted services that support it
-      if (mounts) {
-        for (const { path: mountPath, handler } of mounts) {
-          if (handler.setBaseUrl) handler.setBaseUrl(url + mountPath);
-        }
+      for (const { path: mountPath, handler } of mountList) {
+        if (handler.setBaseUrl) handler.setBaseUrl(url + mountPath);
       }
 
       resolve({
+        closeLiveSessions,
         server,
         journal,
-        chaosSeed: chaosRandom.seed,
         url,
         defaults,
         videoStates,

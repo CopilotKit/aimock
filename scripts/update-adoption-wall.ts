@@ -306,6 +306,7 @@ export interface AdopterDisplay {
  */
 export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "openclaw/openclaw": { name: "OpenClaw", url: "https://openclaw.ai" },
+  "botiverse/oar": { name: "botiverse", url: "https://github.com/botiverse/oar" },
   "mattermost/mattermost-plugin-agents": {
     name: "Mattermost",
     url: "https://mattermost.com/copilot",
@@ -328,7 +329,9 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   },
   "openstory-so/openstory": { name: "OpenStory", url: "https://openstory.so" },
   "SkillNerds/xskill": { name: "xskill", url: "https://xskill.wiki" },
-  "selfagency/opilot": { name: "Opilot", url: "https://opilot.self.agency" },
+  // Moved from selfagency to the voxslopuli org; keyed by its current home so the
+  // avatar check resolves the owner id to the repo's actual owner.
+  "voxslopuli/opilot": { name: "Opilot", url: "https://opilot.self.agency" },
   // No homepage exists for either of these: cortexkit declares a Discord invite
   // and ant-chat declares nothing, and cortexkit.dev/.ai/.com do not resolve. A
   // repo URL is honest when there is no site; a bare GitHub login is just an
@@ -345,6 +348,26 @@ export const ADOPTER_DISPLAY: Record<string, AdopterDisplay> = {
   "liveloveapp/hashbrown": { name: "Hashbrown", url: "https://www.hashbrown.dev" },
   "octelium/octelium": { name: "Octelium", url: "https://octelium.com" },
   "supabitapp/supaterm": { name: "Supaterm", url: "https://supaterm.com" },
+  // The original Supaterm repo, renamed to -legacy when supabitapp started a new
+  // `supaterm` repo. Same product (README title "Supaterm"), and it is the one
+  // that uses aimock (apps/mac/E2EModelServer), so it gets the same identity.
+  "supabitapp/supaterm-legacy": { name: "Supaterm", url: "https://supaterm.com" },
+  "tercumantanumut/selene": { name: "Selene", url: "https://selene.engineer" },
+  // The repo declares no homepage; the EmberAGI org does (emberai.xyz), and the
+  // README links "Ember AI" there, so that is the company behind the repo.
+  "EmberAGI/arbitrum-vibekit": { name: "Ember AI", url: "https://www.emberai.xyz" },
+  "agentskillexchange/skills": {
+    name: "Agent Skill Exchange",
+    url: "https://agentskillexchange.com",
+  },
+  "affromero/flight-finder": { name: "Flight Finder", url: "https://flight-finder.org" },
+  "alpic-ai/skybridge": { name: "Skybridge", url: "https://www.skybridge.tech" },
+  "ackness/covel": { name: "Covel", url: "https://covel.cc" },
+  "CherryHQ/cherry-studio": { name: "Cherry Studio", url: "https://cherryai.com" },
+  "Checkmk/checkmk": { name: "Checkmk", url: "https://checkmk.com/" },
+  "pixtuoid/pixtuoid": { name: "Pixtuoid", url: "https://pixtuoid.dev" },
+  "orka-agents/orka": { name: "Orka", url: "https://orka-agents.github.io/orka/" },
+  "Innei/haklex": { name: "Haklex", url: "https://haklex.innei.dev" },
 };
 
 /**
@@ -396,16 +419,30 @@ export const STAR_FLOOR = 40;
  * suppressed something, so this never becomes a filter nobody remembers exists.
  */
 export const EXCLUDED_ADOPTERS: Record<string, string> = {
+  "abacusai/abacusai-bot":
+    "Not an aimock user: the only occurrence is a mention in docs/rewrite/PLAN.md, a planning document. No package.json declares it and no source, test or config references it.",
   "AdemBenAbdallah/openstory-tanstack-cloudflare-template":
     'Self-described derivative: README opens "A hands-on learning template derived from the MIT-licensed OpenStory project". openstory-so/openstory is the original and is already on the wall.',
   "CrimsonSithria/agentos":
     "Copy of rivet-dev/agentos: same README banner and same homepage (agentos-sdk.dev) as the original, on a personal account with 2 followers. Not a GitHub fork, so the fork filter cannot see it.",
+  "idarpansharma/Advanced-AI-ML-Projects":
+    "Copied content, not usage: every occurrence is under generative_interfaces/, byte-identical copies of Shubhamsaboo/awesome-llm-apps's generative_ui_agents/ projects, which is already on the wall. Personal collection; not a GitHub fork.",
+  "miantiao-me/github-stars":
+    "Not an aimock user: an auto-generated list of the owner's starred repos, and the only occurrence is stars/CopilotKit/aimock.md, the generated entry for starring aimock. A star is not usage.",
+  "ngophatneknha/ai-engineering-hub":
+    "Copied content, not usage: every occurrence is under curated-courses/awesome-llm-apps/, copied from Shubhamsaboo/awesome-llm-apps, which is already on the wall. Personal learning hub; not a GitHub fork.",
   "podhmo/llm-wiki-compiler":
     'Self-declared copy: README\'s first line is "Personal fork of https://github.com/atomicstrata/llm-wiki-compiler — do not merge". atomicstrata/llm-wiki-compiler is the original and is already on the wall.',
   "rivet-dev/agentos":
     "Not an aimock user: the ONLY two occurrences in the repo are pnpm-lock.yaml entries, and they are TRANSITIVE (@copilotkit/llmock@1.7.1 depends on @copilotkit/aimock@1.7.0). No package.json declares it and no source, test, config or doc references it. A lockfile mention is not usage.",
   "seek4coherence/Zoo-Code":
     'Self-declared copy: repo description is "Fork of Zoo-Code for PR: Remote Access WebUI + Discord Bot". Zoo-Code-Org/Zoo-Code is the original and is already on the wall.',
+  "SimonSchubert/LinuxCommandLibrary":
+    "Not an aimock user: a Linux command reference that documents the aimock CLI (assets/commands/aimock.md and its index). Documenting a command is not using it.",
+  "streetsidesoftware/cspell-dicts":
+    "Not an aimock user: aimock appears only as a word in the npm spelling dictionary (dictionaries/npm), one package name among thousands. A dictionary entry is not usage.",
+  "TIGER-AI-Lab/LongBanana":
+    "Vendored copy, not usage: the only occurrence is openclaw-runtime/package.json, a vendored openclaw package. openclaw/openclaw is the original and is already on the wall.",
   "tylaujjapan0/openclaw":
     "Verbatim re-push of openclaw/openclaw: README is openclaw's README including its hot-linked logo. Throwaway account (3 repos, 0 followers). Not a GitHub fork.",
   "unprofessional/openclaw-archive":
@@ -1444,6 +1481,20 @@ export function classify(input: ClassifyInput): {
 
   if (input.next) {
     const nextRepos = new Set(input.next.map((e) => repoKey(e.repo)));
+
+    // An UNMAPPED tile renders a raw GitHub org login and a repo URL on the
+    // homepage in place of a company name and homepage. The summary has always
+    // listed these as a maintenance queue, but a queue nobody is forced to read
+    // is not a gate: the weekly routine auto-pushes a SAFE wall straight to the
+    // default branch, so a newly-discovered adopter shipped its org login to a
+    // public page unattended and left `main` red on the round-trip test that
+    // asserts the shipped wall is fully curated. NEEDS-REVIEW routes exactly
+    // this case to a review PR instead, which is where a human adds the pair.
+    for (const e of input.next.filter((x) => !x.mapped)) {
+      reasons.push(
+        `${e.repo} has no ADOPTER_DISPLAY entry and would render as the raw org login "${e.name}".`,
+      );
+    }
 
     const floor = input.minWallSize ?? MIN_WALL_SIZE;
     if (input.next.length < floor) {

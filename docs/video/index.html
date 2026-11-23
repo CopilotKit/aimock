@@ -83,6 +83,15 @@
           documented separately at <a href="/openrouter-video">OpenRouter Video</a>.
         </p>
 
+        <p>
+          JSON video creation requests accept a nonempty string or a nonempty array of content parts
+          for
+          <code>prompt</code>. Each part must be an object with a string <code>type</code>. If a
+          part includes <code>text</code>, that value must be a string. Mixed parts, nontext parts,
+          and empty text within content parts remain accepted. Unsupported values return HTTP 400
+          before fixture matching and do not consume a fixture sequence position.
+        </p>
+
         <h2>Async Polling Pattern</h2>
         <p>
           Real video generation is asynchronous: the <code>POST</code> endpoint returns a job ID,

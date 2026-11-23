@@ -92,6 +92,39 @@
           </li>
         </ul>
 
+        <p>
+          Gemini deterministic fallback uses 768 dimensions when
+          <code>outputDimensionality</code> is absent or <code>null</code>. In this fallback,
+          negative or fractional numbers and nonnumeric strings return HTTP 400 with
+          <code>INVALID_ARGUMENT</code>. This check applies only when fallback generation uses the
+          dimension value.
+        </p>
+        <p>
+          The fallback also rejects numeric values and numeric strings greater than 100000, the
+          local serialization budget. This budget is not a provider or model limit. Fixture replay,
+          strict mode, chaos responses, and proxy responses retain their existing behavior. Zero
+          dimensions and existing numeric-string coercion remain supported within this budget.
+        </p>
+
+        <p>
+          Native <code>POST /v1/embeddings</code> requires a <code>model</code> field and returns
+          HTTP 400 if it is absent. Azure deployment routes and compatible embedding routes retain
+          their model defaults.
+        </p>
+        <p>
+          aimock preserves empty embedding inputs as a compatibility convenience. An empty string,
+          <code>[""]</code>, and <code>[[]]</code> each produce one embedding for empty text. An
+          empty outer array (<code>[]</code>) produces an empty data list. These forms remain
+          accepted with an explicit model, alongside string batches and token arrays.
+        </p>
+        <p>
+          For Cohere embedding output, <code>embedding_types</code> must be an array of strings.
+          Omitted, <code>null</code>, and empty-array values retain the default float output. String
+          extension names remain accepted. Invalid containers or nonstring members return HTTP 400
+          when aimock builds embedding output from a fixture or deterministic fallback. Error
+          fixtures, strict-mode errors, and proxy responses retain their existing behavior.
+        </p>
+
         <h2>Unit Test: Fixture-based Embedding</h2>
 
         <div class="code-block">

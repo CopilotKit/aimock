@@ -1,0 +1,7 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"id\":\"msg_<#0>\",\"finish_reason\":\"COMPLETE\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi there.\"}],\"tool_calls\":[],\"tool_plan\":\"\",\"citations\":[]},\"usage\":{\"billed_units\":{\"input_tokens\":0,\"output_tokens\":0,\"search_units\":0,\"classifications\":0},\"tokens\":{\"input_tokens\":0,\"output_tokens\":0}}}"
+}

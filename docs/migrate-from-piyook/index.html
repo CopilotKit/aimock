@@ -296,17 +296,17 @@
             </tr>
             <tr>
               <td>OpenAI Responses API</td>
-              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
               <td style="color: var(--accent)">&#10003;</td>
             </tr>
             <tr>
               <td>Anthropic Claude</td>
-              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
               <td style="color: var(--accent)">&#10003;</td>
             </tr>
             <tr>
               <td>Google Gemini</td>
-              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
               <td style="color: var(--accent)">&#10003;</td>
             </tr>
             <tr>
@@ -316,7 +316,7 @@
             </tr>
             <tr>
               <td>Streaming SSE</td>
-              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
               <td style="color: var(--accent)">Built-in (TTFT, TPS, jitter)</td>
             </tr>
             <tr>
@@ -366,7 +366,7 @@
             </tr>
             <tr>
               <td>Request journal</td>
-              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
               <td style="color: var(--accent)">&#10003;</td>
             </tr>
             <tr>
@@ -384,8 +384,33 @@
               <td style="color: var(--error)">&#10007;</td>
               <td style="color: var(--accent)">&#10003;</td>
             </tr>
+            <tr>
+              <td>Native model catalogs</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">
+                &#10003;<br /><span class="version-note">1.46.0+</span>
+              </td>
+            </tr>
+            <tr>
+              <td>Token-count endpoints</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">
+                &#10003;<br /><span class="version-note">1.46.0+</span>
+              </td>
+            </tr>
+            <tr>
+              <td>Native 401 auth errors</td>
+              <td>Partial (generic error type)</td>
+              <td style="color: var(--accent)">
+                &#10003; (opt-in)<br /><span class="version-note">1.46.0+</span>
+              </td>
+            </tr>
           </tbody>
         </table>
+        <p class="matrix-legend">
+          <span style="color: var(--accent)" aria-hidden="true">&#10003;</span> supported &middot;
+          <span style="color: var(--error)" aria-hidden="true">&#10007;</span> not supported
+        </p>
 
         <!-- ─── CLI / Docker quick start ─────────────────────────── -->
         <h2>CLI / Docker quick start</h2>

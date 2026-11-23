@@ -7,45 +7,65 @@
  */
 
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
+import { resolvePolicy, resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { missingRequiredHeader } from "./response/profiles.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureResponse,
   HandlerDefaults,
-  RecordedTimings,
   FixtureBlock,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
 import {
+  toolArgsForWire,
+  servedToolArgs,
+  estimatePromptTokens,
+  estimateTokens,
   generateMessageId,
   generateToolUseId,
   extractOverrides,
+  requireEmittedFunctionToolCalls,
+  rejectGeneratedFiles,
+  resolveCitations,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
-  resolveFixtureBlocks,
+  isRawResponse,
+  resolveFixtureBlockOutcome,
   flattenHeaders,
+  resolveRequestId,
+  isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
   resolveReasoningArtifactsForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import type { MisbehaviorPlan } from "./misbehavior.js";
+import { mapAnthropicFinish } from "./response/finish.js";
+import {
+  resolve as resolveAnthropicUsage,
+  render as renderAnthropicUsage,
+} from "./response/usage/codecs/anthropic.js";
 
 /**
  * Non-empty placeholder signature written into emitted `thinking` blocks.
@@ -395,21 +415,7 @@ function thinkingViolationMessage(v: ThinkingViolation): string {
 
 function claudeStopReason(finishReason: string | undefined, defaultReason: string): string {
   if (!finishReason) return defaultReason;
-  if (finishReason === "stop") return "end_turn";
-  if (finishReason === "tool_calls") return "tool_use";
-  if (finishReason === "length") return "max_tokens";
-  return finishReason;
-}
-
-function claudeUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
-  return {
-    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
-  };
+  return mapAnthropicFinish(finishReason);
 }
 
 interface ClaudeSSEEvent {
@@ -453,6 +459,71 @@ function pushRedactedThinkingStreamEvents(
   return blockIndex;
 }
 
+/**
+ * Fixture `citations` as Anthropic `web_search_result_location` citations, the
+ * URL-sourced citation type (see `CitationsWebSearchResultLocation` in
+ * `@anthropic-ai/sdk`), grouped per text block. `texts` are the turn's text
+ * blocks in order; citation offsets index their joined text, the same
+ * convention as Chat Completions and Gemini. Each citation goes only to the
+ * last text block whose start offset in the joined text is at or before the
+ * citation's `startIndex`, with `cited_text` sliced from that block's own text
+ * (cut off at the block's end).
+ * `web_search_result_location` carries no offsets, so nothing is rebased.
+ * `encrypted_index` is opaque on the real wire, so aimock fills a stable
+ * base64 placeholder. File citations are skipped (see {@link resolveCitations}):
+ * Anthropic has no citation type for an OpenAI file ID.
+ */
+function claudeBlockCitations(texts: string[], overrides?: ResponseOverrides): object[][] {
+  const starts: number[] = [];
+  let offset = 0;
+  for (const text of texts) {
+    starts.push(offset);
+    offset += text.length;
+  }
+  const perBlock: object[][] = texts.map(() => []);
+  if (texts.length === 0) {
+    // Blocks with no text block: a turn with no text for `citations` to point at.
+    resolveCitations("", overrides?.citations);
+    return perBlock;
+  }
+  resolveCitations(texts.join(""), overrides?.citations).forEach((c, i) => {
+    let owner = 0;
+    for (let k = 1; k < starts.length; k++) if (starts[k] <= c.startIndex) owner = k;
+    const start = starts[owner];
+    perBlock[owner].push({
+      type: "web_search_result_location",
+      cited_text: texts[owner].slice(c.startIndex - start, c.endIndex - start),
+      url: c.url,
+      title: c.title,
+      encrypted_index: Buffer.from(`aimock-citation:${i}:${c.url}`).toString("base64"),
+    });
+  });
+  return perBlock;
+}
+
+/** {@link claudeBlockCitations} for a turn with a single text block. */
+function claudeCitations(text: string, overrides?: ResponseOverrides): object[] {
+  return claudeBlockCitations([text], overrides)[0];
+}
+
+/** A text content block; `citations` is added only when it has some. */
+function claudeTextBlock(text: string, citations: object[]): object {
+  return citations.length > 0 ? { type: "text", text, citations } : { type: "text", text };
+}
+
+/**
+ * Streamed form of a text block's citations: one `citations_delta` per
+ * citation, after the block's text deltas and before its `content_block_stop`,
+ * as in the Anthropic citations streaming example. Nothing when it has none.
+ */
+function claudeCitationDeltas(citations: object[], index: number): ClaudeSSEEvent[] {
+  return citations.map((citation) => ({
+    type: "content_block_delta",
+    index,
+    delta: { type: "citations_delta", citation },
+  }));
+}
+
 function buildClaudeTextStreamEvents(
   content: string,
   model: string,
@@ -480,7 +551,7 @@ function buildClaudeTextStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -542,6 +613,8 @@ function buildClaudeTextStreamEvents(
     });
   }
 
+  events.push(...claudeCitationDeltas(claudeCitations(content, overrides), blockIndex));
+
   // content_block_stop
   events.push({
     type: "content_block_stop",
@@ -555,7 +628,7 @@ function buildClaudeTextStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "end_turn"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -574,6 +647,8 @@ function buildClaudeToolCallStreamEvents(
   reasoningSignature?: string,
   redactedThinking?: string[],
 ): ClaudeSSEEvent[] {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
   // Prefer a recorded real signature when one was captured; otherwise fall back
@@ -592,7 +667,7 @@ function buildClaudeToolCallStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -644,17 +719,9 @@ function buildClaudeToolCallStreamEvents(
   for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
-    // Parse arguments to JSON object (Claude uses objects, not strings)
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    const argsJson = JSON.stringify(argsObj);
+    // Preserve malformed arguments on the streaming string wire.
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.text;
 
     // content_block_start
     events.push({
@@ -694,7 +761,7 @@ function buildClaudeToolCallStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -749,7 +816,7 @@ function buildClaudeTextResponse(
     });
   }
 
-  contentBlocks.push({ type: "text", text: content });
+  contentBlocks.push(claudeTextBlock(content, claudeCitations(content, overrides)));
 
   return {
     id: overrides?.id ?? generateMessageId(),
@@ -759,7 +826,7 @@ function buildClaudeTextResponse(
     model: overrides?.model ?? model,
     stop_reason: claudeStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
@@ -772,6 +839,8 @@ function buildClaudeToolCallResponse(
   reasoningSignature?: string,
   redactedThinking?: string[],
 ): object {
+  // A tool-only turn has no text for `citations` to point at.
+  resolveCitations("", overrides?.citations);
   const contentBlocks: object[] = [];
 
   // Redacted-thinking blocks lead the content array (before thinking / tool_use)
@@ -792,15 +861,8 @@ function buildClaudeToolCallResponse(
   }
 
   for (const tc of toolCalls) {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
+    const args = servedToolArgs(tc, "object", logger);
+    const argsObj = args.value;
     contentBlocks.push({
       type: "tool_use",
       id: tc.id || generateToolUseId(),
@@ -817,7 +879,7 @@ function buildClaudeToolCallResponse(
     model: overrides?.model ?? model,
     stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
@@ -851,7 +913,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -901,7 +963,15 @@ function buildClaudeContentWithToolCallsStreamEvents(
     // order. Anthropic is fully tool-first capable — a `toolCall` block can take
     // a lower `index` than a `text` block. Content-block indices are assigned in
     // encounter order, continuing from any leading thinking/redacted blocks.
-    const ordered = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const ordered = outcome.ordered;
+    // Citation offsets index the joined text of every text block; each text
+    // block carries only the citations that start inside it.
+    const textCitations = claudeBlockCitations(
+      ordered.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+      overrides,
+    );
+    let textPos = 0;
 
     for (const block of ordered) {
       if (block.type === "text") {
@@ -920,6 +990,10 @@ function buildClaudeContentWithToolCallsStreamEvents(
           });
         }
 
+        const citations = block.citations ?? textCitations[textPos];
+        textPos++;
+        events.push(...claudeCitationDeltas(citations ?? [], blockIndex));
+
         events.push({
           type: "content_block_stop",
           index: blockIndex,
@@ -929,16 +1003,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
       } else {
         const toolUseId = block.id || generateToolUseId();
 
-        let argsObj: unknown;
-        try {
-          argsObj = JSON.parse(block.arguments || "{}");
-        } catch {
-          logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-          );
-          argsObj = {};
-        }
-        const argsJson = JSON.stringify(argsObj);
+        const args = servedToolArgs(block, "string", logger);
+        const argsJson = args.text;
 
         events.push({
           type: "content_block_start",
@@ -973,10 +1039,13 @@ function buildClaudeContentWithToolCallsStreamEvents(
     events.push({
       type: "message_delta",
       delta: {
-        stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
+        stop_reason: claudeStopReason(
+          overrides?.finishReason,
+          outcome.hasToolCalls ? "tool_use" : "end_turn",
+        ),
         stop_sequence: null,
       },
-      usage: { output_tokens: claudeUsage(overrides).output_tokens },
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
     });
 
     // message_stop
@@ -985,10 +1054,11 @@ function buildClaudeContentWithToolCallsStreamEvents(
     return events;
   }
 
-  // LEGACY PATH (byte-for-byte unchanged): text content block, then tool_use
-  // blocks in `toolCalls` order. Reached only when `blocks` is absent; the
-  // leading redacted-thinking/thinking blocks above are shared with the new
-  // path and produce identical wire output here.
+  // LEGACY PATH: text content block, then tool_use blocks in `toolCalls`
+  // order. Reached only when `blocks` is absent; the leading
+  // redacted-thinking/thinking blocks above are shared with the new path and
+  // produce identical wire output here. Unchanged except that the text block
+  // now ends with one `citations_delta` per fixture URL citation, if any.
   // Text content block
   events.push({
     type: "content_block_start",
@@ -1005,6 +1075,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
     });
   }
 
+  events.push(...claudeCitationDeltas(claudeCitations(content, overrides), blockIndex));
+
   events.push({
     type: "content_block_stop",
     index: blockIndex,
@@ -1016,16 +1088,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
   for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    const argsJson = JSON.stringify(argsObj);
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.text;
 
     events.push({
       type: "content_block_start",
@@ -1062,7 +1126,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -1098,18 +1162,11 @@ function buildClaudeContentWithToolCallsResponse(
   }
 
   // Build a tool_use content block from a fixture tool call, parsing its
-  // string `arguments` into the object `input` Anthropic emits (warning on
-  // malformed JSON, same idiom as the streaming/legacy paths).
+  // string `arguments` into the object `input` Anthropic emits. Malformed
+  // JSON cannot be represented on this object wire and must fail explicitly.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
+    const args = servedToolArgs(tc, "object", logger);
+    const argsObj = args.value;
     return {
       type: "tool_use",
       id: tc.id || generateToolUseId(),
@@ -1118,16 +1175,28 @@ function buildClaudeContentWithToolCallsResponse(
     };
   };
 
+  let blockHasTools: boolean | undefined;
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-streaming `content[]` array is positionally observable,
     // so emit `text`/`tool_use` content blocks in the fixture's ARRAY ORDER
     // (after any leading redacted/thinking blocks). A toolCall block before a
     // text block therefore yields a tool_use ahead of the text — matching the
     // streaming path for the same `blocks` fixture.
-    const ordered = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const ordered = outcome.ordered;
+    // Citation offsets index the joined text of every text block; each text
+    // block carries only the citations that start inside it.
+    const textCitations = claudeBlockCitations(
+      ordered.flatMap((b) => (b.type === "text" ? [b.text] : [])),
+      overrides,
+    );
+    let textPos = 0;
+    blockHasTools = outcome.hasToolCalls;
     for (const block of ordered) {
       if (block.type === "text") {
-        contentBlocks.push({ type: "text", text: block.text });
+        const citations = block.citations ?? textCitations[textPos];
+        textPos++;
+        contentBlocks.push(claudeTextBlock(block.text, citations ?? []));
       } else {
         contentBlocks.push(
           toolUseBlock({ name: block.name, arguments: block.arguments, id: block.id }),
@@ -1135,8 +1204,10 @@ function buildClaudeContentWithToolCallsResponse(
       }
     }
   } else {
-    // LEGACY PATH (unchanged): text content block, then tool_use blocks.
-    contentBlocks.push({ type: "text", text: content });
+    // LEGACY PATH: text content block, then tool_use blocks. Unchanged except
+    // that the text block now carries `citations` when the fixture has URL
+    // citations.
+    contentBlocks.push(claudeTextBlock(content, claudeCitations(content, overrides)));
     for (const tc of toolCalls) {
       contentBlocks.push(toolUseBlock(tc));
     }
@@ -1148,65 +1219,290 @@ function buildClaudeContentWithToolCallsResponse(
     role: overrides?.role ?? "assistant",
     content: contentBlocks,
     model: overrides?.model ?? model,
-    stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
+    stop_reason: claudeStopReason(
+      overrides?.finishReason,
+      blockHasTools === false ? "end_turn" : "tool_use",
+    ),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
-// ─── SSE writer for Claude Messages API ─────────────────────────────────────
+/** Internal Claude-family prepared output; the transport owns delivery and journaling. */
+export type PreparedClaudeMisbehavior = {
+  plan: MisbehaviorPlan;
+  /** The reasoning the reply serves: the fault's for reasoning-only, else the model-gated fixture reasoning. */
+  reasoning: string | undefined;
+  usage: { input_tokens: number; output_tokens: number };
+} & ({ stream: true; events: ClaudeSSEEvent[] } | { stream: false; body: object });
 
-interface ClaudeStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  jitterSource?: JitterSource;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeClaudeSSEStream(
-  res: http.ServerResponse,
-  events: ClaudeSSEEvent[],
-  optionsOrLatency?: number | ClaudeStreamOptions,
-): Promise<boolean> {
-  const opts: ClaudeStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(
-      chunkIndex,
-      profile,
-      latency,
-      recordedTimings,
-      replaySpeed,
-      opts.jitterSource,
+/**
+ * Prepare an already-selected Claude fault once for Messages or InvokeModel.
+ * IDs, canonical served arguments and usage describe the full emitted output,
+ * even when the transport later interrupts delivery. Never mutates the plan.
+ */
+export function prepareClaudeMisbehavior(
+  plan: MisbehaviorPlan,
+  context: {
+    request: ChatCompletionRequest;
+    stream: boolean;
+    chunkSize: number;
+    logger: Logger;
+    strict: boolean;
+    /**
+     * Emit fixture `citations`. Only the Anthropic Messages endpoint does;
+     * Bedrock InvokeModel shares these builders but serves no citations.
+     */
+    citations: boolean;
+  },
+): PreparedClaudeMisbehavior {
+  const response = plan.response;
+  if (
+    !(
+      isTextResponse(response) ||
+      isToolCallResponse(response) ||
+      isCombinedFixtureResponse(response)
+    )
+  ) {
+    throw new TypeError("Claude misbehavior requires a chat response");
+  }
+  const outcome =
+    isCombinedFixtureResponse(response) && response.blocks?.length
+      ? resolveFixtureBlockOutcome(response.blocks)
+      : undefined;
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  const toolCalls = calls.map((call, index) => ({
+    ...call,
+    // Captured Claude max_tokens tool output has input {}, even for a cut JSON prefix.
+    ...(!context.stream &&
+    plan.summary.fault === "stop-length-mid-tool" &&
+    index === plan.summary.target?.index
+      ? { arguments: "{}" }
+      : {}),
+    ...(index === plan.duplicateId?.destinationIndex ? {} : { id: call.id || generateToolUseId() }),
+  }));
+  if (plan.duplicateId) {
+    toolCalls[plan.duplicateId.destinationIndex].id = toolCalls[plan.duplicateId.sourceIndex].id;
+  }
+  let preparedResponse: FixtureResponse = { ...response };
+  delete preparedResponse.usage;
+  if (outcome) {
+    let index = 0;
+    preparedResponse = {
+      ...preparedResponse,
+      content: outcome.content,
+      toolCalls,
+      blocks: outcome.ordered.map((block) => {
+        if (block.type !== "text") return { ...block, ...toolCalls[index++] };
+        // A text block's native citations follow the same `citations` rule.
+        const { citations, ...text } = block;
+        return context.citations && citations !== undefined ? { ...text, citations } : text;
+      }),
+    };
+  } else if ("toolCalls" in response) {
+    preparedResponse = { ...preparedResponse, toolCalls };
+  }
+  const servedToolCalls = toolCalls.map((call) => {
+    const args = toolArgsForWire(call);
+    return {
+      name: call.name,
+      id: call.id,
+      arguments: args.kind === "parsed" ? args.text : args.raw,
+    };
+  });
+  const preparedPlan: MisbehaviorPlan = {
+    ...plan,
+    response: preparedResponse,
+    summary: { ...plan.summary, servedToolCalls },
+  };
+  const reasoning =
+    plan.summary.fault === "reasoning-only"
+      ? (plan.reasoning ?? "")
+      : resolveReasoningForModel(
+          response.reasoning,
+          context.request.model,
+          context.strict,
+          context.logger,
+        );
+  const artifacts = resolveReasoningArtifactsForModel(
+    response.reasoningSignature,
+    response.redactedThinking,
+    context.request.model,
+    context.strict,
+    context.logger,
+  );
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  const resolvedUsage = resolveAnthropicUsage(undefined, {
+    inputTokens: estimatePromptTokens(context.request.messages),
+    outputTokens: estimateTokens(
+      content +
+        servedToolCalls.map((call) => call.name + call.arguments).join("") +
+        (reasoning ?? "") +
+        (plan.refusal ?? ""),
+    ),
+  });
+  const usage = renderAnthropicUsage(resolvedUsage, "messages-final", "applied-misbehavior");
+  const { citations, ...rest } = extractOverrides(response);
+  const overrides = {
+    ...rest,
+    ...(context.citations ? { citations } : {}),
+    ...(plan.stop === "length" ? { finishReason: "length" } : {}),
+    usage,
+  };
+  const model = context.request.model;
+  if (plan.summary.fault === "reasoning-only") {
+    // Approved modeled K9: native thinking-only exhaustion was not captured.
+    // Preserve an explicitly empty thought as a thinking block, never text.
+    const thought = reasoning ?? "";
+    const signature = artifacts.reasoningSignature ?? PLACEHOLDER_SIGNATURE;
+    const body = {
+      id: overrides.id ?? generateMessageId(),
+      type: "message",
+      role: overrides.role ?? "assistant",
+      content: [{ type: "thinking", thinking: thought, signature }],
+      model: overrides.model ?? model,
+      stop_reason: "max_tokens",
+      stop_sequence: null,
+      usage,
+    };
+    if (!context.stream) return { reasoning, stream: false, body, plan: preparedPlan, usage };
+    const events: ClaudeSSEEvent[] = [
+      { type: "message_start", message: { ...body, content: [], stop_reason: null } },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      },
+    ];
+    const size = Math.max(1, context.chunkSize);
+    for (let offset = 0; offset < thought.length; offset += size) {
+      events.push({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: thought.slice(offset, offset + size) },
+      });
+    }
+    events.push(
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null },
+        usage: renderAnthropicUsage(resolvedUsage, "messages-delta", "applied-misbehavior"),
+      },
+      { type: "message_stop" },
     );
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
   }
-
-  if (!res.writableEnded) {
-    res.end();
+  const empty = plan.summary.fault === "empty-response" || plan.summary.fault === "refusal";
+  if (empty) {
+    const stop = plan.stop === "refusal" ? "refusal" : "end_turn";
+    const detail =
+      plan.stop === "refusal"
+        ? {
+            stop_details: {
+              type: "refusal",
+              category: plan.refusalCategory ?? null,
+              explanation: plan.refusal ?? "",
+            },
+          }
+        : {};
+    const body = {
+      id: overrides.id ?? generateMessageId(),
+      type: "message",
+      role: overrides.role ?? "assistant",
+      content: [],
+      model: overrides.model ?? model,
+      stop_reason: stop,
+      stop_sequence: null,
+      ...detail,
+      usage,
+    };
+    if (!context.stream) return { reasoning, stream: false, body, plan: preparedPlan, usage };
+    const events: ClaudeSSEEvent[] = [
+      {
+        type: "message_start",
+        message: {
+          ...body,
+          stop_reason: null,
+          ...("stop_details" in detail ? { stop_details: undefined } : {}),
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: stop, stop_sequence: null, ...detail },
+        usage: renderAnthropicUsage(resolvedUsage, "messages-delta", "applied-misbehavior"),
+      },
+      { type: "message_stop" },
+    ];
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
   }
-  return true;
+  if (context.stream) {
+    const args = [
+      reasoning,
+      overrides,
+      artifacts.reasoningSignature,
+      artifacts.redactedThinking,
+    ] as const;
+    const events = isCombinedFixtureResponse(preparedResponse)
+      ? buildClaudeContentWithToolCallsStreamEvents(
+          preparedResponse.content ?? "",
+          toolCalls,
+          model,
+          Math.max(1, context.chunkSize),
+          context.logger,
+          ...args,
+          preparedResponse.blocks,
+        )
+      : isToolCallResponse(preparedResponse)
+        ? buildClaudeToolCallStreamEvents(
+            toolCalls,
+            model,
+            Math.max(1, context.chunkSize),
+            context.logger,
+            ...args,
+          )
+        : buildClaudeTextStreamEvents(content, model, Math.max(1, context.chunkSize), ...args);
+    if (plan.summary.fault === "stop-length-mid-tool") {
+      // Captured Claude max_tokens output omits the cut tool's block stop.
+      // Earlier completed blocks retain their stops, including when IDs repeat.
+      const cutIndex = events.filter(
+        (event) =>
+          event.type === "content_block_start" &&
+          isJsonObject(event.content_block) &&
+          event.content_block.type === "tool_use",
+      )[plan.target?.index ?? 0]?.index;
+      return {
+        reasoning,
+        stream: true,
+        events: events.filter(
+          (event) => !(event.type === "content_block_stop" && event.index === cutIndex),
+        ),
+        plan: preparedPlan,
+        usage,
+      };
+    }
+    return { reasoning, stream: true, events, plan: preparedPlan, usage };
+  }
+  const args = [
+    reasoning,
+    overrides,
+    artifacts.reasoningSignature,
+    artifacts.redactedThinking,
+  ] as const;
+  const body = isCombinedFixtureResponse(preparedResponse)
+    ? buildClaudeContentWithToolCallsResponse(
+        preparedResponse.content ?? "",
+        toolCalls,
+        model,
+        context.logger,
+        ...args,
+        preparedResponse.blocks,
+      )
+    : isToolCallResponse(preparedResponse)
+      ? buildClaudeToolCallResponse(toolCalls, model, context.logger, ...args)
+      : buildClaudeTextResponse(content, model, ...args);
+  return { reasoning, stream: false, body, plan: preparedPlan, usage };
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -1223,6 +1519,39 @@ export async function handleMessages(
   const { logger } = defaults;
   setCorsHeaders(res);
 
+  // Resolve here so exported direct calls obey the same policy as server routes.
+  const policy = resolvePolicy(defaults, req.headers);
+  const missingHeader =
+    policy.requiredHeaders === "enforce"
+      ? missingRequiredHeader("messages", req.headers)
+      : undefined;
+  if (missingHeader) {
+    const { id: requestId } = resolveRequestId(req.headers);
+    req.headers["x-request-id"] = requestId;
+    res.setHeader("X-Request-Id", requestId);
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: {
+        status: 400,
+        fixture: null,
+        source: "internal",
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("messages", "thinking", {
+        message: `${missingHeader}: header is required`,
+        requestId,
+      }).body,
+    );
+    return;
+  }
+
   let claudeReq: ClaudeRequest;
   try {
     claudeReq = JSON.parse(raw) as ClaudeRequest;
@@ -1238,12 +1567,62 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("messages", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `claudeReq.thinking` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(claudeReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("messages", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  const messagesError = !Array.isArray(claudeReq.messages)
+    ? "messages must be an array"
+    : claudeReq.messages.some((message) => !isJsonObject(message))
+      ? "messages entries must be JSON objects"
+      : claudeReq.messages.some(
+            (message) =>
+              (message.role === "user" || message.role === "assistant") &&
+              typeof message.content === "number",
+          )
+        ? "messages content must be a string or an array of content blocks"
+        : null;
+  if (messagesError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("messages", "validation", {
+        message: messagesError,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1254,7 +1633,7 @@ export async function handleMessages(
   // the real Anthropic API, which 400s on these.
   const thinkingViolation = validateThinkingInvariants(claudeReq);
   if (thinkingViolation) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).thinkingRejection;
     const violationMessage = thinkingViolationMessage(thinkingViolation);
     if (effectiveStrict) {
       logger.error(`THINKING: ${violationMessage}`);
@@ -1272,18 +1651,40 @@ export async function handleMessages(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          type: "error",
-          error: {
-            type: "invalid_request_error",
-            message: violationMessage,
-          },
-        }),
+        renderError("messages", "thinking", { message: violationMessage }).body,
       );
       return;
     }
     logger.warn(`THINKING: ${violationMessage} (strict off — replaying anyway)`);
     // Fall through to existing match/replay behavior.
+  }
+
+  // Mirror the converter's consumption gate: inert tools values remain tolerated.
+  // Reject only shapes that would throw while mapping native tool definitions.
+  if (claudeReq.tools && claudeReq.tools.length > 0) {
+    const toolsError = !Array.isArray(claudeReq.tools)
+      ? "tools must be an array"
+      : claudeReq.tools.some((tool) => tool === null)
+        ? "tools entries must not be null"
+        : null;
+    if (toolsError) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/messages",
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null },
+      });
+      writeErrorResponse(
+        res,
+        400,
+        renderError("messages", "validation", {
+          message: toolsError,
+          type: "invalid_request_error",
+        }).body,
+      );
+      return;
+    }
   }
 
   // Convert to ChatCompletionRequest for fixture matching
@@ -1299,7 +1700,7 @@ export async function handleMessages(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "anthropic" },
   );
 
   if (fixture) {
@@ -1314,28 +1715,29 @@ export async function handleMessages(
     );
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/messages",
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/messages",
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1360,25 +1762,25 @@ export async function handleMessages(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("messages", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "anthropic",
-        req.url ?? "/v1/messages",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "anthropic",
+          req.url ?? "/v1/messages",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1387,7 +1789,12 @@ export async function handleMessages(
           path: req.url ?? "/v1/messages",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1406,53 +1813,166 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("messages", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "anthropic",
+    fixture,
+    response,
+    request: completionReq,
+    stream: claudeReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`POST /v1/messages: ${misbehavior.message}`);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("messages", "misbehavior", {
+        type: misbehavior.status === 400 ? "invalid_request_error" : "api_error",
+        code: misbehavior.code,
+        message: misbehavior.message,
+      }).body,
+    );
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
+
+  if (misbehavior.kind === "applied") {
+    // Journal first, as the success branches do, so a fixture error thrown
+    // below leaves a 500 entry that keeps the fixture. Record the fault only
+    // once the reply is built: a thrown error is not a fault that was served.
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    // Safety net: the planner already skips a fixture with generated `files`
+    // (they have no Anthropic Messages projection), so it is never faulted.
+    // Reject here anyway, before any byte is written, if one gets through.
+    rejectGeneratedFiles(misbehavior.response, "Anthropic Messages");
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: claudeReq.stream === true,
+      chunkSize,
+      logger,
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: true,
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    if (!prepared.stream) {
+      const preparedBody = prepared.body;
+      await deliverJson(
+        res,
+        entry,
+        fixture,
+        () => preparedBody,
+        jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+          ),
+          !!misbehavior.duplicateId,
+        ),
+      );
+    } else {
+      await deliverStream(res, entry, fixture, typedSseCodec(), prepared.events, streamTiming);
+    }
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "anthropic",
+      stream: claudeReq.stream === true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "messages",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     // Anthropic-style error format: { type: "error", error: { type, message } }
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("messages", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Claude Messages API — ignoring",
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1474,24 +1994,38 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            completionReq.model,
+            logger,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeContentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         logger,
@@ -1501,22 +2035,7 @@ export async function handleMessages(
         effRedactedThinking,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -1529,7 +2048,10 @@ export async function handleMessages(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1551,17 +2073,30 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeTextResponse(
+            response.content,
+            completionReq.model,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeTextStreamEvents(
         response.content,
@@ -1572,22 +2107,7 @@ export async function handleMessages(
         effReasoningSignature,
         effRedactedThinking,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
@@ -1600,7 +2120,10 @@ export async function handleMessages(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1622,21 +2145,35 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // Generated `files` have no Anthropic Messages projection: reject before any byte is written.
+    rejectGeneratedFiles(response, "Anthropic Messages");
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
-      const body = buildClaudeToolCallResponse(
-        response.toolCalls,
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
-        effReasoningSignature,
-        effRedactedThinking,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildClaudeToolCallResponse(
+            functionToolCalls,
+            completionReq.model,
+            logger,
+            effReasoning,
+            overrides,
+            effReasoningSignature,
+            effRedactedThinking,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeToolCallStreamEvents(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         logger,
@@ -1645,42 +2182,26 @@ export async function handleMessages(
         effReasoningSignature,
         effRedactedThinking,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeClaudeSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, typedSseCodec(), events, streamTiming);
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v1/messages",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("messages", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }

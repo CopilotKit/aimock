@@ -1,17 +1,28 @@
+import { claimOneShotError, isOneShotError } from "./fixture-loader.js";
+import { isDeepStrictEqual } from "node:util";
+import { getEmbeddingRequest } from "./embedding-request.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
   ContentPart,
+  CustomToolDefinition,
   Fixture,
-  FixtureMatch,
+  ToolDefinition,
+  RawWireId,
+  WireId,
 } from "./types.js";
 import {
+  describeMatch,
+  isLiveResponse,
   isImageResponse,
   isAudioResponse,
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
+  isRawResponse,
   isErrorResponse,
+  isExtendedResponsesToolsList,
+  markExtendedResponsesToolsRequest,
 } from "./helpers.js";
 
 export function getLastMessageByRole(messages: ChatMessage[], role: string): ChatMessage | null {
@@ -19,6 +30,32 @@ export function getLastMessageByRole(messages: ChatMessage[], role: string): Cha
     if (messages[i].role === role) return messages[i];
   }
   return null;
+}
+
+/**
+ * Every tool an OpenAI Responses request offered (top level, inside
+ * `namespace` tools, and from `additional_tools` / `tool_search_output`
+ * items), keyed by the converted request. Kept off the request object so the
+ * request that predicates and the journal see is unchanged by default.
+ */
+const responsesOfferedTools = new WeakMap<
+  object,
+  { tools: ToolDefinition[]; customTools: CustomToolDefinition[] }
+>();
+
+/** Record the tools a Responses request offered (see {@link getResponsesOfferedTools}). */
+export function setResponsesOfferedTools(
+  request: ChatCompletionRequest,
+  offered: { tools: ToolDefinition[]; customTools: CustomToolDefinition[] },
+): void {
+  responsesOfferedTools.set(request, offered);
+}
+
+/** The tools a Responses request offered, for `toolNamespace` matching. */
+export function getResponsesOfferedTools(
+  request: ChatCompletionRequest,
+): { tools: ToolDefinition[]; customTools: CustomToolDefinition[] } | undefined {
+  return responsesOfferedTools.get(request);
 }
 
 /**
@@ -205,6 +242,12 @@ export interface MatchOptions {
    * own level gate keeps a passing programmatic run (silent default) quiet.
    */
   logger?: { warn(...args: unknown[]): void };
+  /**
+   * @internal The wire of the calling LLM handler. Set by handlers, never
+   * read from the request body. A raw fixture (see `isRawResponse`) matches
+   * only when its `raw.wire` equals this; with no wire, raw never matches.
+   */
+  wire?: WireId | RawWireId;
 }
 
 /**
@@ -299,14 +342,33 @@ export function matchFixtureDiagnostic(
   // legacy hard gate for replay too). Record mode passes `true` explicitly; the
   // env only matters when the caller left it `false`/unset (replay).
   const strictTurnIndex = (options?.strictTurnIndex ?? false) || strictTurnIndexEnv();
+  // `match.toolNamespace` (and, in resolveResponse, `customToolCalls` /
+  // `responsesBlocks`) apply only with responsesTools "extended". Earlier
+  // releases ignored these keys, so the default ignores them too.
+  const extendedTools = isExtendedResponsesToolsList(fixtures);
+  // An extended server's list gives each fixture with its held keys applied
+  // (createServerFixtureList), so the fixtures are matched as they are read.
+  if (extendedTools) markExtendedResponsesToolsRequest(req);
 
   let skippedBySequenceOrTurn = 0;
   // Every fixture whose content / shape predicates (and sequenceIndex gate)
   // pass. turnIndex is applied afterwards as a non-fatal disambiguator.
   const contentMatches: Fixture[] = [];
+  // Raw fixtures whose content matched but whose `raw.wire` is not this
+  // request's wire, kept only for the miss warning below.
+  const rawWireMisses: { fixture: Fixture; wire: unknown }[] = [];
 
   for (const fixture of fixtures) {
     const { match } = fixture;
+
+    // Recorded embeddings retain the operation and exact wire inputs so a
+    // changed batch or width cannot reuse another operation's response.
+    if (
+      match.embeddingRequest !== undefined &&
+      !isDeepStrictEqual(match.embeddingRequest, getEmbeddingRequest(req))
+    ) {
+      continue;
+    }
 
     // predicate — if present, must return true (receives original request)
     if (match.predicate !== undefined) {
@@ -319,6 +381,30 @@ export function matchFixtureDiagnostic(
     //    whose response type is incompatible (prevents generic chat fixtures
     //    from matching image/speech/video requests and causing 500s)
     const reqEndpoint = effective._endpointType as string | undefined;
+    const response = fixture.response;
+    const liveResponse = isLiveResponse(response);
+    if (reqEndpoint === "openai-live") {
+      if (
+        match.endpoint !== "openai-live" ||
+        effective.model !== "gpt-live-1" ||
+        (typeof response !== "function" &&
+          (!liveResponse || effective.model !== response.live.model))
+      )
+        continue;
+    } else if (liveResponse) {
+      continue;
+    }
+    // A raw fixture is wire-specific: never offer it to another wire's handler.
+    // The wire comes from the calling handler via MatchOptions, never from the
+    // request body: body fields are journaled, and a `requestTransform` copy
+    // may drop them. No wire given (direct matchFixture callers, non-LLM
+    // handlers) means raw never matches. Factories are checked at serve time.
+    // The skip is deferred until every content predicate has run, so a fixture
+    // that failed ONLY on its wire can be named in a miss warning below.
+    const rawWire =
+      typeof response !== "function" && isRawResponse(response)
+        ? { wire: response.raw.wire }
+        : undefined;
     if (match.endpoint !== undefined) {
       if (match.endpoint !== reqEndpoint) continue;
       // A declared endpoint used to END the shape discussion — the router
@@ -365,6 +451,16 @@ export function matchFixtureDiagnostic(
           (reqEndpoint === "audio-gen" && isAudioResponse(r)) ||
           (reqEndpoint === "fal-audio" && isAudioResponse(r)) ||
           (reqEndpoint === "fal" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-voice-design" &&
+            (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-voice" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-voice-get" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-voice-delete" &&
+            (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-stt" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "byteplus-tts" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "elevenlabs-audio-isolation" &&
+            (isAudioResponse(r) || isJSONResponse(r) || isErrorResponse(r))) ||
           (reqEndpoint === "transcription" && isTranscriptionResponse(r)) ||
           (reqEndpoint === "translation" && isTranscriptionResponse(r)) ||
           (reqEndpoint === "video" && isVideoResponse(r));
@@ -482,10 +578,32 @@ export function matchFixtureDiagnostic(
       if (text === null || !text.includes(match.toolResultContains)) continue;
     }
 
-    // toolName — match against any tool definition by function.name
-    if (match.toolName !== undefined) {
-      const tools = effective.tools ?? [];
-      const found = tools.some((t) => t.function.name === match.toolName);
+    // toolName — match against any tool definition by function.name (and,
+    // with responsesTools "extended", any Responses custom tool by name).
+    // toolNamespace — exact OpenAI Responses namespace of an offered tool; with
+    // toolName, ONE tool must carry both (Codex routes by the exact pair). Only
+    // with responsesTools "extended"; there a toolNamespace fixture sees every
+    // tool the Responses request offered. The default ignores the key.
+    const toolNamespace = extendedTools ? match.toolNamespace : undefined;
+    if (match.toolName !== undefined || toolNamespace !== undefined) {
+      const offered =
+        toolNamespace !== undefined
+          ? (getResponsesOfferedTools(effective) ?? getResponsesOfferedTools(req))
+          : undefined;
+      const tools = offered?.tools ?? (Array.isArray(effective.tools) ? effective.tools : []);
+      const customTools =
+        offered?.customTools ?? (Array.isArray(effective.customTools) ? effective.customTools : []);
+      const found =
+        tools.some(
+          (t) =>
+            (match.toolName === undefined || t?.function?.name === match.toolName) &&
+            (toolNamespace === undefined || t?.namespace === toolNamespace),
+        ) ||
+        customTools.some(
+          (t) =>
+            (match.toolName === undefined || t?.name === match.toolName) &&
+            (toolNamespace === undefined || t?.namespace === toolNamespace),
+        );
       if (!found) continue;
     }
 
@@ -540,6 +658,13 @@ export function matchFixtureDiagnostic(
       if (currentTurnHasToolResult(effective.messages) !== match.hasToolResult) continue;
     }
 
+    // A raw fixture for another wire is skipped here, after its content
+    // matched and before the sequence/turn gates (it is not a count skip).
+    if (rawWire !== undefined && rawWire.wire !== options?.wire) {
+      rawWireMisses.push({ fixture, wire: rawWire.wire });
+      continue;
+    }
+
     // At this point every SHAPE / CONTENT predicate above has passed, so this
     // fixture is a genuine CONTENT match for the request. The sequenceIndex and
     // turnIndex constraints below are POSITION state, not request shape.
@@ -583,6 +708,20 @@ export function matchFixtureDiagnostic(
   }
 
   if (contentMatches.length === 0) {
+    // Near-miss: a raw fixture matched this request in every way except its
+    // `raw.wire`. Name both wires so a wrong or missing wire is not a silent 404.
+    if (options?.logger) {
+      for (const miss of rawWireMisses) {
+        const fixtureWire =
+          miss.wire === undefined ? "raw.wire is missing" : `raw.wire=${JSON.stringify(miss.wire)}`;
+        const requestWire =
+          options.wire === undefined ? "request wire is not set" : `request wire "${options.wire}"`;
+        options.logger.warn(
+          `raw fixture not served: ${describeMatch(miss.fixture.match, fixtures.indexOf(miss.fixture))} ` +
+            `matched the request except its wire (${fixtureWire}, ${requestWire})`,
+        );
+      }
+    }
     return { fixture: null, skippedBySequenceOrTurn };
   }
 
@@ -628,44 +767,6 @@ export function matchFixtureDiagnostic(
   }
 
   return { fixture: selected, skippedBySequenceOrTurn, turnIndexRelaxed, matchedBy };
-}
-
-/**
- * Build a stable, human-readable identifier for a fixture's match shape for the
- * relaxed-turnIndex warning. The previous `JSON.stringify(match)` was unfit: it
- * DROPS `predicate` functions (non-serialisable) and serialises any RegExp
- * matcher to `{}`, so a predicate- or regex-gated fixture's warning collapsed to
- * an uninformative "served fixture {}" / `{"userMessage":{}}` blob.
- *
- * Instead we list the PRESENT matcher keys in declaration order, annotating each
- * by VALUE KIND so predicates and regexes survive: `predicate(fn)`,
- * `userMessage(regex)`, `userMessage("hello")`, `turnIndex=0`, etc. The
- * fixture's array `index` (when known, i.e. `>= 0`) is prefixed as the stable
- * positional identifier — the `Fixture` type carries no `id`/`name`, so its
- * registration index is the only stable handle. String/number values are shown
- * inline (truncated) so a content match remains recognisable; the whole string
- * is capped to keep the log line bounded.
- */
-function describeMatch(match: FixtureMatch, index: number): string {
-  const parts: string[] = [];
-  for (const [key, value] of Object.entries(match)) {
-    if (value === undefined) continue;
-    if (typeof value === "function") {
-      parts.push(`${key}(fn)`);
-    } else if (value instanceof RegExp) {
-      parts.push(`${key}(${value})`);
-    } else if (typeof value === "string") {
-      const v = value.length > 40 ? `${value.slice(0, 40)}…` : value;
-      parts.push(`${key}(${JSON.stringify(v)})`);
-    } else if (Array.isArray(value)) {
-      parts.push(`${key}(${value.length} item${value.length === 1 ? "" : "s"})`);
-    } else {
-      parts.push(`${key}=${String(value)}`);
-    }
-  }
-  const keys = parts.length > 0 ? parts.join(", ") : "no matchers";
-  const prefix = index >= 0 ? `#${index} ` : "";
-  return `${prefix}{ ${keys} }`.slice(0, 160);
 }
 
 /**
@@ -780,4 +881,23 @@ export function matchFixture(
   options?: MatchOptions,
 ): Fixture | null {
   return matchFixtureDiagnostic(fixtures, req, matchCounts, requestTransform, options).fixture;
+}
+
+/** Select for serving and reserve an injected error before the caller can await.
+ * Diagnostic-only matching stays non-consuming. A competing selection retries
+ * against the live queue; cancellation must release the reserved fixture.
+ */
+export function selectFixtureForServing(
+  ...args: Parameters<typeof matchFixtureDiagnostic>
+): MatchFixtureDiagnostic {
+  for (;;) {
+    const attempt = matchFixtureDiagnostic(...args);
+    if (
+      attempt.fixture &&
+      isOneShotError(attempt.fixture) &&
+      !claimOneShotError(args[0], attempt.fixture)
+    )
+      continue;
+    return attempt;
+  }
 }

@@ -1,16 +1,35 @@
 #!/usr/bin/env node
-import { parseArgs } from "node:util";
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isDeepStrictEqual, parseArgs } from "node:util";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync, type Stats } from "node:fs";
+import { relative, resolve, sep } from "node:path";
 import { createServer } from "./server.js";
-import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "./fixture-loader.js";
+import { parsePolicyFlags } from "./config-loader.js";
+import type { ResponsesToolsMode } from "./types.js";
+import {
+  FixtureLoadError,
+  MisbehaviorConfigError,
+  enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "./fixture-loader.js";
+import {
+  loadFixtureFileWithServices,
+  loadFixturesFromDirWithServices,
+  type FixturesWithServices,
+} from "./fixture-loader-services.js";
+import { McpFakesAddError } from "./mcp-fakes.js";
+import { build, msg } from "./message-text.js";
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
 import { AGUIMock } from "./agui-mock.js";
+import { MCPMock } from "./mcp-mock.js";
+import { mcpRecordEnv, parseMcpRecordFlag } from "./mcp-recorder.js";
+import { parseChaosField, CHAOS_FIELDS, type ChaosField } from "./chaos.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
-import type { Fixture, ChaosConfig, RecordConfig } from "./types.js";
+import type { Fixture, ChaosConfig, RecordConfig, McpFakeSource, Mountable } from "./types.js";
 
 const HELP = `
 Usage: aimock [options]
@@ -26,11 +45,19 @@ Options:
   -w, --watch               Watch fixture path for changes and reload
       --log-level <level>   Log verbosity: silent, warn, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
+      --misbehavior         Enable model misbehavior: fixture misbehavior keys and the
+                            X-AIMock-Misbehavior header (ignored without this flag)
       --metrics             Enable Prometheus metrics at GET /metrics
       --record              Record mode: proxy unmatched requests and save fixtures
       --record-full-model-version  Record exact model version without date stripping (default: false)
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
+      --strict-tool-arguments  Reject fixture tool calls with invalid JSON arguments instead of serving {} (default: false)
+      --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or extended (namespaced and
+                            custom tools visible to matching, custom tool rounds counted, namespaces emitted and recorded)
+      --policy <key=value>  Request policy (repeatable): requiredHeaders=off|enforce (default: off),
+                            authErrors=legacy|native (default: legacy),
+                            modelCatalog=legacy|native (default: legacy)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
@@ -43,6 +70,7 @@ Options:
       --provider-cohere <url>     Upstream URL for Cohere
       --provider-openrouter <url> Upstream URL for OpenRouter (video record proxy)
       --provider-byteplus <url>   Upstream ORIGIN for BytePlus Ark (e.g. https://ark.ap-southeast.bytepluses.com — origin only, no /api/v3)
+      --provider-byteplus-speech <url>  Upstream ORIGIN for BytePlus Seed Speech (e.g. https://voice.ap-southeast-1.bytepluses.com)
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --max-proxy-buffer-bytes <n> Cap (bytes) on in-memory proxy-path buffer; full body still relayed (default: 67108864)
@@ -50,11 +78,14 @@ Options:
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
+      --mcp-record <mount>=<url>   Record an upstream MCP server into mcpFakes (repeatable)
+      --mcp-proxy-only <mount>=<url>  Proxy an upstream MCP server without saving
       --replay-speed <n>    Replay speed multiplier (default: 1.0, 2.0 = 2x faster)
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
-      --chaos-seed <seed>   Seed making chaos decisions reproducible
+      --chaos-ratelimit <rate> Probability (0-1) of 429 with Retry-After
+      --chaos-latency <ms> Delay (0-${CHAOS_FIELDS.latencyMs.max}ms) injected before handling
       AIMOCK_API_KEYS  Comma-separated inbound test API keys (environment only)
       --help                Show this help message
 `.trim();
@@ -69,11 +100,15 @@ const { values } = parseArgs({
     watch: { type: "boolean", short: "w", default: false },
     "log-level": { type: "string", default: "info" },
     "validate-on-load": { type: "boolean", default: false },
+    misbehavior: { type: "boolean", default: false },
     metrics: { type: "boolean", default: false },
     record: { type: "boolean", default: false },
     "record-full-model-version": { type: "boolean", default: false },
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
+    "strict-tool-arguments": { type: "boolean", default: false },
+    "responses-tools": { type: "string" },
+    policy: { type: "string", multiple: true },
     "provider-openai": { type: "string" },
     "provider-anthropic": { type: "string" },
     "provider-gemini": { type: "string" },
@@ -84,6 +119,7 @@ const { values } = parseArgs({
     "provider-cohere": { type: "string" },
     "provider-openrouter": { type: "string" },
     "provider-byteplus": { type: "string" },
+    "provider-byteplus-speech": { type: "string" },
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
     "max-proxy-buffer-bytes": { type: "string" },
@@ -91,11 +127,14 @@ const { values } = parseArgs({
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
+    "mcp-record": { type: "string", multiple: true },
+    "mcp-proxy-only": { type: "string", multiple: true },
     "replay-speed": { type: "string", default: "1.0" },
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
-    "chaos-seed": { type: "string" },
+    "chaos-ratelimit": { type: "string" },
+    "chaos-latency": { type: "string" },
     "journal-max": { type: "string", default: "1000" },
     "fixture-counts-max": { type: "string", default: "500" },
     help: { type: "boolean", default: false },
@@ -144,6 +183,26 @@ if (Number.isNaN(replaySpeed) || replaySpeed <= 0) {
   console.error("--replay-speed must be a positive number");
   process.exit(1);
 }
+
+const responsesToolsFlag = values["responses-tools"];
+if (
+  responsesToolsFlag !== undefined &&
+  responsesToolsFlag !== "legacy" &&
+  responsesToolsFlag !== "extended"
+) {
+  console.error(
+    `Invalid --responses-tools: ${responsesToolsFlag} (expected "legacy" or "extended")`,
+  );
+  process.exit(1);
+}
+const responsesTools: ResponsesToolsMode | undefined = responsesToolsFlag;
+
+const parsedPolicy = parsePolicyFlags(values.policy ?? []);
+if (!parsedPolicy.ok) {
+  console.error(`${parsedPolicy.error}\n\n${HELP}`);
+  process.exit(1);
+}
+const policy = parsedPolicy.policy;
 
 const journalMax = Number(values["journal-max"]);
 if (Number.isNaN(journalMax) || !Number.isInteger(journalMax) || journalMax < 0) {
@@ -218,44 +277,38 @@ let chaos: ChaosConfig | undefined;
   const dropStr = values["chaos-drop"];
   const malformedStr = values["chaos-malformed"];
   const disconnectStr = values["chaos-disconnect"];
-  const seedStr = values["chaos-seed"];
+  const ratelimitStr = values["chaos-ratelimit"];
+  const latencyStr = values["chaos-latency"];
 
   if (
     dropStr !== undefined ||
     malformedStr !== undefined ||
     disconnectStr !== undefined ||
-    seedStr !== undefined
+    ratelimitStr !== undefined ||
+    latencyStr !== undefined
   ) {
+    // Same parser, same TABLE, same reject-never-clamp policy as every other
+    // chaos input (headers, fixture, server default, control API) — see
+    // `ChaosConfig`. The bounds and the integer-vs-rate grammar are read out of
+    // `CHAOS_FIELDS`, never re-typed here, so raising a cap in that one table
+    // moves the flag with it instead of leaving `--chaos-latency` on the old
+    // limit with no compile error.
     chaos = {};
-    if (dropStr !== undefined) {
-      const val = parseFloat(dropStr);
-      if (isNaN(val) || val < 0 || val > 1) {
-        console.error(`Invalid chaos-drop: ${dropStr} (must be 0-1)`);
+    const flagFields: Array<{ flag: string; field: ChaosField; raw: string | undefined }> = [
+      { flag: "chaos-drop", field: "dropRate", raw: dropStr },
+      { flag: "chaos-malformed", field: "malformedRate", raw: malformedStr },
+      { flag: "chaos-disconnect", field: "disconnectRate", raw: disconnectStr },
+      { flag: "chaos-ratelimit", field: "rateLimitRate", raw: ratelimitStr },
+      { flag: "chaos-latency", field: "latencyMs", raw: latencyStr },
+    ];
+    for (const { flag, field, raw } of flagFields) {
+      if (raw === undefined) continue;
+      const val = parseChaosField(field, raw);
+      if (val === undefined) {
+        console.error(`Invalid ${flag}: ${raw} (must be 0-${CHAOS_FIELDS[field].max})`);
         process.exit(1);
       }
-      chaos.dropRate = val;
-    }
-    if (malformedStr !== undefined) {
-      const val = parseFloat(malformedStr);
-      if (isNaN(val) || val < 0 || val > 1) {
-        console.error(`Invalid chaos-malformed: ${malformedStr} (must be 0-1)`);
-        process.exit(1);
-      }
-      chaos.malformedRate = val;
-    }
-    if (disconnectStr !== undefined) {
-      const val = parseFloat(disconnectStr);
-      if (isNaN(val) || val < 0 || val > 1) {
-        console.error(`Invalid chaos-disconnect: ${disconnectStr} (must be 0-1)`);
-        process.exit(1);
-      }
-      chaos.disconnectRate = val;
-    }
-    // Passed on as written. Normalizing a number, refusing a seed that could
-    // not be reported back and standing in a generated one are the
-    // randomizer's job, and it does the same for a fixture's seed.
-    if (seedStr !== undefined) {
-      chaos.seed = seedStr;
+      chaos[field] = val;
     }
   }
 }
@@ -274,6 +327,8 @@ if (values.record || values["proxy-only"]) {
   if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
   if (values["provider-openrouter"]) providers.openrouter = values["provider-openrouter"];
   if (values["provider-byteplus"]) providers.byteplus = values["provider-byteplus"];
+  if (values["provider-byteplus-speech"])
+    providers["byteplus-speech"] = values["provider-byteplus-speech"];
 
   if (Object.keys(providers).length === 0) {
     console.error(
@@ -327,6 +382,7 @@ if (values.record || values["proxy-only"]) {
       "provider-cohere",
       "provider-openrouter",
       "provider-byteplus",
+      "provider-byteplus-speech",
     ] as const
   ).filter((flag) => values[flag] !== undefined);
   if (droppedProviderFlags.length > 0) {
@@ -375,6 +431,64 @@ if (values["agui-record"] || values["agui-proxy-only"]) {
   aguiMount = { path: "/agui", handler: agui };
 }
 
+// Parse MCP record/proxy mounts (MR1, AM6): --mcp-record / --mcp-proxy-only <mount>=<url>
+const mcpRecordMounts: { path: string; handler: MCPMock }[] = [];
+{
+  const recordValues = values["mcp-record"] ?? [];
+  const proxyValues = values["mcp-proxy-only"] ?? [];
+  if (recordValues.length > 0) {
+    // C11: check the flag itself; fixtureValues defaults to ./fixtures.
+    if (!(values.fixtures && values.fixtures.length > 0)) {
+      console.error(
+        "Error: --mcp-record requires --fixtures <local path> for the recording destination",
+      );
+      process.exit(1);
+    }
+    if (/^https?:\/\//i.test(values.fixtures[0])) {
+      console.error(
+        `Error: --mcp-record requires a local --fixtures path for the recording destination; got URL ${values.fixtures[0]}`,
+      );
+      process.exit(1);
+    }
+  }
+  const flags = [
+    ...recordValues.map((value) => ({ flag: "--mcp-record", value, proxyOnly: false })),
+    ...proxyValues.map((value) => ({ flag: "--mcp-proxy-only", value, proxyOnly: true })),
+  ];
+  if (flags.length > 0) {
+    let env: ReturnType<typeof mcpRecordEnv>;
+    try {
+      env = mcpRecordEnv(process.env);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    for (const { flag, value, proxyOnly } of flags) {
+      try {
+        const { mount, upstream } = parseMcpRecordFlag(value, flag);
+        if (aguiMount && mount === aguiMount.path) {
+          throw new Error(`${flag} mount ${mount} is held by a mount that is not an MCP mock`);
+        }
+        if (mcpRecordMounts.some((m) => m.path === mount)) {
+          throw new Error(`${flag} mount ${mount} is given more than once`);
+        }
+        const mcp = new MCPMock().enableRecording({
+          upstream,
+          fixturePath: proxyOnly ? undefined : resolve(values.fixtures![0], "recorded"),
+          proxyOnly,
+          secretValues: env.secretValues,
+          upstreamAuth: env.upstreamAuth,
+          strict: values.strict,
+        });
+        mcpRecordMounts.push({ path: mount, handler: mcp });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
 interface ResolvedFixtureSource {
   source: string;
   path: string;
@@ -415,21 +529,145 @@ async function resolveAllFixtureSources(): Promise<ResolvedFixtureSource[]> {
   return resolved;
 }
 
-function loadSource(source: ResolvedFixtureSource): Fixture[] {
-  return source.isDir
-    ? loadFixturesFromDir(source.path, logger)
-    : loadFixtureFile(source.path, logger);
+// F3: the loaders that carry `mcpFakes`. A file's entry-id source (I6) is the
+// --fixtures value as given: the path, or the URL of a remote file (whose
+// `path` is the on-disk cache).
+function loadSource(source: ResolvedFixtureSource): FixturesWithServices {
+  const loaded = source.isDir
+    ? loadFixturesFromDirWithServices(source.path, logger)
+    : loadFixtureFileWithServices(source.path, logger, undefined, source.source);
+  // --misbehavior: a bad fixture `misbehavior` key fails the load; without it the key is ignored.
+  if (values.misbehavior) loaded.fixtures.forEach(enableHeldFixtureMisbehavior);
+  return loaded;
+}
+
+/** Each source's `mcpFakes` blocks, in load order, for the --watch comparison. */
+function fakesBySource(blocks: McpFakeSource[]): Map<string, unknown[]> {
+  const bySource = new Map<string, unknown[]>();
+  for (const block of blocks) {
+    const list = bySource.get(block.source) ?? [];
+    list.push([block.blockIndex, block.raw]);
+    bySource.set(block.source, list);
+  }
+  return bySource;
+}
+
+/**
+ * R9/F11: fakes are not reloaded by --watch, so a reload whose `mcpFakes`
+ * differ from the boot set is rejected. Returns the first changed source.
+ * A source in `unreadable` could not be read or parsed: it is not compared,
+ * because its blocks are unknown, not removed.
+ */
+function changedFakesSource(
+  boot: McpFakeSource[],
+  reload: McpFakeSource[],
+  unreadable: ReadonlySet<string>,
+): string | null {
+  const before = fakesBySource(boot);
+  const after = fakesBySource(reload);
+  for (const source of new Set([...before.keys(), ...after.keys()])) {
+    if (unreadable.has(source)) continue;
+    if (!isDeepStrictEqual(before.get(source), after.get(source))) return source;
+  }
+  return null;
+}
+
+/**
+ * L3: a load error on stderr, whatever the log level: every error of a
+ * `McpFakesAddError`, one per line, then its L8 warnings.
+ */
+function printLoadError(err: FixtureLoadError | MisbehaviorConfigError): void {
+  const errors = err instanceof McpFakesAddError ? err.errors : [err];
+  for (const e of errors) console.error(e.message);
+  if (err instanceof McpFakesAddError) {
+    for (const w of err.warnings) console.warn(w.message);
+  }
+}
+
+/** A --watch reload that `loadFn` rejected and already printed (L3, L7). */
+class ReloadRejected extends Error {}
+
+/**
+ * The --watch logger: as `Logger`, except that the watcher's own report of a
+ * {@link ReloadRejected} reload is dropped, so the error is printed once.
+ */
+class WatchLogger extends Logger {
+  override error(...args: unknown[]): void {
+    if (args.some((a) => a instanceof ReloadRejected)) return;
+    super.error(...args);
+  }
+}
+
+/**
+ * MR13: --watch with record mounts. (a) An event for a recorder temp file, or
+ * for a file whose bytes are exactly what a recorder last wrote there, does
+ * not reload; everything else (a delete, a directory, a user edit) reloads as
+ * on main. (b) Each recorder write moves the --watch baseline of that file,
+ * so the next reload does not reject the recording as a changed `mcpFakes`.
+ * Without record mounts (or for a file source), --watch is exactly as on main.
+ */
+function recorderWatch(
+  primary: ResolvedFixtureSource,
+  moveBaseline: (moved: (boot: McpFakeSource[]) => McpFakeSource[]) => void,
+): { ignore?: (absPath: string) => boolean } {
+  const events = mcpRecordMounts.map((m) => m.handler.recorderEvents()).filter((ev) => ev !== null);
+  if (events.length === 0 || !primary.isDir) return {};
+  for (const ev of events) {
+    ev.onWrite((file, written) => {
+      const source = relative(primary.path, file).split(sep).join("/");
+      const blocks: McpFakeSource[] = Array.isArray(written)
+        ? written.map((raw, blockIndex) => ({ source, blockIndex, raw }))
+        : [{ source, blockIndex: null, raw: written }];
+      moveBaseline((boot) => {
+        // Replace this source's blocks in place; a new source goes last.
+        const others = boot.filter((b) => b.source !== source);
+        const at = boot.findIndex((b) => b.source === source);
+        const pos = at === -1 ? others.length : at;
+        return [...others.slice(0, pos), ...blocks, ...others.slice(pos)];
+      });
+    });
+  }
+  return {
+    ignore: (absPath: string): boolean => {
+      // Recorder temp files only (persistServiceFakes writes `<file>.tmp.<uuid>`, then renames it).
+      if (/\.tmp\.[0-9a-f-]+$/i.test(absPath)) return true;
+      let st: Stats;
+      try {
+        st = statSync(absPath);
+      } catch {
+        return false; // gone: a user deleted a fixture — this MUST reload (r2 N2)
+      }
+      if (st.isDirectory()) return false; // directory events behave as on main
+      let data: Buffer;
+      try {
+        data = readFileSync(absPath);
+      } catch {
+        return false;
+      }
+      const hash = createHash("sha256").update(data).digest("hex");
+      return events.some((ev) => ev.lastWrittenHash(absPath) === hash);
+    },
+  };
 }
 
 async function main() {
   const sources = await resolveAllFixtureSources();
 
   const fixtures: Fixture[] = [];
+  const mcpFakes: McpFakeSource[] = [];
+  // The primary source's blocks: what a --watch reload of it is compared with.
+  let primaryFakes: McpFakeSource[] = [];
   for (const src of sources) {
-    fixtures.push(...loadSource(src));
+    const loaded = loadSource(src);
+    fixtures.push(...loaded.fixtures);
+    mcpFakes.push(...loaded.mcpFakes);
+    if (src === sources[0]) primaryFakes = loaded.mcpFakes;
   }
 
-  if (fixtures.length === 0) {
+  if (fixtures.length === 0 && mcpFakes.length > 0) {
+    // F5/L9: fake blocks count as loaded; only LLM requests have nothing to match.
+    console.warn(build(msg`Warning: No LLM fixtures loaded; LLM requests will return 404`));
+  } else if (fixtures.length === 0) {
     if (validateOnLoad || values.strict) {
       console.error("Error: No fixtures loaded and validation/strict mode is enabled — aborting.");
       process.exit(1);
@@ -442,6 +680,7 @@ async function main() {
 
   // Validate fixtures if requested
   if (validateOnLoad) {
+    if (responsesTools === "extended") fixtures.forEach(markFixtureResponsesToolsExtended);
     const results = validateFixtures(fixtures);
     const errors = results.filter((r) => r.severity === "error");
     const warnings = results.filter((r) => r.severity === "warning");
@@ -449,6 +688,8 @@ async function main() {
     for (const w of warnings) {
       logger.warn(`Fixture ${w.fixtureIndex}: ${w.message}`);
     }
+    // L8 (shadowed mcpFakes entries) is not printed here: the hand-off in
+    // createServer prints it on every start.
     for (const e of errors) {
       logger.error(`Fixture ${e.fixtureIndex}: ${e.message}`);
     }
@@ -459,7 +700,11 @@ async function main() {
     }
   }
 
-  const mounts = aguiMount ? [aguiMount] : undefined;
+  const allMounts: { path: string; handler: Mountable }[] = [
+    ...(aguiMount ? [aguiMount] : []),
+    ...mcpRecordMounts,
+  ];
+  const mounts = allMounts.length > 0 ? allMounts : undefined;
 
   const instance = await createServer(
     fixtures,
@@ -474,11 +719,16 @@ async function main() {
       metrics: values.metrics,
       record,
       strict: values.strict,
+      policy,
+      strictToolArguments: values["strict-tool-arguments"],
+      enableMisbehavior: values.misbehavior,
+      ...(responsesTools !== undefined ? { responsesTools } : {}),
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,
     },
     mounts,
+    { search: [], rerank: [], moderation: [], mcpFakes },
   );
 
   // Only the first local source is watched — remote URL sources are fetched once
@@ -510,11 +760,49 @@ async function main() {
     if (!primary) {
       logger.warn("--watch requested but no resolvable fixture sources; skipping watcher");
     } else {
-      const loadFn = (): Fixture[] => loadSource(primary);
+      // A rejected reload is printed here, whatever the log level, then
+      // thrown as ReloadRejected: watchFixtures keeps the previous fixtures,
+      // and its WatchLogger does not print the error a second time.
+      const reject = (err: FixtureLoadError | MisbehaviorConfigError): never => {
+        printLoadError(err);
+        throw new ReloadRejected(build(msg`--watch reload rejected`));
+      };
+      const loadFn = (): Fixture[] => {
+        let loaded: FixturesWithServices;
+        try {
+          loaded = loadSource(primary);
+        } catch (err) {
+          // L3: a bad block in the reloaded file.
+          if (err instanceof FixtureLoadError || err instanceof MisbehaviorConfigError) {
+            return reject(err);
+          }
+          throw err;
+        }
+        const changed = changedFakesSource(
+          primaryFakes,
+          loaded.mcpFakes,
+          new Set(loaded.unreadable),
+        );
+        if (changed !== null) {
+          // L7.
+          return reject(
+            new FixtureLoadError({
+              rule: "mcp-fakes/watch-reload-changed",
+              file: changed,
+              detail: msg`mcpFakes changed on --watch reload; MCP fakes are not reloaded, so the whole reload is rejected and the previous fixtures stay loaded. Restart aimock to load the new fakes`,
+            }),
+          );
+        }
+        if (responsesTools === "extended") {
+          loaded.fixtures.forEach(markFixtureResponsesToolsExtended);
+        }
+        return loaded.fixtures;
+      };
       watcher = watchFixtures(primary.path, fixtures, loadFn, {
-        logger,
+        logger: new WatchLogger(logLevel),
         validate: validateOnLoad,
         validateFn: validateFixtures,
+        ...recorderWatch(primary, (moved) => (primaryFakes = moved(primaryFakes))),
       });
       logger.info(`Watching ${primary.path} for changes`);
     }
@@ -522,6 +810,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  if (err instanceof FixtureLoadError || err instanceof MisbehaviorConfigError) {
+    printLoadError(err);
+  } else {
+    console.error(err);
+  }
   process.exit(1);
 });

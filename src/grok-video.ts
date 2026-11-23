@@ -1,3 +1,4 @@
+import { renderError } from "./response/errors.js";
 import type * as http from "node:http";
 import crypto from "node:crypto";
 import type {
@@ -14,16 +15,15 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos, chaosIdentity } from "./chaos.js";
+import { applyChaosAsync, responseGone } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
@@ -395,31 +395,30 @@ export async function handleGrokVideoCreate(
   }
 
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       fixture,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
       fixture
         ? "fixture"
-        : resolveStrictMode(defaults.strict, req.headers)
+        : resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss
           ? "internal"
           : defaults.record?.providers.grok
             ? "proxy"
             : "internal",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req, raw),
     )
   )
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -481,7 +480,7 @@ export async function handleGrokVideoCreate(
   const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     const status = response.status ?? 500;
     journal.add({
       method,
@@ -497,7 +496,7 @@ export async function handleGrokVideoCreate(
   }
 
   if (!isVideoResponse(response)) {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journal.add({
       method,
       path,
@@ -508,14 +507,15 @@ export async function handleGrokVideoCreate(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not a video type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a video type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
-  if (res.destroyed || res.writableEnded) return;
+  if (responseGone(res)) return;
   journal.add({
     method,
     path,
@@ -584,7 +584,7 @@ export async function handleGrokVideoStatus(
   if (!job) {
     // Grok miss → Sora status, UNCHANGED (byte-for-byte; it sets CORS + rolls
     // chaos itself). Disjoint id namespaces make this unambiguous.
-    handleVideoStatus(req, res, id, journal, defaults, setCorsHeaders, videoStates);
+    await handleVideoStatus(req, res, id, journal, defaults, setCorsHeaders, videoStates);
     return;
   }
 
@@ -595,24 +595,23 @@ export async function handleGrokVideoStatus(
   const method = req.method ?? "GET";
 
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       null,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: null },
       "internal",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req),
     )
   )
     return;
 
   if (job.kind === "record") {
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: video job ${id} is proxied live upstream (record mode) — refusing the upstream poll`,
       );
@@ -654,7 +653,7 @@ export async function handleGrokVideoStatus(
   }
 
   // Replay: guard BEFORE advancing or journaling (file convention).
-  if (res.destroyed || res.writableEnded) return;
+  if (responseGone(res)) return;
   advanceJob(job);
   grokJobs.set(key, job);
   journal.add({
@@ -738,7 +737,7 @@ async function proxyGrokVideoSubmit(args: {
 
   const proxyError = (msg: string): "handled" => {
     defaults.logger.error(`Grok video submit proxy failed: ${msg}`);
-    if (res.destroyed || res.writableEnded) return "handled";
+    if (responseGone(res)) return "handled";
     journal.add({
       method,
       path,
@@ -799,7 +798,7 @@ async function proxyGrokVideoSubmit(args: {
     defaults.logger.warn(
       `Upstream rejected the video submit (${fetched.status}) — relaying the upstream status`,
     );
-    if (res.destroyed || res.writableEnded) return "handled";
+    if (responseGone(res)) return "handled";
     journal.add({
       method,
       path,
@@ -868,7 +867,7 @@ async function proxyGrokVideoSubmit(args: {
     );
   }
 
-  if (res.destroyed || res.writableEnded) return "handled";
+  if (responseGone(res)) return "handled";
   journal.add({
     method,
     path,
@@ -935,7 +934,7 @@ async function proxyGrokVideoRecordPoll(args: {
 
   const proxyError = (msg: string): void => {
     logger.error(`Grok video poll proxy failed: ${msg}`);
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(502);
     writeErrorResponse(
       res,
@@ -976,7 +975,7 @@ async function proxyGrokVideoRecordPoll(args: {
     logger.warn(
       `Upstream rejected the status poll for job ${job.upstreamRequestId} (${fetched.status}) — relaying the upstream status`,
     );
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(fetched.status);
     res.writeHead(fetched.status, { "Content-Type": fetched.contentType ?? "application/json" });
     res.end(fetched.text);
@@ -1008,7 +1007,7 @@ async function proxyGrokVideoRecordPoll(args: {
   const relayBody: Record<string, unknown> = { ...upstreamBody, request_id: job.requestId };
 
   const relayJson = (body: Record<string, unknown>): void => {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(200);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));

@@ -3321,6 +3321,55 @@ describe("recorder auth header handling", () => {
 
     await new Promise<void>((resolve) => echoServer.close(() => resolve()));
   });
+
+  it.each([
+    ["record", false],
+    ["proxy-only", true],
+  ])("never forwards a MINTED x-request-id upstream (%s)", async (_label, proxyOnly) => {
+    // The server normalizes req.headers["x-request-id"] to the resolved id so
+    // journal snapshots carry it. Without a minted-only strip, that invented
+    // correlation id rides buildForwardHeaders straight to a real provider.
+    let receivedHeaders: http.IncomingHttpHeaders = {};
+    const echoServer = http.createServer((req, res) => {
+      receivedHeaders = req.headers;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "echo" }, index: 0 }],
+          model: "gpt-4",
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => echoServer.listen(0, "127.0.0.1", resolve));
+    const echoAddr = echoServer.address() as { port: number };
+    const echoUrl = `http://127.0.0.1:${echoAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: echoUrl }, fixturePath: tmpDir, proxyOnly },
+    });
+
+    // No caller id -> aimock mints one -> it must NOT reach upstream.
+    const minted = await post(
+      `${recorder.url}/v1/chat/completions`,
+      { model: "gpt-4", messages: [{ role: "user", content: "minted request id" }] },
+      { Authorization: "Bearer sk-test" },
+    );
+    expect(minted.headers["x-request-id"]).toMatch(/^req-/);
+    expect(receivedHeaders["x-request-id"]).toBeUndefined();
+
+    // A caller-supplied id is the caller's own header and still forwards.
+    const echoed = await post(
+      `${recorder.url}/v1/chat/completions`,
+      { model: "gpt-4", messages: [{ role: "user", content: "caller request id" }] },
+      { Authorization: "Bearer sk-test", "X-Request-Id": "caller-supplied-123" },
+    );
+    expect(echoed.headers["x-request-id"]).toBe("caller-supplied-123");
+    expect(receivedHeaders["x-request-id"]).toBe("caller-supplied-123");
+
+    await new Promise<void>((resolve) => echoServer.close(() => resolve()));
+  });
 });
 
 // ---------------------------------------------------------------------------

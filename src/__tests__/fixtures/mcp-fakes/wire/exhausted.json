@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -31010,
+    "message": "aimock MCP fake exhausted: tool \"create_ticket\" with {\"title\":\"Refund\"} was called again, but all 2 matching fakes are already used (testId \"tickets › retry on timeout\").",
+    "data": {
+      "aimock": {
+        "code": "MCP_FAKE_EXHAUSTED",
+        "tool": "create_ticket",
+        "testId": "tickets › retry on timeout",
+        "context": null,
+        "mount": "/mcp",
+        "received": {
+          "title": "Refund"
+        },
+        "matchingDeclared": 2,
+        "matchingConsumed": 2,
+        "matchingIds": ["tickets/retry.json:first-try", "tickets/retry.json:retry"]
+      }
+    }
+  }
+}

@@ -1,5 +1,14 @@
 import { generateId } from "./helpers.js";
-import type { ChatCompletionRequest, Fixture, FixtureMatch, JournalEntry } from "./types.js";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  ChatCompletionRequest,
+  Fixture,
+  FixtureMatch,
+  JournalBody,
+  JournalEntry,
+  MisbehaviorCounterKey,
+  MisbehaviorCounters,
+} from "./types.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 export { DEFAULT_TEST_ID } from "./constants.js";
 
@@ -27,18 +36,42 @@ const JOURNAL_BODY_CAP_BYTES = 64 * 1024; // 64 KB
  * content (e.g. CJK/emoji) whose code-unit count falls under the threshold
  * but whose byte size does not.
  */
-function capBody(body: ChatCompletionRequest | null): ChatCompletionRequest | null {
+function capBody(body: JournalBody | null): JournalBody | null {
   if (body === null) return null;
   const serialized = JSON.stringify(body);
   if (Buffer.byteLength(serialized, "utf8") <= JOURNAL_BODY_CAP_BYTES) return body;
-  // Cast: the marker is not a real ChatCompletionRequest, but the field type
-  // is already nullable-union and downstream consumers (e.g. GET /journal)
-  // treat the body as opaque JSON — the truncation marker is safe to store.
+  // The marker is not a chat request, and `JournalBody` no longer claims it is
+  // — downstream consumers (e.g. GET /journal) treat the body as opaque JSON.
   return {
     __aimock_truncated: true,
     originalByteSize: Buffer.byteLength(serialized, "utf8"),
     note: "body truncated by aimock journal cap (64 KB limit)",
-  } as unknown as ChatCompletionRequest;
+  };
+}
+
+/**
+ * Narrow a journaled body to a chat-completion request.
+ *
+ * `JournalEntry.body` is a union (see {@link JournalBody}): most entries hold a
+ * chat request, but the fine-tuning create payload and this module's own
+ * truncation marker do not. Anything reading `messages`, `model` or the rest of
+ * the chat shape off a journal entry — inside aimock or in a consumer's test
+ * — goes through here, so an entry that is not a chat request fails as a
+ * `false` it can assert on rather than as an undefined property three accesses
+ * later.
+ *
+ * `messages` is the discriminator because it is the one required field no
+ * other journaled shape carries.
+ */
+export function isChatCompletionBody(
+  body: JournalBody | null | undefined,
+): body is ChatCompletionRequest {
+  return (
+    body !== null &&
+    body !== undefined &&
+    Array.isArray((body as { messages?: unknown }).messages) &&
+    typeof (body as { model?: unknown }).model === "string"
+  );
 }
 
 /**
@@ -77,15 +110,42 @@ function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
     fieldEqual(a.userMessage, b.userMessage) &&
     systemMessageEqual(a.systemMessage, b.systemMessage) &&
     fieldEqual(a.inputText, b.inputText) &&
+    isDeepStrictEqual(a.embeddingRequest, b.embeddingRequest) &&
     fieldEqual(a.toolCallId, b.toolCallId) &&
     fieldEqual(a.toolName, b.toolName) &&
+    fieldEqual(a.toolNamespace, b.toolNamespace) &&
     fieldEqual(a.model, b.model) &&
     fieldEqual(a.responseFormat, b.responseFormat) &&
     fieldEqual(a.predicate, b.predicate) &&
     fieldEqual(a.endpoint, b.endpoint) &&
     fieldEqual(a.turnIndex, b.turnIndex) &&
-    fieldEqual(a.hasToolResult, b.hasToolResult)
+    fieldEqual(a.hasToolResult, b.hasToolResult) &&
+    fieldEqual(a.toolResultContains, b.toolResultContains) &&
+    fieldEqual(a.context, b.context)
   );
+}
+
+/** Count-map keys resolve through `identity`, so every alias of a fixture finds its caller entry. */
+class FixtureCountMap extends Map<Fixture, number> {
+  constructor(private readonly identity: (fixture: Fixture) => Fixture) {
+    super();
+  }
+
+  override get(key: Fixture): number | undefined {
+    return super.get(this.identity(key));
+  }
+
+  override has(key: Fixture): boolean {
+    return super.has(this.identity(key));
+  }
+
+  override set(key: Fixture, value: number): this {
+    return super.set(this.identity(key), value);
+  }
+
+  override delete(key: Fixture): boolean {
+    return super.delete(this.identity(key));
+  }
 }
 
 export interface JournalOptions {
@@ -103,8 +163,8 @@ export interface JournalOptions {
    */
   maxEntries?: number;
   /**
-   * Maximum number of unique testIds retained in the fixture match-count
-   * map (`fixtureMatchCountsByTestId`). When exceeded, the oldest testId
+   * Maximum number of unique testIds retained across fixture match-count
+   * and misbehavior counters. When exceeded, the oldest testId
    * (by first-insertion order) is evicted FIFO. Set to 0 (or omit) for
    * unbounded retention. Negative values are rejected at the CLI parse
    * layer; programmatically they are treated as 0 (unbounded) for
@@ -112,15 +172,47 @@ export interface JournalOptions {
    * servers that see many unique testIds.
    */
   fixtureCountsMaxTestIds?: number;
+  /**
+   * Called with every entry {@link Journal.add} creates, right after it is
+   * recorded. The hook exists so an embedder can attribute an entry to the
+   * request that produced it WITHOUT touching each of the ~100 `journal.add`
+   * call sites spread across the handler modules: the server binds the entry
+   * to the in-flight `IncomingMessage` here, and its error arm then amends
+   * that exact object rather than guessing from a caller-supplied header.
+   *
+   * The entry is already recorded when the hook runs, so a hook that throws
+   * does not lose the write — but it does propagate out of `add` into the
+   * caller's error path, so a hook must not throw.
+   */
+  onAdd?: (entry: JournalEntry) => void;
 }
 
-export class Journal {
+export class Journal implements MisbehaviorCounters {
   private entries: JournalEntry[] = [];
+  private readonly matchedFixtures = new WeakMap<JournalEntry, Fixture>();
+  /** The fixture a request was served from, where the entry names its caller fixture instead. */
+  private readonly servedFixtures = new WeakMap<JournalEntry, Fixture>();
   private readonly fixtureMatchCountsByTestId: Map<string, Map<Fixture, number>> = new Map();
+  /** An extended server's view of a fixture to the caller's fixture (configureFixtureViewSource). */
+  private fixtureViewSource = (fixture: Fixture): Fixture => fixture;
+  private fixtureCountIdentity = (fixture: Fixture): Fixture => fixture;
+  /** The key a fixture is counted under: the caller's object behind any view or copy. */
+  private readonly fixtureCountKey = (fixture: Fixture): Fixture =>
+    this.fixtureCountIdentity(this.fixtureViewSource(fixture));
+  private createFixtureCountMap = (): Map<Fixture, number> => new Map();
+  private fixtureCountIdentityConfigured = false;
+  private fixtureViewSourceConfigured = false;
+  private readonly counterTestIds = new Set<string>();
+  private readonly misbehaviorCountersByTestId = new Map<
+    string,
+    Map<string, Map<number, { ordinal: number; firings: number }>>
+  >();
   private readonly maxEntries: number;
   private readonly fixtureCountsMaxTestIds: number;
+  private readonly onAdd?: (entry: JournalEntry) => void;
 
   constructor(options: JournalOptions = {}) {
+    this.onAdd = options.onAdd;
     // Treat 0 or negative as "unbounded" to preserve prior behavior when
     // the option is omitted or explicitly disabled.
     const cap = options.maxEntries;
@@ -129,18 +221,50 @@ export class Journal {
     this.fixtureCountsMaxTestIds = testIdCap !== undefined && testIdCap > 0 ? testIdCap : 0;
   }
 
+  /**
+   * The per-test-id cap on fixture match-count maps, for an MCP mount to pass
+   * to `McpFakeStore.setMaxTestIds`. Always a non-negative safe integer, `0`
+   * meaning unbounded, and never throws, whatever option was passed:
+   * omitted, zero, negative or `NaN` is `0`; `Infinity` or a value above
+   * `Number.MAX_SAFE_INTEGER` (never reached) is `0`; a fraction of 1 or more
+   * is rounded down (`1.5` evicts at 2 ids, so it keeps 1). For these values
+   * it is the number of test ids the journal keeps.
+   *
+   * An option between 0 and 1 is the exception. The journal keeps no test id
+   * (each new count map is evicted as soon as it is made, so counts never
+   * advance), and a store cap cannot say "keep none" because `0` is
+   * unbounded. The getter returns `1`, the smallest bounded cap, so a store
+   * given it keeps 1 test id where the journal keeps 0.
+   */
+  get fixtureCountsMaxTestIdsCap(): number {
+    const cap = this.fixtureCountsMaxTestIds;
+    if (!(cap > 0) || cap > Number.MAX_SAFE_INTEGER) return 0;
+    return Math.max(1, Math.floor(cap));
+  }
+
   /** Backwards-compatible accessor — returns the default (no testId) count map. */
   get fixtureMatchCounts(): Map<Fixture, number> {
     return this.getFixtureMatchCountsForTest(DEFAULT_TEST_ID);
   }
 
-  add(entry: Omit<JournalEntry, "id" | "timestamp">): JournalEntry {
+  /** @internal matchedFixture preserves identity when Live supplies safe diagnostics. */
+  add(entry: Omit<JournalEntry, "id" | "timestamp">, matchedFixture?: Fixture): JournalEntry {
     const full: JournalEntry = {
       id: generateId("req"),
       timestamp: Date.now(),
       ...entry,
       body: capBody(entry.body),
     };
+    // A request is served from an extended server's view of a fixture, or
+    // from LLMock's per-addition copy with misbehavior enabled; the entry
+    // names the caller's fixture behind it, as in 1.44.0.
+    const fixture = full.response.fixture;
+    const source = fixture ? this.fixtureCountKey(fixture) : fixture;
+    if (fixture && source !== fixture) {
+      full.response = { ...full.response, fixture: source };
+      this.servedFixtures.set(full, fixture);
+    }
+    if (matchedFixture) this.matchedFixtures.set(full, this.fixtureCountKey(matchedFixture));
     this.entries.push(full);
     // FIFO eviction when over capacity. Array.prototype.shift() is O(n)
     // regardless of how many we drop per add; we accept it at small caps
@@ -150,12 +274,24 @@ export class Journal {
     if (this.maxEntries > 0 && this.entries.length > this.maxEntries) {
       this.entries.shift();
     }
+    this.onAdd?.(full);
     return full;
   }
 
+  /**
+   * Return every entry, or with `limit` the most recent `limit` entries.
+   * `0` returns `[]` — exactly what `GET /__aimock/journal?limit=0` answers.
+   * `slice(-0)` is `slice(0)`, so a `0` used to return the ENTIRE journal; it
+   * is special-cased so the library and the HTTP route agree. This is a public
+   * library API, so odd limits are tolerated rather than thrown on: a
+   * non-finite limit (`NaN`, `Infinity`) means "no limit", a fractional limit
+   * floors, and any limit at or below `0` asks for nothing.
+   */
   getAll(opts?: { limit?: number }): JournalEntry[] {
-    if (opts?.limit !== undefined) {
-      return this.entries.slice(-opts.limit);
+    if (opts?.limit !== undefined && Number.isFinite(opts.limit)) {
+      const limit = Math.floor(opts.limit);
+      if (limit <= 0) return [];
+      return this.entries.slice(-limit);
     }
     return this.entries.slice();
   }
@@ -165,7 +301,17 @@ export class Journal {
   }
 
   findByFixture(fixture: Fixture): JournalEntry[] {
-    return this.entries.filter((e) => e.response.fixture === fixture);
+    const key = this.fixtureCountKey(fixture);
+    return this.entries.filter((e) => (this.matchedFixtures.get(e) ?? e.response.fixture) === key);
+  }
+
+  /**
+   * @internal The fixture `entry`'s request was served from: the extended
+   * view or the per-addition copy when the entry names the caller's fixture
+   * behind it, otherwise `entry.response.fixture`. The journal JSON shows it.
+   */
+  servedFixture(entry: JournalEntry): Fixture | null {
+    return this.servedFixtures.get(entry) ?? entry.response.fixture;
   }
 
   /**
@@ -176,7 +322,7 @@ export class Journal {
    * `getOrCreateFixtureMatchCountsForTest`.
    */
   getFixtureMatchCountsForTest(testId: string): Map<Fixture, number> {
-    return this.fixtureMatchCountsByTestId.get(testId) ?? new Map();
+    return this.fixtureMatchCountsByTestId.get(testId) ?? this.createFixtureCountMap();
   }
 
   /**
@@ -188,22 +334,99 @@ export class Journal {
   private getOrCreateFixtureMatchCountsForTest(testId: string): Map<Fixture, number> {
     let counts = this.fixtureMatchCountsByTestId.get(testId);
     if (!counts) {
-      counts = new Map();
+      counts = this.createFixtureCountMap();
       this.fixtureMatchCountsByTestId.set(testId, counts);
-      // FIFO eviction when over capacity. JS Map preserves insertion order,
-      // so the first key returned by keys() is the oldest. Same O(n) shift
-      // caveat as `entries`: acceptable at small caps (default 500).
-      if (
-        this.fixtureCountsMaxTestIds > 0 &&
-        this.fixtureMatchCountsByTestId.size > this.fixtureCountsMaxTestIds
-      ) {
-        const oldest = this.fixtureMatchCountsByTestId.keys().next().value;
-        if (oldest !== undefined) {
-          this.fixtureMatchCountsByTestId.delete(oldest);
-        }
-      }
+      this.admitCounterTestId(testId);
     }
     return counts;
+  }
+
+  /** Match and fault mutations share one admission order and capacity. */
+  private admitCounterTestId(testId: string): void {
+    this.counterTestIds.add(testId);
+    if (
+      this.fixtureCountsMaxTestIds > 0 &&
+      this.counterTestIds.size > this.fixtureCountsMaxTestIds
+    ) {
+      const oldest = this.counterTestIds.values().next().value;
+      if (oldest !== undefined) {
+        this.counterTestIds.delete(oldest);
+        this.fixtureMatchCountsByTestId.delete(oldest);
+        this.misbehaviorCountersByTestId.delete(oldest);
+      }
+    }
+  }
+
+  private getOrCreateMisbehaviorCounter(key: MisbehaviorCounterKey) {
+    let sources = this.misbehaviorCountersByTestId.get(key.testId);
+    if (!sources) {
+      sources = new Map();
+      this.misbehaviorCountersByTestId.set(key.testId, sources);
+      this.admitCounterTestId(key.testId);
+    }
+    let entries = sources.get(key.sourceKey);
+    if (!entries) {
+      entries = new Map();
+      sources.set(key.sourceKey, entries);
+    }
+    let counter = entries.get(key.entryIndex);
+    if (!counter) {
+      counter = { ordinal: 0, firings: 0 };
+      entries.set(key.entryIndex, counter);
+    }
+    return counter;
+  }
+
+  getFiringCount(key: MisbehaviorCounterKey): number {
+    return (
+      this.misbehaviorCountersByTestId.get(key.testId)?.get(key.sourceKey)?.get(key.entryIndex)
+        ?.firings ?? 0
+    );
+  }
+
+  nextOrdinal(key: MisbehaviorCounterKey): number {
+    return this.getOrCreateMisbehaviorCounter(key).ordinal++;
+  }
+
+  recordFiring(key: MisbehaviorCounterKey): void {
+    this.getOrCreateMisbehaviorCounter(key).firings++;
+  }
+
+  clearMisbehaviorCounters(testId?: string): void {
+    if (testId !== undefined) {
+      this.misbehaviorCountersByTestId.delete(testId);
+      if (!this.fixtureMatchCountsByTestId.has(testId)) this.counterTestIds.delete(testId);
+    } else {
+      this.misbehaviorCountersByTestId.clear();
+      for (const id of this.counterTestIds) {
+        if (!this.fixtureMatchCountsByTestId.has(id)) this.counterTestIds.delete(id);
+      }
+    }
+  }
+
+  /** @internal LLMock configures caller count identity before serving requests. */
+  configureFixtureCountIdentity(identity: (fixture: Fixture) => Fixture): void {
+    if (this.fixtureCountIdentityConfigured || this.fixtureMatchCountsByTestId.size > 0) {
+      throw new Error("Fixture count identity must be configured once before counting");
+    }
+    this.fixtureCountIdentity = identity;
+    this.createFixtureCountMap = () => new FixtureCountMap(this.fixtureCountKey);
+    this.fixtureCountIdentityConfigured = true;
+  }
+
+  /**
+   * @internal A server with `responsesTools: "extended"` matches each fixture
+   * through its extended view. `source` maps a view back to the caller's
+   * fixture, so counts, `findByFixture` and `JournalEntry.response.fixture`
+   * keep the caller's object. Configured once, before counting.
+   */
+  configureFixtureViewSource(source: (fixture: Fixture) => Fixture): void {
+    if (this.fixtureViewSourceConfigured || this.fixtureMatchCountsByTestId.size > 0) {
+      throw new Error("Fixture view source must be configured once before counting");
+    }
+    this.fixtureViewSource = source;
+    this.createFixtureCountMap = () => new FixtureCountMap(this.fixtureCountKey);
+    this.fixtureViewSourceConfigured = true;
   }
 
   getFixtureMatchCount(fixture: Fixture, testId = DEFAULT_TEST_ID): number {
@@ -220,7 +443,7 @@ export class Journal {
     // When a sequenced fixture matches, also increment all siblings with matching criteria
     if (fixture.match.sequenceIndex !== undefined && allFixtures) {
       for (const sibling of allFixtures) {
-        if (sibling === fixture) continue;
+        if (this.fixtureCountKey(sibling) === this.fixtureCountKey(fixture)) continue;
         if (sibling.match.sequenceIndex === undefined) continue;
         if (matchCriteriaEqual(fixture.match, sibling.match)) {
           counts.set(sibling, (counts.get(sibling) ?? 0) + 1);
@@ -232,8 +455,10 @@ export class Journal {
   clearMatchCounts(testId?: string): void {
     if (testId !== undefined) {
       this.fixtureMatchCountsByTestId.delete(testId);
+      this.clearMisbehaviorCounters(testId);
     } else {
       this.fixtureMatchCountsByTestId.clear();
+      this.clearMisbehaviorCounters();
     }
   }
 
@@ -250,7 +475,7 @@ export class Journal {
 
   clear(): void {
     this.entries = [];
-    this.fixtureMatchCountsByTestId.clear();
+    this.clearMatchCounts();
   }
 
   get size(): number {

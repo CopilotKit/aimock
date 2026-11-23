@@ -1,0 +1,305 @@
+[
+  {
+    "request": {
+      "id": "video-status-not-found",
+      "method": "GET",
+      "path": "/v1/videos/a12_absent",
+      "headers": {
+        "host": "a12.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      }
+    },
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Video a12_absent not found\",\"type\":\"not_found\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#0>",
+        "timestamp": "<epoch>",
+        "method": "GET",
+        "path": "/v1/videos/a12_absent",
+        "headers": {
+          "host": "a12.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "a12-caller-trace",
+          "content-length": "0"
+        },
+        "body": null,
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "grok-wrong-fixture-type",
+      "method": "POST",
+      "path": "/v1/videos/generations",
+      "body": {
+        "model": "grok-imagine-video",
+        "prompt": "a12 non-video"
+      },
+      "headers": {
+        "host": "a12.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      }
+    },
+    "wire": {
+      "status": 500,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Fixture response is not a video type\",\"type\":\"server_error\"}}"
+    },
+    "entries": [
+      {
+        "id": "req-<#1>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/v1/videos/generations",
+        "headers": {
+          "host": "a12.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "a12-caller-trace",
+          "content-length": "55"
+        },
+        "body": {
+          "model": "grok-imagine-video",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a12 non-video"
+            }
+          ],
+          "_endpointType": "video",
+          "_videoProvider": "grok"
+        },
+        "response": {
+          "status": 500,
+          "fixture": {
+            "match": {
+              "userMessage": "a12 non-video",
+              "endpoint": "video",
+              "model": "grok-imagine-video"
+            },
+            "response": {
+              "content": "A valid text response, not a video."
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "video-create-control",
+      "method": "POST",
+      "path": "/v1/videos",
+      "body": {
+        "model": "sora-2",
+        "prompt": "a12 sora control"
+      },
+      "headers": {
+        "host": "a12.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      }
+    },
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      },
+      "body": "{\"id\":\"video_a12_control\",\"status\":\"completed\",\"url\":\"https://video.example/a12-sora.mp4\",\"created_at\":\"<epoch>\"}"
+    },
+    "entries": [
+      {
+        "id": "req-<#2>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/v1/videos",
+        "headers": {
+          "host": "a12.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "a12-caller-trace",
+          "content-length": "46"
+        },
+        "body": {
+          "model": "sora-2",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a12 sora control"
+            }
+          ],
+          "_endpointType": "video"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a12 sora control",
+              "endpoint": "video",
+              "model": "sora-2"
+            },
+            "response": {
+              "video": {
+                "id": "video_a12_control",
+                "status": "completed",
+                "url": "https://video.example/a12-sora.mp4"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "video-status-control",
+      "method": "GET",
+      "path": "/v1/videos/video_a12_control",
+      "headers": {
+        "host": "a12.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      }
+    },
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      },
+      "body": "{\"id\":\"video_a12_control\",\"status\":\"completed\",\"created_at\":\"<epoch>\",\"url\":\"https://video.example/a12-sora.mp4\"}"
+    },
+    "entries": [
+      {
+        "id": "req-<#3>",
+        "timestamp": "<epoch>",
+        "method": "GET",
+        "path": "/v1/videos/video_a12_control",
+        "headers": {
+          "host": "a12.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "a12-caller-trace",
+          "content-length": "0"
+        },
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "grok-native-control",
+      "method": "POST",
+      "path": "/v1/videos/generations",
+      "body": {
+        "model": "grok-imagine-video",
+        "prompt": "a12 grok control"
+      },
+      "headers": {
+        "host": "a12.local",
+        "connection": "close",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      }
+    },
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a12-caller-trace"
+      },
+      "body": "{\"request_id\":\"<uuid#4>\"}"
+    },
+    "entries": [
+      {
+        "id": "req-<#5>",
+        "timestamp": "<epoch>",
+        "method": "POST",
+        "path": "/v1/videos/generations",
+        "headers": {
+          "host": "a12.local",
+          "connection": "close",
+          "content-type": "application/json",
+          "x-request-id": "a12-caller-trace",
+          "content-length": "58"
+        },
+        "body": {
+          "model": "grok-imagine-video",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a12 grok control"
+            }
+          ],
+          "_endpointType": "video",
+          "_videoProvider": "grok"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "userMessage": "a12 grok control",
+              "endpoint": "video",
+              "model": "grok-imagine-video"
+            },
+            "response": {
+              "video": {
+                "id": "video_a12_grok",
+                "status": "completed",
+                "url": "https://video.example/a12-grok.mp4",
+                "duration": 4,
+                "cost": 0.03
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+]

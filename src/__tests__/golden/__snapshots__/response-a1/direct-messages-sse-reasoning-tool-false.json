@@ -1,0 +1,61 @@
+{
+  "got": {
+    "status": 200,
+    "headers": {
+      "cache-control": "no-cache",
+      "content-type": "text/event-stream"
+    },
+    "frames": [
+      "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<#0>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-4\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}",
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Reason\"}}",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"signature\"}}",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_<#1>\",\"name\":\"lookup\",\"input\":{}}}",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}",
+      "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":0}}",
+      "event: message_stop\ndata: {\"type\":\"message_stop\"}"
+    ]
+  },
+  "journal": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "tool"
+          }
+        ],
+        "stream": true,
+        "max_tokens": 100,
+        "_endpointType": "chat"
+      },
+      "response": {
+        "status": 200,
+        "fixture": {
+          "match": {
+            "userMessage": "tool"
+          },
+          "response": {
+            "toolCalls": [
+              {
+                "name": "lookup",
+                "arguments": "{}"
+              }
+            ],
+            "reasoning": "Reason",
+            "reasoningSignature": "signature"
+          }
+        }
+      },
+      "responseKeys": [
+        "status",
+        "fixture"
+      ]
+    }
+  ]
+}

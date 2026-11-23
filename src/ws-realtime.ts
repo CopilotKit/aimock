@@ -6,75 +6,61 @@
  * individual WebSocket text frames.
  */
 
-import { createHash, randomBytes, type Hash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
-  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
-  FixtureBlock,
   JournalEntry,
+  HandlerDefaults,
+  ToolDefinition,
 } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
+  fixtureToolCallErrorCode,
+  isFixtureToolCallError,
+  journalFixtureToolCallError,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
+  type FunctionFixtureBlock,
   generateToolCallId,
   flattenHeaders,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isTranscriptionResponse,
   isErrorResponse,
   resolveFixtureBlocks,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
-import { createInterruptionSignal } from "./interruption.js";
-import { delay, calculateDelay, createJitterSource, type JitterSource } from "./sse-writer.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
+import {
+  markInterrupted,
+  markWsTurnStopped,
+  watchWsClose,
+  wsLifecycle,
+} from "./response/lifecycle.js";
+import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { WebSocketConnection } from "./ws-framing.js";
-import { decideChaos } from "./chaos.js";
-import { canonicalJSON, type ChaosRandomizer } from "./chaos-random.js";
+import { render as renderRealtimeUsage } from "./response/usage/codecs/realtime.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { buildOpenAIError } from "./response/errors.js";
+
+/**
+ * Wire label for custom-tool-call rejections on this transport, on both the
+ * `toolCalls` and the ordered `blocks` path.
+ */
+const REALTIME_WIRE = "OpenAI Realtime";
 
 /** Generate a Realtime-API-style ID with underscore separator (e.g. event_xxx, item_xxx). */
 function realtimeId(prefix: string): string {
   return `${prefix}_${randomBytes(12).toString("base64url")}`;
-}
-
-// Keep wire identity separate from mutable session/router projections. A
-// rolling digest retains the complete client-event history without retaining
-// audio payloads or growing a second copy of a long conversation in memory.
-const realtimeWire = new WeakMap<WebSocketConnection, { path: string; events: Hash }>();
-
-function realtimeJitterSource(
-  defaults: {
-    chaos?: ChaosConfig;
-    chaosRandom?: ChaosRandomizer;
-    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    logger: Logger;
-  },
-  fixture: Fixture | null,
-  ws: WebSocketConnection,
-): JitterSource | undefined {
-  const wire = realtimeWire.get(ws);
-  if (!defaults.chaosRandom || !wire) return undefined;
-  const decision = decideChaos(
-    fixture,
-    defaults.chaos,
-    defaults.upgradeHeaders,
-    {
-      method: "WS",
-      path: wire.path,
-      body: { kind: "realtime-events", sha256: wire.events.copy().digest("hex") },
-    },
-    defaults.chaosRandom,
-    defaults.logger,
-    true,
-  );
-  return createJitterSource(decision.seed, decision.key);
 }
 
 // ─── Realtime protocol types ────────────────────────────────────────────────
@@ -263,6 +249,29 @@ function serializeSession(session: SessionConfig, sessionId?: string): Record<st
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────
+
+/** Realtime declares functions directly, rather than under Chat's `function` key. */
+function realtimeToolDefinitions(tools: unknown[]): ToolDefinition[] {
+  return tools.flatMap((value): ToolDefinition[] => {
+    if (!value || typeof value !== "object") return [];
+    const tool = value as Record<string, unknown>;
+    if (tool.type !== "function" || typeof tool.name !== "string") return [];
+    return [
+      {
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+          ...(tool.parameters &&
+          typeof tool.parameters === "object" &&
+          !Array.isArray(tool.parameters)
+            ? { parameters: tool.parameters }
+            : {}),
+        },
+      },
+    ];
+  });
+}
 
 export function realtimeItemsToMessages(
   items: RealtimeItem[],
@@ -479,7 +488,58 @@ function buildErrorRealtimeEvent(
   type = "invalid_request_error",
   code?: string,
 ): void {
-  sendEvent(ws, { type: "error", error: { message, type, code } }, isBeta);
+  sendEvent(ws, { type: "error", error: buildOpenAIError({ message, type, code }) }, isBeta);
+}
+
+// ─── Retired Beta shape ─────────────────────────────────────────────────────
+
+/**
+ * OpenAI's Realtime *Beta* shape ("OpenAI-Beta: realtime=v1") no longer serves.
+ * Per aimock's deprecation policy (https://aimock.copilotkit.dev/deprecation-policy/)
+ * a removed upstream surface is mocked as REMOVED: a client that negotiates it
+ * gets the sunset rejection the real API returns, so the removal surfaces in the
+ * caller's tests instead of in production.
+ *
+ * Wire behaviour observed firsthand against wss://api.openai.com/v1/realtime on
+ * 2026-09-15 (authenticated, `OpenAI-Beta: realtime=v1`, GA control run in the
+ * same session still returned session.created):
+ *
+ *   HTTP/1.1 101 Switching Protocols          <- the upgrade SUCCEEDS
+ *   TEXT  {"type":"error","event_id":"event_…","error":{"type":"invalid_request_error",
+ *          "code":"beta_api_shape_disabled","message":"The Realtime Beta API is no
+ *          longer supported. Please use /v1/realtime for the GA API.","param":null,
+ *          "event_id":null}}
+ *   CLOSE code=4000 reason="invalid_request_error.beta_api_shape_disabled"
+ *
+ * No session.created is sent. Every value below is copied from that capture —
+ * none of it is inferred.
+ */
+const BETA_SUNSET_ERROR_CODE = "beta_api_shape_disabled";
+const BETA_SUNSET_MESSAGE =
+  "The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.";
+const BETA_SUNSET_CLOSE_CODE = 4000;
+const BETA_SUNSET_CLOSE_REASON = `invalid_request_error.${BETA_SUNSET_ERROR_CODE}`;
+
+function rejectRetiredBetaShape(ws: WebSocketConnection, logger: Logger): void {
+  logger.warn(
+    `WS /v1/realtime rejected the retired Realtime Beta shape (OpenAI-Beta: realtime=v1) — ${BETA_SUNSET_MESSAGE}`,
+  );
+  // Sent raw, NOT through sendEvent(): this frame is the real API's own wire
+  // shape and must not pass through the GA->Beta translation shim.
+  ws.send(
+    JSON.stringify({
+      type: "error",
+      event_id: realtimeId("event"),
+      error: {
+        type: "invalid_request_error",
+        code: BETA_SUNSET_ERROR_CODE,
+        message: BETA_SUNSET_MESSAGE,
+        param: null,
+        event_id: null,
+      },
+    }),
+  );
+  ws.close(BETA_SUNSET_CLOSE_CODE, BETA_SUNSET_CLOSE_REASON);
 }
 
 // ─── Main handler ───────────────────────────────────────────────────────────
@@ -493,25 +553,33 @@ export function handleWebSocketRealtime(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    upgradePath?: string;
     transcriptionIntent?: boolean;
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
 ): void {
   const { logger } = defaults;
-  realtimeWire.set(ws, {
-    path: defaults.upgradePath ?? "/v1/realtime",
-    events: createHash("sha256"),
-  });
   const sessionId = realtimeId("sess");
+  watchWsClose(ws);
 
   const isBeta = defaults.upgradeHeaders?.["openai-beta"]
     ? String(defaults.upgradeHeaders["openai-beta"]).includes("realtime=v1")
     : false;
+
+  // The Realtime Beta shape is RETIRED upstream. aimock mocks the sunset, not a
+  // successful handshake — see rejectRetiredBetaShape.
+  if (isBeta) {
+    rejectRetiredBetaShape(ws, logger);
+    return;
+  }
 
   const session: SessionConfig = {
     model: defaults.model,
@@ -544,17 +612,20 @@ export function handleWebSocketRealtime(
   // Serialize message processing to prevent event interleaving
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
-    pending = pending.then(() =>
-      processMessage(
-        raw,
-        ws,
-        fixtures,
-        journal,
-        defaults,
-        session,
-        conversationItems,
-        isBeta,
-      ).catch((err: unknown) => {
+    pending = pending.then(async () => {
+      try {
+        defaults.beforeProcessMessage?.();
+        await processMessage(
+          raw,
+          ws,
+          fixtures,
+          journal,
+          defaults,
+          session,
+          conversationItems,
+          isBeta,
+        );
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket realtime error: ${msg}`);
         try {
@@ -564,8 +635,8 @@ export function handleWebSocketRealtime(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
           );
         }
-      }),
-    );
+      }
+    });
   });
 }
 
@@ -579,6 +650,9 @@ async function processMessage(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
@@ -604,15 +678,6 @@ async function processMessage(
     );
     return;
   }
-
-  // Snapshot each accepted JSON value before routing adds generated item IDs,
-  // context headers, default fields, or applies request transforms. Length
-  // framing makes event boundaries unambiguous; JSON key order is irrelevant.
-  const wireEvent = canonicalJSON(parsed);
-  realtimeWire
-    .get(ws)
-    ?.events.update(`${Buffer.byteLength(wireEvent)}:`)
-    .update(wireEvent);
 
   const msgType = parsed.type;
 
@@ -640,11 +705,11 @@ async function processMessage(
             ws,
             {
               type: "error",
-              error: {
+              error: buildOpenAIError({
                 message: `Invalid session type: ${(s as Record<string, unknown>).type}`,
                 type: "invalid_request_error",
                 code: "invalid_session_config",
-              },
+              }),
             },
             isBeta,
           );
@@ -755,11 +820,11 @@ async function processMessage(
           ws,
           {
             type: "error",
-            error: {
+            error: buildOpenAIError({
               message: `Model ${candidateTranscriptionModel} does not support session type transcription`,
               type: "invalid_request_error",
               code: "invalid_session_config",
-            },
+            }),
           },
           isBeta,
         );
@@ -771,11 +836,11 @@ async function processMessage(
           ws,
           {
             type: "error",
-            error: {
+            error: buildOpenAIError({
               message: `Model ${s.model ?? prevSession.model} does not support session type translation`,
               type: "invalid_request_error",
               code: "invalid_session_config",
-            },
+            }),
           },
           isBeta,
         );
@@ -933,7 +998,7 @@ async function emitLiveTranscriptionEvents(
   const itemId = audioItem.id ?? realtimeId("item");
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
@@ -1032,8 +1097,7 @@ async function emitLiveTranscriptionEvents(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
-  const jitterSource = realtimeJitterSource(defaults, fixture, ws);
-  const interruption = createInterruptionSignal(fixture);
+  const lifecycle = wsLifecycle(ws, fixture);
   let chunkIndex = 0;
   for (let index = 0; index < transcript.length; index += chunkSize) {
     const chunkDelay = calculateDelay(
@@ -1042,16 +1106,16 @@ async function emitLiveTranscriptionEvents(
       latency,
       fixture.recordedTimings,
       replaySpeed,
-      jitterSource,
     );
-    if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-    if (interruption?.signal.aborted || ws.isClosed) {
-      if (interruption?.signal.aborted) {
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption.reason();
+    if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+    if (lifecycle.signal.aborted || ws.isClosed) {
+      if (lifecycle.signal.aborted) {
+        markInterrupted(journalEntry, lifecycle.reason());
         ws.destroy();
+      } else {
+        markWsTurnStopped(journalEntry, ws, lifecycle);
       }
-      interruption?.cleanup();
+      lifecycle.dispose();
       return;
     }
     sendEvent(
@@ -1064,14 +1128,13 @@ async function emitLiveTranscriptionEvents(
       },
       isBeta,
     );
-    interruption?.tick();
+    lifecycle.tick();
     chunkIndex++;
   }
-  if (interruption?.signal.aborted) {
-    journalEntry.response.interrupted = true;
-    journalEntry.response.interruptReason = interruption.reason();
+  if (lifecycle.signal.aborted || ws.isClosed) {
+    markWsTurnStopped(journalEntry, ws, lifecycle);
     ws.destroy();
-    interruption.cleanup();
+    lifecycle.dispose();
     return;
   }
   sendEvent(
@@ -1088,7 +1151,7 @@ async function emitLiveTranscriptionEvents(
     },
     isBeta,
   );
-  interruption?.cleanup();
+  lifecycle.dispose();
 }
 
 function sendLiveTranscriptionFailure(
@@ -1109,6 +1172,69 @@ function sendLiveTranscriptionFailure(
   );
 }
 
+/**
+ * Run a fixture tool-call `check` before any output item is sent. A rejected
+ * fixture (a custom tool call, which Realtime cannot carry, or a malformed
+ * `toolCalls` entry or tool-call block) marks the journal entry as a 500 and
+ * answers with a failed response — `response.created` then
+ * `response.done` with `status: "failed"` and the error, including its aimock
+ * `code`, in `status_details` — the same pair the error-fixture branch sends.
+ * Returns undefined when the response was rejected.
+ */
+function checkRealtimeFixtureToolCalls<T>(
+  ws: WebSocketConnection,
+  journalEntry: JournalEntry,
+  responseId: string,
+  isBeta: boolean,
+  logger: Logger,
+  check: () => T,
+): T | undefined {
+  try {
+    return journalFixtureToolCallError(journalEntry, check);
+  } catch (err) {
+    if (!isFixtureToolCallError(err)) throw err;
+    logger.error(`WebSocket realtime error: ${err.message}`);
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
+        response: {
+          id: responseId,
+          object: "realtime.response",
+          status: "failed",
+          status_details: null,
+          output: [],
+          usage: null,
+        },
+      },
+      isBeta,
+    );
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
+        response: {
+          id: responseId,
+          object: "realtime.response",
+          status: "failed",
+          output: [],
+          status_details: {
+            type: "error",
+            error: {
+              message: err.message,
+              type: "server_error",
+              code: fixtureToolCallErrorCode(err),
+            },
+          },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
+        },
+      },
+      isBeta,
+    );
+    return undefined;
+  }
+}
+
 async function handleResponseCreate(
   ws: WebSocketConnection,
   fixtures: Fixture[],
@@ -1118,6 +1244,9 @@ async function handleResponseCreate(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
@@ -1147,10 +1276,14 @@ async function handleResponseCreate(
         ? realtimeContextHeader[0]
         : undefined;
 
+  const tools = realtimeToolDefinitions(
+    Array.isArray(responseOverrides?.tools) ? responseOverrides.tools : session.tools,
+  );
   const completionReq: ChatCompletionRequest = {
     model: session.model,
     messages,
     _endpointType: endpointType,
+    ...(tools.length > 0 ? { tools } : {}),
     _context: realtimeContext,
   };
 
@@ -1163,14 +1296,12 @@ async function handleResponseCreate(
   );
   const responseId = realtimeId("resp");
 
-  const jitterSource = fixture ? realtimeJitterSource(defaults, fixture, ws) : undefined;
-
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
@@ -1231,7 +1362,7 @@ async function handleResponseCreate(
               code: "no_fixture_match",
             },
           },
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1240,19 +1371,105 @@ async function handleResponseCreate(
   }
 
   const response = await resolveResponse(fixture, completionReq);
-  const latency = fixture.latency ?? defaults.latency;
-  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
-
-  // ── Error fixture ───────────────────────────────────────────────────
-  if (isErrorResponse(response)) {
-    const status = response.status ?? 500;
-    journal.add({
+  const plannerDefaults = { ...defaults, replaySpeed: defaults.replaySpeed ?? 1 };
+  let misbehavior = planMisbehavior({
+    wire: "openai-realtime",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: true,
+    defaults: plannerDefaults,
+    rawHeaders: defaults.upgradeHeaders ?? {},
+    // The server already resolved both header and query-string session scopes.
+    url: `/v1/realtime?testId=${encodeURIComponent(testId)}`,
+  });
+  if (misbehavior.kind === "applied") {
+    misbehavior = prepareOpenAIChatMisbehavior(misbehavior);
+  }
+  const addResponseEntry = (status: number) => {
+    const entry = journal.add({
       method: "WS",
       path: "/v1/realtime",
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry,
+      summary: misbehavior.summary,
+      defaults: plannerDefaults,
+      testId,
+    });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    addResponseEntry(misbehavior.status);
+    if (!misbehavior.summary?.evaluations.length) {
+      defaults.logger.error(`[misbehavior] ${misbehavior.message} (testId=${testId})`);
+    }
+    buildErrorRealtimeEvent(
+      ws,
+      misbehavior.message,
+      isBeta,
+      "invalid_request_error",
+      misbehavior.code,
+    );
+    return;
+  }
+  const latency = fixture.latency ?? defaults.latency;
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = misbehavior.response;
+    const combined = isCombinedFixtureResponse(prepared);
+    // Journal first so a fixture tool-call error gets the same coded failed
+    // response as the non-misbehavior paths below. (The planner never applies
+    // a fault to a custom-call fixture on this wire.)
+    const journalEntry = addResponseEntry(200);
+    const blocks: FunctionFixtureBlock[] | undefined = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () =>
+        combined && prepared.blocks?.length
+          ? resolveFixtureBlocks(prepared.blocks)
+          : [
+              ...((isTextResponse(prepared) || combined) && prepared.content
+                ? [{ type: "text" as const, text: prepared.content }]
+                : []),
+              ...(isToolCallResponse(prepared) || combined
+                ? (prepared.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
+                : []),
+            ],
+    );
+    if (!blocks) return;
+    const usage = resolveOpenAIChatMisbehaviorUsage(misbehavior, completionReq, false);
+    await streamRealtimeBlocks(
+      ws,
+      blocks,
+      responseId,
+      fixture,
+      defaults,
+      latency,
+      chunkSize,
+      isBeta,
+      conversationItems,
+      journalEntry,
+      {
+        stop: misbehavior.stop,
+        usage: renderRealtimeUsage({ kind: "applied-misbehavior", usage }),
+      },
+    );
+    return;
+  }
+
+  // ── Error fixture ───────────────────────────────────────────────────
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    addResponseEntry(status);
     sendEvent(
       ws,
       {
@@ -1285,7 +1502,7 @@ async function handleResponseCreate(
               code: response.error.code,
             },
           },
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1294,14 +1511,8 @@ async function handleResponseCreate(
   }
 
   // ── Content + tool calls response ──────────────────────────────────
-  if (isContentWithToolCallsResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+  if (isCombinedFixtureResponse(response)) {
+    const journalEntry = addResponseEntry(200);
 
     // ── Ordered blocks path (#274) ──────────────────────────────────
     // When the fixture supplies an ordered `blocks` array, stream the items in
@@ -1313,9 +1524,22 @@ async function handleResponseCreate(
     // `output_index`, so block order — including tool-before-text — IS
     // observable to a client and is honored here.
     if (response.blocks && response.blocks.length > 0) {
+      const blocks = response.blocks;
+      const resolvedBlocks = checkRealtimeFixtureToolCalls(
+        ws,
+        journalEntry,
+        responseId,
+        isBeta,
+        defaults.logger,
+        () => {
+          rejectResponsesOnlyToolCalls(response, REALTIME_WIRE);
+          return resolveFixtureBlocks(blocks);
+        },
+      );
+      if (!resolvedBlocks) return;
       await streamRealtimeBlocks(
         ws,
-        resolveFixtureBlocks(response.blocks),
+        resolvedBlocks,
         responseId,
         fixture,
         defaults,
@@ -1324,10 +1548,19 @@ async function handleResponseCreate(
         isBeta,
         conversationItems,
         journalEntry,
-        jitterSource,
       );
       return;
     }
+
+    const functionToolCalls = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
+    );
+    if (!functionToolCalls) return;
 
     // response.created
     sendEvent(
@@ -1346,7 +1579,7 @@ async function handleResponseCreate(
       isBeta,
     );
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     let interrupted = false;
     const allOutputItems: unknown[] = [];
 
@@ -1409,14 +1642,13 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(
         eventIndex,
-        fixture.streamingProfile,
+        undefined,
         latency,
         recordedTimings,
         replaySpeed,
-        jitterSource,
       );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1440,8 +1672,8 @@ async function handleResponseCreate(
         break;
       }
       eventIndex++;
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1449,14 +1681,14 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1475,7 +1707,8 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1494,7 +1727,8 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
@@ -1528,14 +1762,15 @@ async function handleResponseCreate(
     );
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
     allOutputItems.push(textOutputItem);
 
     // ── Tool call parts ────────────────────────────────────────────
-    const toolCalls = response.toolCalls ?? [];
+    const toolCalls = functionToolCalls;
     for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
       const tc = toolCalls[tcIdx];
       const callId = tc.id ?? generateToolCallId();
@@ -1578,14 +1813,13 @@ async function handleResponseCreate(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          fixture.streamingProfile,
+          undefined,
           latency,
           recordedTimings,
           replaySpeed,
-          jitterSource,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -1612,8 +1846,8 @@ async function handleResponseCreate(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -1676,15 +1910,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.done
     sendEvent(
@@ -1696,7 +1932,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: allOutputItems,
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1717,13 +1953,7 @@ async function handleResponseCreate(
 
   // ── Text response ───────────────────────────────────────────────────
   if (isTextResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const itemId = realtimeId("item");
     const contentIndex = 0;
@@ -1791,7 +2021,7 @@ async function handleResponseCreate(
     const content = response.content ?? "";
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     let interrupted = false;
     let eventIndex = 0;
 
@@ -1799,14 +2029,13 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(
         eventIndex,
-        fixture.streamingProfile,
+        undefined,
         latency,
         recordedTimings,
         replaySpeed,
-        jitterSource,
       );
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1830,8 +2059,8 @@ async function handleResponseCreate(
         break;
       }
       eventIndex++;
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -1839,15 +2068,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.output_text.done
     sendEvent(
@@ -1916,7 +2147,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: [outputItem],
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -1934,13 +2165,16 @@ async function handleResponseCreate(
 
   // ── Tool call response ──────────────────────────────────────────────
   if (isToolCallResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
+    const toolCalls = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
+    );
+    if (!toolCalls) return;
 
     // response.created
     sendEvent(
@@ -1960,14 +2194,14 @@ async function handleResponseCreate(
     );
 
     const outputItems: unknown[] = [];
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
     let eventIndex = 0;
 
-    for (let tcIdx = 0; tcIdx < response.toolCalls.length; tcIdx++) {
-      const tc = response.toolCalls[tcIdx];
+    for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+      const tc = toolCalls[tcIdx];
       const callId = tc.id ?? generateToolCallId();
       const itemId = realtimeId("item");
 
@@ -2007,14 +2241,13 @@ async function handleResponseCreate(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          fixture.streamingProfile,
+          undefined,
           latency,
           recordedTimings,
           replaySpeed,
-          jitterSource,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2041,8 +2274,8 @@ async function handleResponseCreate(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2101,15 +2334,17 @@ async function handleResponseCreate(
 
     if (interrupted) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markInterrupted(journalEntry, lifecycle.reason());
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
-    if (ws.isClosed) return;
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
+    }
 
     // response.done
     sendEvent(
@@ -2121,7 +2356,7 @@ async function handleResponseCreate(
           object: "realtime.response",
           status: "completed",
           output: outputItems,
-          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+          usage: renderRealtimeUsage({ kind: "ordinary-zero" }),
         },
       },
       isBeta,
@@ -2136,13 +2371,7 @@ async function handleResponseCreate(
   }
 
   // Unknown response type
-  journal.add({
-    method: "WS",
-    path: "/v1/realtime",
-    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-    body: completionReq,
-    response: { status: 500, fixture },
-  });
+  addResponseEntry(500);
   buildErrorRealtimeEvent(
     ws,
     "Fixture response did not match any known type",
@@ -2162,7 +2391,7 @@ async function handleResponseCreate(
  */
 async function streamRealtimeBlocks(
   ws: WebSocketConnection,
-  blocks: FixtureBlock[],
+  blocks: FunctionFixtureBlock[],
   responseId: string,
   fixture: Fixture,
   defaults: { latency: number; chunkSize: number; replaySpeed?: number; logger: Logger },
@@ -2171,7 +2400,10 @@ async function streamRealtimeBlocks(
   isBeta: boolean,
   conversationItems: RealtimeItem[],
   journalEntry: JournalEntry,
-  jitterSource?: JitterSource,
+  fault?: {
+    stop: MisbehaviorPlan["stop"];
+    usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  },
 ): Promise<void> {
   // response.created
   sendEvent(
@@ -2190,7 +2422,7 @@ async function streamRealtimeBlocks(
     isBeta,
   );
 
-  const interruption = createInterruptionSignal(fixture);
+  const lifecycle = wsLifecycle(ws, fixture);
   let interrupted = false;
   const allOutputItems: unknown[] = [];
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
@@ -2254,14 +2486,13 @@ async function streamRealtimeBlocks(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          fixture.streamingProfile,
+          undefined,
           latency,
           recordedTimings,
           replaySpeed,
-          jitterSource,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2288,8 +2519,8 @@ async function streamRealtimeBlocks(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2360,11 +2591,13 @@ async function streamRealtimeBlocks(
       const callId = block.id ?? generateToolCallId();
       const itemId = realtimeId("item");
       const args = block.arguments;
+      const itemStatus =
+        fault?.stop === "length" && outputIndex === blocks.length - 1 ? "incomplete" : "completed";
 
       const toolOutputItem = {
         id: itemId,
         type: "function_call",
-        status: "completed",
+        status: itemStatus,
         call_id: callId,
         name: block.name,
         arguments: args,
@@ -2393,14 +2626,13 @@ async function streamRealtimeBlocks(
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(
           eventIndex,
-          fixture.streamingProfile,
+          undefined,
           latency,
           recordedTimings,
           replaySpeed,
-          jitterSource,
         );
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2427,8 +2659,8 @@ async function streamRealtimeBlocks(
           break;
         }
         eventIndex++;
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -2470,7 +2702,7 @@ async function streamRealtimeBlocks(
             id: itemId,
             object: "realtime.item",
             type: "function_call",
-            status: "completed",
+            status: itemStatus,
             call_id: callId,
             name: block.name,
             arguments: args,
@@ -2486,15 +2718,17 @@ async function streamRealtimeBlocks(
 
   if (interrupted) {
     ws.destroy();
-    journalEntry.response.interrupted = true;
-    journalEntry.response.interruptReason = interruption?.reason();
-    interruption?.cleanup();
+    markInterrupted(journalEntry, lifecycle.reason());
+    lifecycle.dispose();
     return;
   }
 
-  interruption?.cleanup();
+  lifecycle.dispose();
 
-  if (ws.isClosed) return;
+  if (ws.isClosed) {
+    markWsTurnStopped(journalEntry, ws, lifecycle);
+    return;
+  }
 
   // response.done
   sendEvent(
@@ -2504,9 +2738,18 @@ async function streamRealtimeBlocks(
       response: {
         id: responseId,
         object: "realtime.response",
-        status: "completed",
+        status:
+          fault?.stop === "length" || fault?.stop === "content_filter" ? "incomplete" : "completed",
+        ...(fault?.stop === "length" || fault?.stop === "content_filter"
+          ? {
+              status_details: {
+                type: "incomplete",
+                reason: fault.stop === "length" ? "max_output_tokens" : "content_filter",
+              },
+            }
+          : {}),
         output: allOutputItems,
-        usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+        usage: fault?.usage ?? renderRealtimeUsage({ kind: "ordinary-zero" }),
       },
     },
     isBeta,

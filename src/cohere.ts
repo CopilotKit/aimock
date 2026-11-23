@@ -16,41 +16,56 @@ import type {
   Fixture,
   FixtureBlock,
   HandlerDefaults,
-  RecordedTimings,
   ResponseOverrides,
-  StreamingProfile,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
 import {
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
   generateMessageId,
   generateToolCallId,
   generateDeterministicEmbedding,
   extractOverrides,
+  requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isEmbeddingResponse,
   isErrorResponse,
-  serializeErrorResponse,
+  isRawResponse,
+  validateChatMessages,
+  validateToolsField,
   flattenHeaders,
+  isJsonObject,
   getTestId,
-  resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, typedSseCodec } from "./sse-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
+import {
+  normalizeDirectToolSchema,
+  planMisbehavior,
+  recordMisbehaviorOutcome,
+} from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
+import { mapCohereFinish } from "./response/finish.js";
+import { render as renderCohereUsage } from "./response/usage/codecs/cohere.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Cohere v2 Chat request types ───────────────────────────────────────────
 
@@ -111,13 +126,6 @@ interface CohereSSEEvent {
   [key: string]: unknown;
 }
 
-// ─── Zero-value usage block ─────────────────────────────────────────────────
-
-const ZERO_USAGE = {
-  billed_units: { input_tokens: 0, output_tokens: 0, search_units: 0, classifications: 0 },
-  tokens: { input_tokens: 0, output_tokens: 0 },
-};
-
 // ─── Cohere finish reason / usage mapping ──────────────────────────────────
 
 function cohereFinishReason(
@@ -125,34 +133,24 @@ function cohereFinishReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "COMPLETE";
-  if (overrideFinishReason === "tool_calls") return "TOOL_CALL";
-  if (overrideFinishReason === "length") return "MAX_TOKENS";
-  return overrideFinishReason;
+  return mapCohereFinish(overrideFinishReason);
 }
 
-function cohereUsage(overrides?: ResponseOverrides): typeof ZERO_USAGE {
-  if (!overrides?.usage) return ZERO_USAGE;
-  const inputTokens = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
-  const outputTokens = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
-  return {
-    billed_units: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      search_units: 0,
-      classifications: 0,
-    },
-    tokens: { input_tokens: inputTokens, output_tokens: outputTokens },
-  };
+function cohereUsage(overrides?: ResponseOverrides): ReturnType<typeof renderCohereUsage> {
+  return renderCohereUsage(overrides);
 }
 
 // ─── Input conversion: Cohere → ChatCompletionRequest ───────────────────────
 
 /** Extract plain text from structured content (array of { type, text } parts) or passthrough string. */
-function extractTextContent(content: string | CohereContentPart[]): string {
+function extractTextContent(content: string | CohereContentPart[] | null | undefined): string {
+  if (content === null || content === undefined) return "";
   if (typeof content === "string") return content;
   return content
-    .filter((part) => part.type === "text" && part.text !== undefined)
+    .filter(
+      (part) =>
+        part !== null && part !== undefined && part.type === "text" && part.text !== undefined,
+    )
     .map((part) => part.text!)
     .join("");
 }
@@ -211,13 +209,17 @@ export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionReq
           },
         };
       }
+      // Preserve the native map identity before adapting to canonical JSON Schema.
+      const schema = normalizeDirectToolSchema({ tools: [t] }, t.name);
       // Cohere v2 native format: { name, description, parameter_definitions }
       return {
         type: "function" as const,
         function: {
           name: t.name,
           description: t.description,
-          parameters: t.parameter_definitions,
+          parameters: schema
+            ? { type: "object", properties: schema.properties, required: [...schema.required] }
+            : undefined,
         },
       };
     });
@@ -271,16 +273,8 @@ function buildCohereToolCallResponse(
 ): object {
   const cohereCalls = toolCalls.map((tc) => {
     // Validate arguments JSON
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsJson = "{}";
-    }
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
@@ -330,7 +324,8 @@ function buildCohereContentWithToolCallsResponse(
   // `content` + `toolCalls` inputs unchanged.
   // Resolve the blocks exactly once (pure: validate + copy, no id-gen) and
   // reuse the single result for BOTH the tool-call and text derivation below.
-  const resolvedBlocks = blocks && blocks.length > 0 ? resolveFixtureBlocks(blocks) : undefined;
+  const outcome = blocks && blocks.length > 0 ? resolveFixtureBlockOutcome(blocks) : undefined;
+  const resolvedBlocks = outcome?.ordered;
 
   const effectiveToolCalls: ToolCall[] = resolvedBlocks
     ? resolvedBlocks
@@ -339,16 +334,8 @@ function buildCohereContentWithToolCallsResponse(
     : toolCalls;
 
   const cohereCalls = effectiveToolCalls.map((tc) => {
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsJson = "{}";
-    }
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
@@ -381,7 +368,10 @@ function buildCohereContentWithToolCallsResponse(
 
   return {
     id: overrides?.id ?? generateMessageId(),
-    finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
+    finish_reason: cohereFinishReason(
+      overrides?.finishReason,
+      outcome && !outcome.hasToolCalls ? "COMPLETE" : "TOOL_CALL",
+    ),
     message: {
       role: "assistant",
       content: contentBlocks,
@@ -541,16 +531,8 @@ function buildCohereToolCallStreamEvents(
     const callId = tc.id || generateToolCallId();
 
     // Validate arguments JSON
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsJson = "{}";
-    }
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.raw;
 
     // tool-call-start
     events.push({
@@ -661,7 +643,8 @@ function buildCohereContentWithToolCallsStreamEvents(
     // Cohere v2 events are ordered, so tool-first is wire-expressible. The
     // tool-plan-delta is emitted once before the first toolCall block (Cohere
     // requires it preceding tool calls). Legacy fixtures (no blocks) skip this.
-    const resolved = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const resolved = outcome.ordered;
     let toolPlanEmitted = false;
     let toolIdx = 0;
     resolved.forEach((block) => {
@@ -674,16 +657,8 @@ function buildCohereContentWithToolCallsStreamEvents(
           toolPlanEmitted = true;
         }
         const callId = block.id || generateToolCallId();
-        let argsJson: string;
-        try {
-          JSON.parse(block.arguments || "{}");
-          argsJson = block.arguments || "{}";
-        } catch {
-          logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-          );
-          argsJson = "{}";
-        }
+        const args = servedToolArgs(block, "string", logger);
+        const argsJson = args.raw;
         events.push({
           type: "tool-call-start",
           index: toolIdx,
@@ -732,7 +707,10 @@ function buildCohereContentWithToolCallsStreamEvents(
     events.push({
       type: "message-end",
       delta: {
-        finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
+        finish_reason: cohereFinishReason(
+          overrides?.finishReason,
+          outcome.hasToolCalls ? "TOOL_CALL" : "COMPLETE",
+        ),
         usage: cohereUsage(overrides),
       },
     });
@@ -785,16 +763,8 @@ function buildCohereContentWithToolCallsStreamEvents(
     const tc = toolCalls[idx];
     const callId = tc.id || generateToolCallId();
 
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsJson = "{}";
-    }
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.raw;
 
     // tool-call-start
     events.push({
@@ -851,61 +821,6 @@ function buildCohereContentWithToolCallsStreamEvents(
   return events;
 }
 
-// ─── SSE writer for Cohere typed events ─────────────────────────────────────
-
-interface CohereStreamOptions {
-  latency?: number;
-  streamingProfile?: StreamingProfile;
-  jitterSource?: JitterSource;
-  recordedTimings?: RecordedTimings;
-  replaySpeed?: number;
-  signal?: AbortSignal;
-  onChunkSent?: () => void;
-}
-
-async function writeCohereSSEStream(
-  res: http.ServerResponse,
-  events: CohereSSEEvent[],
-  optionsOrLatency?: number | CohereStreamOptions,
-): Promise<boolean> {
-  const opts: CohereStreamOptions =
-    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(
-      chunkIndex,
-      profile,
-      latency,
-      recordedTimings,
-      replaySpeed,
-      opts.jitterSource,
-    );
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    onChunkSent?.();
-    if (signal?.aborted) return false;
-    chunkIndex++;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
-}
-
 // ─── Request handler ────────────────────────────────────────────────────────
 
 export async function handleCohere(
@@ -935,12 +850,32 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `cohereReq.model` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(cohereReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/chat",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("cohere", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -957,17 +892,26 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "model is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "model is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  if (!cohereReq.messages || !Array.isArray(cohereReq.messages)) {
+  // Reject wrong-typed message/tool fields before the converter dereferences
+  // them — otherwise the TypeError surfaces as a 500 instead of a 400.
+  let shapeError = validateChatMessages(cohereReq.messages) ?? validateToolsField(cohereReq.tools);
+  if (!shapeError && Array.isArray(cohereReq.tools)) {
+    const nullFunctionIndex = cohereReq.tools.findIndex(
+      (tool) => "function" in tool && tool.function === null,
+    );
+    if (nullFunctionIndex !== -1) {
+      shapeError = `tools[${nullFunctionIndex}].function must be an object`;
+    }
+  }
+  if (shapeError) {
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -978,12 +922,10 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: messages array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Invalid request: ${shapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1002,7 +944,7 @@ export async function handleCohere(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "cohere" },
   );
 
   if (fixture) {
@@ -1012,28 +954,29 @@ export async function handleCohere(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v2/chat",
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/chat",
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1054,25 +997,25 @@ export async function handleCohere(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("cohere", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "cohere",
-        req.url ?? "/v2/chat",
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "cohere",
+          req.url ?? "/v2/chat",
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1081,7 +1024,12 @@ export async function handleCohere(
           path: req.url ?? "/v2/chat",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1100,51 +1048,155 @@ export async function handleCohere(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  const resolvedResponse = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "cohere",
+    fixture,
+    response: resolvedResponse,
+    request: completionReq,
+    stream: cohereReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/chat",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.length) logger.error(misbehavior.message);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("cohere", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(resolvedResponse)) {
+    await serveRawResponse({
+      wire: "cohere",
+      stream: cohereReq.stream === true,
+      req,
+      res,
+      fixture,
+      response: resolvedResponse,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "cohere",
+    });
+    return;
+  }
+
+  // Cohere carries the same raw argument strings and call identities as Chat.
+  // Reuse the accepted preparation so generated/duplicate IDs match metadata.
+  const prepared =
+    misbehavior.kind === "applied" ? prepareOpenAIChatMisbehavior(misbehavior) : undefined;
+  const observedK5Stream =
+    cohereReq.stream === true && prepared?.summary.fault === "stop-length-mid-tool";
+  const appliedReasoning =
+    prepared && "reasoning" in prepared.response
+      ? resolveReasoningForModel(
+          prepared.response.reasoning,
+          cohereReq.model,
+          resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+          logger,
+        )
+      : undefined;
+  const usage = prepared
+    ? resolveOpenAIChatMisbehaviorUsage(prepared, completionReq, appliedReasoning !== undefined)
+    : undefined;
+  const response =
+    prepared && usage
+      ? {
+          ...prepared.response,
+          usage,
+          ...(prepared.stop
+            ? { finishReason: observedK5Stream ? "tool_calls" : prepared.stop }
+            : {}),
+        }
+      : resolvedResponse;
+  const summary = prepared?.summary ?? misbehavior.summary;
+  const empty = prepared?.summary.fault === "empty-response";
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const codec = typedSseCodec<CohereSSEEvent>({ terminalSentinel: observedK5Stream });
+  // Cohere has no separate misbehavior reply: an applied plan is merged into
+  // `response` above and served by the branches below, so every non-streaming
+  // site sizes its wait from the served payload and carries the K4 flag.
+  const jsonOpts = (payloadLength: number) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!prepared?.duplicateId,
+    replaySpeed,
+  });
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
+    });
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Cohere v2 Chat API — ignoring",
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1152,43 +1204,40 @@ export async function handleCohere(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
-      const body = buildCohereContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        logger,
-        effReasoning,
-        overrides,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildCohereContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            logger,
+            effReasoning,
+            overrides,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildCohereContentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
@@ -1201,13 +1250,13 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1215,33 +1264,40 @@ export async function handleCohere(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
+    });
     if (cohereReq.stream !== true) {
-      const body = buildCohereTextResponse(response.content, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          empty
+            ? {
+                ...buildCohereTextResponse("", undefined, overrides),
+                message: {
+                  role: "assistant",
+                  content: [],
+                  tool_calls: [],
+                  tool_plan: "",
+                  citations: [],
+                },
+              }
+            : buildCohereTextResponse(response.content, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const events = buildCohereTextStreamEvents(
         response.content,
         chunkSize,
         effReasoning,
         overrides,
-      );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      ).filter((event) => !empty || event.type === "message-start" || event.type === "message-end");
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
@@ -1254,13 +1310,13 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1268,55 +1324,50 @@ export async function handleCohere(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
-      const body = buildCohereToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildCohereToolCallResponse(functionToolCalls, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const events = buildCohereToolCallStreamEvents(
-        response.toolCalls,
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeCohereSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, codec, events, streamTiming);
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v2/chat",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("cohere", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1366,12 +1417,32 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `embedReq.model` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(embedReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("cohere", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1388,12 +1459,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "model is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "model is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1409,12 +1478,31 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: texts array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "validation", {
+        message: "Invalid request: texts array is required",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Every text must be a string — a number reaches createHash().update() in
+  // the no-fixture fallback and throws a TypeError (500) instead of a 400.
+  if (!embedReq.texts.every((text) => typeof text === "string")) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("cohere", "validation", {
+        message: "Invalid request: texts must be an array of strings",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1450,31 +1538,56 @@ export async function handleCohereEmbed(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v2/embed",
-      headers: flattenHeaders(req.headers),
-      body: syntheticReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/embed",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   // Determine requested embedding types (default to float)
   const embeddingTypes =
     embedReq.embedding_types && embedReq.embedding_types.length > 0
       ? embedReq.embedding_types
       : ["float"];
+
+  function rejectInvalidEmbeddingTypes(): boolean {
+    if (embedReq.embedding_types == null) return false;
+    const isArray = Array.isArray(embedReq.embedding_types);
+    if (isArray && embedReq.embedding_types.every((type) => typeof type === "string")) return false;
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 400, fixture: fixture ?? null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("cohere", "validation", {
+        message: isArray
+          ? "Invalid request: embedding_types must be an array of strings"
+          : "Invalid request: embedding_types must be an array",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return true;
+  }
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);
@@ -1489,7 +1602,7 @@ export async function handleCohereEmbed(
         body: syntheticReq,
         response: { status, fixture },
       });
-      writeErrorResponse(res, status, serializeErrorResponse(response), {
+      writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
         retryAfter: response.retryAfter,
       });
       return;
@@ -1497,6 +1610,7 @@ export async function handleCohereEmbed(
 
     // Embedding response — use the fixture's embedding for each input text
     if (isEmbeddingResponse(response)) {
+      if (rejectInvalidEmbeddingTypes()) return;
       journal.add({
         method: req.method ?? "POST",
         path: req.url ?? "/v2/embed",
@@ -1531,19 +1645,17 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError("cohere", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode
-  if (resolveStrictMode(defaults.strict, req.headers)) {
+  if (resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
       strictNoMatchLogLine(req.method ?? "POST", req.url ?? "/v2/embed", skippedBySequenceOrTurn),
@@ -1562,12 +1674,10 @@ export async function handleCohereEmbed(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("cohere", "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1596,6 +1706,8 @@ export async function handleCohereEmbed(
       return;
     }
   }
+
+  if (rejectInvalidEmbeddingTypes()) return;
 
   // No fixture match — generate deterministic embeddings from input texts
   logger.warn(

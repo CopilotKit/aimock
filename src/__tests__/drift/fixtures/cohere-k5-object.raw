@@ -1,0 +1,1 @@
+{"id":"c373a43d-834f-47d8-a76e-208e7233a866","message":{"role":"assistant","content":[{"type":"text","text":"I will use one or more of the available tools to find the answer"}]},"finish_reason":"MAX_TOKENS","usage":{"billed_units":{"input_tokens":65,"output_tokens":14},"tokens":{"input_tokens":1483,"output_tokens":128},"cached_tokens":992}}

@@ -1,0 +1,139 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`raw no-regression: unscoped json and journal bodies > the journaled request body of a typed fixture is unchanged on every wire 1`] = `
+{
+  "anthropic": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-4-5",
+    "stream": undefined,
+    "temperature": undefined,
+    "tools": undefined,
+  },
+  "bedrock-converse": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": undefined,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "stream": false,
+    "temperature": undefined,
+    "tools": undefined,
+  },
+  "bedrock-invoke": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "stream": false,
+    "temperature": undefined,
+    "tools": undefined,
+  },
+  "cohere": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "command-r-plus",
+    "stream": undefined,
+    "tools": undefined,
+  },
+  "gemini": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": undefined,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "gemini-2.5-flash",
+    "stream": false,
+    "temperature": undefined,
+    "tools": undefined,
+    "top_k": undefined,
+    "top_p": undefined,
+  },
+  "gemini-interactions": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": undefined,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "gemini-2.5-flash",
+    "stream": false,
+    "temperature": undefined,
+    "tools": undefined,
+  },
+  "ollama": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": undefined,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "llama3.1",
+    "stream": false,
+    "temperature": undefined,
+    "tools": undefined,
+  },
+  "openai-chat": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-4.1",
+  },
+  "openai-responses": {
+    "_context": undefined,
+    "_endpointType": "chat",
+    "max_tokens": undefined,
+    "messages": [
+      {
+        "content": "journal",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-4.1",
+    "response_format": undefined,
+    "stream": false,
+    "temperature": undefined,
+    "tool_choice": undefined,
+    "tools": undefined,
+  },
+}
+`;

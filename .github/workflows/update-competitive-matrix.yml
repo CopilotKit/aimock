@@ -7,23 +7,35 @@ on:
 
 concurrency:
   group: competitive-matrix
-  cancel-in-progress: true
+  # NOT cancel-in-progress, same as update-adoption-wall.yml: this job pushes a
+  # branch, opens a PR and (for a state-only report) merges it. Cancelling it
+  # between `git push` and `gh pr merge` leaves a pushed branch or an open PR
+  # that nobody is looking at. A re-run queues behind the running one instead.
+  cancel-in-progress: false
 
 permissions:
   contents: read
+
+env:
+  # `pnpm install` runs `prepare` -> husky, which would make the unattended
+  # `git commit` below run lint-staged. HUSKY=0 asks husky not to install the
+  # hooks; the `--no-verify` on the bot commit is the part that does not depend
+  # on husky honouring it. Same as update-adoption-wall.yml.
+  HUSKY: "0"
 
 jobs:
   update-matrix:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      # Read only: the workflow token only reads the GitHub API here. Every
+      # push and every PR goes through the App token ("Mint app token").
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -37,47 +49,187 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet docs/; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+          # Use git status, not git diff: it also sees untracked files, e.g. a
+          # new docs page. (A missing state file is not re-created: the scan
+          # fails the run instead.)
+          if [ -n "$(git status --porcelain -- docs/ scripts/competitive-watch-state.json)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$(git status --porcelain -- docs/)" ]; then
+            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Configure git credentials
-        if: steps.changes.outputs.changed == 'true'
+      # The run's report, where a human can read it without a PR: the job
+      # summary page. Reports only; it must never fail the job.
+      - name: Publish run summary
+        if: always()
         run: |
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git config --local url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          SUMMARY=/tmp/matrix-summary.md
+          # $GITHUB_STEP_SUMMARY is capped at 1 MiB and an oversized file is
+          # discarded, not truncated. Leave headroom for the notice.
+          LIMIT=$((1024 * 1024 - 4096))
+          if [ -s "$SUMMARY" ]; then
+            head -c "$LIMIT" "$SUMMARY" >> "$GITHUB_STEP_SUMMARY" || true
+            if [ "$(wc -c < "$SUMMARY")" -gt "$LIMIT" ]; then
+              {
+                echo
+                echo "_Truncated at ${LIMIT} bytes for the job-summary cap._"
+              } >> "$GITHUB_STEP_SUMMARY" || true
+            fi
+          else
+            echo "## Competitive matrix: no summary was produced; see the \`Update competitive matrix\` step log." >> "$GITHUB_STEP_SUMMARY" || true
+          fi
 
-      - name: Create PR
-        if: steps.changes.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A run whose ONLY change is the feature-watch state file is a report, not
+      # a page edit: it lands itself through a bot PR (below), and its content
+      # stays visible in the PR body, the job summary and the Slack digest.
+      # Anything that touches docs/ (a homepage or migration page edit) still
+      # goes to a review PR for a human. This step decides which path applies,
+      # on the exact set of paths the commit stages.
+      - name: Verify the auto-land diff is confined to the state file
+        id: confine
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.changes.outputs.docs_changed == 'false'
         run: |
+          STATUS=$(git status --porcelain -- docs/ scripts/competitive-watch-state.json)
+          if [ "$STATUS" = " M scripts/competitive-watch-state.json" ]; then
+            echo "confined=true" >> "$GITHUB_OUTPUT"
+            echo "Only scripts/competitive-watch-state.json changed; it may auto-land."
+          else
+            echo "confined=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The change is not exactly a modified scripts/competitive-watch-state.json; it goes to a review PR instead:"
+            echo "$STATUS"
+          fi
+
+      # The workflow token cannot serve either PR path: a PR it opens or a
+      # branch it pushes triggers no CI, and ruleset `blorpathupap` requires an
+      # approved PR on the default branch. copilotkit-bot (app 1108748) is a
+      # PULL-REQUEST-ONLY bypass actor on that ruleset. This is the same app,
+      # the same pinned action, the same secret and the same scopes that
+      # update-adoption-wall.yml and fix-drift.yml use. Minted for any changed
+      # run, which is exactly the union of the two steps it serves: the
+      # auto-land below and the review PR after it. A run with no change never
+      # mints a token. The token reaches git and gh through the environment
+      # only.
+      - name: Mint app token
+        id: app-token
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: "1108748"
+          private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Auto-land via bot PR
+        id: land
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.changes.outputs.docs_changed == 'false' &&
+          steps.confine.outputs.confined == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${AUTH}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"
+          git config user.name "copilotkit-bot[bot]"
+          git config user.email "194550712+copilotkit-bot[bot]@users.noreply.github.com"
+          # Run id + attempt: a same-day re-run must not collide with the first
+          # run's branch.
+          BRANCH="bot/competitive-watch-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git checkout -b "$BRANCH"
+          # ONE NAMED FILE: the bot merges the state file and nothing else.
+          git add -- scripts/competitive-watch-state.json
+          # --no-verify: see the HUSKY note in the workflow env block.
+          git commit --no-verify -m "chore: update competitor feature-watch state"
+          git push -u origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --title "chore: competitor feature-watch report" \
+            --body-file /tmp/matrix-summary.md \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH")
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          # --admin merges now, through the bot's pull-request bypass (--auto
+          # would wait forever for the approval the ruleset requires). --merge
+          # because the ruleset allows merge commits only. A real conflict
+          # fails here and leaves the PR open for a human.
+          if ! gh pr merge "$BRANCH" --merge --admin; then
+            echo "::error::Opened the feature-watch PR for ${BRANCH} but could not merge it into ${GITHUB_REF_NAME}; it is left open for a human."
+            exit 1
+          fi
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      # A docs/ change, or a state change that is not confined, goes to a
+      # review PR for a human. It is pushed and opened with the App token so
+      # that CI runs on it, and it is NEVER merged here: it waits for a human.
+      - name: Create PR
+        id: pr
+        if: >-
+          steps.changes.outputs.changed == 'true' &&
+          steps.confine.outputs.confined != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_ID: ${{ github.run_id }}
+          DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${AUTH}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="auto/competitive-matrix-$(date +%Y%m%d)"
+          # The run id keeps two runs on the same day on separate branches.
+          BRANCH="auto/competitive-matrix-$(date +%Y%m%d)-${RUN_ID}"
           git checkout -b "$BRANCH"
-          git add docs/
-          git commit -m "docs: update competitive matrix and migration pages from latest competitor data"
+          git add docs/ scripts/competitive-watch-state.json
+          if [ "$DOCS_CHANGED" = "true" ]; then
+            TITLE="Update competitive matrix and migration pages"
+            git commit -m "docs: update competitive matrix and migration pages from latest competitor data"
+          else
+            TITLE="Competitor feature-watch report"
+            git commit -m "chore: update competitor feature-watch state"
+          fi
           git push -u origin "$BRANCH"
-          gh pr create \
-            --title "Update competitive matrix and migration pages" \
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
             --body-file /tmp/matrix-summary.md \
-            --base main
+            --base main)
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack
         if: always()
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           CHANGED: ${{ steps.changes.outputs.changed }}
+          DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
+          PR_URL: ${{ steps.land.outputs.url || steps.pr.outputs.url }}
+          LANDED: ${{ steps.land.outputs.merged }}
           JOB_STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          if [ "$CHANGED" = "true" ]; then
+          # "PR created" only when the PR step really produced a URL; a failed
+          # Create PR falls through to the failure message. "Merged" only when
+          # the bot PR's merge really succeeded; an unmerged bot PR is left open
+          # and reported as a PR to review.
+          if [ "$LANDED" = "true" ] && [ -n "$PR_URL" ]; then
+            EMOJI="🔎"
+            MSG="*Competitor feature-watch report* — state merged into main via a bot PR; check the changes below. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
+          elif [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ] && [ "$DOCS_CHANGED" = "true" ]; then
             EMOJI="📊"
             MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
+          elif [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ]; then
+            EMOJI="🔎"
+            MSG="*Competitor feature-watch changes need a review* — report PR created. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           elif [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             MSG="Competitive matrix check — no changes detected."
@@ -85,7 +237,51 @@ jobs:
             EMOJI="❌"
             MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           fi
-          PAYLOAD=$(jq -n --arg text "${EMOJI} ${MSG}" '{text: $text}')
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+          # The digest is the summary's "## Feature watch" section. It is sent
+          # only with a created PR, so a quiet week, a failed Create PR and a
+          # failed run send none (the full table is in the PR body).
+          : > /tmp/feature-watch.md
+          if [ -n "$PR_URL" ] && [ -f /tmp/matrix-summary.md ]; then
+            awk '/^## /{inwatch = ($0 == "## Feature watch")} inwatch' /tmp/matrix-summary.md > /tmp/feature-watch.md
+          fi
+          # jq turns the GFM digest into Slack mrkdwn: the heading becomes bold
+          # and each table row becomes one bullet. Each cell is decoded back to
+          # the text the script had before its GFM `cell()` escaping: the row
+          # splits only on a "|" that is not backslash-escaped (no placeholder
+          # characters, so competitor control characters cannot collide), each
+          # "\" escape is removed, the U+2060 after "@" and "#" and before "$" is
+          # dropped, and "&lt;", "&gt;" and "&amp;" are decoded in one pass.
+          # Then the digest
+          # (and only the digest: the "View run" link above stays live) is
+          # escaped for Slack once, so competitor text such as <!channel> or
+          # <url|label> is inert and shows as written.
+          PAYLOAD=$(jq -n \
+            --arg text "${EMOJI} ${MSG}" \
+            --arg pr "${PR_URL}" \
+            --rawfile watch /tmp/feature-watch.md \
+            'def slack: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+             def plain: gsub("\\\\(?<c>.)"; .c)
+               | gsub("(?<c>[@#])⁠"; .c)
+               | gsub("⁠(?<c>[$])"; .c)
+               | gsub("&(?<e>amp|lt|gt);"; {amp: "&", lt: "<", gt: ">"}[.e]);
+             def cells: [scan("\\\\.?|\\||[^\\\\|]+")]
+               | reduce .[] as $t ([""]; if $t == "|" then . + [""] else .[-1] += $t end)
+               | .[1:-1] | map(sub("^ +"; "") | sub(" +$"; ""));
+             def row: cells as $c
+               | ((($c[0] // "") | capture("^\\[(?<id>.*)\\]\\(.*\\)$") | .id) // $c[0]) as $id
+               | "• *" + ($id | plain) + "* (" + ($c[1] | plain) + "; " + ($c[2] | plain) + "): "
+                 + ($c[3] | plain)
+                 + (if $c[4] != "-" then " — Details: " + ($c[4] | plain) else "" end)
+                 + (if $c[5] != "-" then " — Evidence: " + ($c[5] | plain) else "" end);
+             def digest: split("\n")
+               | map(if startswith("## ") then "*" + ltrimstr("## ") + "*"
+                     elif test("^\\| (Source|---) \\|") then empty
+                     elif startswith("| ") then row
+                     else . end)
+               | join("\n") | slack;
+             {text: ($text
+               + (if $pr != "" then "\n" + $pr else "" end)
+               + (if $watch != "" then "\n\n" + ($watch | digest) else "" end))}')
+          # The webhook is a secret: keep its curl on one line, behind the guard above.
+          # --fail-with-body makes a rejected post (4xx/5xx) fail the step and log Slack's reason.
+          curl -sS --fail-with-body -X POST "$SLACK_WEBHOOK" -H "Content-Type: application/json" -d "$PAYLOAD"

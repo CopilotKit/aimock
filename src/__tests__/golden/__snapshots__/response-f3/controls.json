@@ -1,0 +1,247 @@
+[
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#0>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#1>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#2>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#3>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#4>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#5>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#6>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#7>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#8>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#9>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#10>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#11>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\"",
+      "x-request-id": "req-<#12>"
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  },
+  {
+    "status": 401,
+    "headers": {
+      "content-length": "94",
+      "content-type": "application/json",
+      "www-authenticate": "Bearer realm=\"aimock\""
+    },
+    "body": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"authentication_error\",\"code\":\"invalid_api_key\"}}"
+  }
+]

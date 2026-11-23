@@ -21,6 +21,16 @@ A pre-commit hook (husky + lint-staged) runs prettier and eslint automatically
 on staged files, but always verify manually before pushing — CI checks the
 entire repo, not just staged files.
 
+## Public API Reports
+
+`etc/*.api.md` records the public type surface (Microsoft API Extractor). After
+changing public types, run `pnpm build && pnpm api:report` and commit `etc/`;
+CI requires generated reports to match committed reports on every event, ignoring
+comment-only changes. The `public-api-addition` label cannot bypass report freshness.
+Committed report changes against the PR base require that label, ignoring comment-only
+changes. Review intended report changes for compatibility; the label does not
+authorize breaking changes or replace that review (see `.github/workflows/api-report.yml`).
+
 ## Project Structure
 
 - `src/` — TypeScript source (server, router, helpers, responses, types)

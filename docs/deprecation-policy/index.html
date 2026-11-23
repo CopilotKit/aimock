@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deprecated &amp; Removed APIs — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Deprecated &amp; Removed APIs</h1>
+        <p class="lead">
+          aimock keeps mocking provider surfaces that upstream has deprecated, and declines to mock
+          the success path of surfaces upstream has removed. Deprecated is not the same as removed,
+          and the difference decides what belongs in the mock.
+        </p>
+
+        <h2>Deprecated Is Not Removed</h2>
+        <p>
+          The two words get used interchangeably in release notes, but for a mock they describe
+          opposite situations. A deprecated endpoint still answers: the provider has announced an
+          intent to retire it, published a migration path, and kept serving traffic in the meantime.
+          A removed endpoint does not answer: the URL is gone, and calling it produces a
+          <code>404</code> or a <code>410</code> rather than a result.
+        </p>
+        <p>
+          aimock treats those two states differently because a mock's users are in different
+          positions in each one. Against a deprecated API they still have working production code.
+          Against a removed one they do not.
+        </p>
+
+        <h2>Why Deprecated Surfaces Stay</h2>
+        <p>
+          Deprecation is the moment when test scaffolding matters most, not least. Someone with
+          production code written against a deprecating API is in the middle of migrating, and a
+          migration means running the old path and the new path side by side — comparing behavior,
+          keeping the old one green while the new one lands, and proving the switchover before
+          shipping it. Pulling the mock out from under that work removes the tool exactly when it is
+          needed.
+        </p>
+        <p>
+          It also helps to be precise about what aimock users are testing. They are testing
+          <strong>their own code</strong>, not the provider. Upstream deciding to deprecate an
+          endpoint does not delete that endpoint from anybody's codebase. There is a long tail in
+          which the API still serves, real applications still call it, and those applications still
+          need a deterministic local target to test against.
+        </p>
+        <p>
+          Finally, the decision is asymmetric. Declining to <em>add</em> a surface costs a
+          contributor a pull request and nothing else. <em>Deleting</em> a surface aimock already
+          ships takes a route out from under everyone whose tests are wired to it. So the bar runs
+          in one direction: be quick to decline, slow to delete. That asymmetry governs deletion,
+          not honesty — when upstream kills an endpoint, the route stays and starts telling the
+          truth about it.
+        </p>
+
+        <h2>Why a Removed API Is Different</h2>
+        <p>
+          A mock's entire contract is to behave like the real thing. When the real endpoint has
+          stopped answering, a mock that returns <code>200</code> with a plausible body is
+          manufacturing <strong>false green</strong> — a test that passes for code that cannot
+          possibly work in production. The suite reports health for a call path that is already
+          dead.
+        </p>
+        <p>
+          That is strictly worse than having no mock at all. With no mock, the test fails loudly in
+          CI, where failures are cheap and someone is watching. With a lying mock, the failure moves
+          to deploy, where it is expensive and nobody expected it.
+        </p>
+        <p>
+          The same reasoning reaches a surface aimock already ships. Once upstream pulls the
+          endpoint, the shipped mock is the one doing the lying, and correcting it is not our
+          breaking change — upstream's removal is. The endpoint is gone whether or not aimock
+          reflects it. The user's code is already broken; the only thing still in our hands is
+          whether they find that out in CI or in production.
+        </p>
+        <p>
+          A major version is not the instrument for it either. A major protects
+          <strong>aimock's own interface</strong> — the CLI, the configuration, the way you start it
+          and point a client at it. Fidelity to upstream is not our interface, it is our job, and
+          correcting a mock to match reality is not us breaking a promise. Treating it as one would
+          also be unworkable: providers retire things constantly, and tying every upstream removal
+          to a major bump makes majors either meaningless or perpetual. The conversion ships in a
+          normal release. It is consumer-visible and earns a loud <code>CHANGELOG</code> entry, but
+          it is not a major-version event.
+        </p>
+        <div class="info-box">
+          <p>
+            The objection to a removed surface is never &ldquo;this API is old.&rdquo; Age is not
+            disqualifying — plenty of old endpoints still serve, and aimock mocks them. The
+            objection is that the mock would assert something untrue about the world.
+          </p>
+        </div>
+
+        <h2>The Drift Consequence</h2>
+        <p>
+          A removed API also cannot be
+          <a href="/drift-detection">drift-tested</a>. Drift detection works by comparing mock
+          output against a live response from the real provider; when nothing live remains to
+          compare against, there is no comparison to make. A dead surface left in the drift pipeline
+          produces a permanent vacuous pass — a green check that verifies nothing — and that
+          corrupts the signal that tells us the rest of the suite is healthy. Dead surfaces are
+          therefore excluded from drift explicitly, rather than left to pass neutrally.
+        </p>
+
+        <h2>The Matrix</h2>
+        <p>
+          Two questions decide every case: what state is the surface in upstream, and are we looking
+          at a new contribution or something aimock already ships?
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Upstream state</th>
+              <th>New contribution</th>
+              <th>Surface already shipped</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>GA</strong></td>
+              <td>Normal bar</td>
+              <td>Maintain</td>
+            </tr>
+            <tr>
+              <td><strong>Deprecated, still serving</strong></td>
+              <td>Accept with a concrete user story; label it</td>
+              <td>Keep; freeze feature growth; note in docs</td>
+            </tr>
+            <tr>
+              <td><strong>Removed / sunset</strong></td>
+              <td>Decline the success-path mock</td>
+              <td>Convert to the sunset behaviour in a normal release</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Three Rules</h2>
+        <ol>
+          <li>
+            <strong>Never mock success for an endpoint that no longer serves.</strong> Faithfulness
+            is the product, and it binds a surface aimock already ships exactly as it binds one
+            being proposed.
+          </li>
+          <li>
+            <strong>A sunset mock is legitimate if it mocks the sunset.</strong> Returning the
+            <code>404</code> or <code>410</code> the real API now returns is a faithful mock, and a
+            useful one — it lets users test that their code handles the removal. For a surface
+            aimock already ships, that conversion is not merely permitted; it is the required path.
+          </li>
+          <li>
+            <strong>Dead surfaces are explicitly excluded from drift</strong>, never left to pass
+            neutrally.
+          </li>
+        </ol>
+
+        <h2>What to Expect as a Contributor</h2>
+        <p>
+          If you are proposing a mock for a surface that upstream has
+          <strong>deprecated but is still serving</strong>, bring a concrete user story: whose code
+          calls this, and what are they testing. That is the whole bar. The mock gets labelled as
+          covering a deprecated surface so nobody mistakes it for a recommended path, and it will
+          not grow new features afterwards — it is there to support migration, not to keep pace with
+          an API that is on its way out.
+        </p>
+        <p>
+          If you are proposing a mock for a surface upstream has <strong>removed</strong>, the
+          success path will be declined. Reframing the same contribution as a sunset mock — one that
+          returns the error the real API now returns — is welcome, and is the version that actually
+          helps users, because handling the removal is the only thing left to test.
+        </p>
+        <p>
+          If a surface aimock already ships gets removed upstream, the route does not vanish from
+          your next release — what it returns changes. It starts serving the rejection the real API
+          now serves, it leaves the drift pipeline, and it stays there so you can still test that
+          your code handles the shutdown. That change is consumer-visible and the
+          <code>CHANGELOG</code> says so plainly, but it rides a normal release: matching upstream
+          reality is aimock doing its job, not aimock breaking its interface.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

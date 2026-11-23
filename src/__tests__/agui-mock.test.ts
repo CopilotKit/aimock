@@ -1801,3 +1801,87 @@ describe("NO_USER_MESSAGE_SENTINEL", () => {
     expect(NO_USER_MESSAGE_SENTINEL).toBe("__NO_USER_MESSAGE__");
   });
 });
+
+describe("AG-UI convenience helpers use each request's run identity", () => {
+  it.each(["message", "tool", "state", "reasoning"] as const)(
+    "%s supports concurrent and repeated requests",
+    async (helper) => {
+      agui = new AGUIMock({ port: 0 });
+      if (helper === "message") agui.onMessage("identity", "hello");
+      if (helper === "tool")
+        agui.onToolCall("identity", "search", '{"q":"hello"}', { result: "found" });
+      if (helper === "state") agui.onStateKey("counter", { counter: 42 });
+      if (helper === "reasoning") agui.onReasoning("identity", "thinking");
+      await agui.start();
+      const responses = await Promise.all(
+        [0, 1, 2].map((index) =>
+          post(
+            agui!.url,
+            aguiInput("identity", {
+              threadId: `thread-${index}`,
+              runId: `run-${index}`,
+              parentRunId: `parent-${index}`,
+              state: { counter: 0 },
+            }),
+          ),
+        ),
+      );
+      const contentIds = new Set<string>();
+      for (const [index, response] of responses.entries()) {
+        expect(response.status).toBe(200);
+        const events = parseSSEEvents(response.body);
+        expect(events[0]).toMatchObject({
+          type: "RUN_STARTED",
+          threadId: `thread-${index}`,
+          runId: `run-${index}`,
+          parentRunId: `parent-${index}`,
+        });
+        expect(events[events.length - 1]).toMatchObject({
+          type: "RUN_FINISHED",
+          threadId: `thread-${index}`,
+          runId: `run-${index}`,
+        });
+        for (const event of events) {
+          if (event.type === "TEXT_MESSAGE_START" || event.type === "REASONING_MESSAGE_START")
+            contentIds.add(event.messageId);
+          if (event.type === "TOOL_CALL_START") contentIds.add(event.toolCallId);
+        }
+      }
+      if (helper !== "state") expect(contentIds.size).toBe(3);
+      const again = parseSSEEvents(
+        (
+          await post(
+            agui.url,
+            aguiInput("identity", {
+              threadId: "later-thread",
+              runId: "later-run",
+              state: { counter: 0 },
+            }),
+          )
+        ).body,
+      );
+      expect(again[0]).toMatchObject({
+        type: "RUN_STARTED",
+        threadId: "later-thread",
+        runId: "later-run",
+      });
+      expect(again[0]).not.toHaveProperty("parentRunId");
+    },
+  );
+
+  it("onRun retains authored events and IDs without changing the caller's array", async () => {
+    const events = buildTextResponse("authored", {
+      threadId: "fixture-thread",
+      runId: "fixture-run",
+    });
+    const before = JSON.stringify(events);
+    agui = new AGUIMock({ port: 0 });
+    agui.onRun("identity", events);
+    await agui.start();
+    for (const runId of ["request-one", "request-two"]) {
+      const response = await post(agui.url, aguiInput("identity", { runId }));
+      expect(parseSSEEvents(response.body)).toMatchObject(events);
+    }
+    expect(JSON.stringify(events)).toBe(before);
+  });
+});

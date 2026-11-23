@@ -34,3 +34,6 @@ docs/specs/
 # step fails the run if the three disagree, so a rename that misses one is
 # caught before it can commit weekly state data into main's history.
 /adoption-data/
+
+# API Extractor scratch output (scripts/api-report.ts; reports live in etc/)
+/temp/

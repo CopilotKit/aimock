@@ -5,6 +5,8 @@ import type { MetricsRegistry } from "./metrics.js";
 import type {
   A2AAgentDefinition,
   A2AArtifact,
+  A2AConversationOptions,
+  A2AConversationTurn,
   A2AMockOptions,
   A2APart,
   A2AStreamEvent,
@@ -20,10 +22,12 @@ import {
 } from "./a2a-handler.js";
 import { createJsonRpcDispatcher } from "./jsonrpc.js";
 import { generateId, flattenHeaders, readBody } from "./helpers.js";
+import { ConversationStore, conversationPattern } from "./a2a-conversation.js";
 
 export class A2AMock implements Mountable {
   private agents: Map<string, { def: A2AAgentDefinition; patterns: PatternEntry[] }> = new Map();
   private tasks: Map<string, A2ATask> = new Map();
+  private conversations = new ConversationStore(this.tasks);
   private server: http.Server | null = null;
   private journal: Journal | null = null;
   private registry: MetricsRegistry | null = null;
@@ -37,7 +41,7 @@ export class A2AMock implements Mountable {
   }
 
   private buildDispatcher() {
-    const methods = createA2AMethods(this.agents, this.tasks);
+    const methods = createA2AMethods(this.agents, this.tasks, this.conversations);
     return createJsonRpcDispatcher({ methods });
   }
 
@@ -82,7 +86,34 @@ export class A2AMock implements Mountable {
     return this;
   }
 
+  onConversation(
+    agentName: string,
+    turns: A2AConversationTurn[],
+    options?: A2AConversationOptions,
+  ): this {
+    const agent = this.agents.get(agentName);
+    if (!agent) throw new Error(`Agent "${agentName}" not registered`);
+    agent.patterns.push(conversationPattern(agentName, turns, options));
+    return this;
+  }
+
   // ---- Mountable interface ----
+
+  private journalRequest(req: http.IncomingMessage, pathname: string, status: number): void {
+    if (this.journal) {
+      this.journal.add({
+        // req.url keeps the mount prefix and the query string, which pathname
+        // (the mount-relative sub-path) drops; the journal's ?path= and
+        // ?testId= filters both read this field.
+        method: req.method ?? "POST",
+        path: req.url ?? pathname,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        service: "a2a",
+        response: { status, fixture: null },
+      });
+    }
+  }
 
   async handleRequest(
     req: http.IncomingMessage,
@@ -100,6 +131,7 @@ export class A2AMock implements Mountable {
         "A2A-Version": "1.0",
       });
       res.end(JSON.stringify(card));
+      this.journalRequest(req, pathname, 200);
       return true;
     }
 
@@ -123,6 +155,7 @@ export class A2AMock implements Mountable {
             error: { code: -32700, message: "Parse error" },
           }),
         );
+        this.journalRequest(req, pathname, 200);
         return true;
       }
 
@@ -147,16 +180,7 @@ export class A2AMock implements Mountable {
       await this.dispatcher(req, res, body);
 
       // Journal the request after the handler completes
-      if (this.journal) {
-        this.journal.add({
-          method: req.method ?? "POST",
-          path: pathname,
-          headers: flattenHeaders(req.headers),
-          body: null,
-          service: "a2a",
-          response: { status: res.statusCode, fixture: null },
-        });
-      }
+      this.journalRequest(req, pathname, res.statusCode);
 
       return true;
     }
@@ -201,6 +225,7 @@ export class A2AMock implements Mountable {
           } else if (!res.writableEnded) {
             res.end();
           }
+          this.journalRequest(req, url.pathname, res.statusCode);
         });
       });
 
@@ -240,6 +265,7 @@ export class A2AMock implements Mountable {
   reset(): this {
     this.agents.clear();
     this.tasks.clear();
+    this.conversations.clear();
     return this;
   }
 
@@ -258,8 +284,28 @@ export class A2AMock implements Mountable {
   ): Promise<void> {
     const params = parsed.params as Record<string, unknown> | undefined;
     const id = parsed.id as string | number;
-    const text = extractText(params);
-    const entry = findStreamingMatch(text, this.agents);
+    const text = extractText(params, true);
+    const message = params?.message as { taskId?: unknown } | undefined;
+    const owned = this.conversations.owns(message?.taskId);
+    const entry = owned ? null : findStreamingMatch(text, this.agents);
+
+    if (owned || entry?.kind === "conversation") {
+      const response = this.conversations.send(
+        params,
+        id,
+        text,
+        entry?.kind === "conversation" ? entry : undefined,
+      );
+      res.writeHead(200, {
+        "Content-Type": response.error ? "application/json" : "text/event-stream",
+        "Cache-Control": "no-cache",
+        "A2A-Version": "1.0",
+      });
+      res.end(response.error ? JSON.stringify(response) : `data: ${JSON.stringify(response)}\n\n`);
+      this.journalRequest(req, "/", res.statusCode);
+      return;
+    }
+    extractText(params); // Non-conversation fixtures keep the legacy throw on null parts.
 
     if (!entry) {
       res.writeHead(200, {
@@ -273,6 +319,7 @@ export class A2AMock implements Mountable {
           error: { code: -32000, message: "No matching pattern for message" },
         }),
       );
+      this.journalRequest(req, "/", res.statusCode);
       return;
     }
 

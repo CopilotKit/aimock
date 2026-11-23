@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fine-tuning Jobs — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Fine-tuning Jobs</h1>
+        <p class="lead">
+          aimock implements OpenAI's fine-tuning job surface in memory, so an SDK that creates a
+          job, polls it and reads its events gets a complete lifecycle without touching
+          <code>api.openai.com</code>. Progression is deterministic and driven by retrieves, not by
+          wall-clock time, so tests never sleep.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/fine_tuning/jobs</code></td>
+              <td>Create a job from <code>training_file</code> + <code>model</code></td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/fine_tuning/jobs</code></td>
+              <td>List jobs, newest first (<code>limit</code>, <code>after</code>)</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/fine_tuning/jobs/{id}</code></td>
+              <td>Retrieve, advancing the job one step</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/fine_tuning/jobs/{id}/cancel</code></td>
+              <td>Cancel a non-terminal job</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/fine_tuning/jobs/{id}/events</code></td>
+              <td>Read the job's event log (<code>limit</code>, <code>after</code>)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Deterministic Progression</h2>
+        <p>
+          A new job starts at <code>validating_files</code>. Each retrieve advances it one step —
+          first to <code>queued</code>, then to <code>running</code>, then to
+          <code>succeeded</code> with a <code>fine_tuned_model</code> name and a
+          <code>finished_at</code> stamp. Terminal jobs stop advancing.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Status ladder <span class="lang-tag">text</span></div>
+          <pre><code>create   -> validating_files
+retrieve -> queued
+retrieve -> running
+retrieve -> succeeded   (fine_tuned_model: "ft:&lt;model&gt;:aimock:&lt;job-id-tail&gt;")
+                        with a create-time suffix, one more segment:
+                        "ft:&lt;model&gt;:aimock:&lt;suffix&gt;:&lt;job-id-tail&gt;"
+
+cancel   -> cancelled   (any non-terminal job, with a finished_at stamp;
+                         400 once terminal: succeeded, cancelled or failed)</code></pre>
+        </div>
+
+        <h2>The Job Object</h2>
+        <p>
+          Every job response carries all fifteen fields the OpenAI API marks required on
+          <code>fine_tuning.job</code> — <code>id</code>, <code>object</code>,
+          <code>created_at</code>, <code>error</code>, <code>fine_tuned_model</code>,
+          <code>finished_at</code>, <code>hyperparameters</code>, <code>model</code>,
+          <code>organization_id</code>, <code>result_files</code>, <code>seed</code>,
+          <code>status</code>, <code>trained_tokens</code>, <code>training_file</code> and
+          <code>validation_file</code>. The nullable ones are emitted as <code>null</code> until the
+          lifecycle fills them in, so typed SDK clients never see a missing key.
+          <code>seed</code> is derived from the job id and is stable across reads when the create
+          body sends none &mdash; a <code>seed</code> you do send is echoed back unchanged &mdash;
+          <code>organization_id</code> is the fixed mock value <code>org-aimock</code>, and
+          <code>result_files</code> and <code>trained_tokens</code> stay empty and
+          <code>null</code> until the job reaches <code>succeeded</code>. The three optional members
+          &mdash; <code>integrations</code>, <code>method</code> and <code>metadata</code> &mdash;
+          are present on the job exactly when the create body carried a value for them, and absent
+          otherwise, because none of them is required and emitting <code>null</code> would be a
+          field the vendor never sends. Sending one of them as an explicit <code>null</code> is
+          legal and means the same thing as omitting it: the job comes back with no such key at all,
+          rather than with a <code>null</code> one.
+        </p>
+
+        <h2>Create Parameters</h2>
+        <p>
+          All nine properties <code>CreateFineTuningJobRequest</code> declares are read, and only
+          those nine: an unrecognized top-level parameter is rejected with <code>400</code> listing
+          the nine, rather than accepted and dropped.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>What the mock does with it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>model</code>, <code>training_file</code></td>
+              <td>Required non-empty strings; echoed on the job</td>
+            </tr>
+            <tr>
+              <td><code>validation_file</code></td>
+              <td>Non-empty string or <code>null</code>; echoed on the job</td>
+            </tr>
+            <tr>
+              <td><code>hyperparameters</code></td>
+              <td>
+                The deprecated top-level object: <code>n_epochs</code>, <code>batch_size</code>,
+                <code>learning_rate_multiplier</code> only, each range-checked and echoed
+              </td>
+            </tr>
+            <tr>
+              <td><code>suffix</code></td>
+              <td>
+                A string of 1&ndash;64 Unicode code points (not UTF-16 units, so an astral character
+                such as an emoji counts once) or <code>null</code>; becomes a segment of
+                <code>fine_tuned_model</code> once the job succeeds, and is never echoed as a field
+                (the vendor&rsquo;s <code>fine_tuning.job</code> has no <code>suffix</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>seed</code></td>
+              <td>
+                An integer <code>0</code>&ndash;<code>2147483647</code>, honoured verbatim;
+                <code>null</code> and omission are both legal and mean &ldquo;generate one&rdquo;,
+                in which case the job reports a seed derived from its id, stable across reads
+              </td>
+            </tr>
+            <tr>
+              <td><code>method</code></td>
+              <td>
+                <code>type</code> is required and one of <code>supervised</code>, <code>dpo</code>,
+                <code>reinforcement</code>; the chosen type&rsquo;s own
+                <code>hyperparameters</code> table is enforced and a
+                <code>reinforcement</code> method must carry a <code>grader</code>, which is passed
+                through as the JSON object you sent. A configuration object belonging to a type
+                other than the one in <code>method.type</code> is rejected with <code>400</code>
+                naming it, rather than validated, echoed or ignored. Echoed on the job
+              </td>
+            </tr>
+            <tr>
+              <td><code>metadata</code></td>
+              <td>
+                At most 16 string pairs, keys &le; 64 and values &le; 512 Unicode code points (the
+                same unit <code>suffix</code> is counted in); echoed on the job
+              </td>
+            </tr>
+            <tr>
+              <td><code>integrations</code></td>
+              <td>
+                <code>wandb</code> entries with a required <code>wandb.project</code>; echoed on the
+                job
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Job Lifecycle</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Driving the lifecycle with the <code>openai</code> SDK
+            <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({ <span class="prop">port</span>: <span class="num">0</span> });
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="kw">const</span> <span class="op">openai</span> = <span class="kw">new</span> <span class="type">OpenAI</span>({ <span class="prop">baseURL</span>: <span class="str">`${mock.url}/v1`</span>, <span class="prop">apiKey</span>: <span class="str">"test"</span> });
+
+<span class="kw">const</span> <span class="op">job</span> = <span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">create</span>({
+  <span class="prop">training_file</span>: <span class="str">"file-train"</span>,
+  <span class="prop">model</span>: <span class="str">"gpt-4o-mini"</span>,
+});
+<span class="fn">expect</span>(<span class="op">job</span>.<span class="prop">status</span>).<span class="fn">toBe</span>(<span class="str">"validating_files"</span>);
+
+<span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">retrieve</span>(<span class="op">job</span>.<span class="prop">id</span>); <span class="cm">// queued</span>
+<span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">retrieve</span>(<span class="op">job</span>.<span class="prop">id</span>); <span class="cm">// running</span>
+<span class="kw">const</span> <span class="op">done</span> = <span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">retrieve</span>(<span class="op">job</span>.<span class="prop">id</span>);
+
+<span class="fn">expect</span>(<span class="op">done</span>.<span class="prop">status</span>).<span class="fn">toBe</span>(<span class="str">"succeeded"</span>);
+<span class="fn">expect</span>(<span class="op">done</span>.<span class="prop">fine_tuned_model</span>).<span class="fn">toMatch</span>(<span class="str">/^ft:gpt-4o-mini/</span>);</code></pre>
+        </div>
+
+        <h2>Events</h2>
+        <p>
+          Events are an append-only log: creating the job, each status transition a retrieve drives,
+          and a cancel each append exactly one event, so the list is what actually happened to that
+          job rather than a rendering of its current status. Each event carries the full
+          <code>fine_tuning.job.event</code> shape. An event's id is <code>ftevent-</code> plus the
+          job id's suffix (the job id with its own <code>ftjob-</code> prefix stripped) plus the
+          event's position in that log, which never renumbers, so an id denotes the same event
+          across later reads and later transitions and works as an <code>after</code> cursor. Read
+          the id off the event rather than rebuilding it: an <code>after</code> spelled
+          <code>`${job.id}-0`</code> matches no event and is answered <code>400</code>. The page
+          comes back newest-first, and every event is <code>level: "info"</code> &mdash; this mock
+          has no failure path, so it never emits a <code>warn</code> or <code>error</code> event.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Events response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"object"</span>: <span class="str">"list"</span>,
+  <span class="key">"data"</span>: [
+    {
+      <span class="key">"id"</span>: <span class="str">"ftevent-&lt;job-suffix&gt;-0"</span>,
+      <span class="key">"object"</span>: <span class="str">"fine_tuning.job.event"</span>,
+      <span class="key">"created_at"</span>: <span class="num">1700000000</span>,
+      <span class="key">"level"</span>: <span class="str">"info"</span>,
+      <span class="key">"message"</span>: <span class="str">"Job created, validating training file"</span>,
+      <span class="key">"type"</span>: <span class="str">"message"</span>
+    }
+  ],
+  <span class="key">"has_more"</span>: <span class="kw">false</span>
+}</code></pre>
+        </div>
+
+        <h2>Pagination</h2>
+        <p>
+          Both list endpoints are cursor pages ordered newest-first: <code>limit</code> defaults to
+          <code>20</code> and must be written as plain decimal digits naming an integer from
+          <code>1</code> to <code>100</code>, <code>after</code> resumes from an id, and
+          <code>has_more</code> reports whether anything was left behind rather than being a
+          constant. That is what the OpenAI SDK's <code>CursorPage</code> reads when you iterate
+          results. Any other spelling is rejected with <code>400</code> quoting the raw query text
+          you sent, and that includes every spelling <code>Number()</code> would have accepted,
+          whether it would have landed on a different integer (<code>0x10</code> as 16,
+          <code>1e2</code> as 100) or on the very one you meant (<code>%2B5</code>,
+          <code>20.0</code>, a percent-encoded whitespace-padded <code>%2020%20</code>). A literal
+          <code>+</code> must be percent-encoded, since a bare <code>+</code> in a query decodes to
+          a space. An <code>after</code> that matches no item is rejected the same way &mdash; a
+          stale cursor that quietly returned page one would make <code>CursorPage</code> iterate
+          forever. Sending <code>limit</code> or <code>after</code> more than once on one request is
+          also a <code>400</code>, naming the parameter and the number of times it appeared: the
+          spec types each as a single scalar and gives no combining rule, so taking the first would
+          launder the rest.
+        </p>
+        <p>
+          Only the <code>20</code> default is the vendor&rsquo;s: <code>openai-openapi</code> v2.3.0
+          types <code>limit</code> as an integer defaulting to <code>20</code> on both endpoints.
+          The upper bound of <code>100</code>, the refusal of non-decimal spellings of an in-range
+          integer, the <code>400</code> on an <code>after</code> that matches nothing, the
+          <code>400</code> on a repeated <code>limit</code> or <code>after</code> and the
+          newest-first order are this mock&rsquo;s own choices: the same spec declares no maximum,
+          says nothing about a cursor that misses or a repeated parameter, and accepts no
+          <code>order</code> parameter on either endpoint. So are the create-body rejections that
+          refuse what the spec merely fails to forbid: an unrecognized top-level parameter; an
+          unrecognized member of <code>hyperparameters</code>, of <code>method</code>, of a
+          <code>method</code> variant, of an <code>integrations</code> entry or of its
+          <code>wandb</code> object; an <code>integrations</code> list longer than the five the job
+          schema declares; a configuration for a <code>method</code> type other than the one in
+          <code>method.type</code>; and the empty string as a file id, on
+          <code>training_file</code> as on <code>validation_file</code>. The spec marks none of
+          those objects <code>additionalProperties: false</code>, sets no <code>minLength</code> on
+          a file id and says nothing about a stray variant, and a mock that answered
+          <code>200</code> having dropped what you wrote would let the bug through to the real API.
+          Every other rejection in the list below enforces a bound the spec itself declares, and the
+          <code>hyperparameters</code> ranges are the vendor&rsquo;s, quoted from that spec.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Paging a job list <span class="lang-tag">ts</span></div>
+          <pre><code><span class="cm">// The store is process-wide, so a job any earlier test left behind would be</span>
+<span class="cm">// on this page too. Reset first, then create exactly the two jobs counted below.</span>
+<span class="cm">// reset() is synchronous and returns the instance; there is nothing to await.</span>
+<span class="op">mock</span>.<span class="fn">reset</span>();
+<span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">create</span>({ <span class="prop">training_file</span>: <span class="str">"file-train"</span>, <span class="prop">model</span>: <span class="str">"gpt-4o-mini"</span> });
+<span class="kw">await</span> <span class="op">openai</span>.<span class="prop">fineTuning</span>.<span class="prop">jobs</span>.<span class="fn">create</span>({ <span class="prop">training_file</span>: <span class="str">"file-train-2"</span>, <span class="prop">model</span>: <span class="str">"gpt-4o-mini"</span> });
+
+<span class="kw">const</span> <span class="op">page</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/fine_tuning/jobs?limit=1`</span>).<span class="fn">then</span>((<span class="op">r</span>) =&gt; <span class="op">r</span>.<span class="fn">json</span>());
+<span class="fn">expect</span>(<span class="op">page</span>.<span class="prop">has_more</span>).<span class="fn">toBe</span>(<span class="kw">true</span>);
+
+<span class="kw">const</span> <span class="op">next</span> = <span class="kw">await</span> <span class="fn">fetch</span>(
+  <span class="str">`${mock.url}/v1/fine_tuning/jobs?after=${page.data[0].id}`</span>,
+).<span class="fn">then</span>((<span class="op">r</span>) =&gt; <span class="op">r</span>.<span class="fn">json</span>());
+<span class="fn">expect</span>(<span class="op">next</span>.<span class="prop">has_more</span>).<span class="fn">toBe</span>(<span class="kw">false</span>);</code></pre>
+        </div>
+
+        <h2>Validation</h2>
+        <ul>
+          <li>A non-object request body is rejected with <code>400</code></li>
+          <li>Malformed JSON is rejected with <code>400</code></li>
+          <li>
+            A <code>training_file</code> or <code>model</code> that is missing, not a string, or the
+            empty string is rejected with <code>400</code>
+          </li>
+          <li>
+            A <code>hyperparameters</code> value that is not a JSON object is rejected with
+            <code>400</code>, <code>null</code> included: the spec types the field
+            <code>type: object</code> and, unlike its siblings <code>suffix</code>,
+            <code>validation_file</code> and <code>integrations</code>, never marks it
+            <code>nullable</code>
+          </li>
+          <li>
+            A <code>hyperparameters</code> member outside the range the spec declares for it, or
+            that is neither a number nor the string <code>"auto"</code>, is rejected with
+            <code>400</code> naming the field: the mock never silently drops it.
+            <code>n_epochs</code> must be an integer from <code>1</code> to <code>50</code>,
+            <code>batch_size</code> an integer from <code>1</code> to <code>256</code>, and
+            <code>learning_rate_multiplier</code> a number strictly greater than <code>0</code>
+          </li>
+          <li>
+            A <code>validation_file</code> that is present but neither a non-empty string nor
+            <code>null</code> is rejected with <code>400</code>; omitting it or sending
+            <code>null</code> is accepted and the job reports <code>validation_file: null</code>
+          </li>
+          <li>
+            A <code>hyperparameters</code> member the object does not declare &mdash;
+            <code>beta</code> is the one people reach for &mdash; is rejected with
+            <code>400</code> naming it and listing the three members the object does take.
+            <code>beta</code> is legal, but under <code>method.dpo.hyperparameters</code>, which is
+            the only place <code>FineTuneDPOHyperparameters</code> declares it; sending it under
+            <code>method.supervised.hyperparameters</code> is the same <code>400</code>
+          </li>
+          <li>
+            A top-level create parameter outside the nine in the table above is rejected with
+            <code>400</code> listing the nine
+          </li>
+          <li>
+            A <code>suffix</code> that is not a string of 1&ndash;64 code points is rejected with
+            <code>400</code>; <code>null</code> means &ldquo;none&rdquo;. A <code>seed</code> that
+            is not an integer in <code>0</code>&ndash;<code>2147483647</code> and
+            <code>metadata</code> outside the 16-pair / 64-code-point-key / 512-code-point-value
+            bounds are rejected the same way
+          </li>
+          <li>
+            <code>integrations</code> is checked entry by entry: a list of more than five entries,
+            an entry member other than <code>type</code> and <code>wandb</code>, a
+            <code>wandb</code> member other than <code>project</code>, <code>name</code>,
+            <code>entity</code> and <code>tags</code>, and a <code>project</code> that is missing or
+            not a non-empty string are each a <code>400</code>. The five-entry cap and the two
+            unknown-member rejections are this mock&rsquo;s own; the rest is the shape the spec
+            requires
+          </li>
+          <li>
+            On either list endpoint, a <code>limit</code> that is not plain decimal digits naming an
+            integer in <code>1</code>&ndash;<code>100</code>, or an <code>after</code> that matches
+            no item in the list, is rejected with <code>400</code> naming the parameter; so is a
+            <code>limit</code> or <code>after</code> given more than once
+          </li>
+          <li>An unknown job id returns <code>404</code> on retrieve, cancel and events</li>
+          <li>
+            Cancelling a job that is already terminal &mdash; <code>succeeded</code>,
+            <code>cancelled</code> or <code>failed</code> &mdash; returns <code>400</code> naming
+            the status it is stuck in. Cancelling a non-terminal job returns <code>200</code>, moves
+            it to <code>cancelled</code> and stamps <code>finished_at</code>
+          </li>
+        </ul>
+
+        <h2>Not Implemented</h2>
+        <p>
+          aimock covers the five endpoints in the table above and nothing else on this surface. The
+          <code>openai</code> SDK 4.104.0 also exposes <code>jobs.pause()</code>,
+          <code>jobs.resume()</code>, <code>jobs.checkpoints.list()</code>,
+          <code>checkpoints.permissions.*</code> and <code>alpha.graders.*</code>; aimock has no
+          handler for <code>POST /v1/fine_tuning/jobs/{id}/pause</code>,
+          <code>POST /v1/fine_tuning/jobs/{id}/resume</code>,
+          <code>GET /v1/fine_tuning/jobs/{id}/checkpoints</code>,
+          <code>/v1/fine_tuning/checkpoints/{ckpt}/permissions</code> or the
+          <code>/v1/fine_tuning/alpha/graders/*</code> routes, so those paths fall through to the
+          server&rsquo;s generic
+          <code>404 {"error":{"message":"Not found","type":"not_found"}}</code> rather than to this
+          surface&rsquo;s own <code>No such fine-tuning job</code> error. Those 404s are still
+          counted, under the normalized <code>path</code> labels described below, so an SDK that
+          polls <code>jobs.pause()</code> cannot inflate metric cardinality. A job also never
+          reaches <code>failed</code>: nothing in the mock drives that status, so it exists in the
+          type and in the cancel guard but is never produced.
+        </p>
+
+        <h2>State &amp; Journal</h2>
+        <p>
+          Jobs live in memory for the life of the process, not of an individual
+          <code>LLMock</code>: every instance in one process shares a single store, so a job created
+          against one instance is visible from another, and <code>new LLMock()</code> does not start
+          empty. Clearing the store is what gives a test a clean slate, and
+          <code>POST /__aimock/reset</code>, <code>LLMock.reset()</code> and
+          <code>clearFineTuningStore()</code> all do it. Every request the handler serves is
+          recorded exactly once in the journal with <code>service: "fine-tuning"</code> — including
+          chaos-faulted requests — and a create whose body parsed into a JSON object carries that
+          body, whether it went on to succeed or to be rejected, on any of the rejections above.
+          Three kinds of entry record <code>body: null</code>: the <code>GET</code> and cancel
+          routes, a create whose body was not a JSON object at all, and any request the chaos gate
+          faulted. The gate does not roll before the body is read. On create and cancel the server
+          reads the body first, then hands off to the handler, whose first act is the chaos roll,
+          and only a create that survives the roll goes on to parse what was read; a faulted
+          request&rsquo;s entry is written by the gate itself with a fixed <code>body: null</code>,
+          so a create carrying a perfectly good JSON body still journals <code>null</code> when
+          chaos fires, and its <code>response</code> names the <code>chaosAction</code> that did. A
+          cancel journals its outcome as <code>response.status</code> alone &mdash;
+          <code>200</code> when the job moved to <code>cancelled</code>, <code>404</code> for an
+          unknown id, <code>400</code> for a job already terminal &mdash; with
+          <code>body: null</code> and no reason field of any kind; the human-readable reason,
+          <code>Job cancelled by user</code>, is the event the cancel appends to the job&rsquo;s own
+          log and is read back from <code>/events</code>, not from the journal. The cancel route
+          takes no payload, but it is not bodyless: it reads and discards whatever you send, so that
+          <code>readBody</code>'s 10 MB ceiling applies to it as it does to create. Those two are
+          also the only requests that are not journaled at all: a create or a cancel whose body
+          could not be read in the first place — past the body-size cap, or a broken socket — is
+          answered <code>500</code> before the fine-tuning handler runs, exactly as on every other
+          aimock route. An entry's <code>path</code> is the raw request URL, query string included,
+          so <code>?limit=</code> and <code>?testId=</code> survive into the journal and stay
+          filterable. &ldquo;Query string&rdquo; here means everything after the first
+          <code>?</code>: an HTTP request target has no fragment component, so a literal
+          <code>#</code> is part of the query rather than a cut-off point &mdash;
+          <code>?limit=5#frag</code> is a <code>400</code> quoting <code>'5#frag'</code>, not a page
+          of five. Select entries by <code>service</code> rather than by exact
+          <code>path</code> equality. So the surface is chaos-gated like the other job endpoints and
+          still fully inspectable — see <a href="/chaos-testing">Chaos Testing</a>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Journal entries <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> entries = mock.getRequests();
+<span class="kw">const</span> ftRequests = entries.filter((e) =&gt; e.service === <span class="str">"fine-tuning"</span>);</code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            See <a href="/control-api">Control API</a> for reset and journal, and
+            <a href="/metrics">Prometheus Metrics</a>: everything under
+            <code>/v1/fine_tuning/</code> is normalized, so nothing a caller controls can mint a
+            label. The label set is fifteen shapes &mdash; <code>/v1/fine_tuning/jobs</code>,
+            <code>/v1/fine_tuning/jobs/{id}</code>, one per named job sub-resource
+            (<code>/cancel</code>, <code>/events</code>, <code>/pause</code>, <code>/resume</code>,
+            <code>/checkpoints</code>) with any other collapsed to
+            <code>/v1/fine_tuning/jobs/{id}/{action}</code>; the id-free grader routes
+            <code>/v1/fine_tuning/alpha/graders/run</code> and
+            <code>/v1/fine_tuning/alpha/graders/validate</code> kept verbatim;
+            <code>/v1/fine_tuning/checkpoints/{ckpt}</code>,
+            <code>/v1/fine_tuning/checkpoints/{ckpt}/permissions</code>,
+            <code>/v1/fine_tuning/checkpoints/{ckpt}/permissions/{id}</code> and
+            <code>/v1/fine_tuning/checkpoints/{ckpt}/{action}</code>; and a single
+            <code>/v1/fine_tuning/{other}</code> catch-all for any path none of those match. The
+            routes this mock does not implement are normalized too, so an SDK that polls
+            <code>jobs.pause()</code>, or a typo at an unknown depth, cannot inflate cardinality.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

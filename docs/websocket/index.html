@@ -50,8 +50,9 @@
       <main class="docs-content">
         <h1>WebSocket APIs</h1>
         <p class="lead">
-          aimock implements three WebSocket APIs with zero dependencies &mdash; real RFC 6455
-          framing built from scratch. The same fixtures drive HTTP and WebSocket transports.
+          aimock implements four WebSocket APIs with zero dependencies &mdash; real RFC 6455 framing
+          built from scratch. Responses fixtures can drive HTTP and WebSocket transports; GPT-Live
+          uses dedicated transcripts.
         </p>
 
         <h2>Endpoints</h2>
@@ -64,6 +65,11 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td>/v1/live/sessions</td>
+              <td>OpenAI GPT-Live</td>
+              <td>WebSocket JSON messages, including base64 PCM</td>
+            </tr>
             <tr>
               <td>/v1/responses</td>
               <td>OpenAI Responses API</td>
@@ -82,7 +88,222 @@
           </tbody>
         </table>
 
+        <p>
+          On OpenAI Responses, OpenAI Realtime and Gemini Live, if the client closes the connection
+          during a reply, aimock stops sending and journals the turn with
+          <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>).
+        </p>
+
+        <h2 id="openai-live">OpenAI GPT-Live</h2>
+        <p>
+          GPT-Live uses a primary WebSocket upgrade: <code>GET /v1/live/sessions</code>. Connect to
+          the mock server and send <code>session.start</code> as the first JSON message. The fixture
+          must match <code>endpoint: "openai-live"</code> and <code>model: "gpt-live-1"</code>.
+        </p>
+        <p>
+          Replay needs no provider key or network connection to OpenAI. It reproduces the saved
+          conversation, including audio, delegation, usage, and session closure. It does not
+          synthesize speech or run a backend model.
+        </p>
+        <h3>Run an offline client example</h3>
+        <p>
+          Use Node.js 22 or later for this example's built-in <code>WebSocket</code>. From an aimock
+          checkout, install dependencies with <code>pnpm install --frozen-lockfile</code> and build
+          with <code>pnpm build</code>. Save the following as <code>live-client.mts</code> and run
+          <code>pnpm exec tsx live-client.mts</code>.
+        </p>
+        <p>
+          The included <code>fixtures/openai-live-client.json</code> is an authored example, not a
+          provider recording. Its six PCM16 samples per direction are synthetic, not speech. Timings
+          and usage are illustrative.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">live-client.mts <span class="lang-tag">ts</span></div>
+          <pre><code>import assert from &quot;node:assert/strict&quot;;
+import { readFileSync } from &quot;node:fs&quot;;
+import { LLMock, type LiveTranscript } from &quot;@copilotkit/aimock&quot;;
+
+const file = &quot;fixtures/openai-live-client.json&quot;;
+const document: { fixtures: { response: { live: LiveTranscript } }[] } =
+  JSON.parse(readFileSync(file, &quot;utf8&quot;));
+const transcript = document.fixtures[0].response.live;
+const mock = new LLMock().loadFixtureFile(file);
+await mock.start();
+const ws = new WebSocket(`${mock.url.replace(/^http/, &quot;ws&quot;)}/v1/live/sessions`);
+const audio: Buffer[] = [];
+const send = (event: object) =&gt; ws.send(JSON.stringify(event));
+
+try {
+  await new Promise&lt;void&gt;((resolve, reject) =&gt; {
+    const timer = setTimeout(() =&gt; reject(new Error(&quot;Live replay timed out&quot;)), 5000);
+    const finish = (error?: Error) =&gt; {
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    let closed = false;
+    ws.onopen = () =&gt; send(transcript.entries[0].event); // session.start
+    ws.onerror = () =&gt; finish(new Error(&quot;WebSocket failed&quot;));
+    ws.onclose = () =&gt; {
+      if (!closed) finish(new Error(&quot;Missing session.closed&quot;));
+    };
+    ws.onmessage = ({ data }) =&gt; {
+      try {
+        const event = JSON.parse(String(data));
+        if (event.type === &quot;session.started&quot;) {
+          send({ type: &quot;session.input_audio.append&quot;, audio: &quot;AAABAP//AgD+/wAA&quot; });
+        } else if (event.type === &quot;session.delegation.created&quot;) {
+          const delegation_id = event.delegation.id; // Fresh ID from this connection
+          send({
+            type: &quot;session.thinking.append&quot;, event_id: &quot;thinking-1&quot;, delegation_id,
+            content: &quot;The fictional red and blue sensor checks are still pending.&quot;,
+          });
+          send({
+            type: &quot;session.commentary.append&quot;, event_id: &quot;commentary-1&quot;, delegation_id,
+            content: &quot;The fictional red sensor reads seven.&quot;,
+          });
+        } else if (event.type === &quot;session.output_audio.delta&quot;) {
+          audio.push(Buffer.from(event.delta, &quot;base64&quot;));
+        } else if (event.type === &quot;session.usage.updated&quot;) {
+          send({ type: &quot;session.close&quot;, event_id: &quot;close-1&quot; });
+        } else if (event.type === &quot;session.closed&quot;) {
+          assert.deepEqual(Buffer.concat(audio), Buffer.from(&quot;AAACAP7/AQD//wAA&quot;, &quot;base64&quot;));
+          closed = true;
+          finish();
+        } else if (event.type === &quot;aimock.error&quot; || event.type === &quot;error&quot;) {
+          finish(new Error(JSON.stringify(event)));
+        }
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+  });
+  console.log(&quot;Live client replay passed&quot;);
+} finally {
+  ws.close();
+  await mock.stop();
+}</code></pre>
+        </div>
+        <p>
+          The example loads one fixture file into one server. The managed example matches the same
+          endpoint and model; do not load both examples together unless you add distinct matching
+          rules.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Builder alternative <span class="lang-tag">ts</span></div>
+          <pre><code>// Alternative registration: use the transcript directly.
+const mock = new LLMock().onLive({ model: &quot;gpt-live-1&quot; }, transcript);</code></pre>
+        </div>
+        <p>
+          <code>onLive</code> takes a <code>LiveTranscript</code>, not a
+          <code>{ live: transcript }</code> wrapper. The builder uses recorded timing by default.
+          The supplied files select <code>liveTiming: "immediate"</code>. Use
+          <code
+            >mock.on({ endpoint: "openai-live", model: "gpt-live-1" }, { live: transcript,
+            liveTiming: "immediate" })</code
+          >
+          to select immediate timing explicitly.
+        </p>
+        <h3>Client and managed delegation</h3>
+        <p>
+          In client mode, <code>session.delegation.created</code> asks your application to handle
+          backend work. Send <code>session.thinking.append</code> and
+          <code>session.commentary.append</code> using the emitted delegation ID. Recorded null and
+          repeated commentary values remain part of the transcript.
+        </p>
+        <p>
+          For managed mode, load <code>fixtures/openai-live-managed.json</code> instead and use its
+          startup configuration. The transcript calls this mode <code>managed</code>; the wire
+          configuration uses <code>delegation.type: "responses"</code>. Backend events arrive inside
+          <code>response.event</code>. Read complete function calls from nested
+          <code>response.output_item.done</code> events. Use each nested item's
+          <code>call_id</code> when returning its output.
+        </p>
+        <p>
+          The managed fixture requests <code>read_red</code> and <code>read_blue</code>. After both
+          complete calls arrive, return both outputs and then explicitly request continuation:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Managed continuation (inside your message handler) <span class="lang-tag">ts</span>
+          </div>
+          <pre><code>// Send each output using the call_id received in response.event.
+send({
+  type: &quot;response.item.create&quot;, event_id: &quot;red-result&quot;,
+  item: {
+    type: &quot;function_call_output&quot;, call_id: redCallId,
+    output: JSON.stringify({ sensor: &quot;read_red&quot;, value: 7 }),
+  },
+});
+send({
+  type: &quot;response.item.create&quot;, event_id: &quot;blue-result&quot;,
+  item: {
+    type: &quot;function_call_output&quot;, call_id: blueCallId,
+    output: JSON.stringify({ sensor: &quot;read_blue&quot;, value: 9 }),
+  },
+});
+// Continue only after all pending tool outputs have been sent.
+send({ type: &quot;response.create&quot;, event_id: &quot;continue-1&quot; });</code></pre>
+        </div>
+        <p>
+          The managed application must handle these nested events; the client-mode handler above
+          does not. Use IDs received on the current connection. Replay creates fresh server IDs and
+          preserves their references.
+        </p>
+        <h3>Audio, timing, and lifecycle</h3>
+        <ul>
+          <li>
+            Audio is mono, 24,000 Hz, signed 16-bit little-endian PCM. JSON messages carry base64
+            audio; binary frames are not supported.
+          </li>
+          <li>
+            Replay compares decoded PCM bytes, not base64 chunk boundaries. Rechunking consecutive
+            audio is valid; moving audio across control commands is not.
+          </li>
+          <li>
+            Server events wait for their recorded client command and audio-byte barriers. Immediate
+            timing removes delays but preserves those barriers.
+          </li>
+          <li>
+            Recorded timing preserves event delays. Replay does not infer speech, new tool calls, or
+            an unrecorded interruption.
+          </li>
+          <li>
+            Model, delegation mode, and audio format are fixed for a session. Only observed backend
+            instruction updates are supported in managed mode.
+          </li>
+          <li>
+            A successful transcript ends with <code>session.closed</code>. A transport close alone
+            does not establish a complete recording.
+          </li>
+        </ul>
+        <p>
+          Always close the client and call <code>await mock.stop()</code> in cleanup. Use
+          <code>mock.closeLiveSessions(testId)</code> to close sessions for an explicit
+          <code>X-Test-Id</code>, or omit the ID to close all Live sessions on that server. The
+          Vitest and Jest helpers close their owned Live sessions at test boundaries.
+          <code>resetMatchCounts()</code> only resets counters; it does not close sessions.
+        </p>
+        <p>
+          For provider authentication, recording, retained audio, sanitization, and finite session
+          limits, see <a href="/record-replay">Record &amp; Replay</a>. For the transcript format,
+          see <a href="/fixtures">Fixtures</a>.
+        </p>
+        <div class="callout">
+          <strong>Supported surface:</strong> the primary WebSocket connection only. POST SDP,
+          WebRTC, sideband connections, fork, download, and cancellation are not supported by this
+          Live implementation. These exclusions do not change the separate Realtime API below.
+        </div>
+
         <h2>OpenAI Responses (WebSocket)</h2>
+        <p>
+          Namespaced function calls, custom tool calls and the request-side tool matching work the
+          same as over HTTP &mdash; see
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >Namespaced and custom tool calls</a
+          >.
+        </p>
 
         <div class="code-block">
           <div class="code-block-header">ws-responses.test.ts <span class="lang-tag">ts</span></div>
@@ -114,10 +335,10 @@
           the
           <strong>GA (General Availability) protocol</strong> natively &mdash; event names like
           <code>response.output_text.delta</code>, <code>conversation.item.added</code>, and nested
-          <code>audio</code> session config are the defaults. The Beta protocol is supported via the
-          <code>OpenAI-Beta: realtime=v1</code> header, which activates a translation shim that
-          converts GA events back to Beta names (<code>response.text.delta</code>,
-          <code>conversation.item.created</code>, flat session config).
+          <code>audio</code> session config are the defaults. The Beta protocol (<code
+            >OpenAI-Beta: realtime=v1</code
+          >) has been removed upstream and is mocked as removed &mdash; see
+          <a href="#beta-removed">Beta shape: mocked as removed</a>.
         </p>
 
         <h3>Supported Models</h3>
@@ -203,7 +424,9 @@
           <li>
             <strong>Commentary phase</strong> &mdash; <code>phase</code> field on
             <code>response.output_item.added/done</code> events (<code>final_answer</code> or
-            <code>commentary</code>)
+            <code>commentary</code>). The text message gets <code>commentary</code> when the
+            response also includes tool calls, otherwise <code>final_answer</code>. The fixture
+            <code>phase</code> override applies to the Responses API only
           </li>
           <li>
             <strong><code>conversation.item.done</code></strong> &mdash; New event emitted after
@@ -215,12 +438,48 @@
           </li>
         </ul>
 
-        <h3>Beta Compatibility</h3>
+        <h3 id="beta-removed">Beta shape: mocked as removed</h3>
+        <div class="callout">
+          <strong>The Realtime Beta shape no longer serves upstream</strong> &mdash; OpenAI removed
+          it, so aimock mocks the removal rather than a handshake that no longer happens. A client
+          that sends <code>OpenAI-Beta: realtime=v1</code> gets the sunset rejection the real API
+          returns today, which is what is left to test: that your code handles the removal. This
+          follows aimock&rsquo;s
+          <a href="/deprecation-policy">deprecated &amp; removed APIs policy</a> &mdash; a removed
+          surface is mocked as removed, never as a success.
+        </div>
         <p>
-          Clients that send the <code>OpenAI-Beta: realtime=v1</code> header receive Beta-format
-          events automatically. The shim translates event names, flattens the nested audio config,
-          and suppresses GA-only events like <code>conversation.item.done</code>. No code changes
-          needed in tests that target the Beta protocol.
+          The upgrade still succeeds (<code>HTTP/1.1 101</code>); the rejection arrives on the
+          socket. aimock replays exactly what a live Beta handshake against
+          <code>wss://api.openai.com/v1/realtime</code> returns: one <code>error</code> event, no
+          <code>session.created</code>, then a close frame.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Beta handshake &rarr; sunset rejection <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"type"</span>: <span class="str">"error"</span>,
+  <span class="prop">"event_id"</span>: <span class="str">"event_..."</span>,
+  <span class="prop">"error"</span>: {
+    <span class="prop">"type"</span>: <span class="str">"invalid_request_error"</span>,
+    <span class="prop">"code"</span>: <span class="str">"beta_api_shape_disabled"</span>,
+    <span class="prop">"message"</span>: <span class="str">"The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API."</span>,
+    <span class="prop">"param"</span>: <span class="kw">null</span>,
+    <span class="prop">"event_id"</span>: <span class="kw">null</span>
+  }
+}
+
+<span class="cm">// then: WebSocket CLOSE code 4000</span>
+<span class="cm">// reason "invalid_request_error.beta_api_shape_disabled"</span></code></pre>
+        </div>
+
+        <p>
+          Tests that used to drive the Beta shape should move to the GA shape (drop the
+          <code>OpenAI-Beta</code> header) &mdash; that is the migration target, and the only
+          Realtime surface OpenAI still serves. The Beta shape is also excluded from aimock&rsquo;s
+          drift pipeline, because there is no live Beta endpoint left to compare against.
         </p>
 
         <div class="code-block">
@@ -295,8 +554,8 @@
         <h2>Implementation Details</h2>
         <ul>
           <li>Built on raw RFC 6455 WebSocket framing &mdash; zero external dependencies</li>
-          <li>Text messages only (no binary/audio/video)</li>
-          <li>Same fixture matching as HTTP endpoints</li>
+          <li>JSON text messages; GPT-Live carries base64 PCM audio. No binary frames.</li>
+          <li>Endpoint-specific fixture matching; GPT-Live requires a Live transcript</li>
           <li>All WebSocket connections are logged in the journal</li>
         </ul>
 
@@ -320,6 +579,11 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td>OpenAI GPT-Live</td>
+              <td>wss://api.openai.com/v1/live/sessions</td>
+              <td class="yes">Primary WebSocket replay and recording</td>
+            </tr>
             <tr>
               <td>OpenAI Realtime</td>
               <td>wss://api.openai.com/v1/realtime</td>

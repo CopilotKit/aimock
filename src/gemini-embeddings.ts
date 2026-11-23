@@ -11,6 +11,8 @@
  */
 
 import type * as http from "node:http";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -21,11 +23,11 @@ import {
   isEmbeddingResponse,
   isErrorResponse,
   generateDeterministicEmbedding,
+  MAX_EMBEDDING_DIMENSIONS,
   flattenHeaders,
+  isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -33,7 +35,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { prepareChaos, chaosIdentity } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Gemini embedContent request types ────────────────────────────────────
@@ -94,19 +96,66 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          code: 400,
-          status: "INVALID_ARGUMENT",
-        },
-      }),
+      renderError("gemini", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `embedReq.content` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(embedReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? `/v1beta/models/${model}:embedContent`,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("gemini", "validation", {
+        message: "Request body must be a JSON object",
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
 
   // Extract text from content.parts
   const parts = embedReq.content?.parts ?? [];
+  // Preserve nullish defaults and ignored non-null entries; guard only the
+  // shapes that cannot be consumed by the text extraction below.
+  const partsError = !Array.isArray(parts)
+    ? "content.parts must be an array"
+    : parts.some((part) => part === null)
+      ? "content.parts must not contain null entries"
+      : undefined;
+  if (partsError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? `/v1beta/models/${model}:embedContent`,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("gemini", "validation", {
+        message: partsError,
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
   const inputText = parts
     .filter((p) => p.text !== undefined)
     .map((p) => p.text!)
@@ -139,25 +188,26 @@ export async function handleGeminiEmbedContent(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path,
-      headers: flattenHeaders(req.headers),
-      body: syntheticReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);
@@ -172,14 +222,12 @@ export async function handleGeminiEmbedContent(
         body: syntheticReq,
         response: { status, fixture },
       });
-      const geminiError = {
-        error: {
-          code: status,
-          message: response.error.message,
-          status: response.error.type ?? "ERROR",
-        },
-      };
-      writeErrorResponse(res, status, JSON.stringify(geminiError), {
+      const geminiError = renderError("gemini", "fixture", {
+        bodyCode: status,
+        message: response.error.message,
+        status: response.error.type ?? "ERROR",
+      }).body;
+      writeErrorResponse(res, status, geminiError, {
         retryAfter: response.retryAfter,
       });
       return;
@@ -215,20 +263,18 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          code: 500,
-          status: "INTERNAL",
-        },
-      }),
+      renderError("gemini", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        bodyCode: 500,
+        status: "INTERNAL",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
   if (effectiveStrict) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(strictNoMatchLogLine(req.method ?? "POST", path, skippedBySequenceOrTurn));
@@ -246,13 +292,11 @@ export async function handleGeminiEmbedContent(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          code: 503,
-          status: "UNAVAILABLE",
-        },
-      }),
+      renderError("gemini", "strict-miss", {
+        message: strictMessage,
+        bodyCode: 503,
+        status: "UNAVAILABLE",
+      }).body,
     );
     return;
   }
@@ -283,6 +327,36 @@ export async function handleGeminiEmbedContent(
 
   // No fixture match — generate deterministic embedding from input text
   const dimensions = embedReq.outputDimensionality ?? DEFAULT_GEMINI_EMBEDDING_DIMENSIONS;
+  // Match the embedding loop's numeric coercion, including array dimensions.
+  // Preserve supported coercion and zero within the local serialization budget.
+  // Guard only the fallback allocation, not unused dimensions on earlier branches.
+  // Replay, strict, chaos, and proxy paths above do not consume this field.
+  const exceedsFallbackBudget = dimensions > MAX_EMBEDDING_DIMENSIONS;
+  if (
+    exceedsFallbackBudget ||
+    (typeof dimensions === "number" && (!Number.isInteger(dimensions) || dimensions < 0)) ||
+    (typeof dimensions === "string" && Number.isNaN(Number(dimensions)))
+  ) {
+    journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("gemini", "validation", {
+        message: exceedsFallbackBudget
+          ? `outputDimensionality exceeds the fallback serialization budget of ${MAX_EMBEDDING_DIMENSIONS}`
+          : "outputDimensionality cannot produce a numeric embedding",
+        bodyCode: 400,
+        status: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
   const embedding = generateDeterministicEmbedding(inputText, dimensions);
 
   logger.warn(

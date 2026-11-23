@@ -19,26 +19,28 @@ aimock is a zero-dependency mock infrastructure for AI apps. Fixture-driven. Mul
 
 ## Match Field Reference
 
-| Field                | Type                                      | Matches Against                                                                                                                                                                                                                                                                                                                                                                                                    |
-| -------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `userMessage`        | `string`                                  | Substring of last `role: "user"` message text                                                                                                                                                                                                                                                                                                                                                                      |
-| `userMessage`        | `RegExp`                                  | Pattern test on last `role: "user"` message text                                                                                                                                                                                                                                                                                                                                                                   |
-| `systemMessage`      | `string`                                  | Substring of the concatenated text of every `role: "system"` message in the request. Use to gate a fixture on host-supplied context (persona, agent-context entries) so changes to that context cause the fixture to fall through instead of returning a stale baked response                                                                                                                                      |
-| `systemMessage`      | `string[]`                                | Array of substrings — ALL must be present in the joined system text (AND semantics). Use when the gate must combine multiple non-adjacent tokens whose serialisation order isn't stable                                                                                                                                                                                                                            |
-| `systemMessage`      | `RegExp`                                  | Pattern test on the concatenated system-message text                                                                                                                                                                                                                                                                                                                                                               |
-| `inputText`          | `string`                                  | Substring of embedding input text (concatenated if multiple inputs)                                                                                                                                                                                                                                                                                                                                                |
-| `inputText`          | `RegExp`                                  | Pattern test on embedding input text                                                                                                                                                                                                                                                                                                                                                                               |
-| `toolName`           | `string`                                  | Exact match on any tool in request's `tools[]` array (by `function.name`)                                                                                                                                                                                                                                                                                                                                          |
-| `toolCallId`         | `string`                                  | Exact match on `tool_call_id` of last `role: "tool"` message                                                                                                                                                                                                                                                                                                                                                       |
-| `toolResultContains` | `string`                                  | Substring of the last tool message's text content, gated on that message being the request's LAST message (same rule as `toolCallId`). Discriminates resume paths that share a `tool_call_id` and differ only inside the tool-result payload (e.g. approve `{"chosen_time": …}` vs cancel `{"cancelled": true}`)                                                                                                   |
-| `model`              | `string`                                  | Exact match on `req.model`                                                                                                                                                                                                                                                                                                                                                                                         |
-| `model`              | `RegExp`                                  | Pattern test on `req.model`                                                                                                                                                                                                                                                                                                                                                                                        |
-| `responseFormat`     | `string`                                  | Exact match on `req.response_format.type` (`"json_object"`, `"json_schema"`)                                                                                                                                                                                                                                                                                                                                       |
-| `sequenceIndex`      | `number`                                  | Matches only when this fixture's match count equals the given index (0-based)                                                                                                                                                                                                                                                                                                                                      |
-| `turnIndex`          | `number`                                  | Stateless conversation-depth matching. Counts `role: "assistant"` messages in the request; matches when that count equals the value. `turnIndex: 0` = first turn (no prior assistant messages). Use instead of `sequenceIndex` for shared/deployed instances where stateful counters break under concurrency                                                                                                       |
-| `hasToolResult`      | `boolean`                                 | Stateless tool-message presence matching, scoped to the CURRENT turn (messages after the last `role: "user"` message). `true` matches when a `role: "tool"` message appears after the last user message; `false` matches when none does. (If the request has no user message, the whole conversation is scanned.) Provider-consistent across all aimock handlers (OpenAI, Claude, Gemini, Bedrock, Ollama, Cohere) |
-| `endpoint`           | `string`                                  | Restrict to endpoint type: `"chat"`, `"image"`, `"speech"`, `"transcription"`, `"video"`, `"embedding"`                                                                                                                                                                                                                                                                                                            |
-| `predicate`          | `(req: ChatCompletionRequest) => boolean` | Custom function — full access to request                                                                                                                                                                                                                                                                                                                                                                           |
+| Field                | Type                                      | Matches Against                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userMessage`        | `string`                                  | Substring of last `role: "user"` message text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `userMessage`        | `RegExp`                                  | Pattern test on last `role: "user"` message text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `systemMessage`      | `string`                                  | Substring of the concatenated text of every `role: "system"` message in the request. Use to gate a fixture on host-supplied context (persona, agent-context entries) so changes to that context cause the fixture to fall through instead of returning a stale baked response                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `systemMessage`      | `string[]`                                | Array of substrings — ALL must be present in the joined system text (AND semantics). Use when the gate must combine multiple non-adjacent tokens whose serialisation order isn't stable                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `systemMessage`      | `RegExp`                                  | Pattern test on the concatenated system-message text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `inputText`          | `string`                                  | Substring of embedding input text (concatenated if multiple inputs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `inputText`          | `RegExp`                                  | Pattern test on embedding input text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `embeddingRequest`   | `{ operation, input, dimensions? }`       | Exact operation (`/api/embed`, `/api/embeddings` or `/v1/embeddings`), input shape and requested dimensions. Recordings set it alongside `inputText` and `model` so batches and widths stay distinct; omit it for broad embedding fixtures                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `toolName`           | `string`                                  | Exact match on any tool in request's `tools[]` array (by `function.name`). On the OpenAI Responses API, with `responsesTools: "extended"`, this also includes tools inside a `namespace` tool, `custom` tools (by `name`, in `req.customTools`), and tools in an `additional_tools` or `tool_search_output` input item; by default only top-level function tools, as in 1.44.0. Other Responses tool types (`web_search`, `mcp`, ...) are not visible                                                                                                                                                                                                                                                                                                                                   |
+| `toolNamespace`      | `string`                                  | Exact OpenAI Responses tool namespace; needs `responsesTools: "extended"` (ignored otherwise). Alone: any offered tool sits in it. With `toolName`: one offered tool must carry both (Codex routes by this exact pair). No default namespace is assumed. Chat Completions passes request tools through, so a client-sent top-level `namespace` there also matches. With `"extended"` (`aimock validate --responses-tools extended`), `aimock validate` and `--validate-on-load` warn about a file fixture with `toolNamespace` and an `endpoint` other than `"chat"`. A Responses `namespace` tool with an empty or missing `name` is dropped. Codex names an MCP server's namespace `mcp__<server>` (no trailing `__`). aimock-pytest needs aimock 1.45.0+, its default pin from 0.7.0 |
+| `toolCallId`         | `string`                                  | Exact match on `tool_call_id` of last `role: "tool"` message                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `toolResultContains` | `string`                                  | Substring of the last tool message's text content, gated on that message being the request's LAST message (same rule as `toolCallId`). Discriminates resume paths that share a `tool_call_id` and differ only inside the tool-result payload (e.g. approve `{"chosen_time": …}` vs cancel `{"cancelled": true}`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `model`              | `string`                                  | Exact match on `req.model`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `model`              | `RegExp`                                  | Pattern test on `req.model`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `responseFormat`     | `string`                                  | Exact match on `req.response_format.type` (`"json_object"`, `"json_schema"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `sequenceIndex`      | `number`                                  | Matches only when this fixture's match count equals the given index (0-based)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `turnIndex`          | `number`                                  | Stateless conversation-depth matching. Counts `role: "assistant"` messages in the request; matches when that count equals the value. `turnIndex: 0` = first turn (no prior assistant messages). Use instead of `sequenceIndex` for shared/deployed instances where stateful counters break under concurrency                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `hasToolResult`      | `boolean`                                 | Stateless tool-message presence matching, scoped to the CURRENT turn (messages after the last `role: "user"` message). `true` matches when a `role: "tool"` message appears after the last user message; `false` matches when none does. (If the request has no user message, the whole conversation is scanned.) Provider-consistent across all aimock handlers (OpenAI, Claude, Gemini, Bedrock, Ollama, Cohere)                                                                                                                                                                                                                                                                                                                                                                      |
+| `endpoint`           | `string`                                  | Restrict to endpoint type: `"chat"`, `"image"`, `"speech"`, `"transcription"`, `"video"`, `"embedding"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `predicate`          | `(req: ChatCompletionRequest) => boolean` | Custom function — full access to request                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 **AND logic**: all specified fields must match. Empty match `{}` = catch-all.
 
@@ -99,9 +101,29 @@ Multi-part content (e.g., `[{type: "text", text: "hello"}]`) is automatically ex
 
 **Both object and string forms are accepted** for `arguments`. The fixture loader auto-stringifies objects via `JSON.stringify()`. Object form is preferred for readability.
 
+**OpenAI Responses API only** — namespaced and custom tool calls (used by Codex for MCP tools, sub-agents and `apply_patch`). Start the server with `responsesTools: "extended"` (`--responses-tools extended`): it makes namespaced, custom and `additional_tools` tools visible to `toolName` and predicates, counts custom tool rounds for `hasToolResult` / `toolCallId` / `turnIndex`, emits a `toolCalls` entry's `namespace`, and records namespaces and custom calls. The default (`"legacy"`) behaves exactly like 1.44.0. `toolNamespace`, `customToolCalls` and `responsesBlocks` also need `"extended"`; the default ignores them.
+
+```typescript
+const response = {
+  toolCalls: [
+    // function call to a tool offered inside a `namespace` tool
+    {
+      name: "spawn_agent",
+      namespace: "collaboration",
+      arguments: JSON.stringify({ message: "..." }),
+    },
+  ],
+  // custom (freeform) tool calls: free-text `input`, never parsed or stringified,
+  // emitted after the function calls. A custom-only turn sets `toolCalls: []`.
+  customToolCalls: [{ name: "apply_patch", input: "*** Begin Patch\n...\n*** End Patch\n" }],
+};
+```
+
+A `toolCalls` entry is always a function call; a `type` or `input` on it is ignored (as in 1.44.0). To interleave custom calls with text or function calls, use `responsesBlocks` (the `blocks` entries plus `{ "type": "customToolCall", "name", "input", "id"?, "namespace"? }`); a fixture may not set both `blocks` and `responsesBlocks`. Every other API (Chat Completions, Anthropic Messages, Gemini, Gemini Interactions, Bedrock, Ollama, Cohere, Realtime, Gemini Live) ignores `namespace` and rejects a fixture with custom calls before any content with code `aimock_unsupported_tool_call` (Ollama `/api/generate` keeps its HTTP 400 for every tool-call fixture); a `responsesBlocks` without custom calls is served there as `blocks`. A malformed `customToolCalls` entry or `responsesBlocks` tool block fails validation (`aimock validate`, `--validate-on-load`, `addFixturesFromJSON()`, `POST /__aimock/fixtures`); in a programmatic, factory or unvalidated file fixture it fails the Responses request with code `aimock_invalid_fixture_tool_call`. Fixtures that 1.44.0 accepted get no new validation finding and no new error. Where the code goes: `error.code` (OpenAI Chat / Responses, Azure, Cohere, Anthropic, Gemini Interactions); `error.metadata.reason` (OpenRouter Chat); a `google.rpc.ErrorInfo` detail (Gemini, Vertex AI, Gemini Live error frame with `code` 13); `reason` (Bedrock); `code` next to `error` (Ollama `/api/chat`); an `error` event's `error.code` (Responses WebSocket); `response.done` with `status: "failed"` and `status_details.error.code` (Realtime). For Codex, gate the turn-0 fixture with `hasToolResult: false` and the follow-up with `hasToolResult: true`, or the turn-0 fixture matches again and the agent loops. A fixture that matches only on `toolName` / `toolNamespace` loops the same way, because Codex offers the same tools on every request.
+
 ### Blocks (ordered text / tool-call streaming)
 
-The optional `blocks` array expresses an explicit, ordered sequence of stream entries — something plain `content` + `toolCalls` cannot, since those imply text-then-tools. Each entry is either `{ "type": "text", "text": "..." }` or `{ "type": "toolCall", "name": "...", "arguments": "...", "id"?: "..." }`, streamed in array order. This enables tool-first ordering (a tool call before any text) and interleaved text/tool ordering.
+The optional `blocks` array expresses an explicit, ordered sequence of stream entries — something plain `content` + `toolCalls` cannot, since those imply text-then-tools. Each entry is `{ "type": "text", "text": "..." }`, `{ "type": "toolCall", "name": "...", "arguments": "...", "id"?: "...", "namespace"?: "..." }`, streamed in array order (OpenAI Responses `responsesBlocks` also take `customToolCall` blocks). This enables tool-first ordering (a tool call before any text) and interleaved text/tool ordering.
 
 ```typescript
 // Tool-first: tool call streams before the text
@@ -176,6 +198,38 @@ Video uses async polling — `POST /v1/videos` creates, `GET /v1/videos/{id}` ch
 { error: { message: "Rate limited", type: "rate_limit_error" }, status: 429 }
 ```
 
+### Raw passthrough (provider events as written)
+
+Prefer the typed responses above: they work on every provider and are drift-checked. Use `raw` only for an event, field or error shape aimock does not model yet (for example a new Responses event type). aimock sends `events` (streaming) or `json` (non-streaming) exactly as written and adds only the named wire's framing.
+
+```typescript
+{
+  raw: {
+    wire: "openai-responses", // required; the fixture matches only this wire
+    events: [
+      {
+        type: "response.output_text.annotation.added",
+        annotation: { type: "url_citation", url: "https://example.com" },
+      },
+    ],
+    json: { id: "resp_1", object: "response", status: "completed", output: [] },
+    status: 200, // optional, 200-599, not 204/304
+    headers: { "x-request-id": "req_1" }, // optional; no content-length/transfer-encoding/connection/content-encoding
+  },
+}
+```
+
+- `wire` is one of `openai-responses`, `openai-chat`, `anthropic`, `gemini`, `gemini-interactions`, `cohere`, `ollama` (`/api/chat`), `ollama-generate` (`/api/generate`), `bedrock-invoke`, `bedrock-converse`. The router skips a raw fixture on every other wire and keeps matching; only a factory that returns a raw fixture for another wire gets a 500.
+- Events on `openai-responses`, `anthropic` and `cohere` need a string `type`; a `bedrock-converse` event is `{ "<eventType>": { …payload } }`.
+- `done: false` (openai-chat only, a boolean) omits `data: [DONE]`.
+- Unless `headers` sets `Content-Type`, a stream gets the typed stream's default headers for its wire (`text/event-stream`, `application/x-ndjson` on Ollama, `application/vnd.amazon.eventstream` on Bedrock) and a non-streaming reply gets `application/json` on every wire. An authored header replaces the default of the same name in any letter case.
+- An error reply (`status` >= 400) is never delayed, streaming or not. With `json`, it answers JSON even to a streaming request.
+- A request whose mode has no body (`events` for streaming, `json` for non-streaming) gets the wire's 500 with `aimock_raw_mode_unavailable`. An invalid raw fixture registered with `on()` or a factory is not checked when added; it gets the same 500 with `aimock_raw_fixture_invalid`, as does a factory result for another wire. Every raw fixture is checked again when it is served. `--validate-on-load` reports invalid fixtures at load. Also invalid: events that are not plain JSON (holes, `undefined`, non-finite numbers, Dates, cycles), a CR or LF in a `type`, `customToolCalls` or `responsesBlocks` next to `raw`, and a raw fixture with its own `misbehavior`. Unknown keys inside `raw` are a warning.
+- `chunkSize` does not apply (each event is one frame). Misbehavior faults skip raw fixtures: a server-level fault is journaled as skipped, an `X-AIMock-Misbehavior` header returns 501 `aimock_misbehavior_not_applicable`, and a fixture's own `misbehavior` makes it invalid (load error, 500 `aimock_raw_fixture_invalid`). Streaming timing, `truncateAfterChunks`, `disconnectAfterMs` and chaos apply.
+- Non-streaming timing: `nonStreamingTiming: true` delays a raw `stream: false` reply on `openai-chat` only; `nonStreamingTimingAllProviders: true` on every raw wire. Either needs `streamingProfile` or `recordedTimings`; the wait is sized from the served JSON.
+- OpenRouter `models` fallback: an `openai-chat` raw fixture with `status` >= 400 fails over like a typed error fixture.
+- Not served over WebSocket Responses yet (error event with code `aimock_raw_mode_unavailable`). Docs: `/raw-passthrough`.
+
 ### Chaos (Failure Injection)
 
 The optional `chaos` field on a fixture enables probabilistic failure injection:
@@ -191,6 +245,114 @@ The optional `chaos` field on a fixture enables probabilistic failure injection:
 ```
 
 Rates are evaluated per-request. When triggered, the chaos failure replaces the normal response.
+
+### Bad model output and retry recovery
+
+Use `misbehavior` to change a valid fixture response. Keep `chaos` for transport failures.
+Semantic fault support varies by wire, fault, and mode; consult the [support matrix](../../docs/model-misbehavior/index.html#support) before authoring a fixture. The example below uses `openai-chat`, including Azure and OpenRouter chat endpoints.
+Local support does not establish native fidelity; preserve the [modeled contracts and native capture limits](../../docs/model-misbehavior/index.html#fidelity).
+
+Save this fixture as `bad-tool.json`. Its first matching request receives invalid tool JSON; the next receives valid arguments.
+
+```json
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather", "endpoint": "chat" },
+      "response": {
+        "toolCalls": [{ "id": "call_weather", "name": "weather", "arguments": { "city": "Paris" } }]
+      },
+      "misbehavior": {
+        "seed": 42,
+        "faults": [
+          {
+            "fault": "tool-args-invalid-json",
+            "style": "trailing-comma",
+            "times": 1,
+            "providers": ["openai-chat"]
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Check application parsing and recovery explicitly. An HTTP 200 with bad arguments does not trigger the SDK's HTTP retry logic.
+For Vitest, use the real local server and official SDK:
+
+```typescript
+import OpenAI from "openai";
+import { LLMock } from "@copilotkit/aimock";
+import { expect } from "vitest";
+
+const mock = new LLMock();
+mock.loadFixtureFile("bad-tool.json");
+await mock.start();
+try {
+  const client = new OpenAI({
+    apiKey: "local",
+    baseURL: `${mock.url}/v1`,
+    maxRetries: 0,
+    defaultHeaders: { "X-Test-Id": "retry-tool" },
+  });
+  const request = {
+    model: "gpt-4",
+    messages: [{ role: "user", content: "weather" }],
+  } as const;
+  const first = await client.chat.completions.create({
+    ...request,
+    messages: [...request.messages],
+  });
+  const bad = first.choices[0].message.tool_calls?.[0].function.arguments;
+  expect(bad).toBeDefined();
+  expect(() => JSON.parse(bad!)).toThrow(SyntaxError);
+  const second = await client.chat.completions.create({
+    ...request,
+    messages: [...request.messages],
+  });
+  expect(JSON.parse(second.choices[0].message.tool_calls![0].function.arguments)).toEqual({
+    city: "Paris",
+  });
+  expect(mock.journal.getAll()[0].response.misbehavior).toMatchObject({
+    applied: true,
+    source: "fixture",
+    wire: "openai-chat",
+    fault: "tool-args-invalid-json",
+  });
+} finally {
+  await mock.stop();
+}
+```
+
+Keep the same test ID for both attempts. `times` counts firings per source, entry and test ID, not matching requests.
+Use `mock.resetMatchCounts("retry-tool")` to restart that test's counters. Clearing journal entries alone preserves fault counters.
+
+A configuration accepts a fault ID string or `{ seed, faults }`. Use `{ faults: [] }` for an explicit opt-out.
+Only `POST /__aimock/misbehavior` accepts bare `{}` as an opt-out.
+Each entry accepts `rate` from 0 to 1, positive integer `times`, a `tool` selector and a `providers` wire list.
+The default rate is 1. An omitted `times` has no firing limit. The default seed is 0; `"random"` selects one process seed.
+
+| Fault                        | Fault-specific configuration                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `tool-args-invalid-json`     | `style`: `truncated` (default), `trailing-comma`, `single-quotes`                                                             |
+| `tool-args-schema-violation` | `violation`: `missing-required` (default), `wrong-type`, `extra-property`, `enum-mismatch`, `not-object`; optional `property` |
+| `tool-unknown-name`          | Optional `name`                                                                                                               |
+| `tool-call-id-duplicate`     | No extra parameters; requires at least one call on an ID-emitting wire; duplicates the sole call when only one exists         |
+| `stop-length-mid-tool`       | `at` strictly between 0 and 1; default 0.5; emits a clean `length` stop with partial arguments                                |
+| `empty-response`             | No extra parameters                                                                                                           |
+| `refusal`                    | Optional `message`; keep `category` null or omitted on OpenAI Chat                                                            |
+| `content-filter`             | No extra parameters                                                                                                           |
+| `reasoning-only`             | Optional `reasoning`; OpenRouter emits `reasoning` with `reasoning_details`; native OpenAI exposes no reasoning               |
+
+For schema violations, send the tool schema in the request. Use direct schema constraints; do not assume `$ref` or combinator support.
+Selection order is HTTP header, fixture, runtime scope, then server baseline. Selected configurations replace one another; they do not merge.
+Fixture and header faults that cannot apply fail loudly. Runtime and server faults that cannot apply are skipped.
+Bad fixture configuration throws `FixtureLoadError` with a `misbehavior/` rule, including CLI loads without `--validate-on-load`.
+Bad server configuration or setter input throws a rule-prefixed `TypeError`.
+Check `response.misbehavior.evaluations` in the journal for skips, exhausted budgets and provider exclusions.
+Check actual SDK output too: `servedToolCalls` describes the prepared response, not proof of network delivery.
+See the [control API](https://aimock.copilotkit.dev/control-api#misbehavior) for runtime scope, validation errors and header grammar.
 
 ## Common Patterns
 
@@ -404,6 +566,7 @@ All providers share the same fixture pool — write fixtures once, they work for
 | `POST /v1/chat/completions`                                                              | OpenAI        | HTTP      |
 | `POST /v1/responses`                                                                     | OpenAI        | HTTP + WS |
 | `POST /v1/messages`                                                                      | Anthropic     | HTTP      |
+| `POST /v1/messages/count_tokens`                                                         | Anthropic     | HTTP      |
 | `POST /v1/embeddings`                                                                    | OpenAI        | HTTP      |
 | `POST /v1beta/models/{model}:{method}`                                                   | Google Gemini | HTTP      |
 | `POST /model/{modelId}/invoke`                                                           | AWS Bedrock   | HTTP      |
@@ -419,11 +582,13 @@ All providers share the same fixture pool — write fixtures once, they work for
 | `POST /api/chat`                                                                         | Ollama        | HTTP      |
 | `POST /api/generate`                                                                     | Ollama        | HTTP      |
 | `GET /api/tags`                                                                          | Ollama        | HTTP      |
+| `POST /api/embed` · `/api/embeddings`                                                    | Ollama        | HTTP      |
 | `POST /v2/chat`                                                                          | Cohere        | HTTP      |
 | `POST /api/v1/chat/completions`                                                          | OpenRouter    | HTTP      |
 | `GET /api/v1/models` · `/api/v1/key` · `/api/v1/credits`                                 | OpenRouter    | HTTP      |
 | `GET /metrics`                                                                           | —             | HTTP      |
-| `GET /v1/models`                                                                         | OpenAI-compat | HTTP      |
+| `GET /v1/models` · `/v1/models/{id}`                                                     | OpenAI-compat | HTTP      |
+| `GET /v1beta/models` · `/v1beta/models/{model}`                                          | Google Gemini | HTTP      |
 | `WS /v1/responses`                                                                       | OpenAI        | WebSocket |
 | `WS /v1/realtime`                                                                        | OpenAI        | WebSocket |
 | `WS /ws/google.ai...BidiGenerateContent`                                                 | Gemini Live   | WebSocket |
@@ -434,23 +599,28 @@ All providers share the same fixture pool — write fixtures once, they work for
 | `POST /v1/videos`                                                                        | OpenAI        | HTTP      |
 | `GET /v1/videos/{id}`                                                                    | OpenAI        | HTTP      |
 
+`GET /v1/models` returns the OpenAI-format list by default. With `policy.modelCatalog: "native"` (or `--policy modelCatalog=native`, or the `X-AIMock-Policy: modelCatalog=native` header), it returns the Anthropic list (native paging, `after_id` / `before_id`) when the request has `anthropic-version`, or `x-api-key` without `Authorization`; other callers still get the OpenAI format. `GET /v1/models/{id}` uses the same header selection without the opt-in. Catalogs list the fixture model IDs. Catalog and count routes (`count_tokens`, Gemini `:countTokens`) never proxy or record. Counts are a deterministic estimate of about 1 token per 4 characters of messages (plus tool definitions), minimum 1, and ignore fixture `usage`.
+
 ## Response Template Overrides
 
 Fixture responses can include optional override fields to control auto-generated envelope values. These are merged into the provider-specific response format (OpenAI, Claude, Gemini, Responses API).
 
-| Field                | Type   | Default                   | Description                                                                                                                                                                                                                                                                |
-| -------------------- | ------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                 | string | auto-generated            | Override response ID (e.g., `chatcmpl-custom`)                                                                                                                                                                                                                             |
-| `created`            | number | `Date.now()/1000`         | Override Unix timestamp                                                                                                                                                                                                                                                    |
-| `model`              | string | echoes request            | Override model name in response                                                                                                                                                                                                                                            |
-| `usage`              | object | zeroed                    | Override token counts: `{ prompt_tokens, completion_tokens, total_tokens }`. OpenAI Chat includes usage in response body; Responses API uses `response.usage`. When omitted, auto-computed from content length                                                             |
-| `finishReason`       | string | `"stop"` / `"tool_calls"` | Override finish reason. Mappings: `stop` -> `end_turn` (Claude), `STOP` (Gemini); `tool_calls` -> `tool_use` (Claude), `FUNCTION_CALL` (Gemini); `length` -> `max_tokens` (Claude), `MAX_TOKENS` (Gemini); `content_filter` -> `SAFETY` (Gemini), `failed` (Responses API) |
-| `role`               | string | `"assistant"`             | Override message role                                                                                                                                                                                                                                                      |
-| `systemFingerprint`  | string | (omitted)                 | Add `system_fingerprint` to response                                                                                                                                                                                                                                       |
-| `provider`           | string | slug author               | OpenRouter only: top-level serving-provider display name (default = the winning model slug's author). Override to assert who served the request                                                                                                                            |
-| `nativeFinishReason` | string | mirrors `finishReason`    | OpenRouter only: the raw upstream `native_finish_reason` alongside the normalized `finish_reason`                                                                                                                                                                          |
-| `usage.cost`         | number | (omitted)                 | OpenRouter only: per-request `usage.cost` (scriptable — powers budget-guard tests). When set, `usage.cost_details` is emitted too. Never fabricated when omitted                                                                                                           |
-| `usage.is_byok`      | bool   | (omitted)                 | OpenRouter only: emit `usage.is_byok`. Also `usage.prompt_tokens_details`, `usage.completion_tokens_details` — emitted only when set                                                                                                                                       |
+| Field                | Type                             | Default                   | Description                                                                                                                                                                                                                                                                                           |
+| -------------------- | -------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | string                           | auto-generated            | Override response ID (e.g., `chatcmpl-custom`)                                                                                                                                                                                                                                                        |
+| `created`            | number                           | `Date.now()/1000`         | Override Unix timestamp                                                                                                                                                                                                                                                                               |
+| `model`              | string                           | echoes request            | Override model name in response                                                                                                                                                                                                                                                                       |
+| `usage`              | object                           | zeroed                    | Override token counts: `{ prompt_tokens, completion_tokens, total_tokens }`. OpenAI Chat includes usage in response body; Responses API uses `response.usage`. When omitted, auto-computed from content length                                                                                        |
+| `finishReason`       | string                           | `"stop"` / `"tool_calls"` | Override finish reason. Mappings: `stop` -> `end_turn` (Claude), `STOP` (Gemini); `tool_calls` -> `tool_use` (Claude), `FUNCTION_CALL` (Gemini); `length` -> `max_tokens` (Claude), `MAX_TOKENS` (Gemini); `content_filter` -> `SAFETY` (Gemini), `failed` (Responses API)                            |
+| `role`               | string                           | `"assistant"`             | Override message role                                                                                                                                                                                                                                                                                 |
+| `phase`              | `"commentary" \| "final_answer"` | (omitted)                 | OpenAI Responses API (HTTP and WebSocket) only: labels each assistant `message` output item. Preserved in streaming added/done items, the completed response, and non-streaming output. Omitted by default; never inferred from content or finish reason. Does not label reasoning or tool-call items |
+| `systemFingerprint`  | string                           | (omitted)                 | Add `system_fingerprint` to response                                                                                                                                                                                                                                                                  |
+| `provider`           | string                           | slug author               | OpenRouter only: top-level serving-provider display name (default = the winning model slug's author). Override to assert who served the request                                                                                                                                                       |
+| `nativeFinishReason` | string                           | mirrors `finishReason`    | OpenRouter only: the raw upstream `native_finish_reason` alongside the normalized `finish_reason`                                                                                                                                                                                                     |
+| `usage.cost`         | number                           | (omitted)                 | OpenRouter only: per-request `usage.cost` (scriptable — powers budget-guard tests). When set, `usage.cost_details` is emitted too. Never fabricated when omitted                                                                                                                                      |
+| `usage.is_byok`      | bool                             | (omitted)                 | OpenRouter only: emit `usage.is_byok`. Also `usage.prompt_tokens_details`, `usage.completion_tokens_details` — emitted only when set                                                                                                                                                                  |
+
+Claude Messages and Bedrock Claude invoke also emit `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens` and a `usage.cache_creation` object (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`) when a fixture supplies them.
 
 ### Example
 
@@ -518,6 +688,9 @@ mock.on(
 | Reasoning            | Yes         | Yes              | Yes    | Yes    | --          | Yes     | Yes   | --     | --     | Yes        |
 | Web Searches         | --          | Yes              | --     | --     | --          | --      | --    | --     | --     | --         |
 | Response Overrides   | Yes         | Yes              | Yes    | Yes    | Yes         | --      | Yes   | --     | --     | Yes        |
+| Custom Tool Calls    | Error       | Yes              | Error  | Error  | Error       | Error   | Error | Error  | Error  | Error      |
+
+Custom tool calls (`customToolCalls` / `customToolCall` blocks in `responsesBlocks`): "Error" means the request fails before any content with code `aimock_unsupported_tool_call`. The Ollama column is `/api/chat`; `/api/generate` rejects every tool-call fixture, custom calls included, with HTTP 400 (`invalid_request_error`) and no aimock code. The Azure column is the deployment route (`/openai/deployments/{id}/chat/completions`) and the OpenRouter column is `/api/v1/chat/completions`. aimock serves `/openai/v1/responses` and OpenRouter's `/api/v1/responses` with its OpenAI Responses handler, so custom tool calls work there. Realtime and Gemini Live WebSockets also reject them.
 
 ## Critical Gotchas
 
@@ -525,9 +698,9 @@ mock.on(
 
 2. **`arguments` accepts both objects and strings** — `"arguments": {"key":"value"}` (preferred, auto-stringified) or `"arguments": "{\"key\":\"value\"}"` (legacy). The same applies to `content` fields that contain JSON. The fixture loader detects `typeof === "object"` and calls `JSON.stringify()` automatically.
 
-3. **Latency is per-chunk, not total** — `latency: 100` means 100ms between each SSE chunk, not 100ms total response time. Similarly, `truncateAfterChunks` and `disconnectAfterMs` are for simulating stream interruptions (added in v1.3.0).
+3. **Latency is per-chunk, not total** — `latency: 100` means 100ms between each SSE chunk, not 100ms total response time. It never delays a non-streaming (`stream: false`) response, also with `nonStreamingTiming: true` or `nonStreamingTimingAllProviders: true`. Similarly, `truncateAfterChunks` and `disconnectAfterMs` are for simulating stream interruptions (added in v1.3.0).
 
-4. **`streamingProfile` takes precedence over `latency`** — when both are set on a fixture, `streamingProfile` controls timing. Use one or the other.
+4. **`streamingProfile` takes precedence over `latency`** — when both are set on a fixture, `streamingProfile` controls timing. Use one or the other. By default, `streamingProfile` and `recordedTimings` delay only streamed replies: a `stream: false` reply returns immediately, also for recorded fixtures. Set `nonStreamingTiming: true` on the fixture to also delay `stream: false` OpenAI Chat Completions replies (text, tool calls, combined content and tool calls, and `blocks`) by the sum of the per-chunk delays a streamed reply at the same `chunkSize` would get. `nonStreamingTiming` does not delay other providers. To delay `stream: false` replies with the same formula on OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, Gemini and Vertex AI `generateContent`, Gemini Interactions (`stream: false`), Cohere v2 chat, Bedrock InvokeModel and Converse, and Ollama `/api/chat` and `/api/generate`, set `nonStreamingTimingAllProviders: true` instead. Audio transcription replies are not delayed. Error replies are never delayed. If the client disconnects during the wait, nothing is written and the journal entry gets `interrupted: true`, `interruptReason: "client aborted"` and `status: 0`.
 
 5. **Tool result messages don't change the user message** — after a tool call, the client sends the same conversation + tool result. Matching on `userMessage` will hit the SAME fixture again → infinite loop. Always use `predicate` checking `role === "tool"` for tool results. Note: a whole-conversation `role === "tool"` check (e.g. `req.messages.some((m) => m.role === "tool")`) diverges from `hasToolResult`'s current-turn scoping in multi-turn flows — the built-in `hasToolResult` matcher only looks after the last user message, so a later turn whose history carries an earlier tool result still reads `false`.
 
@@ -839,3 +1012,29 @@ mock.disableRecording();
 2. **Review**: Check the recorded fixtures in `{fixturePath}/recorded/`. Edit or reorganize as needed.
 3. **Lock down**: Run your test suite with `--strict` to ensure every request hits a fixture. No network calls escape.
 4. **Maintain**: When APIs change, delete stale fixtures and re-record.
+
+## MCP Recording and Fake Reports (1.45.0+)
+
+### Record a live MCP server
+
+```bash
+npx -p @copilotkit/aimock llmock -f ./fixtures \
+  --mcp-record /mcp=http://localhost:3001/mcp
+```
+
+- `--mcp-record <mount>=<url>` (repeatable) is on the `llmock` bin and the Docker image, not on `aimock --config`. It needs a local `--fixtures` path. `--mcp-proxy-only <mount>=<url>` forwards without writing and needs no `--fixtures`.
+- With `aimock --config`, set `llm.enableMcpRecording: true` and use `llm.record.mcp`: `{ "/mcp": "http://localhost:3001/mcp" }`, or an object with `upstream`, `fixturePath`, `proxyOnly`, `upstreamAuth`, `secretValues`, `strict`, `maxRecordBufferBytes`. Without the opt-in, `llm.record.mcp` is ignored with a warning. `llm.record.mcp` alone does not turn on LLM recording.
+- In code: `mcpMock.enableRecording({ upstream, ... })` and `disableRecording()`.
+- Every MCP request needs a test id (`X-Test-Id`, percent-encoded, or `?testId=`) or a context. Without one, the call is forwarded but not written.
+- The recording lands at `<fixtures>/recorded/<slugified test id>/mcp.json`. Replay it by starting aimock with the same `--fixtures` and no `--mcp-record`. A changed call then fails with `MCP_FAKE_MISMATCH`.
+- A call the file already answers is answered from the file, not forwarded. Delete the file to re-record.
+- Secrets: headers are never written; known secrets become `[REDACTED]` with a `_warnings` pointer. Add custom secret values with `AIMOCK_RECORD_SECRET_VALUES` (newline-separated, each at least 8 characters). Set an upstream credential with `AIMOCK_MCP_UPSTREAM_AUTH="Name: value"`. OAuth is not supported through the recorder.
+- Recorded `mcpFakes` files may hold `list`, `recorded` and `timing` (block) and `notifications` and `durationMs` (call entry). Older aimock versions reject them. Replay sends recorded progress notifications (as SSE) at the recorded timing, scaled by `--replay-speed`. Recorded log notifications replay only after the client calls `logging/setLevel`.
+
+### Fail a test on a swallowed or unused fake
+
+- `GET /__aimock/mcp/fakes/report?testId=<id>` returns `{ ok, served, unconsumed, failures, unfaked, sharedUnconsumed, evicted }` for one test id.
+- `useAimock({ fixtures, fakesReport: "fail" })` (Vitest or Jest) checks each test's report in `afterEach` and throws `AimockFakesReportError` when a fake error was swallowed by the agent or a declared entry was never used. `"warn"` prints instead.
+- `mock().fakesFor()` returns `{ testId, mcpUrl, headers }` for the current test. The default test id is `<file> › <describe> › <test>` (Vitest; Jest joins the names with spaces). Scope the `mcpFakes` block to that id. Pass an explicit id for concurrent tests and, in Jest, for duplicate test names.
+- `assertFakesReport(report)` does the same check anywhere. In pytest: `aimock.fakes_for()`, `aimock.fakes_report()` and `aimock.assert_fakes_report()`; the default id is the pytest node id.
+- Fakes work for any caller over MCP HTTP: agents, Mastra Workflow steps, LangGraph nodes and plain functions.

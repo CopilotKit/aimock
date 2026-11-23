@@ -1,0 +1,410 @@
+[
+  {
+    "id": "fal-submit-proxy-failure",
+    "wire": {
+      "status": 502,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Proxy to upstream failed: Submit 503: a11-controlled-submit-failure\",\"type\":\"proxy_error\"}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/fal/fal-ai/a11-model",
+        "body": {
+          "model": "fal-ai/a11-model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a11 record failure"
+            }
+          ],
+          "_endpointType": "fal"
+        },
+        "response": {
+          "status": 502,
+          "fixture": null,
+          "source": "proxy"
+        }
+      }
+    ],
+    "upstream": [
+      {
+        "method": "POST",
+        "path": "/fal-ai/a11-model",
+        "body": "{\"prompt\":\"a11 record failure\"}",
+        "strict": null
+      }
+    ],
+    "fixtureFiles": []
+  },
+  {
+    "id": "fal-request-not-found",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request a11-missing not found\",\"type\":\"not_found\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/fal-ai/a11-model/requests/a11-missing/status",
+        "body": null,
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-status-not-found",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request a11-missing not found\",\"type\":\"not_found\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/queue/requests/a11-missing/status",
+        "body": null,
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-result-not-found",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Request a11-missing not found\",\"type\":\"not_found\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/queue/requests/a11-missing",
+        "body": null,
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-positive-submit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"request_id\":\"<uuid#0>\",\"response_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#0>\",\"status_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#0>/status\",\"cancel_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#0>/cancel\",\"queue_position\":0}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/fal/fal-ai/a11-model",
+        "body": {
+          "model": "fal-ai/a11-model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a11 positive job"
+            }
+          ],
+          "_endpointType": "fal"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "fal",
+              "userMessage": "a11 positive job"
+            },
+            "response": {
+              "json": {
+                "images": [
+                  {
+                    "url": "https://example.test/a11-image.png"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-positive-status",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-fal-request-id": "<uuid#0>",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"status\":\"COMPLETED\",\"request_id\":\"<uuid#0>\",\"response_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#0>\",\"logs\":[{\"timestamp\":\"<iso-date>\",\"level\":\"INFO\",\"message\":\"Job enqueued.\"}],\"metrics\":{\"inference_time\":0}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/fal-ai/a11-model/requests/<uuid#0>/status",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-positive-result",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-fal-request-id": "<uuid#0>",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"images\":[{\"url\":\"https://example.test/a11-image.png\"}]}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/fal-ai/a11-model/requests/<uuid#0>",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-positive-submit",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"request_id\":\"<uuid#1>\",\"response_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#1>/response\",\"status_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#1>/status\",\"cancel_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#1>/cancel\",\"queue_position\":0}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/fal/queue/submit/fal-ai/a11-model",
+        "body": {
+          "model": "fal-ai/a11-model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a11 positive job"
+            }
+          ],
+          "_endpointType": "fal-audio"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "fal-audio",
+              "userMessage": "a11 positive job"
+            },
+            "response": {
+              "audio": "SGVsbG8=",
+              "format": "wav"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-positive-status",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"status\":\"COMPLETED\",\"request_id\":\"<uuid#1>\",\"response_url\":\"https://queue.fal.run/fal-ai/a11-model/requests/<uuid#1>/response\"}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/queue/requests/<uuid#1>/status",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-native-not-ready",
+    "wire": {
+      "status": 409,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"error\":{\"message\":\"Job result not yet available\",\"type\":\"not_ready\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/queue/requests/<uuid#1>",
+        "body": null,
+        "response": {
+          "status": 409,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-positive-result",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "a11-caller-trace"
+      },
+      "body": "{\"audio\":{\"url\":\"https://mock.fal.media/files/generated_audio.wav\",\"content_type\":\"audio/wav\",\"file_name\":\"generated_audio.wav\",\"file_size\":5}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/queue/requests/<uuid#1>",
+        "body": null,
+        "response": {
+          "status": 200,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-unknown-endpoint",
+    "wire": {
+      "status": 404,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"Unknown fal.ai endpoint\",\"type\":\"not_found\"}}"
+    },
+    "entries": [
+      {
+        "method": "GET",
+        "path": "/fal/a11-unknown-endpoint",
+        "body": null,
+        "response": {
+          "status": 404,
+          "fixture": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "fal-audio-direct-positive",
+    "wire": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"audio\":{\"url\":\"https://mock.fal.media/files/generated_audio.wav\",\"content_type\":\"audio/wav\",\"file_name\":\"generated_audio.wav\",\"file_size\":5}}"
+    },
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/fal/run/fal-ai/a11-model",
+        "body": {
+          "model": "fal-ai/a11-model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "a11 positive job"
+            }
+          ],
+          "_endpointType": "fal-audio"
+        },
+        "response": {
+          "status": 200,
+          "fixture": {
+            "match": {
+              "endpoint": "fal-audio",
+              "userMessage": "a11 positive job"
+            },
+            "response": {
+              "audio": "SGVsbG8=",
+              "format": "wav"
+            }
+          }
+        }
+      }
+    ]
+  }
+]

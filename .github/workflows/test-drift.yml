@@ -37,8 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -68,6 +68,9 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       # Short, scannable Slack mrkdwn summary of which providers drifted and
       # what changed. Consumed by the `notify` job (which runs in a separate
@@ -82,11 +85,23 @@ jobs:
       # job can classify an exit-5 quarantine distinctly instead of folding it
       # into the generic "job failed → HTTP drift" fallback (M5 backstop).
       exit_code: ${{ steps.drift.outputs.exit_code }}
+      # "true" when any leg failed on provider quota exhaustion (out of credit),
+      # on any exit that wrote a report (2, 5 or 6), so `notify` says "top up
+      # credit". quota_legs / silent_legs are the counts of ungraded legs that
+      # were out of credit / went silent, so `notify` can name both.
+      quota_exhausted: ${{ steps.drift.outputs.quota_exhausted }}
+      quota_legs: ${{ steps.drift.outputs.quota_legs }}
+      silent_legs: ${{ steps.drift.outputs.silent_legs }}
+      # Probe-model retirement preflight results, for the `notify` job: Slack
+      # lines for retired / soon-retiring probe models, and whether any is
+      # already retired (which stopped the run before drift was graded).
+      model_alert: ${{ steps.model_preflight.outputs.retirement_alert }}
+      model_retired: ${{ steps.model_preflight.outputs.retired }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -177,6 +192,23 @@ jobs:
           PREFLIGHT
           npx tsx "$PREFLIGHT_FILE"
 
+      # Probe-model RETIREMENT preflight. Asks each provider whether every model
+      # the drift probes pin (src/__tests__/drift/probe-models.ts) is still
+      # served. A retired one fails here with "probe model X retired on DATE —
+      # update <constant>" instead of as a confusing drift failure three nights
+      # running (o4-mini, 2026-10-23). A shutdown date inside 30 days is a
+      # warning in the job summary and in Slack via the `notify` job. No key, no
+      # retirement API, or a transient error is an informational skip.
+      - name: Preflight — probe model retirement
+        id: model_preflight
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: npx tsx scripts/drift-model-preflight.ts
+
       # Provision a local Ollama daemon so the OLLAMA_HOST-gated live drift leg
       # (src/__tests__/drift/ollama.drift.ts) actually runs. Ollama needs NO API
       # key — the "credential" is just a running daemon. We pull the smallest
@@ -266,6 +298,7 @@ jobs:
             sleep 1
           done
           ollama pull qwen2:0.5b
+          ollama pull qwen3:0.6b
 
       # Run the collector behind a "retry before alert" wrapper. A single
       # critical run can be a transient real-API hiccup (a streaming call
@@ -275,9 +308,53 @@ jobs:
       # The common green path stays fast (no extra runs when the first is
       # clean). Exit codes mirror the collector contract so the steps below
       # are unchanged.
+      - name: Prepare temporary P1 AWS profile paths
+        id: p1-aws-profile
+        if: github.ref == 'refs/heads/main'
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = path.join(process.env.RUNNER_TEMP, `aimock-aws-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          fs.mkdirSync(dir, { mode: 0o700 });
+          fs.appendFileSync(process.env.GITHUB_ENV, `AWS_SHARED_CREDENTIALS_FILE=${path.join(dir, 'credentials')}\nAWS_CONFIG_FILE=${path.join(dir, 'config')}\n`);
+          NODE
+      - name: Assume limited P1 Bedrock role
+        if: github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::058264219587:role/aimock-daily-bedrock-drift
+          role-session-name: aimock-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: us-west-2
+          audience: sts.amazonaws.com
+          allowed-account-ids: "058264219587"
+          role-duration-seconds: 3600
+          aws-profile: copilotkit-admin
+          overwrite-aws-profile: false
+          output-env-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Authenticate Vertex drift
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        id: vertex_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: llmock-drift-testing
+          workload_identity_provider: projects/291511826003/locations/global/workloadIdentityPools/aimock-drift/providers/github-main
+          service_account: aimock-vertex-drift@llmock-drift-testing.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 3600s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+          export_environment_variables: false
+
       - name: Run drift tests
         id: drift
         env:
+          AIMOCK_NATIVE_PROVIDER_DRIFT: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
@@ -285,15 +362,62 @@ jobs:
           # Un-gates the Ollama live drift leg against the daemon provisioned above.
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          AIMOCK_OLLAMA_K9_MODEL: qwen3:0.6b
+          P1_BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-5-20250929-v1:0
           FAL_KEY: ${{ secrets.FAL_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          AIMOCK_VERTEX_LIVE: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+          AIMOCK_VERTEX_PROJECT: llmock-drift-testing
+          AIMOCK_VERTEX_LOCATION: us-central1
+          AIMOCK_VERTEX_MODEL: gemini-2.5-flash
+          AIMOCK_VERTEX_ACCESS_TOKEN: ${{ steps.vertex_auth.outputs.access_token }}
         run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            export AIMOCK_AWS_MISBEHAVIOR_LIVE=1
+            export AWS_PROFILE=copilotkit-admin
+            export AWS_REGION=us-west-2
+            export AIMOCK_AWS_MODEL_ID="$P1_BEDROCK_MODEL_ID"
+          fi
+          NATIVE_GATE="$GITHUB_WORKSPACE/.native-policy-gate.mts"
+          ruby - "$NATIVE_GATE" <<'RUBY_GATE'
+          source = File.read('.github/workflows/test-drift.yml')
+          body = source.match(/cat > "\$DELTA_FILE" <<'DELTAGATE'\n(.*?)^\s*DELTAGATE\s*$/m).captures.first
+          lines = body.lines
+          indent = lines.reject { |line| line.strip.empty? }.map { |line| line[/\A */].length }.min
+          File.write(ARGV.fetch(0), lines.map { |line| line.sub(/\A {#{indent}}/, '') }.join)
+          RUBY_GATE
+          trap 'rm -f "$NATIVE_GATE"' EXIT
           set +e
-          npx tsx scripts/drift-retry.ts
+          NATIVE_DISPOSITION_MODE=scheduled-retry npx tsx "$NATIVE_GATE"
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          # Ungraded legs, whenever the collector wrote a report, whatever the exit
+          # (exit 1, AG-UI skipped, writes one too). Out of credit is infra, not
+          # drift and not silence, and it often comes with other failures: a
+          # critical diff (2), a quarantine (5) or a skipped AG-UI check (1) must not
+          # hide it. Silent legs are named apart, so neither is reported as the
+          # other. An unreadable or missing report on 2/5/6 is said out loud, never
+          # read as zero legs.
+          if [ -f drift-report.json ] || [ "$EXIT_CODE" -eq 2 ] || [ "$EXIT_CODE" -eq 5 ] || [ "$EXIT_CODE" -eq 6 ]; then
+            if LEG_COUNTS=$(jq -er '[([.timeouts[]? | select(.providerQuotaExhausted)] | length), ([.timeouts[]? | select(.providerQuotaExhausted | not)] | length)] | @tsv' drift-report.json); then
+              read -r QUOTA_LEGS SILENT_LEGS <<< "$LEG_COUNTS"
+              echo "quota_legs=$QUOTA_LEGS" >> "$GITHUB_OUTPUT"
+              echo "silent_legs=$SILENT_LEGS" >> "$GITHUB_OUTPUT"
+              if [ "$QUOTA_LEGS" -gt 0 ]; then
+                echo "quota_exhausted=true" >> "$GITHUB_OUTPUT"
+                echo "::error title=provider-quota-exhausted::${QUOTA_LEGS} drift leg(s) failed because the provider account is out of credit — provider quota exhausted — top up credit. Not API drift; nothing was graded there."
+                jq -r '.timeouts[]? | select(.providerQuotaExhausted) | "::error title=provider-quota-exhausted::\(.testName) — \(.providerQuotaExhausted.code); not graded"' drift-report.json
+              fi
+              if [ "$SILENT_LEGS" -gt 0 ]; then
+                jq -r '.timeouts[]? | select(.providerQuotaExhausted | not) | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); nothing graded on this surface"' drift-report.json
+                echo "::warning::Drift collector: ${SILENT_LEGS} live leg(s) observed nothing — the surface is silent, not drifting. Nothing was graded there."
+              fi
+            else
+              echo "::error title=drift-report-unreadable::Could not read timeouts from drift-report.json (collector exit $EXIT_CODE). Provider-quota and silent-leg counts are UNKNOWN, not zero; see the jq error above."
+            fi
+          fi
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift persisted across retries, continue
           elif [ "$EXIT_CODE" -eq 5 ]; then
@@ -307,20 +431,33 @@ jobs:
             # either: each silent leg gets a named ::warning::, the report keeps
             # its `timeouts[]`, and the `notify` job below alerts on exit 6 with
             # its own wording. A day that graded nothing is never a clean day.
-            jq -r '.timeouts[]? | "::warning title=live-timeout::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); nothing graded on this surface"' \
-              drift-report.json || true
-            echo "::warning::Drift collector: $(jq -r '.timeouts | length' drift-report.json) live leg(s) observed nothing (exit 6) — the surface is silent, not drifting. Nothing was graded there."
+            # The quota / silent annotations were written above.
+            :
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"
           fi
 
+      - name: Remove temporary P1 AWS profile
+        if: always() && steps.p1-aws-profile.outcome == 'success'
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = path.join(process.env.RUNNER_TEMP, `aimock-aws-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          for (const name of ['credentials', 'config']) fs.rmSync(path.join(dir, name), { force: true });
+          fs.rmdirSync(dir);
+          NODE
+
       - name: Upload drift report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-report
-          path: drift-report.json
+          path: |
+            drift-report.json
+            drift-observations.json
+            drift-evidence/*.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -331,7 +468,12 @@ jobs:
       - name: Summarize drift for Slack
         id: summary
         if: always()
-        run: npx tsx scripts/drift-slack-summary.ts
+        run: |
+          if [ -f .native-policy-result.json ] && node -e 'const r = require("./.native-policy-result.json"); process.exit(r.rawExit === 2 && r.effectiveExit === 0 ? 0 : 1)'; then
+            echo 'drift_summary=Approved intentional native default-policy difference retained in raw artifacts; all four enforced comparisons passed. Other raw diagnostics remain available.' >> "$GITHUB_OUTPUT"
+          else
+            npx tsx scripts/drift-slack-summary.ts
+          fi
 
       - name: Fail if critical drift detected
         if: steps.drift.outputs.exit_code == '2'
@@ -353,7 +495,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           PREV=$(gh run list --workflow="Drift Tests" --repo="${REPO}" --branch=main --limit=2 --json conclusion --jq '.[1].conclusion // "unknown"')
-          echo "conclusion=$PREV" >> $GITHUB_OUTPUT
+          echo "conclusion=$PREV" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack
         env:
@@ -364,6 +506,11 @@ jobs:
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
           DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
+          QUOTA_EXHAUSTED: ${{ needs.drift.outputs.quota_exhausted }}
+          QUOTA_LEGS: ${{ needs.drift.outputs.quota_legs }}
+          SILENT_LEGS: ${{ needs.drift.outputs.silent_legs }}
+          MODEL_ALERT: ${{ needs.drift.outputs.model_alert }}
+          MODEL_RETIRED: ${{ needs.drift.outputs.model_retired }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -374,6 +521,7 @@ jobs:
           INFRA_ERROR=false
           QUARANTINE=false
           LIVE_TIMEOUT=false
+          PROBE_RETIRED=false
 
           # Determine what happened in each job. An exit_code of 5 means the
           # collector QUARANTINED unparseable output — the drift job concludes
@@ -389,7 +537,13 @@ jobs:
           # would fall through to the good→good "stay quiet" path and nobody would
           # learn that a surface stopped being checked. Classified before the
           # generic fallbacks so it is never reported as real drift.
-          if [ "$DRIFT_EXIT_CODE" = "5" ]; then
+          #
+          # A retired probe model stops the drift job at its preflight, before
+          # anything is graded. The job concludes `failure`, so without this
+          # branch it would be reported as "providers changed response formats".
+          if [ "$MODEL_RETIRED" = "true" ]; then
+            PROBE_RETIRED=true
+          elif [ "$DRIFT_EXIT_CODE" = "5" ]; then
             QUARANTINE=true
           elif [ "$DRIFT_EXIT_CODE" = "6" ]; then
             LIVE_TIMEOUT=true
@@ -433,16 +587,42 @@ jobs:
           # and needs manual triage. Classified distinctly — NOT real HTTP API
           # drift — so nobody chases a phantom provider format change. The
           # DRIFT_SUMMARY already carries the quarantine detail block (C5.2).
-          if [ "$QUARANTINE" = "true" ]; then
+          ALERT_SHOWN=false
+          QUOTA_SHOWN=false
+          if [ "$PROBE_RETIRED" = "true" ]; then
+            EMOJI="🛑"
+            MSG="*Drift probe model retired* in aimock — the preflight stopped the run before any drift was graded (not API drift). Update the probe model:${NL}${MODEL_ALERT}${NL}${RUN_URL}"
+            ALERT_SHOWN=true
+            if [ "$AGUI_DRIFT" = "true" ]; then
+              MSG="${MSG}${NL}AG-UI schema drift was also detected — canonical ag-ui types changed."
+            fi
+          elif [ "$QUARANTINE" = "true" ]; then
             EMOJI="🔬"
             MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
-          # Live surface silent (collector exit 6): a live leg observed nothing at
-          # all, so that surface was NOT checked this run. Not drift, not a
-          # collector fault — but a surface that has stopped answering is worth
-          # knowing about, especially if it repeats day over day.
+          # Collector exit 6: legs graded nothing. Two causes, named apart and
+          # BOTH listed when both happened, plus any AG-UI schema drift:
+          #   - provider out of credit (quota legs): infra, not drift, top up;
+          #   - live surface silent: a live leg observed nothing at all, so that
+          #     surface was NOT checked this run. Not drift, not a collector
+          #     fault — but a surface that has stopped answering is worth
+          #     knowing about, especially if it repeats day over day.
           elif [ "$LIVE_TIMEOUT" = "true" ]; then
-            EMOJI="⏱️"
-            MSG="*Live drift surface went silent* in aimock — a live leg observed zero messages, so nothing was graded on that surface (not API drift, no collector triage needed). Repeats day over day mean the surface is rejecting or has retired the session, not a flake.${DETAIL}${NL}${RUN_URL}"
+            SILENT_MSG="a live leg observed zero messages, so nothing was graded on that surface (not API drift, no collector triage needed). Repeats day over day mean the surface is rejecting or has retired the session, not a flake."
+            if [ "$QUOTA_EXHAUSTED" = "true" ]; then
+              EMOJI="💳"
+              MSG="*Drift provider quota exhausted* in aimock — top up credit on the drift account. Not API drift: ${QUOTA_LEGS:-some} leg(s) graded nothing."
+              QUOTA_SHOWN=true
+              if [ "${SILENT_LEGS:-0}" -gt 0 ] 2>/dev/null; then
+                MSG="${MSG}${NL}*Also: ${SILENT_LEGS} live drift leg(s) went silent* — ${SILENT_MSG}"
+              fi
+            else
+              EMOJI="⏱️"
+              MSG="*Live drift surface went silent* in aimock — ${SILENT_MSG}"
+            fi
+            if [ "$AGUI_DRIFT" = "true" ]; then
+              MSG="${MSG}${NL}AG-UI schema drift was also detected — canonical ag-ui types changed."
+            fi
+            MSG="${MSG}${DETAIL}${NL}${RUN_URL}"
           # Both types of drift
           elif [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
@@ -462,10 +642,27 @@ jobs:
           # Recovery: previous was bad, now good — notify once
           elif [ "$PREV" = "failure" ]; then
             EMOJI="✅"
-            MSG="Drift tests passing again — all providers and AG-UI schema match."
+            MSG="Drift tests passing again — required checks pass.${DETAIL}"
+          # Good → good, but a probe model retires soon — warn every day until
+          # it is updated (a shutdown date inside the preflight's window).
+          elif [ -n "$MODEL_ALERT" ]; then
+            EMOJI="⚠️"
+            MSG="*Drift probe model retiring soon* in aimock — update it before its shutdown date:${NL}${MODEL_ALERT}${NL}${RUN_URL}"
+            ALERT_SHOWN=true
           # Good → good — stay quiet
           else
             exit 0
+          fi
+
+          # Out of credit beside a critical drift (exit 2) or a quarantine
+          # (exit 5) is still named in the headline, not only in the summary.
+          if [ "$QUOTA_EXHAUSTED" = "true" ] && [ "$QUOTA_SHOWN" = "false" ]; then
+            MSG="${MSG}${NL}💳 *Also: provider quota exhausted* — ${QUOTA_LEGS:-some} drift leg(s) failed because the drift account is out of credit; top up credit (not API drift)."
+          fi
+
+          # Any other alert still carries a pending probe-model retirement.
+          if [ -n "$MODEL_ALERT" ] && [ "$ALERT_SHOWN" = "false" ]; then
+            MSG="${MSG}${NL}${MODEL_ALERT}"
           fi
 
           PAYLOAD=$(jq -n --arg text "${EMOJI} ${MSG}" '{text: $text}')
@@ -511,8 +708,8 @@ jobs:
           # Need main's history reachable so the base leg can check it out
           # into a sibling worktree without a second full clone.
           fetch-depth: 0
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -627,6 +824,18 @@ jobs:
           PREFLIGHT
           npx tsx "$PREFLIGHT_FILE"
 
+      - name: Pin canonical AG-UI sources for both fresh comparison legs
+        if: steps.preflight.outputs.live_legs_ran != 'false'
+        run: |
+          set -euo pipefail
+          AGUI_REPO_PATH="$RUNNER_TEMP/aimock-agui-canonical"
+          git clone --depth 1 https://github.com/ag-ui-protocol/ag-ui.git "$AGUI_REPO_PATH"
+          AGUI_UPSTREAM_SHA=$(git -C "$AGUI_REPO_PATH" rev-parse HEAD)
+          git -C "$AGUI_REPO_PATH" checkout --detach "$AGUI_UPSTREAM_SHA"
+          echo "AGUI_REPO_PATH=$AGUI_REPO_PATH" >> "$GITHUB_ENV"
+          echo "AGUI_UPSTREAM_SHA=$AGUI_UPSTREAM_SHA" >> "$GITHUB_ENV"
+          echo "AG-UI canonical comparison SHA: $AGUI_UPSTREAM_SHA"
+
       # ---- BASE leg -------------------------------------------------------
       # Prefer reusing the most recent same-UTC-day, well-formed `main`
       # scheduled drift report as the delta base — a same-day main baseline
@@ -642,6 +851,7 @@ jobs:
       - name: Base drift report — reuse same-UTC-day main run, else run live
         id: base
         env:
+          AIMOCK_NATIVE_PROVIDER_DRIFT: "1"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           LIVE_LEGS_RAN: ${{ steps.preflight.outputs.live_legs_ran }}
@@ -657,28 +867,71 @@ jobs:
             echo "reused=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          NATIVE_GATE="$GITHUB_WORKSPACE/.native-policy-gate.mts"
+          ruby - "$NATIVE_GATE" <<'RUBY_GATE'
+          source = File.read('.github/workflows/test-drift.yml')
+          body = source.match(/cat > "\$DELTA_FILE" <<'DELTAGATE'\n(.*?)^\s*DELTAGATE\s*$/m).captures.first
+          lines = body.lines
+          indent = lines.reject { |line| line.strip.empty? }.map { |line| line[/\A */].length }.min
+          File.write(ARGV.fetch(0), lines.map { |line| line.sub(/\A {#{indent}}/, '') }.join)
+          RUBY_GATE
+          trap 'rm -f "$NATIVE_GATE"' EXIT
           # Attempt reuse: download the most recent successful scheduled
           # `main` run's drift-report artifact, then let isBaseReportReusable
           # (D6.1) decide if it is a trustworthy same-UTC-day baseline. On any
           # failure to obtain a reusable report, fall through to a live run.
+          git worktree add ../base-main origin/main
+          AGUI_BOOTSTRAP=$(npx tsx scripts/drift-agui-baseline.ts check ../base-main)
           REUSED=false
-          if BASE_RUN_ID=$(gh run list \
+          # Cached reports produced by the old reader did not grade AG-UI 1.0.
+          if [ "$AGUI_BOOTSTRAP" = "true" ]; then
+            echo "base: AG-UI reader compatibility bootstrap requires a fresh comparison"
+          elif BASE_RUN_ID=$(gh run list \
                 --workflow="Drift Tests" --repo="$REPO" --branch=main \
                 --event=schedule --status=success --limit=1 \
-                --json databaseId --jq '.[0].databaseId // empty'); then
-            if [ -n "$BASE_RUN_ID" ]; then
+                --json databaseId,headSha --jq '.[0] | [.databaseId, .headSha] | @tsv'); then
+            BASE_RUN_SHA=$(printf '%s' "$BASE_RUN_ID" | cut -f2)
+            BASE_RUN_ID=$(printf '%s' "$BASE_RUN_ID" | cut -f1)
+            NATIVE_COMPATIBLE=false
+            if [ -n "$BASE_RUN_SHA" ] && git cat-file -e "$BASE_RUN_SHA^{commit}" 2>/dev/null; then
+              git show "$BASE_RUN_SHA:.github/workflows/test-drift.yml" > .base-producing-workflow.yml
+              if ruby - .base-producing-workflow.yml <<'RUBY_COMPAT'
+          require 'yaml'
+          workflow = YAML.load_file(ARGV.fetch(0))
+          job = workflow.fetch('jobs').fetch('drift')
+          step = job.fetch('steps').find { |item| item['name'] == 'Run drift tests' }
+          env = (workflow['env'] || {}).merge(job['env'] || {}).merge(step&.fetch('env', {}) || {})
+          exit(env['AIMOCK_NATIVE_PROVIDER_DRIFT'] == '1' ? 0 : 1)
+          RUBY_COMPAT
+              then NATIVE_COMPATIBLE=true; fi
+            fi
+            if [ -n "$BASE_RUN_ID" ] && [ "$NATIVE_COMPATIBLE" = true ]; then
+
               rm -rf ./.base-artifact
               if gh run download "$BASE_RUN_ID" --repo="$REPO" \
                     --name drift-report --dir ./.base-artifact; then
                 BASE_CONCLUSION=$(gh run view "$BASE_RUN_ID" --repo="$REPO" \
                   --json conclusion --jq '.conclusion // empty' || echo "")
-                if node --input-type=module -e '
+                if BASE_CONCLUSION="$BASE_CONCLUSION" NATIVE_GATE="$NATIVE_GATE" BASE_RUN_ID="$BASE_RUN_ID" node --import tsx --input-type=module -e '
                   import { readFileSync } from "node:fs";
                   import { isBaseReportReusable } from "./scripts/drift-delta.ts";
                   const path = "./.base-artifact/drift-report.json";
                   let report = null;
                   try { report = JSON.parse(readFileSync(path, "utf-8")); } catch {}
-                  const conclusion = report?.conclusion ?? process.env.BASE_CONCLUSION ?? "";
+                  let conclusion = report?.conclusion ?? process.env.BASE_CONCLUSION ?? "";
+                  if (conclusion === "critical") {
+                    const { spawnSync } = await import("node:child_process");
+                    const result = spawnSync(process.execPath, ["--import", "tsx", process.env.NATIVE_GATE], {
+                      env: { ...process.env, NATIVE_DISPOSITION_MODE: "cache", NATIVE_REPORT_PATH: path,
+                        NATIVE_OBSERVATIONS_PATH: "./.base-artifact/drift-observations.json",
+                        NATIVE_EVIDENCE_DIR: "./.base-artifact/drift-evidence", NATIVE_RAW_EXIT_CODE: "2" },
+                      encoding: "utf8"
+                    });
+                    if (result.status !== 0) process.exit(1);
+                    const disposition = JSON.parse(result.stdout);
+                    if (disposition.effectiveExit !== 0) process.exit(1);
+                    conclusion = "success";
+                  }
                   const genAt = report?.generatedAt ? new Date(report.generatedAt) : null;
                   const now = new Date();
                   const sameUtcDay =
@@ -687,7 +940,7 @@ jobs:
                     genAt.getUTCMonth() === now.getUTCMonth() &&
                     genAt.getUTCDate() === now.getUTCDate();
                   process.exit(isBaseReportReusable(report, conclusion, sameUtcDay) ? 0 : 1);
-                ' BASE_CONCLUSION="$BASE_CONCLUSION"; then
+                '; then
                   cp ./.base-artifact/drift-report.json drift-report-base.json
                   REUSED=true
                   echo "base: reusing same-UTC-day main scheduled report (run $BASE_RUN_ID)"
@@ -700,7 +953,7 @@ jobs:
             echo "base: no reusable same-UTC-day main report — running fresh live base"
             # Check main out into a sibling worktree and run the collector
             # there, writing the base report back into the workspace root.
-            git worktree add ../base-main origin/main
+            npx tsx scripts/drift-agui-baseline.ts apply ../base-main "$AGUI_REPO_PATH"
             cd ../base-main
             pnpm install --frozen-lockfile
             # The collector exits 2 when it finds critical drift — that is the
@@ -726,13 +979,18 @@ jobs:
             BASE_EXIT=$?
             set -e
             cd "$GITHUB_WORKSPACE"
+            # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+            # AG-UI skipped, writes one too): out of credit and silence are named apart.
+            # An unreadable or missing report on 2/5/6 is said out loud.
+            if [ -f drift-report-base.json ] || [ "$BASE_EXIT" -eq 2 ] || [ "$BASE_EXIT" -eq 5 ] || [ "$BASE_EXIT" -eq 6 ]; then
+              if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (base)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on main" else "::warning title=live-timeout (base)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on main" end' \
+                drift-report-base.json; then
+                echo "::error title=drift-report-unreadable (base)::Could not read timeouts from drift-report-base.json (collector exit $BASE_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
+              fi
+            fi
             if [ "$BASE_EXIT" -eq 5 ]; then
               echo "::error::Base collector quarantined unparseable output (exit 5) — manual triage required"
               exit "$BASE_EXIT"
-            fi
-            if [ "$BASE_EXIT" -eq 6 ]; then
-              jq -r '.timeouts[]? | "::warning title=live-timeout (base)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); this surface was not graded on main"' \
-                drift-report-base.json || true
             fi
             if [ "$BASE_EXIT" -ne 0 ] && [ "$BASE_EXIT" -ne 2 ] && [ "$BASE_EXIT" -ne 6 ]; then
               echo "::error::Base collector faulted (exit $BASE_EXIT) — not a drift signal"
@@ -763,6 +1021,7 @@ jobs:
       - name: Head drift report — run live on PR ref
         env:
           LIVE_LEGS_RAN: ${{ steps.preflight.outputs.live_legs_ran }}
+          AIMOCK_NATIVE_PROVIDER_DRIFT: "1"
         run: |
           set -uo pipefail
           if [ "${LIVE_LEGS_RAN:-true}" != "true" ]; then
@@ -786,17 +1045,25 @@ jobs:
           #            delta keys, so the gate cannot blame the PR for it.
           #   exit 5 → quarantine (unparseable output) — genuine fault, FAIL.
           #   any other non-{0,2,6} → genuine collector fault, FAIL.
+          test "$(git -C "$AGUI_REPO_PATH" rev-parse HEAD)" = "$AGUI_UPSTREAM_SHA"
+          test -z "$(git -C "$AGUI_REPO_PATH" status --porcelain)"
           set +e
-          npx tsx scripts/drift-report-collector.ts --out drift-report-head.json
+          npx tsx scripts/drift-report-collector.ts --out drift-report-head.json \
+            --observations-out drift-observations-head.json
           HEAD_EXIT=$?
           set -e
+          # Ungraded legs whenever a report was written, whatever the exit (exit 1,
+          # AG-UI skipped, writes one too): out of credit and silence are named apart.
+          # An unreadable or missing report on 2/5/6 is said out loud.
+          if [ -f drift-report-head.json ] || [ "$HEAD_EXIT" -eq 2 ] || [ "$HEAD_EXIT" -eq 5 ] || [ "$HEAD_EXIT" -eq 6 ]; then
+            if ! jq -r '.timeouts[]? | if .providerQuotaExhausted then "::warning title=provider-quota-exhausted (head)::\(.testName) — provider account out of credit (\(.providerQuotaExhausted.code)), top up credit; not API drift, this surface was not graded on the PR ref" else "::warning title=live-timeout (head)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" elif .timeoutMs then "no messages in \(.timeoutMs)ms" else "no messages observed" end); this surface was not graded on the PR ref" end' \
+              drift-report-head.json; then
+              echo "::error title=drift-report-unreadable (head)::Could not read timeouts from drift-report-head.json (collector exit $HEAD_EXIT). Provider-quota and silent-leg annotations are missing, not zero; see the jq error above."
+            fi
+          fi
           if [ "$HEAD_EXIT" -eq 5 ]; then
             echo "::error::Head collector quarantined unparseable output (exit 5) — manual triage required"
             exit "$HEAD_EXIT"
-          fi
-          if [ "$HEAD_EXIT" -eq 6 ]; then
-            jq -r '.timeouts[]? | "::warning title=live-timeout (head)::\(.testName) — \(if .serverClose then "session closed by the server (code \(.serverClose.code))" else "no messages in \(.timeoutMs)ms" end); this surface was not graded on the PR ref"' \
-              drift-report-head.json || true
           fi
           if [ "$HEAD_EXIT" -ne 0 ] && [ "$HEAD_EXIT" -ne 2 ] && [ "$HEAD_EXIT" -ne 6 ]; then
             echo "::error::Head collector faulted (exit $HEAD_EXIT) — not a drift signal"
@@ -806,7 +1073,7 @@ jobs:
 
       - name: Upload base drift report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-report-base
           path: drift-report-base.json
@@ -815,10 +1082,21 @@ jobs:
 
       - name: Upload head drift report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-report-head
-          path: drift-report-head.json
+          path: |
+            drift-report-head.json
+            drift-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload head status and body observations
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: drift-observations-head
+          path: drift-observations-head.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -864,15 +1142,277 @@ jobs:
           DELTA_FILE="$GITHUB_WORKSPACE/.drift-delta-gate.mts"
           trap 'rm -f "$DELTA_FILE"' EXIT
           cat > "$DELTA_FILE" <<'DELTAGATE'
-          import { readFileSync, appendFileSync } from "node:fs";
+          import { readFileSync, appendFileSync, readdirSync, writeFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+          import { fileURLToPath } from "node:url";
+          import { retryUntilStable, DEFAULT_MAX_ATTEMPTS, DEFAULT_BACKOFF_MS } from "./scripts/drift-retry.js";
           import { computeDelta } from "./scripts/drift-delta.js";
           import type { DeltaKey } from "./scripts/drift-delta.js";
 
+          import { join } from "node:path";
+          import { isDeepStrictEqual } from "node:util";
+          import { nativeResponseDiffs } from "./src/__tests__/drift/sdk-shapes.js";
+          import type { ObservedResponse } from "./src/__tests__/drift/live-observations.js";
+
           const read = (p: string) => JSON.parse(readFileSync(p, "utf-8"));
+
+          const object = (value: unknown): Record<string, unknown> => {
+            if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native artifact object");
+            return value as Record<string, unknown>;
+          };
+          const observed = (value: unknown): ObservedResponse => {
+            const row = object(value);
+            if (!Number.isInteger(row.status) || !("body" in row)) throw new Error("Invalid native response receipt");
+            return { status: row.status as number, body: row.body as ObservedResponse["body"] };
+          };
+          const nativeError = (response: ObservedResponse) => {
+            const body = object(response.body);
+            const error = object(body.error);
+            if (response.status !== 400 || body.type !== "error" || error.type !== "invalid_request_error" ||
+                error.message !== "anthropic-version: header is required" ||
+                !isDeepStrictEqual(Object.keys(error).sort(), ["message", "type"]) ||
+                !isDeepStrictEqual(Object.keys(body).filter((key) => key !== "request_id").sort(), ["error", "type"]) ||
+                ("request_id" in body && typeof body.request_id !== "string")) throw new Error("Unexpected vendor missing-version response");
+          };
+          const requiredLocalNativeStrings = (expected: ObservedResponse, actual: ObservedResponse) => {
+            const expectedBody = object(expected.body);
+            const body = object(actual.body);
+            const error = object(body.error);
+            if (typeof error.message !== "string" ||
+                ((typeof expectedBody.request_id === "string" || "request_id" in body) && typeof body.request_id !== "string"))
+              throw new Error("Required local native string field is missing or has a non-string value");
+          };
+          const normalizeDiff = (value: unknown) => {
+            const diff = object(value);
+            if (Object.keys(diff).some((key) => !["severity", "issue", "path", "expected", "real", "mock", "id"].includes(key)) ||
+                ("id" in diff && diff.id !== diff.path)) throw new Error("Unexpected native diff metadata");
+            return JSON.stringify([diff.severity, diff.issue, diff.path, diff.expected, diff.real, diff.mock]);
+          };
+          const classifyNative = (reportPath: string, observationPath: string, evidenceDir: string,
+              options: { allowLegacyCursorPolicy?: boolean } = {}) => {
+            const report = object(read(reportPath));
+            const artifact = object(read(observationPath));
+            if (typeof report.generatedAt !== "string" || report.generatedAt !== artifact.generatedAt || !Array.isArray(artifact.observations) || !Array.isArray(report.entries))
+              throw new Error("Unbound native report/observations");
+            const invocations = readdirSync(evidenceDir).filter((name) => name.endsWith(".json")).map((name) => object(read(join(evidenceDir, name))))
+              .filter((value) => value.schemaVersion === 1 && typeof value.invocationId === "string")
+              .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+            const invocation = invocations.at(-1);
+            if (!invocation || typeof invocation.timestamp !== "string" || invocation.timestamp > report.generatedAt ||
+                invocations.filter((value) => value.timestamp === invocation.timestamp).length !== 1) throw new Error("Ambiguous final collector invocation");
+            if (process.env.BASE_RUN_ID && String(invocation.githubRunId) !== process.env.BASE_RUN_ID) throw new Error("Cached invocation belongs to another run");
+            const drift = object(invocation.drift);
+            const agui = object(invocation.agui);
+            if (drift.availability !== "available" || agui.availability !== "available" || agui.exitCode !== 0 ||
+                !Array.isArray(drift.assertions)) throw new Error("Incomplete native/AG-UI invocation");
+            const rows = artifact.observations.map(object);
+            const receipt = (id: string, surface: string) => {
+              const matches = rows.filter((row) => row.caseId === id && row.surface === surface);
+              if (matches.length !== 1 || rows.filter((row) => row.caseId === id).length !== 1) throw new Error(`Missing/duplicate native receipt ${id}`);
+              return { expected: observed(matches[0].expected), actual: observed(matches[0].actual) };
+            };
+            const enforced = [
+              ["anthropic-messages-missing-version-enforce", "anthropic-native-errors", "Anthropic vendor enforced missing-version /v1/messages comparison"],
+              ["anthropic-count-missing-version-enforce", "anthropic-native-errors", "Anthropic vendor enforced missing-version /v1/messages/count_tokens comparison"],
+              ["anthropic-models-missing-version-enforce", "anthropic-catalog", "Anthropic catalog vendor enforced missing-version /v1/models comparison"],
+              ["anthropic-model-detail-missing-version-enforce", "anthropic-catalog", "Anthropic catalog vendor enforced missing-version /v1/models/:model comparison"]
+            ];
+            for (const [id, surface, title] of enforced) {
+              const row = receipt(`vendor:${id}`, surface);
+              nativeError(row.expected);
+              requiredLocalNativeStrings(row.expected, row.actual);
+              const assertions = drift.assertions.map(object).filter((value) => value.title === title);
+              if (nativeResponseDiffs(row.expected, row.actual).length !== 0 || assertions.length !== 1 || assertions[0].status !== "passed")
+                throw new Error(`Enforced native comparison did not pass: ${id}`);
+            }
+            const row = receipt("vendor:anthropic-missing-version", "anthropic-native-errors");
+            nativeError(row.expected);
+            if (row.actual.status !== 200 || !isDeepStrictEqual(row.actual.body, { input_tokens: 1 })) throw new Error("Unexpected default-policy response");
+            const entries = report.entries.map(object);
+            const intentional = entries.filter((entry) => entry.provider === "Anthropic native authentication and version" && entry.scenario === "intentional default divergence");
+            if (intentional.length !== 1 || intentional[0].builderFile !== "src/response/errors.ts" ||
+                !isDeepStrictEqual(intentional[0].builderFunctions, ["renderError"]) || !Array.isArray(intentional[0].diffs)) throw new Error("Missing/ambiguous intentional native report entry");
+            const expectedDiffs = nativeResponseDiffs(row.expected, row.actual).map(normalizeDiff).sort();
+            if (!isDeepStrictEqual(intentional[0].diffs.map(normalizeDiff).sort(), expectedDiffs)) throw new Error("Intentional entry does not match complete received diffs");
+            const defaultAssertions = drift.assertions.map(object).filter((value) => value.title === "Anthropic vendor missing-version (intentional default divergence) comparison");
+            if (defaultAssertions.length !== 1 || defaultAssertions[0].status !== "failed") throw new Error("Intentional comparison invocation mismatch");
+            const validatedEntries = [intentional[0]];
+            const policyAssertions = drift.assertions.map(object);
+            const assertion = (title: string, status: "passed" | "failed", ancestor: string) => {
+              const matches = policyAssertions.filter((value) => value.title === title &&
+                isDeepStrictEqual(value.ancestors, [ancestor]));
+              if (matches.length !== 1 || matches[0].status !== status ||
+                  object(matches[0].consoleContext).availability !== "available")
+                throw new Error(`Unbound retained-policy assertion: ${title}`);
+            };
+            const exactKeys = (value: Record<string, unknown>, keys: string[]) =>
+              isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
+            const anthropicError = (response: ObservedResponse, status: number, type: string, message: string) => {
+              const body = object(response.body);
+              const error = object(body.error);
+              if (response.status !== status || body.type !== "error" || error.type !== type ||
+                  error.message !== message || typeof body.request_id !== "string" ||
+                  !exactKeys(body, ["type", "error", "request_id"]) || !exactKeys(error, ["type", "message"]))
+                throw new Error("Unexpected retained-policy Anthropic response");
+            };
+            const localContract = (id: string, surface: string, title: string, ancestor: string, expected: ObservedResponse) => {
+              const local = receipt(id, surface);
+              if (!isDeepStrictEqual(local.expected, expected) || !isDeepStrictEqual(local.actual, expected))
+                throw new Error(`Retained local contract changed: ${id}`);
+              assertion(title, "passed", ancestor);
+            };
+            const retain = (provider: string, scenario: string, builderFile: string, builderFunctions: string[],
+                pair: { expected: ObservedResponse; actual: ObservedResponse }, local: ObservedResponse) => {
+              const matches = entries.filter((entry) => entry.provider === provider && entry.scenario === scenario);
+              if (matches.length !== 1 || matches[0].builderFile !== builderFile ||
+                  !isDeepStrictEqual(matches[0].builderFunctions, builderFunctions) || !Array.isArray(matches[0].diffs) ||
+                  !isDeepStrictEqual(pair.actual, local)) throw new Error(`Unexpected retained-policy entry: ${scenario}`);
+              const receivedDiffs = nativeResponseDiffs(pair.expected, pair.actual).map(normalizeDiff).sort();
+              if (receivedDiffs.length === 0 || !isDeepStrictEqual(matches[0].diffs.map(normalizeDiff).sort(), receivedDiffs))
+                throw new Error(`Retained-policy entry differs from complete received diffs: ${scenario}`);
+              validatedEntries.push(matches[0]);
+            };
+            // Approved exact inbound auth contracts intentionally differ from vendor gateways.
+            const auth = receipt("vendor:anthropic-auth", "anthropic-native-errors");
+            anthropicError(auth.expected, 401, "authentication_error", "x-api-key header is required");
+            const anthropicLocal = { status: 401, body: { type: "error", error: { type: "authentication_error", message: "Invalid API key" } } };
+            assertion("Anthropic vendor auth received status/body (evidence only)", "passed", "native provider Anthropic vendor errors");
+            assertion("Anthropic vendor auth comparison", "failed", "native provider Anthropic vendor errors");
+            localContract("local:anthropic-count-auth", "anthropic-native-errors", "local auth /v1/messages/count_tokens",
+              "native provider Anthropic auth and missing-version local contracts", anthropicLocal);
+            retain("Anthropic native authentication and version", "Anthropic vendor auth", "src/response/errors.ts", ["renderError"], auth, anthropicLocal);
+
+            const gemini = receipt("vendor:gemini-auth", "gemini-native-auth");
+            // Google's gateway alternates between these two exact unauthenticated
+            // 403 bodies (both seen in live runs since 2026-11-09). Anything else fails.
+            const geminiGateway: ObservedResponse[] = [
+              { status: 403, body: { error: { code: 403, status: "PERMISSION_DENIED",
+                message: "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API." } } },
+              { status: 403, body: { error: { code: 403, status: "PERMISSION_DENIED", message: "Permission denied on the service.",
+                details: [
+                  { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_DENIED", domain: "googleapis.com",
+                    metadata: { service: "generativelanguage.googleapis.com" } },
+                  { "@type": "type.googleapis.com/google.rpc.LocalizedMessage", locale: "en-US", message: "Permission denied on the service." }
+                ] } } }
+            ];
+            if (!geminiGateway.some((shape) => isDeepStrictEqual(gemini.expected, shape)))
+              throw new Error("Unexpected retained-policy Gemini gateway response");
+            const geminiLocal = { status: 401, body: { error: { code: 401, message: "Invalid API key", status: "UNAUTHENTICATED" } } };
+            assertion("vendor unauthenticated received status/body (evidence only)", "passed", "native provider Gemini vendor auth observation");
+            assertion("vendor unauthenticated comparison", "failed", "native provider Gemini vendor auth observation");
+            localContract("local:gemini-count-auth", "gemini-native-auth", "local auth /v1beta/models/gemini-test:countTokens",
+              "native provider Gemini auth local contracts", geminiLocal);
+            retain("Gemini native authentication", "inbound policy divergence", "src/response/errors.ts", ["renderError"], gemini, geminiLocal);
+
+            // Current cursors match native 400 errors. Only cached BASE receipts may
+            // retain the old exact empty-page policy from before this fix.
+            const emptyPage = { status: 200, body: { data: [], has_more: false, first_id: null, last_id: null } };
+            for (const direction of ["after", "before"]) {
+              const id = `anthropic-${direction}-unknown`;
+              const cursor = receipt(`vendor:${id}`, "anthropic-catalog");
+              anthropicError(cursor.expected, 400, "invalid_request_error", "Model with id aimock-nonexistent-model not found");
+              assertion(`${id} received status/body (evidence only)`, "passed", "native provider Anthropic catalog vendor observations");
+              const legacy = options.allowLegacyCursorPolicy === true && isDeepStrictEqual(cursor.actual, emptyPage);
+              const local = legacy ? emptyPage : { status: 400, body: { type: "error", error: {
+                type: "invalid_request_error", message: "Model with id aimock-nonexistent-model not found"
+              } } };
+              assertion(`${id} comparison`, legacy ? "failed" : "passed", "native provider Anthropic catalog vendor observations");
+              localContract(`local:${id}`, "anthropic-catalog", `'${id}'`, "native provider catalog local contracts", local);
+              if (!legacy) {
+                if (!isDeepStrictEqual(cursor.actual, local))
+                  throw new Error(`Unexpected native cursor response: ${id}`);
+                // Catalog errors omit the vendor request_id. Bind that one known
+                // warning, including its full metadata; no other diff is allowed.
+                const expectedWarning = { severity: "warning", issue: "PROVIDER ADDED FIELD — in real API but not in SDK or mock",
+                  path: "request_id", expected: "<absent>", real: "string", mock: "<absent>" };
+                const received = nativeResponseDiffs(cursor.expected, cursor.actual).map(normalizeDiff);
+                if (!isDeepStrictEqual(received, [normalizeDiff(expectedWarning)]))
+                  throw new Error(`Unexpected native cursor differences: ${id}`);
+                // Passing comparisons do not emit report entries. An added entry
+                // would be unbound evidence, even if its warning looks familiar.
+                if (entries.some((entry) => entry.provider === "Anthropic native catalog" &&
+                    entry.scenario === `Native catalog comparison ${id}`))
+                  throw new Error(`Unexpected native cursor report entry: ${id}`);
+              } else {
+                retain("Anthropic native catalog", `Native catalog comparison ${id}`, "src/response/catalog/anthropic-page.ts",
+                  ["anthropicPage", "renderAnthropicModels"], cursor, local);
+              }
+            }
+            const policyKeys = new Set(validatedEntries.flatMap((entry) => (entry.diffs as unknown[]).map((value) =>
+              JSON.stringify([entry.provider, entry.scenario, String(object(value).id ?? object(value).path)]))));
+            const hasOtherCritical = entries.filter((entry) => !validatedEntries.includes(entry)).some((entry) => Array.isArray(entry.diffs) && entry.diffs.some((diff) => object(diff).severity === "critical"));
+            const quarantineCount = Array.isArray(report.quarantine) ? report.quarantine.length : 0;
+            const timeoutCount = Array.isArray(report.timeouts) ? report.timeouts.length : 0;
+            const keys = new Set((intentional[0].diffs as unknown[]).map((value) => String(object(value).id ?? object(value).path)));
+            return { effectiveExit: hasOtherCritical ? 2 : quarantineCount > 0 ? 5 : timeoutCount > 0 ? 6 : 0, invocationId: invocation.invocationId, keys, policyKeys };
+          };
+          const mode = process.env.NATIVE_DISPOSITION_MODE ?? "delta";
+          if (mode === "scheduled-retry") {
+            const result = retryUntilStable({
+              maxAttempts: DEFAULT_MAX_ATTEMPTS,
+              backoffMs: DEFAULT_BACKOFF_MS,
+              runCollector: () => {
+                const collector = spawnSync(process.execPath,
+                  ["--import", "tsx", "scripts/drift-report-collector.ts"],
+                  { stdio: "inherit" });
+                const rawExit = collector.error ? 1 : collector.status ?? 1;
+                const graded = spawnSync(process.execPath,
+                  ["--import", "tsx", fileURLToPath(import.meta.url)], {
+                    env: { ...process.env, NATIVE_DISPOSITION_MODE: "scheduled",
+                      NATIVE_RAW_EXIT_CODE: String(rawExit) },
+                    encoding: "utf8"
+                  });
+                if (graded.stderr) process.stderr.write(graded.stderr);
+                if (graded.error || graded.status !== 0) {
+                  console.error("[drift-retry] Native disposition process failed.");
+                  return 1;
+                }
+                const disposition = object(JSON.parse(graded.stdout));
+                const effectiveExit = disposition.effectiveExit;
+                if (typeof effectiveExit !== "number" || !Number.isInteger(effectiveExit))
+                  throw new Error("Native disposition exit is unavailable");
+                writeFileSync(".native-policy-result.json", graded.stdout);
+                console.log(`[drift-retry] Collector raw exit ${rawExit}; ` +
+                  `strict native effective exit ${effectiveExit}.`);
+                return effectiveExit;
+              },
+              sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+              log: (message) => console.log(`[drift-retry] ${message}`)
+            });
+            if (result.exitCode === 2 && process.env.GITHUB_OUTPUT)
+              appendFileSync(process.env.GITHUB_OUTPUT,
+                `drift_runs=${result.criticalRuns}\n`);
+            process.exit(result.exitCode);
+          }
+          if (mode !== "delta") {
+            try {
+              const disposition = classifyNative(process.env.NATIVE_REPORT_PATH ?? "drift-report.json",
+                process.env.NATIVE_OBSERVATIONS_PATH ?? "drift-observations.json", process.env.NATIVE_EVIDENCE_DIR ?? "drift-evidence",
+                { allowLegacyCursorPolicy: mode === "cache" });
+              const rawExit = Number(process.env.NATIVE_RAW_EXIT_CODE);
+              const effectiveExit = rawExit === 2 ? disposition.effectiveExit : rawExit;
+              console.log(JSON.stringify({ rawExit, effectiveExit, invocationId: disposition.invocationId, policy: "validated documented native policy differences" }));
+              process.exit(mode === "cache" && effectiveExit !== 0 ? 1 : 0);
+            } catch (error) {
+              console.error(`Native disposition unavailable: ${String(error)}`);
+              if (mode === "cache") process.exit(1);
+              const rawExit = Number(process.env.NATIVE_RAW_EXIT_CODE);
+              console.log(JSON.stringify({ rawExit, effectiveExit: [1, 5, 6].includes(rawExit) ? rawExit : 1 }));
+              process.exit(0);
+            }
+          }
           const base = read("drift-report-base.json");
           const head = read("drift-report-head.json");
 
-          const { block, advisory, fixed } = computeDelta(base, head);
+          const { block: originalBlock, advisory, fixed } = computeDelta(base, head);
+          let block = originalBlock;
+          if (process.env.ANTHROPIC_API_KEY) {
+            const native = classifyNative("drift-report-head.json", "drift-observations-head.json", process.env.NATIVE_EVIDENCE_DIR ?? "drift-evidence");
+            const intentional = block.filter((key) => native.policyKeys.has(JSON.stringify([key.provider, key.scenario, key.id])));
+            block = block.filter((key) => !intentional.includes(key));
+            advisory.push(...intentional);
+            console.log(`::notice title=intentional native policy::${intentional.length} validated documented-policy keys retained in raw artifacts`);
+          }
           const fmt = (k: DeltaKey) =>
             `${k.provider} ${k.id}${k.class ? ` [${k.class}]` : ""}`;
 
@@ -880,18 +1420,18 @@ jobs:
           summary.push("## Drift delta");
           summary.push("");
           summary.push(`- block (new-in-head): ${block.length}`);
-          summary.push(`- advisory (base-present): ${advisory.length}`);
+          summary.push(`- advisory (base-present or validated documented policy): ${advisory.length}`);
           summary.push(`- fixed (gone in head): ${fixed.length}`);
 
           // Advisory: pre-existing / environmental drift. Surface it as a
           // NEUTRAL annotation (::notice::) and in the summary, but do NOT fail
           // the check on it — that drift is the daily main job's concern.
           for (const k of advisory) {
-            console.log(`::notice title=drift-advisory (pre-existing)::${fmt(k)}`);
+            console.log(`::notice title=drift-advisory (base-present or validated documented policy)::${fmt(k)}`);
           }
           if (advisory.length > 0) {
             summary.push("");
-            summary.push("### Advisory (pre-existing on main - not blamed on this PR)");
+            summary.push("### Advisory (base-present or validated documented policy)");
             for (const k of advisory) summary.push(`- ${fmt(k)}`);
           }
 
@@ -919,7 +1459,7 @@ jobs:
           }
           console.log(
             advisory.length > 0
-              ? `Drift gate PASSED: ${advisory.length} advisory (pre-existing) finding(s) surfaced, none new-in-head.`
+              ? `Drift gate PASSED: ${advisory.length} advisory (base-present or validated documented policy) finding(s) surfaced, none blocking.`
               : "Drift gate PASSED: no new-in-head drift.",
           );
           DELTAGATE

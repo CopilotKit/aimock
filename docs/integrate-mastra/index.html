@@ -158,6 +158,31 @@
           combined itinerary. See <a href="/fixtures">Fixtures</a> for the full matching syntax.
         </p>
 
+        <h2 id="tool-mocks">aimock fakes vs Mastra tool mocks</h2>
+        <div class="info-box">
+          <p>
+            Mastra and aimock both let a test script what tools return. They work at different
+            layers and fit together.
+          </p>
+          <p>
+            <strong>Mastra Experiment Tool Mocks</strong> run inside Mastra. Mastra documents them
+            for Mastra agent targets. Because a mocked call returns before the tool runs, they also
+            cover tools that run in-process and never touch the network. Mastra can derive mocks
+            from a trace.
+          </p>
+          <p>
+            <strong>aimock MCP fakes</strong> answer MCP tool calls at the wire, so they work with
+            any agent framework or language that calls MCP tools over Streamable HTTP, Mastra
+            included. They live in fixture files next to the LLM turns of the same scenario. They
+            cannot see in-process tools.
+          </p>
+          <p>
+            Use Mastra tool mocks for in-process tools inside Mastra experiments. Use aimock fakes
+            for MCP tools, in any framework. See
+            <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+          </p>
+        </div>
+
         <h2>AG-UI Frontend Testing</h2>
         <p>
           When using Mastra with CopilotKit, the frontend receives AG-UI event streams. Use

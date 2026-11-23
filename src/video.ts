@@ -3,20 +3,21 @@ import type { ChatCompletionRequest, Fixture, HandlerDefaults, VideoResponse } f
 import {
   isVideoResponse,
   isErrorResponse,
+  isJsonObject,
   serializeErrorResponse,
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos, chaosIdentity, prepareChaos } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { extractBoundary, extractFormField } from "./transcription.js";
 
@@ -161,16 +162,37 @@ export async function handleVideoCreate(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          error: {
-            message: `Malformed JSON: ${detail}`,
-            type: "invalid_request_error",
-            code: "invalid_json",
-          },
-        }),
+        renderError("openai", "validation", {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        }).body,
       );
       return;
     }
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `videoReq.prompt` throws a TypeError that
+  // surfaces as a 500 instead of a 400. The multipart branch above builds its
+  // own object and needs no guard.
+  if (!isJsonObject(videoReq)) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
   }
 
   if (!videoReq.prompt) {
@@ -184,9 +206,40 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: { message: "Missing required parameter: 'prompt'", type: "invalid_request_error" },
-      }),
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'prompt'",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  const prompt = videoReq.prompt;
+  const validParts =
+    Array.isArray(prompt) &&
+    prompt.length > 0 &&
+    prompt.every(
+      (part: unknown) =>
+        isJsonObject(part) &&
+        typeof part.type === "string" &&
+        (!("text" in part) || typeof part.text === "string"),
+    );
+  if (typeof prompt !== "string" && !validParts) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message:
+          "Invalid parameter: 'prompt' must be a string or a non-empty array of content parts",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -213,24 +266,25 @@ export async function handleVideoCreate(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
+    if (fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -247,13 +301,11 @@ export async function handleVideoCreate(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -295,13 +347,11 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -334,9 +384,10 @@ export async function handleVideoCreate(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not a video type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not a video type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -365,7 +416,7 @@ export async function handleVideoCreate(
   }
 }
 
-export function handleVideoStatus(
+export async function handleVideoStatus(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   videoId: string,
@@ -373,24 +424,23 @@ export function handleVideoStatus(
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
   videoStates: VideoStateMap,
-): void {
+): Promise<void> {
   setCorsHeaders(res);
   const path = req.url ?? `/v1/videos/${videoId}`;
   const method = req.method ?? "GET";
 
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       null,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: null },
       "internal",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req),
     )
   )
     return;
@@ -410,7 +460,10 @@ export function handleVideoStatus(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({ error: { message: `Video ${videoId} not found`, type: "not_found" } }),
+      renderError("openai", "route-failure", {
+        message: `Video ${videoId} not found`,
+        type: "not_found",
+      }).body,
     );
     return;
   }

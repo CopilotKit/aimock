@@ -17,6 +17,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { isKnownVoiceModelFamily } from "./drift/voice-models.js";
+import { excludeFamilies } from "./drift/model-registry.js";
+import { unclassifiedFamilies } from "./drift/text-drift.js";
 import { formatDriftReport } from "./drift/schema.js";
 import type { ShapeDiff } from "./drift/schema.js";
 import {
@@ -26,6 +29,7 @@ import {
   extractScenario,
   parseKnownModelsCanary,
   collectDriftEntries,
+  collectUnverifiedSurfaces,
   collectAgUiDriftEntries,
   runAgUiVitest,
   classifyAgUiCheckout,
@@ -57,11 +61,1880 @@ import {
   mkdirSync,
   rmSync,
   writeFileSync,
+  symlinkSync,
+  statSync,
+  lstatSync,
+  readlinkSync,
+  chmodSync,
+  linkSync,
+  openSync,
+  closeSync,
 } from "node:fs";
+import { execFile } from "node:child_process";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { isBaseReportReusable, computeDelta } from "../../scripts/drift-delta.js";
 import type { DriftReport } from "../../scripts/drift-types.js";
+
+// Exercise the real CLI and installed Vitest reporter, without provider credentials.
+async function withCollectorFixture(
+  mode:
+    | "console-overflow"
+    | "mixed"
+    | "unknown-surface"
+    | "secondary-malformed"
+    | "write-failure"
+    | "report-write-failure"
+    | "console-context"
+    | "bedrock-markers"
+    | "vertex-markers"
+    | "cohere-markers"
+    | "anthropic-markers"
+    | "gemini-markers"
+    | "realtime-markers"
+    | "interactions-markers"
+    | "ollama-markers"
+    | "responses-markers",
+  check: (fixture: {
+    directory: string;
+    invoke: (args?: readonly string[]) => Promise<{
+      status: number | null;
+      error: Error | undefined;
+      stdout: string;
+      stderr: string;
+    }>;
+  }) => Promise<void>,
+) {
+  const directory = mkdtempSync(join(tmpdir(), "aimock-collector-evidence-"));
+  const root = resolve(import.meta.dirname, "../..");
+  const canonical = join(directory, "canonical/sdks/typescript/packages/core/src/generated");
+  const tests = join(directory, "src/__tests__/drift");
+  const critical = formatDriftReport(
+    "OpenAI Chat evidence fixture",
+    [
+      {
+        path: "fixture",
+        severity: "critical",
+        issue: "fixture mismatch",
+        expected: "a",
+        real: "b",
+        mock: "a",
+      },
+    ],
+    "openai-chat",
+  );
+  const failure =
+    mode === "unknown-surface"
+      ? critical.replace("Surface: openai-chat", "Surface: fixture-unknown")
+      : critical;
+  const environment: NodeJS.ProcessEnv = {};
+  for (const name of ["PATH", "HOME", "TMPDIR", "SystemRoot", "WINDIR"]) {
+    if (process.env[name]) environment[name] = process.env[name];
+  }
+  environment.AGUI_REPO_PATH = join(directory, "canonical");
+  environment.FIXTURE_SECRET = "fixture-secret-canary-spans-identity-boundary-731";
+  try {
+    mkdirSync(canonical, { recursive: true });
+    mkdirSync(tests, { recursive: true });
+    writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+    writeFileSync(join(canonical, "types.ts"), "export {};");
+    writeFileSync(join(canonical, "schemas.ts"), "export {};");
+    symlinkSync(join(root, "node_modules"), join(directory, "node_modules"), "dir");
+    writeFileSync(
+      join(directory, "vitest.config.drift.ts"),
+      `
+      import { defineConfig } from 'vitest/config';
+      import { writeSync } from 'node:fs';
+      // Reporter-boundary negative control, not a provider marker: an orphan
+      // task ID cannot acquire any assertion identity or native disposition.
+      if (${JSON.stringify(mode)} === 'console-context' && process.argv.some(a => a.endsWith('/drift-evidence-reporter.ts'))) {
+        try { writeSync(3, JSON.stringify({ kind: 'console', taskId: 'orphan-fixture-id', stream: 'stdout', content: JSON.stringify({ outcome: 'TARGET_COMPARED' }) }) + '\\n'); }
+        catch (error) { if (error.code !== 'EBADF') throw error; }
+      }
+      if (${JSON.stringify(mode)} === 'secondary-malformed' && process.argv.some(a => a.includes('src/__tests__/drift/agui-'))) {
+        process.stdout.write = () => true;
+        process.on('exit', () => writeSync(1, 'fixture malformed reporter output'));
+      }
+      export default defineConfig({ test: { include: ['src/__tests__/drift/*.ts'], maxWorkers: 1, minWorkers: 1, fileParallelism: false } });
+    `,
+    );
+    writeFileSync(
+      join(tests, "fixture.drift.ts"),
+      `
+      import { it, expect, describe } from 'vitest';
+      it('retained pass', () => expect(2 + 2).toBe(4));
+      it('Bearer fixture-bearer-canary', () => expect(true).toBe(true));
+      it('-----BEGIN PRIVATE KEY-----fixture-private-canary-----END PRIVATE KEY-----', () => expect(true).toBe(true));
+      it.skip('retained skip', () => expect(true).toBe(false));
+      it('retained unmatched failure', () => expect('actual').toBe('expected'));
+      it('retained critical', () => { throw new Error(${JSON.stringify(failure)}); });
+      describe('ancestor ' + process.env.FIXTURE_SECRET, () => {
+        it('x'.repeat(230) + process.env.FIXTURE_SECRET, () => {
+          console.log({ request: 'fixture-provider-body-912', raw: process.env.FIXTURE_SECRET });
+          throw new Error('fixture-output-text-613 ' + process.env.FIXTURE_SECRET);
+        });
+      });
+    `,
+    );
+    writeFileSync(
+      join(tests, "agui-fixture.drift.ts"),
+      "import { it, expect } from 'vitest'; it('retained AG-UI pass', () => expect(true).toBe(true));",
+    );
+    if (mode === "console-context") {
+      writeFileSync(
+        join(tests, "context.drift.ts"),
+        `
+        import { it, describe, beforeAll, expect } from 'vitest';
+        console.log(JSON.stringify({ scope: 'module', raw: process.env.FIXTURE_SECRET }));
+        describe('native suite', () => {
+          beforeAll(() => console.log(JSON.stringify({ scope: 'suite', outcome: 'TARGET_COMPARED' })));
+          it('native row', () => expect(true).toBe(true));
+        });
+        describe('local suite', () => {
+          it('local row', () => {
+            console.log('stdout | src/__tests__/drift/context.drift.ts > native suite > native row\\n' + JSON.stringify({ outcome: 'TARGET_COMPARED', source: 'native', raw: process.env.FIXTURE_SECRET }));
+            console.error(JSON.stringify({ request: 'fixture-provider-body-912', content: 'fixture-output-text-613' }));
+          });
+          it('duplicate', () => console.log(JSON.stringify({ outcome: 'NOT_TRIGGERED' })));
+          it('duplicate', () => console.log(JSON.stringify({ outcome: 'TARGET_COMPARED' })));
+          it('failed after console', () => { console.log(JSON.stringify({ outcome: 'TARGET_COMPARED' })); expect(true).toBe(false); });
+          it.skip('skipped native', () => console.log(JSON.stringify({ outcome: 'TARGET_COMPARED' })));
+        });
+      `,
+      );
+    }
+    if (mode === "bedrock-markers" || mode === "console-overflow") {
+      const markerFixture = `
+        import { it, describe, expect } from 'vitest';
+        const marker = (fault, stream, source, outcome) => ({ nativeComparison: {wire:'invoke',fault,stream},source,outcome,sends:1,requestedOutputTokens:32,request:'fixture-provider-body-912',raw:process.env.FIXTURE_SECRET });
+        describe('native AWS misbehavior', () => {
+          it('invoke K5 stream=false', () => console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))));
+          it('invoke K9 stream=false', () => console.log(JSON.stringify(marker('K9',false,'native','NOT_TRIGGERED'))));
+          it('converse K9 stream=false', () => console.error(JSON.stringify({...marker('K9',false,'native','TARGET_COMPARED'),nativeComparison:{wire:'converse',fault:'K9',stream:false}})));
+          it('invoke K5 stream=true', () => console.log(JSON.stringify(marker('K5',true,'native','UNKNOWN_OUTCOME'))));
+          it('invoke K9 stream=true', () => { console.log(JSON.stringify(marker('K9',true,'native','TARGET_COMPARED'))); expect(true).toBe(false); });
+          it('converse K5 stream=false', () => console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))));
+          it('converse K5 stream=true', () => console.log(JSON.stringify({...marker('K5',true,'native','TARGET_COMPARED'), nativeComparison:{wire:'converse',fault:'K5',stream:true},sends:-1})));
+        });
+        it('coordinator accounts eight cells and blocks a ninth send', () => console.log(JSON.stringify(marker('K9',false,'local','NOT_TRIGGERED'))));
+        it('wrong context', () => console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))));
+      `;
+      writeFileSync(join(tests, "bedrock-misbehavior-live.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "vertex-markers" || mode === "console-overflow") {
+      const markerFixture = `
+        import { it, describe, beforeAll, expect } from 'vitest';
+        const cells = ['k5-object','k5-stream','k9-object','k9-stream'];
+        const results = cells.map((cell,index) => ({cell,classification:['TARGET_COMPARED','NOT_TRIGGERED','FAILURE','UNATTEMPTED'][index],model:'fixture-model',mode:cell.endsWith('stream')?'stream':'object',rawBase64:process.env.FIXTURE_SECRET,chunks:['fixture-provider-body-912']}));
+        describe('Vertex native recurring modeled-contract observations', () => {
+          beforeAll(() => console.info(JSON.stringify({provider:'vertex',results,budget:{attempts:3},outerCollectorMaximum:{attempts:3,sends:12,requestedOutputTokens:480}})));
+          for (const [index,cell] of cells.entries()) it(cell+' records a target comparison or approved non-trigger',()=>expect(index).toBeLessThan(2));
+          it('unknown records a target comparison or approved non-trigger',()=>{});
+        });
+        describe('local replay', () => {
+          beforeAll(() => console.info(JSON.stringify({provider:'vertex',results,proof:'local'})));
+          it(cells[0]+' records a target comparison or approved non-trigger',()=>{});
+        });
+      `;
+      writeFileSync(join(tests, "vertex-misbehavior.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "cohere-markers" || mode === "console-overflow") {
+      const markerFixture = `
+        import { it, expect } from 'vitest';
+        const marker = {cohereK5:[{stream:false,classification:'NOT_TRIGGERED',finish:'COMPLETE',usage:{tokens:{inputTokens:1,outputTokens:1}}},{stream:true,classification:'TARGET',finish:'TOOL_CALL',usage:{tokens:{inputTokens:1,outputTokens:1}}}],raw:process.env.FIXTURE_SECRET,request:'fixture-provider-body-912'};
+        it('P1 Cohere native K5 object modeled and stream observed comparison',()=>{console.log(JSON.stringify(marker));expect(true).toBe(true);});
+        it('local replay',()=>console.log(JSON.stringify(marker)));
+      `;
+      writeFileSync(join(tests, "cohere.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "anthropic-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit = (k9) => {
+          console.log(JSON.stringify({k9,mode:'actual localhost modeled/native-unverified',raw:process.env.FIXTURE_SECRET}));
+          console.log(JSON.stringify({k9,mode:'live paid provider; no retries',completed:true,request:'fixture-provider-body-912',raw:process.env.FIXTURE_SECRET}));
+          console.log(JSON.stringify({k9,native:k9==='object'?'TARGET_COMPARED':'NOT_TRIGGERED',modeled:'native-unverified unless TARGET_COMPARED'}));
+        };
+        describe('Anthropic K9 modeled exhaustion drift',()=>{
+          for (const mode of ['object','stream']) it(mode+' modeled localhost and bounded native trigger',()=>{emit(mode);expect(true).toBe(true);});
+          it('unknown modeled localhost and bounded native trigger',()=>emit('object'));
+        });
+        it('local replay',()=>emit('object'));
+      `;
+      writeFileSync(join(tests, "anthropic.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "gemini-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit=(fault,stream)=>{
+          console.log(JSON.stringify({kind:'NATIVE_MODELED_COMPARISON',provider:'Gemini Developer API',model:'gemini-2.5-flash',fault,stream,status:200,request:'fixture-provider-body-912',raw:process.env.FIXTURE_SECRET}));
+          console.log(JSON.stringify({fault,stream,outcome:stream?'NOT_TRIGGERED':'NATIVE_TARGET_COMPARED',disclosure:'modeled contract'}));
+        };
+        describe('Gemini modeled K5/K9 recurring contracts',()=>{
+          for(const fault of ['stop-length-mid-tool','reasoning-only']) for(const stream of [false,true]) it('live Developer API bounded '+fault+' stream='+stream,()=>{emit(fault,stream);if(fault==='reasoning-only')expect(true).toBe(false);});
+          it('local SDK/wire reasoning-only stream=false remains strict',()=>emit('reasoning-only',false));
+        });
+        describe('Gemini modeled K5/K9 evidence reader',()=>{it('retains capture as NOT_TRIGGERED',()=>emit('reasoning-only',false));});
+      `;
+      writeFileSync(join(tests, "gemini.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "realtime-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit=()=>console.log('Realtime K5 native',JSON.stringify({model:'gpt-realtime-mini',max_output_tokens:32,disposition:'MATCH',events:[process.env.FIXTURE_SECRET],request:'fixture-provider-body-912'}));
+        describe('Realtime K5 modeled contract',()=>{
+          it('native K5 bounded modeled comparison',()=>{emit();expect(true).toBe(true);});
+          it('official GA SDK retains cut arguments at 0.5',emit);
+        });
+      `;
+      writeFileSync(join(tests, "ws-realtime.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "interactions-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit=()=>{
+          console.log(JSON.stringify({case:'K5 stream modeled/native-unverified',status:200,raw:process.env.FIXTURE_SECRET,journal:[]}));
+          console.log(JSON.stringify({case:'K5 stream',model:'gemini-2.5-flash',request:'fixture-provider-body-912',disposition:'TRIGGERED_MODELED_CONTRACT_MATCH',raw:process.env.FIXTURE_SECRET}));
+        };
+        describe('Gemini Interactions live modeled K5 stream',()=>{
+          it('records genuine non-triggers and rejects contradictory triggered contracts',()=>{emit();expect(true).toBe(true);});
+        });
+        describe('Gemini Interactions captured incomplete contracts',()=>{it('K5 stream matches actual localhost response',emit);});
+        describe('Gemini Interactions live incomplete contracts',()=>{it('K9 object matches native and localhost',()=>console.log(JSON.stringify({case:'K9 object',capture:'retained',status:200,raw:process.env.FIXTURE_SECRET})));});
+      `;
+      writeFileSync(join(tests, "gemini-interactions.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "ollama-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit=(mode)=>console.log(JSON.stringify({cell:'native '+mode,model:'fixture-model',request:'fixture-provider-body-912',attempts:1,wire:[{rawBase64:process.env.FIXTURE_SECRET}],preflight:[],sdkChunks:[{content:process.env.FIXTURE_SECRET}],usage:{eval_count:32},disposition:'TARGET_COMPARED'}));
+        describe('P1 Ollama K9 native',()=>{for(const mode of ['object','stream'])it(mode,()=>{emit(mode);if(mode==='stream')expect(true).toBe(false);});});
+        describe('captured Ollama replay',()=>{it('object',()=>emit('object'));});
+      `;
+      writeFileSync(join(tests, "ollama.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "responses-markers") {
+      const markerFixture = `
+        import {it,describe,expect} from 'vitest';
+        const emit=(kind)=>{
+          const types=['response.created','response.in_progress','response.output_item.added','response.output_item.done'];
+          const events=(kind==='K5'?types:Array(130).fill('response.reasoning_summary_text.delta')).map(type=>({type,id:process.env.FIXTURE_SECRET,arguments:'fixture-provider-body-912'}));
+          if(kind==='K9') events.push({type:process.env.FIXTURE_SECRET});
+          events.push({type:'response.incomplete',response:{status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[{text:process.env.FIXTURE_SECRET}]}});
+          console.log(JSON.stringify({kind,mode:'live WS decoded native events; not raw frames',request:'fixture-provider-body-912',events,disposition:'TARGET_COMPARED'}));
+        };
+        describe('OpenAI Responses WS exhaustion live drift',()=>{for(const kind of ['K5','K9'])it('WS '+kind+' native comparison',()=>{emit(kind);if(kind==='K9')expect(true).toBe(false);});});
+        describe('Responses WS exhaustion local contract',()=>{it('WS K5 native comparison',()=>emit('K5'));});
+      `;
+      writeFileSync(join(tests, "ws-responses.drift.ts"), markerFixture);
+      writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
+    }
+    if (mode === "write-failure") writeFileSync(join(directory, "drift-evidence"), "occupied");
+    await check({
+      directory,
+      invoke: (
+        args = [
+          "--out",
+          mode === "report-write-failure" ? directory : join(directory, "drift-report.json"),
+        ],
+      ) =>
+        new Promise((resolveChild) => {
+          execFile(
+            process.execPath,
+            [
+              join(root, "node_modules/tsx/dist/cli.mjs"),
+              join(root, "scripts/drift-report-collector.ts"),
+              ...args,
+            ],
+            {
+              cwd: directory,
+              env: environment,
+              encoding: "utf8",
+              timeout: 30_000,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+            (error, stdout, stderr) =>
+              resolveChild({
+                status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+                error: error && typeof error.code !== "number" ? error : undefined,
+                stdout,
+                stderr,
+              }),
+          );
+        }),
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+describe("collector invocation evidence", async () => {
+  it("rejects ASCII case aliases with a shared non-ASCII prefix", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "SharedPrefixAlias");
+      mkdirSync(parent);
+      const probe = join(parent, "é-case-probe");
+      const alternate = join(parent, "é-CASE-PROBE");
+      const descriptor = openSync(probe, "wx");
+      let aliases = false;
+      try {
+        const owned = statSync(probe);
+        const other = statSync(alternate, { throwIfNoEntry: false });
+        aliases = owned.dev === other?.dev && owned.ino === other?.ino;
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!aliases) context.skip("Shared-prefix control requires actual ASCII case aliases");
+      expect(readdirSync(parent)).toEqual([]);
+      const main = join(parent, "é-report.json");
+      const observations = join(parent, "é-REPORT.JSON");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      expect(existsSync(main)).toBe(false);
+      expect(existsSync(observations)).toBe(false);
+      expect(readdirSync(parent)).toEqual([]);
+    });
+  }, 30_000);
+
+  it("retains distinct ASCII artifact basenames at a UUID version position", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "UuidPosition");
+      mkdirSync(parent);
+      const probe = join(parent, "case-probe");
+      const alternateProbe = join(parent, "CASE-PROBE");
+      const descriptor = openSync(probe, "wx");
+      let caseSensitive = false;
+      try {
+        caseSensitive = !existsSync(alternateProbe);
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!caseSensitive) context.skip("Distinct ASCII outputs require a case-sensitive parent");
+      expect(readdirSync(parent)).toEqual([]);
+      const main = join(parent, "000000000000e");
+      const observations = join(parent, "000000000000E");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const report = readFileSync(main, "utf8");
+      expect(JSON.parse(report)).toMatchObject({
+        conclusion: "critical",
+        entries: expect.any(Array),
+      });
+      expect(report).toContain("fixture mismatch");
+      expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        observations: expect.any(Array),
+      });
+      expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+      expect(readdirSync(parent).sort()).toEqual(["000000000000E", "000000000000e"]);
+    });
+  }, 30_000);
+
+  it.for([
+    { existing: true, long: false },
+    { existing: false, long: false },
+    { existing: true, long: true },
+    { existing: false, long: true },
+  ])(
+    "rejects case-aliased artifact basenames: existing=$existing long=$long",
+    { timeout: 30_000 },
+    async ({ existing, long }, context) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        const parent = join(directory, "LeafCaseAlias");
+        mkdirSync(parent);
+        const probe = join(parent, long ? `${"v".repeat(250)}.json` : "case-probe.json");
+        const alternateProbe = join(parent, long ? `${"V".repeat(250)}.JSON` : "CASE-PROBE.JSON");
+        const descriptor = openSync(probe, "wx");
+        let aliases = false;
+        try {
+          const original = statSync(probe);
+          const alternate = statSync(alternateProbe, { throwIfNoEntry: false });
+          aliases = original.dev === alternate?.dev && original.ino === alternate?.ino;
+        } finally {
+          try {
+            closeSync(descriptor);
+          } finally {
+            rmSync(probe);
+          }
+        }
+        if (!aliases) context.skip();
+        const main = join(parent, long ? `${"r".repeat(250)}.json` : "report.json");
+        const sidecar = join(parent, long ? `${"R".repeat(250)}.JSON` : "REPORT.JSON");
+        if (existing) writeFileSync(main, report);
+        expect(existsSync(main)).toBe(existing);
+        expect(existsSync(sidecar)).toBe(existing);
+        const child = await invoke(["--out", main, "--observations-out", sidecar]);
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+        expect(existsSync(main)).toBe(existing);
+        expect(existsSync(sidecar)).toBe(existing);
+        if (existing) expect(readFileSync(main, "utf8")).toBe(report);
+        expect(readdirSync(parent).sort()).toEqual(
+          existing ? [long ? `${"r".repeat(250)}.json` : "report.json"] : [],
+        );
+      });
+    },
+  );
+
+  it("preserves independent alternate probe symlinks for distinct case-sensitive outputs", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const parent = join(directory, "AlternateProbeSymlinks");
+      mkdirSync(parent);
+      const probe = join(parent, "case-capability");
+      const alternateProbe = join(parent, "CASE-CAPABILITY");
+      const descriptor = openSync(probe, "wx");
+      let caseSensitive = false;
+      try {
+        caseSensitive = lstatSync(alternateProbe, { throwIfNoEntry: false }) === undefined;
+      } finally {
+        try {
+          closeSync(descriptor);
+        } finally {
+          rmSync(probe);
+        }
+      }
+      if (!caseSensitive) context.skip("Alternate probe control requires case-sensitive storage");
+      const letters = Array.from({ length: 25 }, (_, index) => String.fromCharCode(98 + index));
+      const links = letters.map((letter) => {
+        const path = join(parent, letter);
+        symlinkSync(letter.toUpperCase(), path);
+        const info = lstatSync(path);
+        expect(info.isSymbolicLink()).toBe(true);
+        return { path, dev: info.dev, ino: info.ino, target: readlinkSync(path) };
+      });
+      const main = join(parent, "A");
+      const observations = join(parent, "a");
+      const child = await invoke(["--out", main, "--observations-out", observations]);
+      for (const link of links) {
+        const info = lstatSync(link.path);
+        expect(info.isSymbolicLink()).toBe(true);
+        expect([info.dev, info.ino, readlinkSync(link.path)]).toEqual([
+          link.dev,
+          link.ino,
+          link.target,
+        ]);
+      }
+      expect(
+        readdirSync(parent)
+          .filter((name) => name !== "A" && name !== "a")
+          .sort(),
+      ).toEqual(letters);
+      expect(child.error).toBeUndefined();
+      expect(child.stderr).not.toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.status, child.stderr).toBe(2);
+      expect(JSON.parse(readFileSync(main, "utf8"))).toMatchObject({
+        conclusion: "critical",
+        entries: expect.any(Array),
+      });
+      expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        observations: expect.any(Array),
+      });
+      expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+    });
+  }, 30_000);
+
+  it("rejects case-aliased parents with the same artifact basename", async (context) => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const control = await invoke();
+      expect(control.error).toBeUndefined();
+      expect(control.status).toBe(2);
+      const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+      const parent = join(directory, "CaseAlias");
+      const alias = join(directory, "casealias");
+      mkdirSync(parent);
+      writeFileSync(join(parent, "report.json"), report);
+      if (!existsSync(alias)) context.skip();
+      const original = statSync(parent);
+      const alternate = statSync(alias);
+      if (original.dev !== alternate.dev || original.ino !== alternate.ino) context.skip();
+      const target = statSync(join(parent, "report.json"));
+      const aliasTarget = statSync(join(alias, "report.json"));
+      expect([aliasTarget.dev, aliasTarget.ino]).toEqual([target.dev, target.ino]);
+      expect(readFileSync(join(alias, "report.json"), "utf8")).toBe(report);
+      const child = await invoke([
+        "--out",
+        join(parent, "report.json"),
+        "--observations-out",
+        join(alias, "report.json"),
+      ]);
+      expect(readFileSync(join(parent, "report.json"), "utf8")).toBe(report);
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain(
+        "--out and --observations-out must resolve to different paths",
+      );
+      expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+    });
+  }, 30_000);
+
+  it.for(["nonlisting", "hardlinks"] as const)(
+    "retains ordinary distinct artifact destinations: %s",
+    { timeout: 30_000 },
+    async (mode, context) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        const outputs = join(directory, "outputs");
+        mkdirSync(outputs);
+        const main = join(outputs, "report.json");
+        const observations = join(outputs, "observations.json");
+        writeFileSync(main, report);
+        try {
+          if (mode === "hardlinks") {
+            linkSync(main, observations);
+            expect(statSync(observations).ino).toBe(statSync(main).ino);
+          } else {
+            const uid = process.getuid?.();
+            const euid = process.geteuid?.();
+            if (uid === undefined || euid === undefined || uid === 0 || euid === 0) {
+              context.skip("Nonlisting control requires available non-root UID/EUID APIs");
+            }
+            chmodSync(outputs, 0o300);
+          }
+          if (mode === "nonlisting") {
+            let listingDenied = false;
+            try {
+              readdirSync(outputs);
+            } catch (error) {
+              expect(error).toMatchObject({ code: "EACCES" });
+              listingDenied = true;
+            }
+            if (!listingDenied) {
+              context.skip("Nonlisting control requires enforced directory listing permissions");
+            }
+            const probe = join(outputs, "known-probe");
+            writeFileSync(probe, "lookup-write-unlink");
+            expect(readFileSync(probe, "utf8")).toBe("lookup-write-unlink");
+            rmSync(probe);
+            expect(existsSync(probe)).toBe(false);
+          }
+          const child = await invoke(["--out", main, "--observations-out", observations]);
+          expect(child.error).toBeUndefined();
+          expect(child.status).toBe(2);
+          expect(JSON.parse(readFileSync(main, "utf8"))).toMatchObject({
+            conclusion: "critical",
+            entries: expect.any(Array),
+          });
+          expect(JSON.parse(readFileSync(observations, "utf8"))).toMatchObject({
+            schemaVersion: 1,
+            observations: expect.any(Array),
+          });
+          expect(statSync(main).ino).not.toBe(statSync(observations).ino);
+        } finally {
+          if (mode === "nonlisting") chmodSync(outputs, 0o700);
+        }
+      });
+    },
+  );
+
+  it.each([
+    { link: "file", existing: true, startupFailure: false },
+    { link: "parent", existing: true, startupFailure: true },
+    { link: "parent", existing: false, startupFailure: false },
+  ])(
+    "rejects filesystem artifact aliases: $link existing=$existing startupFailure=$startupFailure",
+    async ({ link, existing, startupFailure }) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        expect(JSON.parse(report)).toMatchObject({
+          conclusion: "critical",
+          entries: expect.any(Array),
+        });
+        const destination = link === "file" ? "report.json" : "real/report.json";
+        const output = join(directory, destination);
+        if (link === "parent") mkdirSync(join(directory, "real"));
+        if (existing) writeFileSync(output, report);
+        symlinkSync(
+          link === "file" ? "report.json" : "real",
+          join(directory, link === "file" ? "report-link.json" : "alias"),
+        );
+        if (startupFailure) {
+          writeFileSync(
+            join(directory, "vitest.config.drift.ts"),
+            "this is not valid TypeScript configuration",
+          );
+        }
+        const child = await invoke([
+          "--out",
+          link === "file" ? "report-link.json" : destination,
+          "--observations-out",
+          link === "file" ? destination : "alias/report.json",
+        ]);
+        const after = existsSync(output) ? readFileSync(output, "utf8") : undefined;
+        expect(after, "artifact alias rejection must preserve the original destination").toBe(
+          existing ? report : undefined,
+        );
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      });
+    },
+    30_000,
+  );
+
+  it.each([
+    {
+      label: "default observation destination",
+      args: ["--out", "drift-observations.json"],
+      destination: "drift-observations.json",
+      unavailable: false,
+    },
+    {
+      label: "explicit identical destinations",
+      args: ["--out", "shape-report.json", "--observations-out", "shape-report.json"],
+      destination: "shape-report.json",
+      unavailable: false,
+    },
+    {
+      label: "normalized destinations with unavailable observation evidence",
+      args: ["--out", "shape-report.json", "--observations-out", "./shape-report.json"],
+      destination: "shape-report.json",
+      unavailable: true,
+    },
+  ])(
+    "rejects aliased artifact destinations: $label",
+    async ({ args, destination, unavailable }) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const control = await invoke();
+        expect(control.error).toBeUndefined();
+        expect(control.status).toBe(2);
+        const report = readFileSync(join(directory, "drift-report.json"), "utf8");
+        expect(JSON.parse(report)).toMatchObject({
+          conclusion: "critical",
+          entries: expect.any(Array),
+        });
+        expect(
+          JSON.parse(readFileSync(join(directory, "drift-observations.json"), "utf8")),
+        ).toMatchObject({
+          schemaVersion: 1,
+          observations: expect.any(Array),
+        });
+        const aliasedPath = join(directory, destination);
+        writeFileSync(aliasedPath, report);
+        if (unavailable) {
+          const config = join(directory, "vitest.config.drift.ts");
+          writeFileSync(config, readFileSync(config, "utf8") + "\nwriteSync(3, 'not json\\n');\n");
+        }
+        const child = await invoke(args);
+        const after = existsSync(aliasedPath) ? readFileSync(aliasedPath, "utf8") : undefined;
+        expect(after, "the actual ShapeDiff report must remain byte-identical").toBe(report);
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          "--out and --observations-out must resolve to different paths",
+        );
+        expect(child.stdout).not.toContain("Running HTTP API drift tests...");
+      });
+    },
+    30_000,
+  );
+
+  it.each(["test", "suite", "module"] as const)(
+    "isolates attributable console overflow at %s scope",
+    async (scope) => {
+      await withCollectorFixture("console-overflow", async ({ directory, invoke }) => {
+        const file =
+          scope === "test"
+            ? "bedrock-misbehavior-live"
+            : scope === "suite"
+              ? "vertex-misbehavior"
+              : "cohere";
+        const fixture = join(directory, `src/__tests__/drift/${file}.drift.ts`);
+        const before = readFileSync(fixture, "utf8");
+        const trigger =
+          scope === "test"
+            ? "it('invoke K5 stream=false', () => console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))));"
+            : scope === "suite"
+              ? "beforeAll(() => console.info("
+              : "const marker =";
+        expect(before).toContain(trigger);
+        writeFileSync(
+          fixture,
+          before.replace(
+            trigger,
+            scope === "test"
+              ? "it('invoke K5 stream=false', async () => { console.log('x'.repeat(262145)); await Promise.resolve(); console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))); });"
+              : scope === "suite"
+                ? "beforeAll(() => console.log('x'.repeat(262145))); beforeAll(() => console.info("
+                : "console.log('x'.repeat(262145)); const marker =",
+          ),
+        );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        for (const row of evidence.drift.assertions) {
+          const tainted =
+            row.file === `src/__tests__/drift/${file}.drift.ts` &&
+            (scope === "module" ||
+              (scope === "test"
+                ? row.title === "invoke K5 stream=false"
+                : row.ancestors[0] === "Vertex native recurring modeled-contract observations"));
+          expect(row.consoleContext.availability, `${row.file}: ${row.title}`).toBe(
+            tainted ? "unavailable" : "available",
+          );
+          if (tainted) {
+            expect(row.consoleContext.recordCount).toBe(0);
+            expect(row.observations).toBeUndefined();
+            expect(row.source).toBe("unknown");
+          }
+        }
+        // Vitest batches synchronous stdout: the yielded marker must survive separately.
+        if (scope === "test") expect(evidence.drift.unboundConsoleRecordCount).toBe(1);
+        if (scope === "suite")
+          expect(evidence.drift.consoleScopes).not.toContainEqual(
+            expect.objectContaining({
+              file: `src/__tests__/drift/${file}.drift.ts`,
+              title: "Vertex native recurring modeled-contract observations",
+            }),
+          );
+        expect(serialized).not.toContain("x".repeat(256));
+        expect(serialized).not.toContain("fixture-provider-body-912");
+      });
+    },
+    60_000,
+  );
+
+  it.each([
+    "missing-owner",
+    "duplicate-id",
+    "duplicate-owner",
+    "empty-id",
+    "non-string-id",
+    "invalid-bytes",
+    "missing-completion",
+    "duplicate-completion",
+    "malformed",
+    "truncated",
+    "oversized-identity",
+    "bounded-marker",
+    "unbounded-marker",
+    "unattributed-overflow",
+  ])(
+    "keeps console overflow channel validation fail-closed: %s",
+    async (fault) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const config = join(directory, "vitest.config.drift.ts");
+        const reporter = resolve(import.meta.dirname, "../../scripts/drift-evidence-reporter.ts");
+        const id =
+          fault === "bounded-marker"
+            ? "i".repeat(8192)
+            : fault === "unbounded-marker"
+              ? "i".repeat(262145)
+              : "transport-owner";
+        const owner = {
+          kind: "identity",
+          id,
+          entity: "suite",
+          file: join(directory, "src/__tests__/drift/fixture.drift.ts"),
+          ancestors: [],
+          title: "transport owner",
+        };
+        const records: unknown[] = [];
+        if (!["missing-owner", "unattributed-overflow"].includes(fault)) records.push(owner);
+        if (fault === "duplicate-id") records.push({ ...owner, title: "other owner" });
+        if (fault === "duplicate-owner") records.push({ ...owner, id: "other id" });
+        if (fault === "oversized-identity") records.push({ ...owner, title: "x".repeat(262145) });
+        if (fault === "duplicate-completion") records.push({ kind: "complete" });
+        const emitsOverflow = [
+          "bounded-marker",
+          "unbounded-marker",
+          "unattributed-overflow",
+        ].includes(fault);
+        if (!emitsOverflow)
+          records.push({
+            kind: "console-unavailable",
+            taskId: fault === "empty-id" ? "" : fault === "non-string-id" ? 4 : id,
+            ...(fault === "invalid-bytes" ? { bytes: -1 } : {}),
+          });
+        const transport =
+          records.map((record) => JSON.stringify(record) + "\n").join("") +
+          (fault === "malformed" ? "not json\n" : fault === "truncated" ? '{"kind":' : "");
+        writeFileSync(
+          config,
+          readFileSync(config, "utf8") +
+            `
+      import { closeSync } from 'node:fs';
+      import EvidenceReporter from ${JSON.stringify(reporter)};
+      writeSync(3, ${JSON.stringify(transport)});
+      ${emitsOverflow ? `new EvidenceReporter().onUserConsoleLog({type:'stdout',taskId:${JSON.stringify(fault === "unattributed-overflow" ? "" : id)},content:'x'.repeat(262145),time:0,size:1});` : ""}
+      ${fault === "missing-completion" ? "closeSync(3);" : ""}
+    `,
+        );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        expect(evidence.drift.assertions.length).toBeGreaterThan(0);
+        for (const row of evidence.drift.assertions) {
+          expect(row.consoleContext.availability).toBe(
+            fault === "bounded-marker" ? "available" : "unavailable",
+          );
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    },
+    60_000,
+  );
+
+  it("compares tainted suite ancestors by path elements", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      writeFileSync(
+        join(directory, "src/__tests__/drift/scope.drift.ts"),
+        `
+      import {describe,it,beforeAll} from 'vitest';
+      describe('a',()=>{
+        describe('b',()=>{
+          beforeAll(()=>console.log('x'.repeat(262145)));
+          it('tainted',()=>console.log('valid child'));
+          describe('c',()=>{beforeAll(()=>console.log('valid nested scope'));it('tainted nested',()=>console.log('valid nested child'));});
+        });
+        describe('b > c',()=>{it('sibling',()=>console.log('valid sibling'));});
+      });
+      describe('a > b',()=>{it('joined name',()=>console.log('valid separate path'));});
+    `,
+      );
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const evidence = JSON.parse(
+        readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+      );
+      for (const row of evidence.drift.assertions)
+        expect(row.consoleContext.availability).toBe(
+          row.title.startsWith("tainted") ? "unavailable" : "available",
+        );
+      expect(evidence.drift.consoleScopes).not.toContainEqual(
+        expect.objectContaining({ title: "c" }),
+      );
+    });
+  }, 60_000);
+
+  it("names each assertion that withholds the observation artifact, with its reason", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      writeFileSync(
+        join(directory, "src/__tests__/drift/scope.drift.ts"),
+        `
+      import {describe,it,beforeAll} from 'vitest';
+      describe('a',()=>{
+        describe('b',()=>{
+          beforeAll(()=>console.log('x'.repeat(300000)));
+          it('tainted',()=>console.log('valid child'));
+        });
+        it('clean',()=>console.log('valid sibling'));
+      });
+    `,
+      );
+      const observations = join(directory, "drift-observations.json");
+      const child = await invoke(["--observations-out", observations]);
+      expect(child.error).toBeUndefined();
+      // Fail-closed is unchanged: existing grading kept, artifact withheld.
+      expect(child.status).toBe(2);
+      expect(existsSync(observations)).toBe(false);
+      expect(child.stderr).toContain(
+        "Live observation evidence unavailable; observation artifact was not written.",
+      );
+      expect(child.stderr).toContain("  Assertions without console context: 1\n");
+      expect(child.stderr).toContain(
+        "    - src/__tests__/drift/scope.drift.ts › a › b › tainted: console output unavailable: " +
+          "record exceeded 262144 bytes (300078 bytes)\n",
+      );
+      expect(child.stderr).not.toContain("› clean:");
+    });
+  }, 60_000);
+
+  it("retains Responses WS exact counts beyond the numeric cap", async () => {
+    await withCollectorFixture("responses-markers", async ({ directory, invoke }) => {
+      const fixture = join(directory, "src/__tests__/drift/ws-responses.drift.ts");
+      const before = readFileSync(fixture, "utf8");
+      expect(before).toContain("Array(130)");
+      writeFileSync(
+        fixture,
+        before.replace(/^ *const events=.*$/m, "const events=Array(17000).fill(null);"),
+      );
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const evidence = JSON.parse(
+        readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+      );
+      for (const kind of ["K5", "K9"]) {
+        const row = evidence.drift.assertions.find(
+          (item: { file: string; title: string }) =>
+            item.file === "src/__tests__/drift/ws-responses.drift.ts" &&
+            item.title === `WS ${kind} native comparison`,
+        );
+        expect(row.observations).toHaveLength(1);
+        const observation = row.observations[0];
+        expect(observation).toMatchObject({
+          eventCount: kind === "K5" ? 17001 : 17002,
+          unknownEventTypeCount: kind === "K5" ? 17000 : 17001,
+          omittedEventTypeCount: 0,
+          eventTypes: ["response.incomplete"],
+        });
+        expect(observation.eventCount).toBe(
+          observation.eventTypes.length +
+            observation.unknownEventTypeCount +
+            observation.omittedEventTypeCount,
+        );
+      }
+    });
+  }, 60_000);
+
+  it("retains Responses WS bounded metadata from actual reporter context", async () => {
+    await withCollectorFixture("responses-markers", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      for (const kind of ["K5", "K9"])
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file: "src/__tests__/drift/ws-responses.drift.ts",
+            title: `WS ${kind} native comparison`,
+            source: "native",
+            disposition: kind === "K9" ? "FAILED" : "UNAVAILABLE",
+            observations: [
+              {
+                provider: "responses-ws",
+                cell: kind,
+                source: "native",
+                disposition: "UNAVAILABLE",
+                eventCount: kind === "K9" ? 132 : 5,
+                unknownEventTypeCount: kind === "K9" ? 1 : 0,
+                omittedEventTypeCount: kind === "K9" ? 3 : 0,
+                eventTypes:
+                  kind === "K9"
+                    ? Array(128).fill("response.reasoning_summary_text.delta")
+                    : [
+                        "response.created",
+                        "response.in_progress",
+                        "response.output_item.added",
+                        "response.output_item.done",
+                        "response.incomplete",
+                      ],
+                terminalStatus: "incomplete",
+                incompleteReason: "max_output_tokens",
+              },
+            ],
+          }),
+        );
+      for (const row of evidence.drift.assertions)
+        if (
+          row.file !== "src/__tests__/drift/ws-responses.drift.ts" ||
+          row.ancestors[0] !== "OpenAI Responses WS exhaustion live drift"
+        ) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+      expect(serialized).not.toContain("fixture-provider-body-912");
+      expect(serialized).not.toContain('"arguments"');
+      expect(serialized).not.toContain('"output"');
+    });
+  }, 60_000);
+
+  it("rejects Responses WS malformed events and wrong marker mode", async () => {
+    for (const [original, replacement] of [
+      [
+        "request:'fixture-provider-body-912',events,",
+        "request:'fixture-provider-body-912',events:'invalid',",
+      ],
+      ["mode:'live WS decoded native events; not raw frames'", "mode:'captured replay'"],
+    ]) {
+      await withCollectorFixture("responses-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/ws-responses.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Ollama observation without claiming native acceptance from actual reporter context", async () => {
+    await withCollectorFixture("ollama-markers", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      for (const mode of ["object", "stream"])
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file: "src/__tests__/drift/ollama.drift.ts",
+            title: mode,
+            source: "native",
+            disposition: mode === "stream" ? "FAILED" : "UNAVAILABLE",
+            observations: [
+              {
+                provider: "ollama",
+                cell: `native ${mode}`,
+                source: "native",
+                disposition: "UNAVAILABLE",
+                attempts: 1,
+              },
+            ],
+          }),
+        );
+      for (const row of evidence.drift.assertions)
+        if (
+          row.file !== "src/__tests__/drift/ollama.drift.ts" ||
+          row.ancestors[0] !== "P1 Ollama K9 native"
+        ) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+      expect(serialized).not.toContain("fixture-provider-body-912");
+      expect(serialized).not.toContain('"rawBase64"');
+      expect(serialized).not.toContain('"sdkChunks"');
+    });
+  }, 60_000);
+
+  it("rejects Ollama invalid counters and mismatched cells", async () => {
+    for (const [original, replacement] of [
+      ["attempts:1", "attempts:-1"],
+      ["cell:'native '+mode", "cell:'native wrong'"],
+    ]) {
+      await withCollectorFixture("ollama-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/ollama.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Interactions explicit native dispositions from actual reporter context", async () => {
+    for (const failed of [false, true]) {
+      await withCollectorFixture("interactions-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/gemini-interactions.drift.ts");
+        if (failed)
+          writeFileSync(
+            fixture,
+            readFileSync(fixture, "utf8")
+              .replace(
+                "disposition:'TRIGGERED_MODELED_CONTRACT_MATCH'",
+                "disposition:'NOT_TRIGGERED'",
+              )
+              .replace("expect(true).toBe(true)", "expect(true).toBe(false)"),
+          );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file: "src/__tests__/drift/gemini-interactions.drift.ts",
+            title: "records genuine non-triggers and rejects contradictory triggered contracts",
+            source: "native",
+            disposition: failed ? "FAILED" : "TARGET_COMPARED",
+            observations: [
+              {
+                provider: "interactions",
+                cell: "K5 stream",
+                source: "native",
+                disposition: failed ? "NOT_TRIGGERED" : "TARGET_COMPARED",
+              },
+            ],
+          }),
+        );
+        for (const row of evidence.drift.assertions)
+          if (
+            row.file !== "src/__tests__/drift/gemini-interactions.drift.ts" ||
+            row.title !==
+              "records genuine non-triggers and rejects contradictory triggered contracts"
+          ) {
+            expect(row.source).toBe("unknown");
+            expect(row.observations).toBeUndefined();
+          }
+        expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+        expect(serialized).not.toContain("fixture-provider-body-912");
+        expect(serialized).not.toContain('"raw"');
+      });
+    }
+  }, 60_000);
+
+  it("rejects Interactions wrong cells and unknown dispositions", async () => {
+    for (const [original, replacement] of [
+      ["disposition:'TRIGGERED_MODELED_CONTRACT_MATCH'", "disposition:'UNKNOWN'"],
+      ["case:'K5 stream',model:", "case:'K9 stream',model:"],
+    ]) {
+      await withCollectorFixture("interactions-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/gemini-interactions.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Realtime native dispositions from actual reporter context", async () => {
+    for (const failed of [false, true]) {
+      await withCollectorFixture("realtime-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/ws-realtime.drift.ts");
+        if (failed)
+          writeFileSync(
+            fixture,
+            readFileSync(fixture, "utf8")
+              .replace("disposition:'MATCH'", "disposition:'NOT_TRIGGERED'")
+              .replace("expect(true).toBe(true)", "expect(true).toBe(false)"),
+          );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file: "src/__tests__/drift/ws-realtime.drift.ts",
+            title: "native K5 bounded modeled comparison",
+            source: "native",
+            disposition: failed ? "FAILED" : "TARGET_COMPARED",
+            observations: [
+              {
+                provider: "realtime",
+                source: "native",
+                disposition: failed ? "NOT_TRIGGERED" : "TARGET_COMPARED",
+              },
+            ],
+          }),
+        );
+        for (const row of evidence.drift.assertions)
+          if (
+            row.file !== "src/__tests__/drift/ws-realtime.drift.ts" ||
+            row.title !== "native K5 bounded modeled comparison"
+          ) {
+            expect(row.source).toBe("unknown");
+            expect(row.observations).toBeUndefined();
+          }
+        expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+        expect(serialized).not.toContain("fixture-provider-body-912");
+        expect(serialized).not.toContain('"events"');
+      });
+    }
+  }, 60_000);
+
+  it("rejects Realtime unknown dispositions and nonexact prefixes", async () => {
+    for (const [original, replacement] of [
+      ["disposition:'MATCH'", "disposition:'UNKNOWN'"],
+      ["'Realtime K5 native'", "'spoof Realtime K5 native'"],
+    ]) {
+      await withCollectorFixture("realtime-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/ws-realtime.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Gemini same-cell native outcomes from actual reporter context", async () => {
+    await withCollectorFixture("gemini-markers", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      for (const fault of ["stop-length-mid-tool", "reasoning-only"])
+        for (const stream of [false, true]) {
+          const disposition = stream ? "NOT_TRIGGERED" : "TARGET_COMPARED";
+          expect(evidence.drift.assertions).toContainEqual(
+            expect.objectContaining({
+              file: "src/__tests__/drift/gemini.drift.ts",
+              title: `live Developer API bounded ${fault} stream=${stream}`,
+              source: "native",
+              disposition: fault === "reasoning-only" ? "FAILED" : disposition,
+              observations: [{ provider: "gemini", fault, stream, source: "native", disposition }],
+            }),
+          );
+        }
+      for (const row of evidence.drift.assertions)
+        if (
+          row.file !== "src/__tests__/drift/gemini.drift.ts" ||
+          !row.title.startsWith("live Developer API bounded ")
+        ) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+      expect(serialized).not.toContain("fixture-provider-body-912");
+      expect(serialized).not.toContain('"raw"');
+    });
+  }, 60_000);
+
+  it("rejects Gemini mismatched cells and unknown outcome fields", async () => {
+    for (const [original, replacement] of [
+      ["status:200", "status:401"],
+      ["{fault,stream,outcome:", "{fault,stream:!stream,outcome:"],
+      ["'NOT_TRIGGERED':'NATIVE_TARGET_COMPARED'", "'UNKNOWN':'UNKNOWN'"],
+    ]) {
+      await withCollectorFixture("gemini-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/gemini.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Anthropic live and captured dispositions from actual reporter context", async () => {
+    for (const capture of [false, true]) {
+      await withCollectorFixture("anthropic-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/anthropic.drift.ts");
+        if (capture)
+          writeFileSync(
+            fixture,
+            readFileSync(fixture, "utf8")
+              .replace(
+                "mode:'live paid provider; no retries',completed:true",
+                "mode:'retained native capture',sha256:'fixture-hash'",
+              )
+              .replace("expect(true).toBe(true)", "expect(true).toBe(false)"),
+          );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        for (const [mode, disposition] of [
+          ["object", "TARGET_COMPARED"],
+          ["stream", "NOT_TRIGGERED"],
+        ]) {
+          expect(evidence.drift.assertions).toContainEqual(
+            expect.objectContaining({
+              file: "src/__tests__/drift/anthropic.drift.ts",
+              title: `${mode} modeled localhost and bounded native trigger`,
+              source: capture ? "captured" : "native",
+              disposition: capture ? "FAILED" : disposition,
+              observations: [
+                {
+                  provider: "anthropic",
+                  cell: mode,
+                  source: capture ? "captured" : "native",
+                  disposition,
+                },
+              ],
+            }),
+          );
+        }
+        for (const row of evidence.drift.assertions)
+          if (
+            row.file !== "src/__tests__/drift/anthropic.drift.ts" ||
+            row.title.startsWith("unknown") ||
+            row.title === "local replay"
+          ) {
+            expect(row.source).toBe("unknown");
+            expect(row.observations).toBeUndefined();
+          }
+        expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+        expect(serialized).not.toContain("fixture-provider-body-912");
+        expect(serialized).not.toContain('"raw"');
+      });
+    }
+  }, 60_000);
+
+  it("rejects unproven Anthropic acquisition and unknown outcomes", async () => {
+    for (const [original, replacement] of [
+      ["completed:true", "completed:false"],
+      ["'TARGET_COMPARED':'NOT_TRIGGERED'", "'UNKNOWN':'UNKNOWN'"],
+    ]) {
+      await withCollectorFixture("anthropic-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/anthropic.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Cohere object and stream metadata from actual reporter context", async () => {
+    for (const failed of [false, true]) {
+      await withCollectorFixture("cohere-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/cohere.drift.ts");
+        if (failed)
+          writeFileSync(
+            fixture,
+            readFileSync(fixture, "utf8").replace(
+              "expect(true).toBe(true)",
+              "expect(true).toBe(false)",
+            ),
+          );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file: "src/__tests__/drift/cohere.drift.ts",
+            title: "P1 Cohere native K5 object modeled and stream observed comparison",
+            source: "native",
+            disposition: failed ? "FAILED" : "UNAVAILABLE",
+            observations: [
+              { provider: "cohere", stream: false, source: "native", disposition: "NOT_TRIGGERED" },
+              {
+                provider: "cohere",
+                stream: true,
+                source: "native",
+                disposition: "TARGET_COMPARED",
+              },
+            ],
+          }),
+        );
+        for (const row of evidence.drift.assertions)
+          if (row.file !== "src/__tests__/drift/cohere.drift.ts" || row.title === "local replay") {
+            expect(row.source).toBe("unknown");
+            expect(row.observations).toBeUndefined();
+          }
+        expect(serialized).not.toContain("fixture-provider-body-912");
+        expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+        expect(serialized).not.toContain('"usage"');
+        expect(serialized).not.toContain('"raw"');
+      });
+    }
+  }, 60_000);
+
+  it("rejects unknown and ambiguous Cohere marker fields", async () => {
+    for (const [original, replacement] of [
+      ["classification:'TARGET'", "classification:'UNKNOWN'"],
+      ["stream:true", "stream:false"],
+    ]) {
+      await withCollectorFixture("cohere-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/cohere.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Vertex coordinator cells from actual reporter context", async () => {
+    await withCollectorFixture("vertex-markers", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      const file = "src/__tests__/drift/vertex-misbehavior.drift.ts";
+      for (const [cell, disposition, observed] of [
+        ["k5-object", "TARGET_COMPARED", "TARGET_COMPARED"],
+        ["k5-stream", "NOT_TRIGGERED", "NOT_TRIGGERED"],
+        ["k9-object", "FAILED", "FAILED"],
+        ["k9-stream", "FAILED", "UNATTEMPTED"],
+      ]) {
+        expect(evidence.drift.assertions).toContainEqual(
+          expect.objectContaining({
+            file,
+            title: `${cell} records a target comparison or approved non-trigger`,
+            source: "native",
+            disposition,
+            observations: [{ provider: "vertex", cell, source: "native", disposition: observed }],
+          }),
+        );
+      }
+      for (const row of evidence.drift.assertions) {
+        if (
+          row.file !== file ||
+          row.ancestors[0] !== "Vertex native recurring modeled-contract observations" ||
+          row.title.startsWith("unknown")
+        ) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      }
+      expect(serialized).not.toContain("fixture-provider-body-912");
+      expect(serialized).not.toContain("fixture-secret-canary-spans-identity-boundary-731");
+      expect(serialized).not.toContain("rawBase64");
+      expect(serialized).not.toContain("chunks");
+    });
+  }, 60_000);
+
+  it("rejects ambiguous Vertex coordinator metadata", async () => {
+    for (const [original, replacement] of [
+      ["'TARGET_COMPARED'", "'UNKNOWN_OUTCOME'"],
+      ["provider:'vertex',results,budget", "provider:'vertex',proof:'local',results,budget"],
+      ["'k5-object','k5-stream'", "'k5-object','k5-object'"],
+    ]) {
+      await withCollectorFixture("vertex-markers", async ({ directory, invoke }) => {
+        const fixture = join(directory, "src/__tests__/drift/vertex-misbehavior.drift.ts");
+        const before = readFileSync(fixture, "utf8");
+        expect(before).toContain(original);
+        writeFileSync(fixture, before.replace(original, replacement));
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        for (const row of evidence.drift.assertions) {
+          expect(row.source).toBe("unknown");
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    }
+  }, 60_000);
+
+  it("retains Bedrock source and disposition from actual reporter context", async () => {
+    await withCollectorFixture("bedrock-markers", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      const file = "src/__tests__/drift/bedrock-misbehavior-live.drift.ts";
+      expect(evidence.drift.assertions).toEqual(
+        expect.arrayContaining([
+          // A valid native marker on stderr is context, never a provider observation.
+          {
+            file,
+            ancestors: ["native AWS misbehavior"],
+            title: "converse K9 stream=false",
+            status: "passed",
+            failureCount: 0,
+            consoleContext: { availability: "available", recordCount: 1 },
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          },
+
+          expect.objectContaining({
+            file,
+            title: "invoke K5 stream=false",
+            source: "native",
+            disposition: "TARGET_COMPARED",
+            observations: [
+              expect.objectContaining({
+                provider: "bedrock",
+                source: "native",
+                disposition: "TARGET_COMPARED",
+                sends: 1,
+                requestedOutputTokens: 32,
+              }),
+            ],
+          }),
+          expect.objectContaining({
+            file,
+            title: "invoke K9 stream=false",
+            source: "native",
+            disposition: "NOT_TRIGGERED",
+          }),
+          expect.objectContaining({
+            file,
+            title: "coordinator accounts eight cells and blocks a ninth send",
+            source: "local",
+            disposition: "NOT_TRIGGERED",
+          }),
+          expect.objectContaining({
+            file,
+            title: "invoke K5 stream=true",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          }),
+          expect.objectContaining({
+            file,
+            title: "invoke K9 stream=true",
+            source: "native",
+            disposition: "FAILED",
+          }),
+          expect.objectContaining({
+            file,
+            title: "converse K5 stream=false",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          }),
+          expect.objectContaining({
+            file,
+            title: "converse K5 stream=true",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          }),
+          expect.objectContaining({
+            file,
+            title: "wrong context",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          }),
+          expect.objectContaining({
+            file: "src/__tests__/drift/unrelated.drift.ts",
+            title: "invoke K5 stream=false",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+          }),
+        ]),
+      );
+      expect(serialized).not.toMatch(/fixture-secret|fixture-provider-body|fixture-output-text/);
+    });
+  }, 30_000);
+
+  it("retains authenticated console context without inferring native disposition", async () => {
+    await withCollectorFixture("console-context", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const serialized = readFileSync(
+        join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+        "utf8",
+      );
+      const evidence = JSON.parse(serialized);
+      expect(evidence.drift.assertions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            title: "native row",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+            consoleContext: { availability: "available", recordCount: 0 },
+          }),
+          expect.objectContaining({
+            title: "local row",
+            source: "unknown",
+            disposition: "UNAVAILABLE",
+            consoleContext: { availability: "available", recordCount: 2 },
+          }),
+          expect.objectContaining({
+            title: "duplicate",
+            disposition: "UNAVAILABLE",
+            consoleContext: { availability: "unavailable", recordCount: 0 },
+          }),
+          expect.objectContaining({
+            title: "failed after console",
+            status: "failed",
+            disposition: "FAILED",
+            consoleContext: { availability: "available", recordCount: 1 },
+          }),
+          expect.objectContaining({ title: "skipped native", disposition: "SKIPPED" }),
+        ]),
+      );
+      expect(evidence.drift.consoleScopes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ entity: "suite", title: "native suite", recordCount: 1 }),
+          expect.objectContaining({ entity: "module", recordCount: 1 }),
+        ]),
+      );
+      expect(serialized).not.toMatch(
+        /fixture-secret|fixture-provider-body|fixture-output-text|stdout \|/,
+      );
+      expect(serialized).not.toContain('"source": "native"');
+      expect(evidence.drift.unboundConsoleRecordCount).toBe(3);
+      expect(evidence.agui.assertions).toEqual([
+        expect.objectContaining({ title: "retained AG-UI pass", disposition: "UNAVAILABLE" }),
+      ]);
+    });
+  }, 30_000);
+
+  it("retains actual collector attempts with unchanged grading", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const reports: DriftReport[] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        expect(child.stdout).not.toContain("Cloning");
+        const report: DriftReport = JSON.parse(
+          readFileSync(join(directory, "drift-report.json"), "utf8"),
+        );
+        expect(report.conclusion).toBe("critical");
+        expect(report.entries).toHaveLength(1);
+        reports.push(report);
+      }
+      expect(reports[0].entries).toEqual(reports[1].entries);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      expect(existsSync(evidenceDirectory), "actual collector discarded reporter rows").toBe(true);
+      const files = readdirSync(evidenceDirectory);
+      expect(files).toHaveLength(2);
+      for (const file of files) {
+        const serialized = readFileSync(join(evidenceDirectory, file), "utf8");
+        const evidence = JSON.parse(serialized);
+        expect(evidence.drift.assertions).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              title: "retained pass",
+              status: "passed",
+              disposition: "UNAVAILABLE",
+            }),
+            expect.objectContaining({
+              title: "retained skip",
+              status: "skipped",
+              disposition: "SKIPPED",
+            }),
+            expect.objectContaining({
+              title: "retained unmatched failure",
+              status: "failed",
+              failureCount: 1,
+              disposition: "FAILED",
+            }),
+          ]),
+        );
+        expect(evidence.agui.assertions).toEqual([
+          expect.objectContaining({ title: "retained AG-UI pass", status: "passed" }),
+        ]);
+        expect(evidence.drift.exitCode).toBe(1);
+        expect(evidence.agui.exitCode).toBe(0);
+        expect(statSync(join(evidenceDirectory, file)).mode & 0o777).toBe(0o600);
+        expect(serialized).not.toMatch(
+          /fixture-secret|fixture-provider-body|fixture-output-text|fixture-bearer|fixture-private/,
+        );
+      }
+    });
+  }, 60_000);
+
+  it("clears obsolete observations before an actual collector startup failure", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      const previous = await invoke();
+      expect(previous.error).toBeUndefined();
+      expect(previous.status).toBe(2);
+      const observations = join(directory, "drift-observations.json");
+      expect(existsSync(observations)).toBe(true);
+      const report = join(directory, "drift-report.json");
+      const reportBefore = readFileSync(report, "utf8");
+      writeFileSync(
+        join(directory, "vitest.config.drift.ts"),
+        'throw new Error("collector startup fixture");\n',
+      );
+
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("Failed to run drift tests");
+      expect(child.stderr).toContain("collector startup fixture");
+      expect(existsSync(observations), "prior invocation observations must not survive").toBe(
+        false,
+      );
+      expect(readFileSync(report, "utf8")).toBe(reportBefore);
+      expect(readdirSync(join(directory, "drift-evidence"))).toHaveLength(2);
+    });
+  }, 60_000);
+
+  it.each(["unknown-surface", "secondary-malformed"] as const)(
+    "retains actual collector attempts after %s failure",
+    async (mode) => {
+      await withCollectorFixture(mode, async ({ directory, invoke }) => {
+        const observations = join(directory, "drift-observations.json");
+        writeFileSync(
+          observations,
+          JSON.stringify({
+            schemaVersion: 1,
+            generatedAt: "2000-01-01T00:00:00Z",
+            observations: [],
+          }),
+        );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(1);
+        expect(child.stderr).toContain(
+          mode === "unknown-surface" ? "Unknown drift surface" : "produced unparseable output",
+        );
+        expect(existsSync(observations), "prior invocation observations must not survive").toBe(
+          false,
+        );
+        const evidenceDirectory = join(directory, "drift-evidence");
+        expect(existsSync(evidenceDirectory), "earlier reporter rows lost on later failure").toBe(
+          true,
+        );
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        expect(evidence.drift.assertions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ title: "retained pass" })]),
+        );
+        expect(evidence.agui.availability).toBe("unavailable");
+        expect(evidence.agui.exitCode).toBe(mode === "unknown-surface" ? null : 0);
+      });
+    },
+    30_000,
+  );
+
+  it("fails loudly when the sidecar cannot be written", async () => {
+    await withCollectorFixture("write-failure", async ({ invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("Failed to write collector invocation evidence");
+    });
+  }, 30_000);
+
+  it("retains captured evidence when the main report cannot be written", async () => {
+    await withCollectorFixture("report-write-failure", async ({ directory, invoke }) => {
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("Failed to write drift report");
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const evidence = JSON.parse(
+        readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+      );
+      expect(evidence.drift.availability).toBe("available");
+      expect(evidence.agui.availability).toBe("available");
+    });
+  }, 30_000);
+});
 
 // ---------------------------------------------------------------------------
 // Helpers for the A1.3 CollectResult shape ({ entries, quarantine }).
@@ -126,6 +1999,21 @@ function makeAssertion(overrides: Partial<VitestAssertion> = {}): VitestAssertio
   };
 }
 
+// Preserve the real collector's input and output for the three standing captured
+// reporter cases. Evidence output never gates the assertions or changes inputs.
+function capturedRoutingCase(caseId: string, input: VitestJsonResult) {
+  const actual = collectDriftEntries(input);
+  const directory = process.env.AIMOCK_W7_ROUTING_EVIDENCE_DIR;
+  if (directory) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, `${caseId}.json`),
+      JSON.stringify({ caseId, input, actual }, null, 2),
+    );
+  }
+  return actual;
+}
+
 const SAMPLE_DIFF: ShapeDiff = {
   path: "choices[0].message.refusal",
   severity: "critical",
@@ -143,6 +2031,39 @@ const SAMPLE_DIFF_WARNING: ShapeDiff = {
   real: "string",
   mock: "<absent>",
 };
+
+describe("W7 supplementary ordinary parsed routing", () => {
+  it.each([
+    [
+      "openai-realtime",
+      "src/ws-realtime.ts",
+      ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    ],
+    ["openai-responses-ws", "src/ws-responses.ts", ["handleWebSocketResponses"]],
+  ] as const)(
+    "%s keeps its non-usage endpoint metadata",
+    (surface, builderFile, builderFunctions) => {
+      // Reuse the existing generic parser fixture. This is a synthetic routing
+      // control, not a captured usage discrepancy or fresh provider observation.
+      const result = makeResult([
+        makeAssertion({
+          failureMessages: [
+            formatDriftReport("supplementary parsed routing control", [SAMPLE_DIFF], surface),
+          ],
+        }),
+      ]);
+      const actual = collectDriftEntries(result);
+      expect(actual.quarantine).toEqual([]);
+      expect(actual.timeouts).toEqual([]);
+      expect(actual.entries).toHaveLength(1);
+      expect(actual.entries[0].builderFile).toBe(builderFile);
+      expect(actual.entries[0].builderFunctions).toEqual(builderFunctions);
+      expect(actual.entries[0].provider).toBe(SURFACE_REGISTRY[surface].provider);
+      expect(actual.entries[0].diffs[0].severity).toBe("critical");
+      expect(exitCodeOf(result)).toBe(2);
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // REAL captured vitest --reporter=json failure-message fixtures.
@@ -410,6 +2331,299 @@ describe("extractScenario", () => {
 // collectDriftEntries (HTTP drift path)
 // ---------------------------------------------------------------------------
 
+describe("R1 ordinary parsed owner routing", () => {
+  const openaiBuilders = [
+    "buildTextCompletion",
+    "buildToolCallCompletion",
+    "buildTextChunks",
+    "buildToolCallChunks",
+  ];
+  const anthropicBuilders = [
+    "buildClaudeTextResponse",
+    "buildClaudeToolCallResponse",
+    "buildClaudeTextStreamEvents",
+    "buildClaudeToolCallStreamEvents",
+  ];
+
+  // These generated controls exercise real collector routing, not vendor drift.
+  function supplementaryCase(caseId: string, surface: string, paths: string[], label?: string) {
+    const diffs = paths.map((path) => ({ ...SAMPLE_DIFF, path }));
+    const input = makeResult([
+      makeAssertion({
+        ancestorTitles: label ? [label] : [],
+        failureMessages: [
+          formatDriftReport(
+            label ?? "supplementary owner routing",
+            diffs,
+            label ? undefined : surface,
+          ),
+        ],
+      }),
+    ]);
+    const actual = capturedRoutingCase(caseId, input);
+    expect(actual.entries).toHaveLength(1);
+    expect(actual.entries[0].diffs).toEqual(diffs.map((diff) => ({ ...diff, id: diff.path })));
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    expect(exitCodeOf(input)).toBe(2);
+    return actual.entries[0];
+  }
+
+  it("routes the unchanged standing OpenAI refusal reporter capture to its endpoint builders", () => {
+    const input = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Chat Completions drift"],
+        title: "non-streaming text matches real API",
+        failureMessages: [GENUINE_DRIFT_WITH_STACK],
+      }),
+    ]);
+    const actual = capturedRoutingCase("ordinary-openai-refusal", input);
+    expect(actual.entries).toHaveLength(1);
+    expect(actual.entries[0].provider).toBe("OpenAI Chat");
+    expect(actual.entries[0].scenario).toBe("non-streaming text");
+    expect(actual.entries[0].diffs).toEqual([
+      {
+        path: "choices[0].message.refusal",
+        severity: "critical",
+        issue: "LLMOCK DRIFT — mismatch detected",
+        expected: "null",
+        real: "null",
+        mock: "<absent>",
+        id: "choices[0].message.refusal",
+      },
+    ]);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    expect(exitCodeOf(input)).toBe(2);
+    expect(actual.entries[0].builderFile).toBe("src/helpers.ts");
+    expect(actual.entries[0].builderFunctions).toEqual(openaiBuilders);
+  });
+
+  const surfaces = [
+    ["openai-chat", "usage.prompt_tokens", "openai", ["resolve", "render"], "src/helpers.ts"],
+    [
+      "openrouter-chat",
+      "usage.total_tokens",
+      "openrouter",
+      ["resolve", "render"],
+      "src/openrouter-chat.ts",
+    ],
+    ["openai-responses", "usage.input_tokens", "responses", ["render"], "src/responses.ts"],
+    ["openai-responses-ws", "usage.output_tokens", "responses", ["render"], "src/ws-responses.ts"],
+    ["anthropic", "usage.input_tokens", "anthropic", ["resolve", "render"], "src/messages.ts"],
+    ["bedrock-invoke", "usage.output_tokens", "anthropic", ["resolve", "render"], "src/bedrock.ts"],
+    [
+      "bedrock-invoke-stream",
+      "usage.output_tokens",
+      "anthropic",
+      ["resolve", "render"],
+      "src/bedrock.ts",
+    ],
+    ["gemini", "usageMetadata.promptTokenCount", "gemini", ["render"], "src/gemini.ts"],
+    ["vertex-ai", "usageMetadata.totalTokenCount", "gemini", ["render"], "src/gemini.ts"],
+    [
+      "gemini-interactions",
+      "usage.total_input_tokens",
+      "interactions",
+      ["render"],
+      "src/gemini-interactions.ts",
+    ],
+    ["cohere-chat", "usage.billed_units.input_tokens", "cohere", ["render"], "src/cohere.ts"],
+    ["ollama", "eval_count", "ollama", ["render"], "src/ollama.ts"],
+    [
+      "openai-realtime",
+      "response.usage.input_tokens",
+      "realtime",
+      ["render"],
+      "src/ws-realtime.ts",
+    ],
+    ["bedrock-converse", "usage.inputTokens", "converse", ["render"], "src/bedrock-converse.ts"],
+    [
+      "bedrock-converse-stream",
+      "usage.outputTokens",
+      "converse",
+      ["render"],
+      "src/bedrock-converse.ts",
+    ],
+  ] as const;
+
+  it.each(surfaces)(
+    "%s usage-only fields retain their codec",
+    (surface, path, codec, functions) => {
+      const entry = supplementaryCase(`${surface}-usage`, surface, [path]);
+      expect(entry.builderFile).toBe(`src/response/usage/codecs/${codec}.ts`);
+      expect(entry.builderFunctions).toEqual(functions);
+    },
+  );
+
+  it.each(surfaces)(
+    "%s content fields retain an endpoint anchor",
+    (surface, _path, _codec, _functions, endpoint) => {
+      const entry = supplementaryCase(`${surface}-content`, surface, ["content[].text"]);
+      expect(entry.builderFile).toBe(endpoint);
+      expect(entry.builderFunctions).not.toContain("render");
+    },
+  );
+
+  it.each([
+    ["openai-chat", "(root)[].usage.prompt_tokens", "openai", ["resolve", "render"]],
+    [
+      "openai-responses",
+      "SSE:response.completed.response.usage.output_tokens",
+      "responses",
+      ["render"],
+    ],
+    [
+      "openai-responses-ws",
+      "SSE:response.incomplete.response.usage.input_tokens",
+      "responses",
+      ["render"],
+    ],
+    [
+      "anthropic",
+      "SSE:message_start.message.usage.input_tokens",
+      "anthropic",
+      ["resolve", "render"],
+    ],
+    [
+      "bedrock-invoke-stream",
+      "SSE:message_delta.usage.output_tokens",
+      "anthropic",
+      ["resolve", "render"],
+    ],
+    [
+      "gemini-interactions",
+      "SSE:interaction.completed.interaction.usage.total_output_tokens",
+      "interactions",
+      ["render"],
+    ],
+    ["cohere-chat", "SSE:message-end.delta.usage.tokens.input_tokens", "cohere", ["render"]],
+    ["openai-realtime", "SSE:response.done.response.usage.output_tokens", "realtime", ["render"]],
+    ["bedrock-converse-stream", "SSE:metadata.usage.inputTokens", "converse", ["render"]],
+  ] as const)("%s recognizes its native usage path %s", (surface, path, codec, functions) => {
+    const entry = supplementaryCase(`${surface}-native-usage`, surface, [path]);
+    expect(entry.builderFile).toBe(`src/response/usage/codecs/${codec}.ts`);
+    expect(entry.builderFunctions).toEqual(functions);
+  });
+
+  it.each(["usage_extra", "choices[0].message.usage", "SSE:message_delta", "", "unknown.path"])(
+    "keeps unknown or non-usage path %s at the endpoint",
+    (path) => {
+      const entry = supplementaryCase(`boundary-${encodeURIComponent(path)}`, "openai-chat", [
+        path,
+      ]);
+      expect(entry.builderFile).toBe("src/helpers.ts");
+      expect(entry.builderFunctions).toEqual(openaiBuilders);
+    },
+  );
+
+  it("routes only OpenAI error-envelope fields to the shared error owner", () => {
+    const entry = supplementaryCase("openai-error", "openai-chat", ["error.message", "error.type"]);
+    expect(entry.builderFile).toBe("src/response/errors.ts");
+    expect(entry.builderFunctions).toEqual(["renderError", "buildOpenAIError"]);
+  });
+
+  it("keeps a bare OpenAI message field at its assembly anchor", () => {
+    const entry = supplementaryCase("openai-bare-message", "openai-chat", ["message"]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual(openaiBuilders);
+  });
+
+  it("retains caller defaults and the shared mapper for Anthropic finish fields", () => {
+    const entry = supplementaryCase("anthropic-finish", "anthropic", ["stop_reason"]);
+    expect(entry.builderFile).toBe("src/messages.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...anthropicBuilders,
+      "claudeStopReason",
+      "mapAnthropicFinish",
+    ]);
+  });
+
+  it("keeps mixed content and usage together with both actual owners", () => {
+    const entry = supplementaryCase("openai-mixed-content-usage", "openai-chat", [
+      "choices[].message.content",
+      "usage.total_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual([...openaiBuilders, "resolve", "render"]);
+  });
+
+  it("keeps mixed error and usage together with real shared functions", () => {
+    const entry = supplementaryCase("openai-mixed-error-usage", "openai-chat", [
+      "error.message",
+      "usage.total_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...openaiBuilders,
+      "resolve",
+      "render",
+      "serializeErrorResponse",
+      "renderError",
+      "buildOpenAIError",
+    ]);
+  });
+
+  it("keeps mixed finish and usage together without displacing caller defaults", () => {
+    const entry = supplementaryCase("anthropic-mixed-finish-usage", "anthropic", [
+      "SSE:message_delta.delta.stop_reason",
+      "SSE:message_delta.usage.output_tokens",
+    ]);
+    expect(entry.builderFile).toBe("src/messages.ts");
+    expect(entry.builderFunctions).toEqual([
+      ...anthropicBuilders,
+      "resolve",
+      "render",
+      "claudeStopReason",
+      "mapAnthropicFinish",
+    ]);
+  });
+
+  it("leaves Ollama duration fields with the endpoint", () => {
+    const entry = supplementaryCase("ollama-duration", "ollama", ["prompt_eval_duration"]);
+    expect(entry.builderFile).toBe("src/ollama.ts");
+    expect(entry.builderFunctions).toEqual([
+      "handleOllama",
+      "handleOllamaGenerate",
+      "ollamaToCompletionRequest",
+    ]);
+  });
+
+  it.each(["Anthropic", "Anthropic Claude"])(
+    "preserves legacy label %s with codec-only usage",
+    (label) => {
+      const entry = supplementaryCase(
+        `legacy-${label.replace(/ /g, "-")}`,
+        "anthropic",
+        ["usage.input_tokens"],
+        label,
+      );
+      expect(entry.provider).toBe(label);
+      expect(entry.builderFile).toBe("src/response/usage/codecs/anthropic.ts");
+      expect(entry.builderFunctions).toEqual(["resolve", "render"]);
+    },
+  );
+
+  it("preserves a legacy OpenAI label for non-usage fields", () => {
+    const entry = supplementaryCase(
+      "legacy-openai-content",
+      "openai-chat",
+      ["choices[].message.content"],
+      "OpenAI Chat",
+    );
+    expect(entry.provider).toBe("OpenAI Chat");
+    expect(entry.builderFile).toBe("src/helpers.ts");
+    expect(entry.builderFunctions).toEqual(openaiBuilders);
+  });
+
+  it("preserves an unaffected surface mapping", () => {
+    const entry = supplementaryCase("unaffected-images", "images", ["usage.total_tokens"]);
+    expect(entry.builderFile).toBe(SURFACE_REGISTRY["images"].builderFile);
+    expect(entry.builderFunctions).toEqual(SURFACE_REGISTRY["images"].builderFunctions);
+  });
+});
+
 describe("collectDriftEntries", () => {
   it("returns empty entries+quarantine when no failed tests", () => {
     const result = makeResult([
@@ -499,12 +2713,14 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    // GREEN: one attributed critical entry, no quarantine, exit 2.
-    expect(quarantineOf(result)).toEqual([]);
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-session-type", result);
+    // Payload/disposition controls precede the independently literal owner
+    // assertion, so a routing RED cannot conceal a preservation failure.
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Realtime");
-    expect(entries[0].builderFile).toBe("src/ws-realtime.ts");
     expect(entries[0].diffs).toHaveLength(1);
     expect(entries[0].diffs[0].severity).toBe("critical");
     // The surfaced error payload (type/code/message) is carried into the entry.
@@ -512,6 +2728,10 @@ describe("collectDriftEntries", () => {
     expect(entries[0].diffs[0].issue).toContain("missing_required_parameter");
     expect(entries[0].diffs[0].issue).toContain("session.type");
     expect(exitCodeOf(result)).toBe(2);
+    expect({ file: entries[0].builderFile, functions: entries[0].builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("does NOT recognize a bare WS timeout (zero messages, no error body) as handshake drift → live-timeout lane (exit 6), NOT drift and NOT quarantine", () => {
@@ -636,13 +2856,15 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-unknown-models", result);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
 
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
     expect(entry.scenario).toBe("known-models canary");
-    expect(entry.builderFile).toBe("src/ws-realtime.ts");
 
     // FULL list recovered from the marker (NOT truncated to just the first id).
     const reals = entry.diffs.map((d) => d.real);
@@ -668,6 +2890,17 @@ describe("collectDriftEntries", () => {
       0,
     );
     expect(criticalCount).toBe(4);
+    expect(exitCodeOf(result)).toBe(2);
+    for (const diff of entry.diffs) {
+      expect(diff.path).toBe("knownVoiceModelFamilies");
+      expect(diff.issue).toBe(
+        "Unknown realtime model detected — add to knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
+      );
+    }
+    expect({ file: entry.builderFile, functions: entry.builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("does NOT misattribute a non-canary toEqual([]) failure from another provider as OpenAI-Realtime drift → quarantine (exit 5)", () => {
@@ -753,11 +2986,13 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = entriesOf(result);
+    const actual = capturedRoutingCase("realtime-no-ga", result);
+    expect(actual.quarantine).toEqual([]);
+    expect(actual.timeouts).toEqual([]);
+    const entries = actual.entries;
     expect(entries).toHaveLength(1);
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
-    expect(entry.builderFile).toBe("src/ws-realtime.ts");
     expect(entry.diffs.length).toBeGreaterThan(0);
     expect(entry.diffs.every((d) => d.severity === "critical")).toBe(true);
 
@@ -766,6 +3001,20 @@ describe("collectDriftEntries", () => {
       0,
     );
     expect(criticalCount).toBeGreaterThan(0);
+    expect(exitCodeOf(result)).toBe(2);
+    expect(entry.diffs).toHaveLength(1);
+    expect(entry.diffs[0]).toMatchObject({
+      id: NO_GA_DELTA_ID,
+      path: "gaRealtimeModels",
+      real: "observed realtime models: gpt-foo, gpt-bar",
+      mock: "<no mock leg — real-API-only canary>",
+      issue:
+        "GA realtime family unavailable — no known GA model in the OpenAI realtime list. OpenAI may have renamed/removed the GA family, or the realtime credential cannot see it. Update gaRealtimeModels in src/__tests__/drift/voice-models.ts.",
+    });
+    expect({ file: entry.builderFile, functions: entry.builderFunctions }).toEqual({
+      file: "src/ws-realtime.ts",
+      functions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+    });
   });
 
   it("preserves the unknown-model list in the NO_GA entry (no info loss when both fire)", () => {
@@ -1585,8 +3834,15 @@ describe("a WS failure with no probe frame is attributed by the failing test's n
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(provider);
-      expect(entries[0].builderFile).toBe(builder);
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(builder);
+      expect(entries[0].builderFunctions).toEqual(
+        provider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : provider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 
@@ -1601,9 +3857,16 @@ describe("a WS failure with no probe frame is attributed by the failing test's n
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(provider);
-      expect(entries[0].builderFile).toBe(builder);
       expect(entries[0].scenario).toBe("WS handshake");
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(builder);
+      expect(entries[0].builderFunctions).toEqual(
+        provider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : provider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 
@@ -1942,10 +4205,17 @@ describe("zero-observation live timeouts are reported AS timeouts (exit 6)", () 
       const entries = entriesOf(result);
       expect(entries).toHaveLength(1);
       expect(entries[0].provider).toBe(wantProvider);
-      expect(entries[0].builderFile).toBe(wantBuilderFile);
       expect(entries[0].diffs[0].severity).toBe("critical");
       expect(entries[0].diffs[0].id).toBe("ws-handshake:bad_setup");
       expect(exitCodeOf(result)).toBe(2);
+      expect(entries[0].builderFile).toBe(wantBuilderFile);
+      expect(entries[0].builderFunctions).toEqual(
+        wantProvider === "OpenAI Realtime"
+          ? ["handleWebSocketRealtime", "realtimeItemsToMessages"]
+          : wantProvider === "OpenAI Responses WS"
+            ? ["handleWebSocketResponses"]
+            : ["handleWebSocketGeminiLive"],
+      );
     },
   );
 
@@ -3214,6 +5484,96 @@ function collectEmittedSurfaceSlugs(): { slugs: Set<string>; scannedFiles: strin
   return { slugs, scannedFiles: files };
 }
 
+/**
+ * Re-derive, from the emitting SOURCES, whether each surface has a leg that
+ * ever reaches the real provider.
+ *
+ * Independent derivation on purpose: `SURFACE_REGISTRY.liveCoverage` is a claim
+ * the registry makes, and a claim nothing checks is how four Bedrock surfaces
+ * and Vertex AI reported as covered for months while no AWS or Google request
+ * has ever left this repo. This scans the `*.drift.ts` files that emit each
+ * slug and decides live-capability from what they actually do.
+ *
+ * A file is live-capable when either:
+ *   1. it imports from `./providers.js` or `./ws-providers.js` — those modules
+ *      are, by construction, the raw fetch/WS clients for REAL provider APIs; or
+ *   2. it issues a request whose target is not the local mock server: a literal
+ *      `http(s)://` / `ws(s)://` URL, or an identifier naming a base URL/host
+ *      (`*_URL`, `*_HOST`). Targets built from `instance.url` / `mock.url` are
+ *      the local aimock server and do NOT count.
+ *
+ * Fixture payloads that merely CONTAIN a URL (`images.drift.ts` seeds
+ * `https://example.com/image.png` as generated-image output) are not request
+ * targets and are correctly ignored — only the first argument of a request call
+ * is inspected.
+ */
+function deriveLiveCapableSurfaces(): {
+  /** slug → true when at least one emitting file can reach the vendor. */
+  liveBySlug: Map<string, boolean>;
+  scannedFiles: string[];
+} {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ts = require("typescript") as typeof import("typescript");
+  const driftDir = resolve(__dirname, "drift");
+  const files = readdirSync(driftDir).filter((f) => f.endsWith(".drift.ts"));
+  const liveBySlug = new Map<string, boolean>();
+
+  const REQUEST_CALLEES = new Set([
+    "fetch",
+    "httpGet",
+    "httpPost",
+    "httpPostBinary",
+    "httpPostForm",
+    "httpRequest",
+  ]);
+  // Live uses the production raw WebSocket connector; the installed SDK has no Live client.
+  const LIVE_CLIENT_MODULES = ["./providers.js", "./ws-providers.js", "./live-scenarios.js"];
+
+  for (const file of files) {
+    const abs = resolve(driftDir, file);
+    const source = readFileSync(abs, "utf8");
+    const sf = ts.createSourceFile(abs, source, ts.ScriptTarget.Latest, true);
+
+    const fileSlugs = new Set<string>();
+    let live = false;
+
+    const visit = (node: import("typescript").Node): void => {
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        LIVE_CLIENT_MODULES.includes(node.moduleSpecifier.text)
+      ) {
+        live = true;
+      }
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        if (node.expression.text === "formatDriftReport" && node.arguments.length >= 3) {
+          const third = node.arguments[2];
+          if (ts.isStringLiteral(third) || ts.isNoSubstitutionTemplateLiteral(third)) {
+            fileSlugs.add(third.text);
+          }
+        }
+        if (REQUEST_CALLEES.has(node.expression.text) && node.arguments[0]) {
+          const target = node.arguments[0].getText();
+          if (
+            /\bhttps?:\/\/|\bwss?:\/\//.test(target) ||
+            /\b[A-Z][A-Z0-9_]*_(URL|HOST)\b/.test(target)
+          ) {
+            live = true;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+
+    for (const slug of fileSlugs) {
+      liveBySlug.set(slug, (liveBySlug.get(slug) ?? false) || live);
+    }
+  }
+
+  return { liveBySlug, scannedFiles: files };
+}
+
 describe("WS-5 — SURFACE_REGISTRY coverage & integrity", () => {
   it("every slug an emitter passes to formatDriftReport is a registered surface", () => {
     // Independent derivation (F2/F3): scan the ACTUAL emitter call sites rather
@@ -3259,6 +5619,65 @@ describe("WS-5 — SURFACE_REGISTRY coverage & integrity", () => {
         ).toBe(true);
       }
     }
+  });
+
+  it("every registry entry declares liveCoverage, and the declaration matches the source", () => {
+    // The honesty gate. `liveCoverage` has NO default — omission used to mean
+    // "covered" by implication, which is the exact defect this locks shut. Both
+    // directions fail:
+    //   - declared "live" but no emitting file can reach the vendor  → the
+    //     registry is claiming coverage that does not exist (the Bedrock/Vertex
+    //     bug);
+    //   - declared "none" but a live leg exists → a stale pessimistic note that
+    //     would put a genuinely-verified surface on the unverified list.
+    const { liveBySlug, scannedFiles } = deriveLiveCapableSurfaces();
+    expect(scannedFiles.length, "found *.drift.ts files to scan").toBeGreaterThan(0);
+
+    const mismatches: string[] = [];
+    for (const [slug, mapping] of Object.entries(SURFACE_REGISTRY)) {
+      const derived = liveBySlug.get(slug);
+      expect(derived, `${slug} is emitted by some *.drift.ts file`).toBeDefined();
+      const declared = mapping.liveCoverage === "live";
+      if (declared !== derived) {
+        mismatches.push(
+          `${slug}: declared liveCoverage="${mapping.liveCoverage}" but the emitting ` +
+            `source(s) are ${derived ? "live-capable" : "mock-only"}`,
+        );
+      }
+      if (mapping.liveCoverage === "none") {
+        expect(
+          (mapping.coverageNote ?? "").length,
+          `${slug} declares liveCoverage "none" and must explain why in coverageNote`,
+        ).toBeGreaterThan(0);
+      }
+    }
+    expect(
+      mismatches,
+      `liveCoverage declaration(s) contradict the source:\n${mismatches.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("the offline-only surfaces are named explicitly (no silent shrink of the unverified list)", () => {
+    // A positive control on the list itself: if a future edit flips one of these
+    // to "live" without a live leg actually being added, the test above catches
+    // the contradiction — but if someone DELETES a surface from the registry to
+    // make the unverified list shorter, only this explicit roster notices.
+    const offline = Object.entries(SURFACE_REGISTRY)
+      .filter(([, m]) => m.liveCoverage === "none")
+      .map(([slug]) => slug)
+      .sort();
+    expect(offline).toEqual([
+      "bedrock-converse",
+      "bedrock-converse-stream",
+      "bedrock-invoke",
+      "bedrock-invoke-stream",
+      "elevenlabs-voice",
+      "fal-sync",
+      "images",
+      "moderation",
+      "vertex-ai",
+      "video",
+    ]);
   });
 
   it("provider labels are unique (legacy fallback reverse-index has no collisions)", () => {
@@ -3463,6 +5882,7 @@ describe("classifyAgUiCheckout — a directory named ag-ui is not a canonical ch
     const canonicalDir = join(agUi, "sdks", "typescript", "packages", "core", "src");
     mkdirSync(canonicalDir, { recursive: true });
     writeFileSync(join(canonicalDir, "types.ts"), "export type Placeholder = never;\n");
+    writeFileSync(join(canonicalDir, "events.ts"), "export enum EventType {}\n");
     expect(classifyAgUiCheckout(agUi)).toEqual({ kind: "ok" });
   });
 
@@ -3472,5 +5892,129 @@ describe("classifyAgUiCheckout — a directory named ag-ui is not a canonical ch
     const exitCode = computeExitCode(0, 0, true, 0);
     expect(exitCode).toBe(1);
     expect(conclusionForExitCode(exitCode)).toBe("skipped");
+  });
+});
+
+// Verbatim retained real-provider refusal messages from the Live canary run.
+const LIVE_REFUSALS = [
+  "Error: Upstream WebSocket refused (HTTP 401)\n    at fail (/Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/src/ws-upstream.ts:83:14)\n    at IncomingMessage.<anonymous> (/Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/src/ws-upstream.ts:101:9)\n    at IncomingMessage.wrapper (node:events:639:12)\n    at IncomingMessage.emit (node:events:526:24)\n    at endReadableNT (node:internal/streams/readable:1966:12)\n    at processTicksAndRejections (node:internal/process/task_queues:90:21)",
+  "Error: OpenAI Live unavailable: earlier provider refusal; no retry\n    at runLiveProvider (/Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/src/__tests__/drift/live-scenarios.ts:245:11)\n    at /Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/src/__tests__/drift/ws-live.drift.ts:12:26\n    at file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11\n    at file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26\n    at file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)\n    at runTest (file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at runSuite (file:///Users/jpr5/.local/state/copilotkit/worktrees/aimock/blitz-aimock-gpt-live-canary/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)",
+];
+
+function liveResult(status: string, messages: string[] = []): VitestJsonResult {
+  return makeResult(
+    ["client lifecycle", "managed lifecycle"].map((title, index) =>
+      makeAssertion({
+        ancestorTitles: ["OpenAI Live API drift"],
+        title,
+        status,
+        failureMessages: messages[index] ? [messages[index]] : [],
+      }),
+    ),
+  );
+}
+
+describe("OpenAI Live collector attribution and runtime coverage", () => {
+  it("attributes supported-invariant drift to the actual Live handler and descriptors", () => {
+    const result = resultFor(
+      formatDriftReport("OpenAI Live (client lifecycle)", [SAMPLE_DIFF], "openai-live"),
+      "OpenAI Live API drift",
+    );
+    expect(entriesOf(result)[0]).toMatchObject({
+      provider: "OpenAI Live",
+      builderFile: "src/ws-live.ts",
+      builderFunctions: ["handleLiveSession"],
+      typesFile: "src/live-types.ts",
+      sdkShapesFile: "src/__tests__/drift/live-scenarios.ts",
+    });
+    expect(exitCodeOf(result)).toBe(2);
+  });
+  it("records absent-key runtime skips without treating source capability as execution", () => {
+    expect(collectUnverifiedSurfaces(liveResult("pending"))).toContainEqual({
+      surface: "openai-live",
+      provider: "OpenAI Live",
+      note: "This run: 0 passed, 0 failed, 2 skipped, 0 other Live assertions. Live compatibility was not fully verified.",
+    });
+    expect(entriesOf(liveResult("pending"))).toEqual([]);
+    expect(quarantineOf(liveResult("pending"))).toEqual([]);
+  });
+  it("does not declare a partially skipped surface verified", () => {
+    const result = liveResult("passed");
+    result.testResults[0].assertionResults[1].status = "skipped";
+    expect(
+      collectUnverifiedSurfaces(result).find((s) => s.surface === "openai-live")?.note,
+    ).toContain("1 passed, 0 failed, 1 skipped");
+  });
+  it("distinguishes a successful live run from an unexecuted surface", () => {
+    expect(
+      collectUnverifiedSurfaces(liveResult("passed")).some((s) => s.surface === "openai-live"),
+    ).toBe(false);
+    expect(
+      collectUnverifiedSurfaces(makeResult([])).find((s) => s.surface === "openai-live")?.note,
+    ).toContain("No Live assertions");
+  });
+  it("does not claim both modes from a filtered single-mode report", () => {
+    const result = liveResult("passed");
+    result.testResults[0].assertionResults.pop();
+    expect(
+      collectUnverifiedSurfaces(result).find((s) => s.surface === "openai-live")?.note,
+    ).toContain("not fully verified");
+  });
+  it("keeps actual 401 and latched refusal visible as unavailable, not protocol drift or skip", () => {
+    const result = liveResult("failed", LIVE_REFUSALS);
+    expect(entriesOf(result)).toEqual([]);
+    expect(quarantineOf(result).map((q) => q.provider)).toEqual(["OpenAI Live", "OpenAI Live"]);
+    expect(quarantineOf(result).map((q) => q.message)).toEqual(LIVE_REFUSALS);
+    expect(exitCodeOf(result)).toBe(5);
+    expect(
+      collectUnverifiedSurfaces(result).find((s) => s.surface === "openai-live")?.note,
+    ).toContain("0 passed, 2 failed, 0 skipped");
+  });
+  it.each([401, 403, 429])("keeps HTTP %i unavailable even beside valid drift", (status) => {
+    const result = liveResult("failed", [
+      `Error: Upstream WebSocket refused (HTTP ${status})`,
+      formatDriftReport("OpenAI Live (managed lifecycle)", [SAMPLE_DIFF], "openai-live"),
+    ]);
+    expect(quarantineOf(result)[0]?.provider).toBe("OpenAI Live");
+    expect(entriesOf(result)).toHaveLength(1);
+    expect(exitCodeOf(result)).toBe(2);
+  });
+  it("retains an untrusted Live failure even alongside another trusted finding", () => {
+    const result = liveResult("failed", [
+      "Error: API DRIFT DETECTED: untrusted marker without a numbered diagnostic",
+      formatDriftReport("OpenAI Live (managed lifecycle)", [SAMPLE_DIFF], "openai-live"),
+    ]);
+    expect(quarantineOf(result)[0]?.provider).toBe("OpenAI Live");
+  });
+  it("quarantines untrusted marker alone", () => {
+    expect(
+      exitCodeOf(resultFor("Error: API DRIFT DETECTED: untrusted marker", "OpenAI Live API drift")),
+    ).toBe(5);
+  });
+  it("keeps zero-message deadline in the existing timeout lane", () => {
+    const result = resultFor(
+      "Error: waitUntil timeout after 15000ms. Collected 0 messages: OpenAI Live upgrade",
+      "OpenAI Live API drift",
+    );
+    expect(timeoutsOf(result)[0].timeoutMs).toBe(15000);
+    expect(exitCodeOf(result)).toBe(6);
+  });
+  it("attributes handshake protocol errors independently of Realtime", () => {
+    const result = resultFor(
+      'Error: waitUntil timeout after 30000ms. Collected 1 messages: [error] bodies=[{"type":"error","error":{"type":"invalid_request_error","code":"invalid_config","message":"Invalid session config"}}]',
+      "OpenAI Live API drift",
+    );
+    expect(entriesOf(result)[0]).toMatchObject({
+      provider: "OpenAI Live",
+      builderFile: "src/ws-live.ts",
+      sdkShapesFile: "src/__tests__/drift/live-scenarios.ts",
+    });
+    expect(exitCodeOf(result)).toBe(2);
+  });
+  it("preserves text exclusion and the mini negative control", () => {
+    expect(isKnownVoiceModelFamily("gpt-live-1")).toBe(true);
+    expect(excludeFamilies.openai.has("gpt-live-1")).toBe(true);
+    expect(isKnownVoiceModelFamily("gpt-live-1-mini")).toBe(false);
+    expect(unclassifiedFamilies(["gpt-live-1-mini"], "openai")).toContain("gpt-live-1-mini");
   });
 });

@@ -5,6 +5,14 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import type {
+  ResponseCreateParamsStreaming,
+  ResponseStreamEvent,
+} from "openai-current-sdk/resources/responses/responses";
+import { LLMock } from "../../llmock.js";
 import { createServer, type ServerInstance } from "../../server.js";
 import type { Fixture } from "../../types.js";
 import {
@@ -19,6 +27,10 @@ import {
   openaiResponsesNonStreamingShape,
   openaiResponsesTextEventShapes,
   openaiResponsesToolCallEventShapes,
+  openaiResponsesNamespacedToolCallEventShapes,
+  openaiResponsesCustomToolCallEventShapes,
+  openaiResponsesNamespacedToolCallNonStreamingShape,
+  openaiResponsesCustomToolCallNonStreamingShape,
   openaiResponsesReasoningEventShapes,
   openaiResponsesEncryptedReasoningEventShapes,
 } from "./sdk-shapes.js";
@@ -26,6 +38,8 @@ import {
   resolveLiveModel,
   isInfraSkip,
   isModelNotFound,
+  throwIfProviderQuotaExhausted,
+  throwIfProviderQuotaRefusal,
   type LiveModelEntry,
   type ResolvedModel,
 } from "./providers.js";
@@ -35,6 +49,11 @@ import {
   parseTypedSSE,
   startDriftServer,
   stopDriftServer,
+  OPENAI_K9_SUMMARY_SHAPES,
+  OPENAI_K9_PROBE_MODEL,
+  OPENAI_K9_REPLAY_MODEL,
+  matchOpenAIK9SummaryShape,
+  isOpenAIModelSnapshot,
 } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -70,26 +89,547 @@ afterAll(async () => {
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
 
+// Credential presence enables two bounded paid exhaustion probes in daily
+// drift. An explicit capture directory instead replays the hash-pinned real
+// transcripts, with their exact requests/status metadata checked below. Each
+// capture was taken against `capturedModel`, which can trail the live probe
+// model after a retirement.
+const EXHAUSTION_CAPTURE_DIR = process.env.OPENAI_RESPONSES_EXHAUSTION_CAPTURE_DIR;
+const exhaustionCases: {
+  kind: "K5" | "K9";
+  prefix: string;
+  sha256: string;
+  capturedModel: string;
+  request: ResponseCreateParamsStreaming;
+}[] = [
+  {
+    kind: "K5",
+    prefix: "k5-20261008T170311Z",
+    sha256: "8095336aeb8908dd4647bbecd49a5a06959f1e5dac06b7a9a17416a30c3e7152",
+    capturedModel: "gpt-4.1-mini",
+    request: {
+      model: "gpt-4.1-mini",
+      input:
+        "Call record_text with a detailed 1000-word description of the water cycle in its text argument.",
+      tools: [
+        {
+          type: "function",
+          name: "record_text",
+          parameters: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          strict: false,
+        },
+      ],
+      tool_choice: { type: "function", name: "record_text" },
+      max_output_tokens: 32,
+      stream: true,
+      store: false,
+    },
+  },
+  {
+    kind: "K9",
+    prefix: "k9-20261008T170312Z",
+    sha256: "f96bf0db1dae1cab1956af15d589d26cace087a5893604bd6c727b6347c0d0ae",
+    capturedModel: OPENAI_K9_REPLAY_MODEL,
+    request: {
+      model: OPENAI_K9_PROBE_MODEL,
+      input:
+        "Find all positive integers n below 100000 for which n squared plus n plus 41 is prime. Explain a rigorous strategy before computing.",
+      reasoning: { effort: "high", summary: "auto" },
+      max_output_tokens: 32,
+      stream: true,
+      store: false,
+    },
+  },
+];
+
+function inspectExhaustion(
+  raw: string,
+  kind: "K5" | "K9",
+  side: "provider" | "localhost",
+  requested: string,
+) {
+  const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
+  expect(blocks.pop(), "Responses terminal SSE event must be terminated").toBe("");
+  const events: ResponseStreamEvent[] = blocks.filter(Boolean).map((block) => {
+    const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+    const eventType = lines.filter((line) => line.startsWith("event: "));
+    const data = lines.filter((line) => line.startsWith("data: "));
+    expect(eventType).toHaveLength(1);
+    expect(data).toHaveLength(1);
+    const event: ResponseStreamEvent = JSON.parse(data[0].slice(6));
+    expect(event.type).toBe(eventType[0].slice(7));
+    return event;
+  });
+  const order = events
+    .map((event) => event.type)
+    .filter((type, index, types) => type !== types[index - 1]);
+  // Live K9 streams one of three named summary shapes at random (see
+  // OPENAI_K9_SUMMARY_SHAPES for the measured frequencies). Only the provider
+  // side may vary; localhost must still emit the full summary.
+  const summaryShape =
+    kind === "K9" && side === "provider"
+      ? matchOpenAIK9SummaryShape(order.slice(3, -2))
+      : ("full-summary" as const);
+  if (summaryShape === undefined) {
+    throw new Error(
+      `live K9 event order matches none of the accepted summary shapes ` +
+        `(${Object.keys(OPENAI_K9_SUMMARY_SHAPES).join(", ")}): ${order.join(", ")}`,
+    );
+  }
+  expect(order).toEqual([
+    "response.created",
+    "response.in_progress",
+    "response.output_item.added",
+    ...(kind === "K5"
+      ? ["response.function_call_arguments.delta", "response.function_call_arguments.done"]
+      : OPENAI_K9_SUMMARY_SHAPES[summaryShape]),
+    "response.output_item.done",
+    "response.incomplete",
+  ]);
+  const terminal = events.at(-1);
+  if (terminal?.type !== "response.incomplete") throw new Error("Missing incomplete terminal");
+  expect(events.filter((event) => event.type === "response.incomplete")).toHaveLength(1);
+  expect(terminal.response.status).toBe("incomplete");
+  expect(terminal.response.incomplete_details).toEqual({ reason: "max_output_tokens" });
+  expect(terminal.response.output).toHaveLength(1);
+  const item = terminal.response.output[0];
+  const added = events.filter((event) => event.type === "response.output_item.added");
+  const done = events.filter((event) => event.type === "response.output_item.done");
+  expect(added).toHaveLength(1);
+  expect(done).toHaveLength(1);
+  expect(added[0].item.id).toBe(item.id);
+  expect(done[0].item.id).toBe(item.id);
+  expect(added[0].item.type).toBe(item.type);
+  expect(done[0].item.type).toBe(item.type);
+  let text = "";
+  if (kind === "K5") {
+    if (item.type !== "function_call" || done[0].item.type !== "function_call")
+      throw new Error("K5 requires only a function call");
+    expect(item.name).toBe("record_text");
+    expect(item.status).toBe("incomplete");
+    expect(item.arguments.length).toBeGreaterThan(0);
+    expect(() => JSON.parse(item.arguments)).toThrow();
+    const deltas = events.filter(
+      (event) => event.type === "response.function_call_arguments.delta",
+    );
+    const argumentDone = events.filter(
+      (event) => event.type === "response.function_call_arguments.done",
+    );
+    expect(argumentDone).toHaveLength(1);
+    for (const event of [...deltas, ...argumentDone]) {
+      expect(event.item_id).toBe(item.id);
+      expect(event.output_index).toBe(0);
+    }
+    text = deltas.map((event) => event.delta).join("");
+    expect(text).toBe(item.arguments);
+    expect(argumentDone[0].arguments).toBe(text);
+    expect(done[0].item).toMatchObject({
+      arguments: text,
+      status: "incomplete",
+      call_id: item.call_id,
+    });
+  } else {
+    if (item.type !== "reasoning" || done[0].item.type !== "reasoning")
+      throw new Error("K9 requires only a reasoning item");
+    const deltas = events.filter((event) => event.type === "response.reasoning_summary_text.delta");
+    const partAdded = events.filter(
+      (event) => event.type === "response.reasoning_summary_part.added",
+    );
+    const textDone = events.filter(
+      (event) => event.type === "response.reasoning_summary_text.done",
+    );
+    const partDone = events.filter(
+      (event) => event.type === "response.reasoning_summary_part.done",
+    );
+    const closed = summaryShape === "full-summary";
+    expect(partAdded).toHaveLength(summaryShape === "no-summary" ? 0 : 1);
+    expect(textDone).toHaveLength(closed ? 1 : 0);
+    expect(partDone).toHaveLength(closed ? 1 : 0);
+    for (const event of [...partAdded, ...deltas, ...textDone, ...partDone]) {
+      expect(event.item_id).toBe(item.id);
+      expect(event.output_index).toBe(0);
+      expect(event.summary_index).toBe(0);
+    }
+    text = deltas.map((event) => event.delta).join("");
+    expect(text.length > 0).toBe(summaryShape !== "no-summary");
+    if (closed) {
+      // The retained real K9 capture has one item/part whose streamed draft
+      // differs from text.done. Final-summary events agree with each other;
+      // delta-to-final equality is not part of the exhaustion contract.
+      text = textDone[0].text;
+      expect(text.length).toBeGreaterThan(0);
+      expect(partDone[0].part).toEqual({ type: "summary_text", text });
+      expect(item.summary).toEqual([{ type: "summary_text", text }]);
+    } else {
+      // The cap landed before the summary closed: the final item carries none.
+      expect(item.summary).toEqual([]);
+    }
+    expect(done[0].item.summary).toEqual(item.summary);
+    if (side === "provider") {
+      // The cap went to reasoning alone: no visible output item, and every
+      // output token is a reasoning token (0 on o4-mini, the full cap on
+      // gpt-5.4-mini).
+      expect(terminal.response.output.every((output) => output.type === "reasoning")).toBe(true);
+      const usage = terminal.response.usage;
+      if (!usage) throw new Error("Missing terminal usage");
+      expect(usage.output_tokens).toBe(usage.output_tokens_details.reasoning_tokens);
+      expect(isOpenAIModelSnapshot(terminal.response.model, requested)).toBe(true);
+      for (const event of events) {
+        if (event.type === "response.created" || event.type === "response.in_progress") {
+          expect(event.response.model).toBe(terminal.response.model);
+        }
+      }
+    }
+  }
+  return {
+    order,
+    // The event order outside the reasoning-summary run, which every accepted
+    // provider shape shares with localhost.
+    frame: order.filter((type) => !type.startsWith("response.reasoning_summary_")),
+    text,
+    status: terminal.response.status,
+    reason: terminal.response.incomplete_details?.reason,
+  };
+}
+
+function gradeExhaustion(
+  raw: string,
+  kind: "K5" | "K9",
+  side: "provider" | "localhost",
+  requested: string,
+) {
+  try {
+    return inspectExhaustion(raw, kind, side, requested);
+  } catch (error) {
+    throw new Error(
+      formatDriftReport(
+        `Responses ${kind} ${side} exhaustion`,
+        [
+          {
+            path: `${kind}:${side}:exhaustion-contract`,
+            severity: "critical",
+            issue: error instanceof Error ? error.message : String(error),
+            expected: "captured incomplete/max_output_tokens event sequence and consistent payload",
+            real: side === "provider" ? "invalid event stream" : "validated provider stream",
+            mock: side === "localhost" ? "invalid event stream" : "not yet compared",
+          },
+        ],
+        "openai-responses",
+      ),
+    );
+  }
+}
+
+/** SSE event bodies for the quota check; a malformed stream is left to the grader. */
+function sseBodies(raw: string): unknown[] {
+  try {
+    return parseTypedSSE(raw).map((e) => e.data);
+  } catch {
+    return [];
+  }
+}
+
+/** The provider stream plus the model it was requested from. */
+async function exhaustionProviderWire(
+  scenario: (typeof exhaustionCases)[number],
+): Promise<{ raw: string; requested: string }> {
+  if (EXHAUSTION_CAPTURE_DIR) {
+    const raw = await readFile(
+      join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-response.sse`),
+      "utf8",
+    );
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(scenario.sha256);
+    const request: { body: ResponseCreateParamsStreaming } = JSON.parse(
+      await readFile(join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-request.json`), "utf8"),
+    );
+    const status: { status: string; content_type: string } = JSON.parse(
+      await readFile(join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-status.json`), "utf8"),
+    );
+    expect(request.body).toEqual({ ...scenario.request, model: scenario.capturedModel });
+    expect(status.status).toBe("200");
+    expect(status.content_type).toContain("text/event-stream");
+    console.log(
+      JSON.stringify({
+        kind: scenario.kind,
+        mode: "retained real capture",
+        sha256: scenario.sha256,
+        request: request.body,
+      }),
+    );
+    return { raw, requested: scenario.capturedModel };
+  }
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 45_000);
+  let raw = "";
+  let completed = false;
+  try {
+    const response = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify(scenario.request),
+      signal: controller.signal,
+    });
+    if (response.status !== 200) {
+      // Read the refusal before asserting, so an out-of-credit 429 is named as
+      // infra instead of failing as "expected 429 to be 200".
+      raw = await response.text();
+      throwIfProviderQuotaRefusal("OpenAI Responses", response.status, raw);
+    }
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    if (!response.body) throw new Error("Missing Responses body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let size = 0;
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > 1_048_576) throw new Error("Responses exhaustion exceeded 1 MiB");
+      raw += decoder.decode(result.value, { stream: true });
+    }
+    raw += decoder.decode();
+    completed = true;
+    return { raw, requested: String(scenario.request.model) };
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    console.log(
+      JSON.stringify({
+        kind: scenario.kind,
+        mode: "live paid provider; no retries",
+        request: scenario.request,
+        completed,
+        raw: OPENAI_API_KEY ? raw.replaceAll(OPENAI_API_KEY, "[REDACTED]") : raw,
+      }),
+    );
+  }
+}
+
+describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
+  "Responses K5/K9 exhaustion drift",
+  () => {
+    it.each(exhaustionCases)(
+      "$kind provider terminal agrees with actual localhost",
+      async (scenario) => {
+        const wire = await exhaustionProviderWire(scenario);
+        throwIfProviderQuotaExhausted("OpenAI Responses", sseBodies(wire.raw));
+        await compareExhaustion(scenario, wire.raw, wire.requested);
+      },
+    );
+  },
+);
+
+// Retained live o4-mini K9 provider streams captured 2026-10-10 from the K9
+// request above (then on OPENAI_K9_REPLAY_MODEL), one per accepted provider summary shape. They replay
+// without a credential so the variant grading and its rejections stay checked.
+const K9_PROVIDER_REPLAYS = ["full-summary", "no-summary", "unclosed-summary"] as const;
+const k9Case = exhaustionCases.find((scenario) => scenario.kind === "K9")!;
+
+function readK9ProviderReplay(shape: (typeof K9_PROVIDER_REPLAYS)[number]) {
+  return readFile(new URL(`./fixtures/openai-responses-k9-${shape}.sse`, import.meta.url), "utf8");
+}
+
+/** Rewrites only the terminal SSE event's JSON payload. */
+function withTerminalEvent(
+  raw: string,
+  mutate: (terminal: { response: { model: string; usage: { output_tokens: number } } }) => void,
+): string {
+  const blocks = raw.split("\n\n");
+  const index = blocks
+    .map((block) => block.startsWith("event: response.incomplete\n"))
+    .lastIndexOf(true);
+  const lines = blocks[index].split("\n");
+  const dataIndex = lines.findIndex((line) => line.startsWith("data: "));
+  const terminal = JSON.parse(lines[dataIndex].slice(6));
+  mutate(terminal);
+  lines[dataIndex] = `data: ${JSON.stringify(terminal)}`;
+  blocks[index] = lines.join("\n");
+  return blocks.join("\n\n");
+}
+
+describe("Responses K9 provider variant replay", () => {
+  it.each(K9_PROVIDER_REPLAYS)(
+    "retained %s provider stream agrees with actual localhost",
+    async (shape) => {
+      await compareExhaustion(k9Case, await readK9ProviderReplay(shape), OPENAI_K9_REPLAY_MODEL);
+    },
+  );
+
+  it.each(K9_PROVIDER_REPLAYS)(
+    "retained %s provider stream rejects a wrong terminal status, non-reasoning output tokens or another model",
+    async (shape) => {
+      const raw = await readK9ProviderReplay(shape);
+      expect(raw).toContain('"status":"incomplete"');
+      expect(() =>
+        inspectExhaustion(
+          raw.replaceAll('"status":"incomplete"', '"status":"completed"'),
+          "K9",
+          "provider",
+          OPENAI_K9_REPLAY_MODEL,
+        ),
+      ).toThrow();
+      // Only the terminal usage changes; created/in_progress keep their
+      // zero-valued tool_usage, so this isolates the terminal usage check.
+      const spentTokens = withTerminalEvent(raw, (terminal) => {
+        expect(terminal.response.usage.output_tokens).toBe(0);
+        terminal.response.usage.output_tokens = 5;
+      });
+      expect(spentTokens.slice(0, spentTokens.indexOf("event: response.incomplete"))).toBe(
+        raw.slice(0, raw.indexOf("event: response.incomplete")),
+      );
+      expect(() =>
+        inspectExhaustion(spentTokens, "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
+      expect(raw).toContain('"model":"o4-mini-2025-04-16"');
+      expect(() =>
+        inspectExhaustion(
+          raw.replaceAll('"model":"o4-mini-2025-04-16"', '"model":"gpt-4.1-mini-2025-04-14"'),
+          "K9",
+          "provider",
+          OPENAI_K9_REPLAY_MODEL,
+        ),
+      ).toThrow();
+      // A valid-looking snapshot on the terminal alone must still disagree
+      // with created/in_progress.
+      const terminalModel = withTerminalEvent(raw, (terminal) => {
+        terminal.response.model = "o4-mini-2099-01-01";
+      });
+      expect(() =>
+        inspectExhaustion(terminalModel, "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+      ).toThrow();
+    },
+  );
+
+  it("rejects an 8-event out-of-order provider summary sequence", async () => {
+    const blocks = (await readK9ProviderReplay("full-summary")).split("\n\n");
+    const typed = (type: string) => (block: string) => block.startsWith(`event: ${type}\n`);
+    const textDone = blocks.filter(typed("response.reasoning_summary_text.done"));
+    const reordered = blocks
+      .filter(
+        (block) =>
+          !typed("response.reasoning_summary_part.added")(block) &&
+          !typed("response.reasoning_summary_text.done")(block),
+      )
+      .flatMap((block) =>
+        typed("response.reasoning_summary_part.done")(block) ? [block, ...textDone] : [block],
+      );
+    expect(textDone).toHaveLength(1);
+    expect(blocks.length - reordered.length).toBe(1);
+    expect(() =>
+      inspectExhaustion(reordered.join("\n\n"), "K9", "provider", OPENAI_K9_REPLAY_MODEL),
+    ).toThrow(/matches none of the accepted summary shapes/);
+  });
+
+  it.each(["no-summary", "unclosed-summary"] as const)(
+    "localhost grading still rejects the %s provider shape",
+    async (shape) => {
+      const raw = await readK9ProviderReplay(shape);
+      expect(() => inspectExhaustion(raw, "K9", "localhost", OPENAI_K9_REPLAY_MODEL)).toThrow(
+        /deeply equal/,
+      );
+    },
+  );
+});
+
+async function compareExhaustion(
+  scenario: (typeof exhaustionCases)[number],
+  provider: string,
+  requested: string,
+) {
+  const expected = gradeExhaustion(provider, scenario.kind, "provider", requested);
+  // Deliberate mutation of authentic provider bytes tests this reader's
+  // sensitivity, not a new product regression or a fabricated SDK response.
+  expect(() =>
+    inspectExhaustion(
+      provider.replaceAll("response.incomplete", "response.completed"),
+      scenario.kind,
+      "provider",
+      requested,
+    ),
+  ).toThrow();
+  console.log(
+    JSON.stringify({
+      kind: scenario.kind,
+      sensitivity: "real provider terminal changed to response.completed",
+      rejected: true,
+    }),
+  );
+  const mock = new LLMock({
+    port: 0,
+    logLevel: "silent",
+    chunkSize: 17,
+    enableMisbehavior: true,
+  });
+  mock.addFixture({
+    match: {},
+    response:
+      scenario.kind === "K5"
+        ? {
+            toolCalls: [
+              {
+                name: "record_text",
+                arguments: JSON.stringify({
+                  text: "The water cycle moves water between the atmosphere and the ground.",
+                }),
+              },
+            ],
+          }
+        : {
+            content: "This answer must be suppressed",
+            reasoning: "Consider each integer and test divisibility rigorously.",
+          },
+    misbehavior: scenario.kind === "K5" ? "stop-length-mid-tool" : "reasoning-only",
+  });
+  const url = await mock.start();
+  try {
+    const local = await httpPost(`${url}/v1/responses`, scenario.request);
+    expect(local.status, local.body).toBe(200);
+    expect(local.headers["content-type"]).toContain("text/event-stream");
+    console.log(
+      JSON.stringify({
+        kind: scenario.kind,
+        mode: "actual localhost",
+        request: scenario.request,
+        raw: local.body,
+      }),
+    );
+    const actual = gradeExhaustion(local.body, scenario.kind, "localhost", requested);
+    expect(actual.frame).toEqual(expected.frame);
+    expect(actual.status).toBe(expected.status);
+    expect(actual.reason).toBe(expected.reason);
+  } finally {
+    await mock.stop();
+  }
+}
+
 /** Maps OpenAI's `/v1/models` listing shape onto {@link LiveModelEntry}. */
 export async function fetchOpenAIModelsListing(): Promise<{
   status: number;
   models: LiveModelEntry[];
+  /** The start of the body, set only when the listing failed or was not JSON. */
+  bodyPreview?: string;
 }> {
   const res = await fetch(OPENAI_MODELS_URL, {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
   });
   const raw = await res.text();
-  if (res.status >= 400) return { status: res.status, models: [] };
+  if (res.status >= 400) return { status: res.status, models: [], bodyPreview: raw.slice(0, 300) };
   let json: { data?: { id: string }[] };
   try {
     json = JSON.parse(raw) as { data?: { id: string }[] };
   } catch {
-    return { status: res.status, models: [] };
+    return { status: res.status, models: [], bodyPreview: `non-JSON body: ${raw.slice(0, 300)}` };
   }
   return { status: res.status, models: (json.data ?? []).map((m) => ({ id: m.id })) };
 }
 
-/** Memoized (per providers.ts `resolveLiveModel`) so this file makes one listing call. */
+/** Memoized (per providers.ts `resolveLiveModel`) so each resolver key makes one listing call. */
 export function getOpenAIResponsesModel(): Promise<ResolvedModel> {
   return resolveLiveModel("openai-responses", fetchOpenAIModelsListing, ["gpt-4o-mini", "gpt-4o"]);
 }
@@ -151,6 +691,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       // Retired/renamed model or a transient provider condition — honest skip.
       ctx.skip();
@@ -197,6 +739,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -204,6 +748,12 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
 
     const realEvents = parseTypedSSE(realRes.raw);
+    // An out-of-credit account answers 200 and then sends `error` /
+    // `response.failed`. That is billing, not a new event type.
+    throwIfProviderQuotaExhausted(
+      "OpenAI Responses",
+      realEvents.map((e) => e.data),
+    );
     expect(realEvents.length, "Real API returned no SSE events").toBeGreaterThan(0);
     const realSSEShapes = realEvents.map((e) => ({
       type: e.type,
@@ -268,6 +818,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -332,6 +884,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       }),
     ]);
 
+    // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+    throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
     if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
       ctx.skip();
       return;
@@ -339,6 +893,12 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
     expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
 
     const realEvents = parseTypedSSE(realRes.raw);
+    // An out-of-credit account answers 200 and then sends `error` /
+    // `response.failed`. That is billing, not a new event type.
+    throwIfProviderQuotaExhausted(
+      "OpenAI Responses",
+      realEvents.map((e) => e.data),
+    );
     expect(realEvents.length, "Real API returned no SSE events").toBeGreaterThan(0);
     const realSSEShapes = realEvents.map((e) => ({
       type: e.type,
@@ -365,6 +925,403 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       report,
     ).toEqual([]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced and custom tool calls (#505)
+// ---------------------------------------------------------------------------
+//
+// `namespace` tools and `custom` (freeform) tools are GPT-5-family features, so
+// these legs resolve their own model, choosing ONLY from GPT5_TOOL_MODELS (never
+// the listing's first id). They report SKIPPED via `ctx.skip(reason)` only for
+// a genuinely unavailable probe: an infra status on the listing or the real
+// call, the real call reporting the model not found (`isModelNotFound`), or an
+// inconclusive real run (`response.incomplete`). A bare `return` would report
+// PASS with nothing compared. Everything else FAILS, like the other legs in
+// this file: a non-infra listing error, a listing with no usable models, a
+// listing that names none of GPT5_TOOL_MODELS (retired or renamed ids must turn
+// the run red, not skip forever), a mock error status, and a real run that
+// ends `response.failed` or with an `error` event. `tool_choice: "required"`
+// with a single offered tool forces the call without depending on a
+// namespace-aware `tool_choice` shape.
+
+const NAMESPACE_TOOLS = [
+  {
+    type: "namespace",
+    name: "weather_tools",
+    description: "Weather lookups",
+    tools: [
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Get weather",
+        parameters: {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
+          additionalProperties: false,
+        },
+      },
+    ],
+  },
+];
+
+const CUSTOM_TOOLS = [
+  {
+    type: "custom",
+    name: "apply_patch",
+    description: "Apply a patch in the *** Begin Patch / *** End Patch format.",
+  },
+];
+
+/** The only models the namespaced/custom tool legs may drive, in preference order. */
+const GPT5_TOOL_MODELS = ["gpt-5-mini", "gpt-5"];
+
+/** What the (single, memoized) listing call for the tool legs returned. */
+let toolsListing: { status: number; listed: number; bodyPreview?: string } | undefined;
+
+/**
+ * Memoized model for the namespaced/custom tool legs. The listing is narrowed
+ * to {@link GPT5_TOOL_MODELS} before selection, so `selectLiveModel`'s
+ * first-listed-id fallback can never pick an unrelated (or tool-less gpt-5
+ * variant) model; with none of them listed the result is `{ unavailable }`.
+ * The unfiltered status and count are kept in {@link toolsListing} so the
+ * failure message names the actual cause.
+ */
+function getOpenAIResponsesToolsModel(): Promise<ResolvedModel> {
+  return resolveLiveModel(
+    "openai-responses-gpt5-tools",
+    async () => {
+      const listing = await fetchOpenAIModelsListing();
+      toolsListing = {
+        status: listing.status,
+        listed: listing.models.length,
+        bodyPreview: listing.bodyPreview,
+      };
+      return {
+        status: listing.status,
+        models: listing.models.filter((m) => GPT5_TOOL_MODELS.includes(m.id)),
+      };
+    },
+    GPT5_TOOL_MODELS,
+  );
+}
+
+/**
+ * The model for a tool leg, or the reason to skip. `{ unavailable }` THROWS,
+ * as in every other leg here (see `ResolvedModel` in providers.ts: "a
+ * genuinely broken state to fail loud on"). A skip would hide a broken listing
+ * and, once both GPT5_TOOL_MODELS ids are retired, would drop the #505 drift
+ * coverage with no red signal anywhere.
+ */
+async function resolveToolsModel(): Promise<{ model: string } | { skip: string }> {
+  const resolved = await getOpenAIResponsesToolsModel();
+  if ("infra" in resolved) return { skip: `OpenAI /v1/models infra status ${resolved.infra}` };
+  if ("model" in resolved) return { model: resolved.model };
+  const l = toolsListing;
+  if (!l) throw new Error("OpenAI /v1/models: no listing recorded for the namespaced/custom legs");
+  if (l.status >= 400) {
+    throw new Error(`OpenAI /v1/models listing failed: status ${l.status}: ${l.bodyPreview ?? ""}`);
+  }
+  if (l.listed === 0) {
+    throw new Error(
+      `OpenAI /v1/models (status ${l.status}) returned no usable models: ${l.bodyPreview ?? "empty data[]"}`,
+    );
+  }
+  throw new Error(
+    `OpenAI /v1/models lists ${l.listed} models but none of ${GPT5_TOOL_MODELS.join(", ")}: ` +
+      `the ids were retired or renamed (update GPT5_TOOL_MODELS) or the key lost gpt-5 access. ` +
+      `Namespaced and custom tool drift is NOT being checked until this is fixed.`,
+  );
+}
+
+type TypedSSEEvent = ReturnType<typeof parseTypedSSE>[number];
+
+function isReasoningItem(item: unknown): boolean {
+  return (
+    typeof item === "object" && item !== null && (item as { type?: unknown }).type === "reasoning"
+  );
+}
+
+/**
+ * Drops everything a real stream carries for its `reasoning` output items:
+ * their `output_item.added`/`.done` events, every `response.reasoning_*` event
+ * (summary parts, summary text, reasoning text), any other event whose
+ * `item_id` is a reasoning item's id, and their entries in
+ * `response.completed.output`. Every other event, and every other output item,
+ * is kept as-is.
+ */
+function withoutReasoningItems(events: TypedSSEEvent[]): TypedSSEEvent[] {
+  const isItemEvent = (e: TypedSSEEvent) =>
+    e.type === "response.output_item.added" || e.type === "response.output_item.done";
+  const reasoningIds = new Set<unknown>(
+    events.filter((e) => isItemEvent(e) && isReasoningItem(e.data.item)).map((e) => e.data.item.id),
+  );
+  return events
+    .filter(
+      (e) =>
+        !(isItemEvent(e) && isReasoningItem(e.data.item)) &&
+        !e.type.startsWith("response.reasoning_") &&
+        !(e.data.item_id !== undefined && reasoningIds.has(e.data.item_id)),
+    )
+    .map((e) => {
+      const output: unknown = e.data.response?.output;
+      if (e.type !== "response.completed" || !Array.isArray(output)) return e;
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          response: { ...e.data.response, output: output.filter((i) => !isReasoningItem(i)) },
+        },
+      };
+    });
+}
+
+/**
+ * The provider's own error text when a real stream ended `response.failed` or
+ * with a top-level `error` event (both arrive on an HTTP 200), else undefined.
+ */
+function realStreamFailure(events: TypedSSEEvent[]): string | undefined {
+  const failure = events.find((e) => e.type === "response.failed" || e.type === "error");
+  if (!failure) return undefined;
+  const error: unknown =
+    failure.type === "error" ? failure.data : (failure.data.response?.error ?? failure.data);
+  return `real stream ended ${failure.type}: ${JSON.stringify(error)}`;
+}
+
+async function fetchOpenAIResponsesForcedTool(
+  model: string,
+  input: object[],
+  tools: object[],
+  stream: boolean,
+): Promise<{ status: number; raw: string }> {
+  const res = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      input,
+      tools,
+      tool_choice: "required",
+      stream,
+      // gpt-5-family models spend output tokens on hidden reasoning first. Low
+      // effort plus a roomy cap keeps a forced single call from ending
+      // `incomplete` (max_output_tokens); the leg still skips if it does.
+      reasoning: { effort: "low" },
+      max_output_tokens: 4096,
+    }),
+  });
+  return { status: res.status, raw: await res.text() };
+}
+
+describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and custom tools", () => {
+  let toolsInstance: ServerInstance;
+
+  beforeAll(async () => {
+    toolsInstance = await createServer(
+      [
+        {
+          match: { toolName: "get_weather", toolNamespace: "weather_tools" },
+          response: {
+            toolCalls: [
+              { name: "get_weather", namespace: "weather_tools", arguments: '{"city":"Paris"}' },
+            ],
+          },
+        },
+        {
+          match: { toolName: "apply_patch" },
+          response: {
+            toolCalls: [],
+            customToolCalls: [
+              {
+                type: "custom",
+                name: "apply_patch",
+                input: "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n",
+              },
+            ],
+          },
+        },
+      ] satisfies Fixture[],
+      // Namespace emission on toolCalls and custom-tool matching are opt-in.
+      { port: 0, chunkSize: 100, responsesTools: "extended" },
+    );
+  });
+
+  afterAll(async () => {
+    await stopDriftServer(toolsInstance);
+  });
+
+  const legs = [
+    {
+      name: "namespaced function_call",
+      tools: NAMESPACE_TOOLS,
+      input: [{ role: "user", content: "Weather in Paris" }],
+      itemType: "function_call",
+      sdk: openaiResponsesNamespacedToolCallEventShapes,
+      sdkNonStreaming: openaiResponsesNamespacedToolCallNonStreamingShape,
+    },
+    {
+      name: "custom_tool_call",
+      tools: CUSTOM_TOOLS,
+      input: [{ role: "user", content: "Create hello.txt containing hello, using apply_patch." }],
+      itemType: "custom_tool_call",
+      sdk: openaiResponsesCustomToolCallEventShapes,
+      sdkNonStreaming: openaiResponsesCustomToolCallNonStreamingShape,
+    },
+  ];
+
+  it.for(legs)(
+    "streaming $name event sequence matches",
+    async ({ name, tools, input, itemType, sdk }, ctx) => {
+      const resolved = await resolveToolsModel();
+      if ("skip" in resolved) {
+        ctx.skip(resolved.skip);
+        return;
+      }
+      const model = resolved.model;
+
+      // The leg's own shapes carry `response.completed` with the tool item; the
+      // text leg contributes only `response.created`.
+      const sdkEvents = [
+        ...openaiResponsesTextEventShapes().filter((e) => e.type === "response.created"),
+        ...sdk(),
+      ];
+
+      const [realRes, mockStreamRes] = await Promise.all([
+        fetchOpenAIResponsesForcedTool(model, input, tools, true),
+        httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: true, tools }),
+      ]);
+
+      // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+      throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
+      if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
+        ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
+        return;
+      }
+      expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
+      expect(
+        mockStreamRes.status,
+        `Mock error ${mockStreamRes.status}: ${mockStreamRes.body.slice(0, 300)}`,
+      ).toBe(200);
+
+      const parsedReal = parseTypedSSE(realRes.raw);
+      expect(parsedReal.length, "Real API returned no SSE events").toBeGreaterThan(0);
+      const incomplete = parsedReal.find((e) => e.type === "response.incomplete");
+      if (incomplete) {
+        // The model ran out of budget before finishing: an inconclusive probe,
+        // not drift. Skip with the reason rather than grade a partial stream.
+        ctx.skip(
+          `real run ended response.incomplete (${JSON.stringify(incomplete.data.response?.incomplete_details ?? null)})`,
+        );
+        return;
+      }
+      // An out-of-credit account answers 200 and then sends `error` /
+      // `response.failed`. That is billing, not a failed tool run.
+      throwIfProviderQuotaExhausted(
+        "OpenAI Responses",
+        parsedReal.map((e) => e.data),
+      );
+      const failure = realStreamFailure(parsedReal);
+      if (failure) throw new Error(failure);
+      // The real gpt-5 stream leads with a `reasoning` item; the mock fixture
+      // defines none, so it is dropped here to keep this leg about the tool
+      // item. The reasoning legs below are mock-only, so real reasoning-item
+      // shapes are not graded anywhere in this suite.
+      const realEvents = withoutReasoningItems(parsedReal);
+      expect(
+        realEvents.some(
+          (e) => e.type === "response.output_item.done" && e.data.item?.type === itemType,
+        ),
+        `Real API stream has no ${itemType} item despite tool_choice "required"; ` +
+          `events: ${parsedReal.map((e) => e.type).join(", ")}`,
+      ).toBe(true);
+      const mockEvents = parseTypedSSE(mockStreamRes.body);
+      expect(mockEvents.length, "Mock returned no SSE events").toBeGreaterThan(0);
+
+      const toShapes = (events: typeof realEvents) =>
+        events.map((e) => ({ type: e.type, dataShape: extractShape(e.data) }));
+      const diffs = compareSSESequences(sdkEvents, toShapes(realEvents), toShapes(mockEvents));
+      const report = formatDriftReport(
+        `OpenAI Responses (streaming ${name} events)`,
+        diffs,
+        "openai-responses",
+      );
+
+      expect(
+        diffs.filter((d) => d.severity === "critical"),
+        report,
+      ).toEqual([]);
+    },
+  );
+
+  it.for(legs)(
+    "non-streaming $name output item shape matches",
+    async ({ name, tools, input, itemType, sdkNonStreaming }, ctx) => {
+      const resolved = await resolveToolsModel();
+      if ("skip" in resolved) {
+        ctx.skip(resolved.skip);
+        return;
+      }
+      const model = resolved.model;
+
+      const [realRes, mockRes] = await Promise.all([
+        fetchOpenAIResponsesForcedTool(model, input, tools, false),
+        httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: false, tools }),
+      ]);
+
+      // Out of credit (HTTP 429 insufficient_quota) is infra, reported, not skipped.
+      throwIfProviderQuotaRefusal("OpenAI Responses", realRes.status, realRes.raw);
+      if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
+        ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
+        return;
+      }
+      expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
+      expect(mockRes.status, `Mock error ${mockRes.status}: ${mockRes.body.slice(0, 300)}`).toBe(
+        200,
+      );
+
+      const real = JSON.parse(realRes.raw) as Record<string, unknown>;
+      if (real.status === "incomplete") {
+        // Same inconclusive-probe rule as the streaming leg.
+        ctx.skip(`real run ended incomplete (${JSON.stringify(real.incomplete_details ?? null)})`);
+        return;
+      }
+      throwIfProviderQuotaExhausted("OpenAI Responses", [real]);
+      if (real.status === "failed" || (real.error !== undefined && real.error !== null)) {
+        throw new Error(`real response ${String(real.status)}: ${JSON.stringify(real.error)}`);
+      }
+      // As in the streaming leg: drop the real `reasoning` item, which the mock
+      // fixture does not define, so the report is about the tool item.
+      const output = Array.isArray(real.output) ? real.output : [];
+      const realToolOnly = { ...real, output: output.filter((i) => !isReasoningItem(i)) };
+      expect(
+        realToolOnly.output.some(
+          (i) => typeof i === "object" && i !== null && (i as { type?: unknown }).type === itemType,
+        ),
+        `Real API output has no ${itemType} item despite tool_choice "required"; ` +
+          `output types: ${JSON.stringify(output.map((i) => (i as { type?: unknown }).type))}`,
+      ).toBe(true);
+
+      const diffs = triangulate(
+        sdkNonStreaming(),
+        extractShape(realToolOnly),
+        extractShape(JSON.parse(mockRes.body)),
+      );
+      const report = formatDriftReport(
+        `OpenAI Responses (non-streaming ${name})`,
+        diffs,
+        "openai-responses",
+      );
+
+      expect(
+        diffs.filter((d) => d.severity === "critical"),
+        report,
+      ).toEqual([]);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

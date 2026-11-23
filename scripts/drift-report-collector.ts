@@ -14,22 +14,48 @@
  *       Covers BOTH legs: an HTTP failure that could not be mapped to a
  *       provider, and an AG-UI failure the collector could not structurally
  *       interpret. An uninterpretable failure is NEVER silently dropped.
- *   6 — at least one live leg timed out having observed ZERO messages: the
- *       surface went silent, so nothing was graded there. Not drift, not a
- *       collector fault, and NOT a clean baseline.
+ *   6 — at least one leg graded nothing, for one of two reasons: a live leg
+ *       timed out having observed ZERO messages (the surface went silent), or
+ *       the provider account is out of credit (a quota leg; the report names
+ *       its code). Not drift, not a collector fault, and NOT a clean baseline.
  *   1 — AG-UI drift detection was skipped (infra), or an unhandled script error
  *
  * Usage:
  *   npx tsx scripts/drift-report-collector.ts [--out drift-report.json]
  */
 
-import { execSync } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { discoverAgUiSources, resolveAgUiRepo } from "./drift-agui-canonical.js";
+import { execSync, execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  lstatSync,
+  readlinkSync,
+  realpathSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  unlinkSync,
+} from "node:fs";
+import { resolve, relative, isAbsolute, sep, dirname, basename } from "node:path";
+import { createRequire } from "node:module";
+import { randomBytes, randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
+import { MAX_EVIDENCE_RECORD_BYTES } from "./drift-evidence-reporter.js";
+import { parseProviderQuotaMarker, quotaCodeInCloseReason } from "./drift-quota.js";
+import type { EvidenceReporterRecord } from "./drift-evidence-reporter.js";
 
 import { SURFACE_REGISTRY, isKnownSurface } from "../src/__tests__/drift/surface-registry.js";
 import type { SurfaceMapping } from "../src/__tests__/drift/surface-registry.js";
+import {
+  parseLiveObservation,
+  type LiveObservation,
+} from "../src/__tests__/drift/live-observations.js";
 
 import type {
   DriftEntry,
@@ -38,6 +64,7 @@ import type {
   ParsedDiff,
   QuarantineEntry,
   TimeoutEntry,
+  UnverifiedSurface,
 } from "./drift-types.js";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +76,7 @@ interface VitestJsonResult {
 }
 
 interface VitestTestFile {
+  name?: string;
   assertionResults: VitestAssertion[];
 }
 
@@ -57,6 +85,1129 @@ interface VitestAssertion {
   ancestorTitles: string[];
   title: string;
   failureMessages: string[];
+}
+
+interface AssertionEvidence {
+  file: string;
+  ancestors: string[];
+  title: string;
+  status: string;
+  failureCount: number;
+  source: "native" | "local" | "captured" | "unknown";
+  disposition:
+    | "TARGET_COMPARED"
+    | "NOT_TRIGGERED"
+    | "FAILED"
+    | "UNATTEMPTED"
+    | "SKIPPED"
+    | "UNAVAILABLE";
+  consoleContext: { availability: "available" | "unavailable"; recordCount: number };
+  observations?: (
+    | BedrockObservation
+    | VertexObservation
+    | CohereObservation
+    | AnthropicObservation
+    | GeminiObservation
+    | RealtimeObservation
+    | InteractionsObservation
+    | OllamaObservation
+    | ResponsesWSObservation
+  )[];
+}
+
+interface BedrockObservation {
+  provider: "bedrock";
+  cell: { wire: "invoke" | "converse"; fault: "K5" | "K9"; stream: boolean };
+  source: "native" | "local";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED" | "FAILED";
+  sends: number;
+  requestedOutputTokens: number;
+}
+
+interface VertexObservation {
+  provider: "vertex";
+  cell: "k5-object" | "k5-stream" | "k9-object" | "k9-stream";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED" | "FAILED" | "UNATTEMPTED" | "SKIPPED";
+}
+
+interface CohereObservation {
+  provider: "cohere";
+  stream: boolean;
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface AnthropicObservation {
+  provider: "anthropic";
+  cell: "object" | "stream";
+  source: "native" | "captured";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface GeminiObservation {
+  provider: "gemini";
+  fault: "stop-length-mid-tool" | "reasoning-only";
+  stream: boolean;
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface RealtimeObservation {
+  provider: "realtime";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface InteractionsObservation {
+  provider: "interactions";
+  cell: "K5 stream";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface OllamaObservation {
+  provider: "ollama";
+  cell: "native object" | "native stream";
+  source: "native";
+  disposition: "UNAVAILABLE";
+  attempts: number;
+}
+
+const responsesWSEventTypes = [
+  "response.created",
+  "response.in_progress",
+  "response.output_item.added",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_summary_text.done",
+  "response.reasoning_summary_part.done",
+  "response.output_item.done",
+  "response.incomplete",
+  "response.completed",
+  "response.done",
+  "error",
+] as const;
+interface ResponsesWSObservation {
+  provider: "responses-ws";
+  cell: "K5" | "K9";
+  source: "native";
+  disposition: "UNAVAILABLE";
+  eventCount: number;
+  unknownEventTypeCount: number;
+  omittedEventTypeCount: number;
+  eventTypes: (typeof responsesWSEventTypes)[number][];
+  terminalStatus?: "incomplete" | "completed" | "failed";
+  incompleteReason?: "max_output_tokens" | "content_filter";
+}
+
+interface LegEvidence {
+  availability: "available" | "unavailable";
+  exitCode: number | null;
+  assertions: AssertionEvidence[];
+  consoleScopes?: {
+    entity: "suite" | "module";
+    file: string;
+    ancestors: string[];
+    title: string;
+    recordCount: number;
+  }[];
+  unboundConsoleRecordCount?: number;
+}
+
+// Raw content exists only in memory, never as a property serialized into evidence.
+const reporterChannels = new WeakMap<LegEvidence, EvidenceReporterRecord[]>();
+const liveObservations = new WeakMap<LegEvidence, LiveObservation[]>();
+const observationRejections = new WeakSet<LegEvidence>();
+// Leg -> unbound assertion diagnostics ("file › ancestors › title: reason").
+const observationUnavailability = new WeakMap<LegEvidence, string[]>();
+
+function parseEvidenceRecord(line: string): EvidenceReporterRecord | null {
+  if (Buffer.byteLength(line) > MAX_EVIDENCE_RECORD_BYTES) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || !("kind" in value)) return null;
+  if (value.kind === "complete" || value.kind === "unavailable") return { kind: value.kind };
+  if (
+    value.kind === "console-unavailable" &&
+    "taskId" in value &&
+    typeof value.taskId === "string" &&
+    value.taskId.length > 0
+  ) {
+    if (!("bytes" in value)) return { kind: "console-unavailable", taskId: value.taskId };
+    if (typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes < 0)
+      return null;
+    return { kind: "console-unavailable", taskId: value.taskId, bytes: value.bytes };
+  }
+
+  if (
+    value.kind === "console" &&
+    "taskId" in value &&
+    typeof value.taskId === "string" &&
+    "stream" in value &&
+    (value.stream === "stdout" || value.stream === "stderr") &&
+    "content" in value &&
+    typeof value.content === "string"
+  ) {
+    return { kind: "console", taskId: value.taskId, stream: value.stream, content: value.content };
+  }
+  if (
+    value.kind === "identity" &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "entity" in value &&
+    (value.entity === "test" || value.entity === "suite" || value.entity === "module") &&
+    "file" in value &&
+    typeof value.file === "string" &&
+    "title" in value &&
+    typeof value.title === "string" &&
+    "ancestors" in value &&
+    Array.isArray(value.ancestors) &&
+    value.ancestors.every((name): name is string => typeof name === "string")
+  ) {
+    return {
+      kind: "identity",
+      id: value.id,
+      entity: value.entity,
+      file: value.file,
+      title: value.title,
+      ancestors: value.ancestors,
+    };
+  }
+  return null;
+}
+
+function captureReporterChannel(leg: LegEvidence, stream: string) {
+  const lines = stream.split("\n").filter((line) => line.length > 0);
+  if (lines.length > 16_384) return;
+  const records: EvidenceReporterRecord[] = [];
+  for (const line of lines) {
+    const record = parseEvidenceRecord(line);
+    if (!record || record.kind === "unavailable") return;
+    records.push(record);
+  }
+  if (records.filter((record) => record.kind === "complete").length !== 1) return;
+  const identities = records.filter((record) => record.kind === "identity");
+  for (const record of records) {
+    if (record.kind !== "console-unavailable") continue;
+    const owners = identities.filter((identity) => identity.id === record.taskId);
+    if (owners.length !== 1) return;
+    const owner = owners[0];
+    if (
+      identities.filter(
+        (identity) =>
+          identity.entity === owner.entity &&
+          resolve(identity.file) === resolve(owner.file) &&
+          identity.title === owner.title &&
+          JSON.stringify(identity.ancestors) === JSON.stringify(owner.ancestors),
+      ).length !== 1
+    )
+      return;
+  }
+  reporterChannels.set(leg, records);
+}
+
+function evidenceFileName(file: string | undefined) {
+  const path =
+    file === undefined ? null : relative(process.cwd(), resolve(sanitizeEvidenceIdentity(file)));
+  return path === null || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)
+    ? "[outside-root]"
+    : boundedEvidenceIdentity(path.split(sep).join("/"));
+}
+
+const MAX_UNBOUND_ASSERTION_LINES = 50;
+
+type IdentityRecord = Extract<EvidenceReporterRecord, { kind: "identity" }>;
+
+// Identities that own a console-unavailable record (withheld console output).
+function taintedOwnerIdentities(records: EvidenceReporterRecord[]) {
+  const taintedIds = new Set(
+    records
+      .filter((record) => record.kind === "console-unavailable")
+      .map((record) => record.taskId),
+  );
+  return records.filter(
+    (record): record is IdentityRecord => record.kind === "identity" && taintedIds.has(record.id),
+  );
+}
+
+// The tainted owners whose withheld output covers this identity.
+function taintingOwners(taintedOwners: IdentityRecord[], identity: IdentityRecord) {
+  return taintedOwners.filter((owner) => {
+    if (resolve(identity.file) !== resolve(owner.file)) return false;
+    if (owner.entity === "module") return true;
+    if (owner.entity === "test") return identity.id === owner.id;
+    const path = [...owner.ancestors, owner.title];
+    return (
+      identity.id === owner.id || path.every((part, index) => identity.ancestors[index] === part)
+    );
+  });
+}
+
+function contextKey(file: string | undefined, ancestors: string[], title: string) {
+  return JSON.stringify([file === undefined ? null : resolve(file), ancestors, title]);
+}
+
+// Names each passed/failed assertion with no console context, and why, so a
+// withheld observation artifact points at its cause instead of a bare ENOENT.
+function describeUnboundAssertions(
+  leg: LegEvidence,
+  result: VitestJsonResult,
+  contexts: Map<VitestAssertion, unknown>,
+) {
+  const records = reporterChannels.get(leg);
+  const identities = (records ?? []).filter(
+    (record): record is IdentityRecord => record.kind === "identity",
+  );
+  const tainted = taintedOwnerIdentities(records ?? []);
+  return result.testResults.flatMap((file) =>
+    file.assertionResults
+      .filter(
+        (assertion) => ["passed", "failed"].includes(assertion.status) && !contexts.has(assertion),
+      )
+      .map((assertion) => {
+        const name = [
+          evidenceFileName(file.name),
+          ...assertion.ancestorTitles.map(boundedEvidenceIdentity),
+          boundedEvidenceIdentity(assertion.title),
+        ].join(" › ");
+        if (!records) return `${name}: reporter evidence channel unavailable`;
+        const identityKey = contextKey(file.name, assertion.ancestorTitles, assertion.title);
+        const matches = identities.filter(
+          (identity) =>
+            identity.entity === "test" &&
+            contextKey(identity.file, identity.ancestors, identity.title) === identityKey,
+        );
+        const owners = matches.length === 1 ? taintingOwners(tainted, matches[0]) : [];
+        if (!owners.length) return `${name}: no console context matched`;
+        const sizes = records.flatMap((record) =>
+          record.kind === "console-unavailable" &&
+          record.bytes !== undefined &&
+          owners.some((owner) => owner.id === record.taskId)
+            ? [record.bytes]
+            : [],
+        );
+        return sizes.length
+          ? `${name}: console output unavailable: record exceeded ${MAX_EVIDENCE_RECORD_BYTES} bytes (${Math.max(...sizes)} bytes)`
+          : `${name}: console-unavailable`;
+      }),
+  );
+}
+
+function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
+  const records = reporterChannels.get(leg) ?? [];
+  const identities = records.filter((record) => record.kind === "identity");
+  const logs = records.filter((record) => record.kind === "console");
+  const taintedOwners = taintedOwnerIdentities(records);
+  const isTainted = (identity: IdentityRecord) =>
+    taintingOwners(taintedOwners, identity).length > 0;
+  const key = contextKey;
+  const rows = result.testResults.flatMap((file) =>
+    file.assertionResults.map((assertion) => ({
+      assertion,
+      key: key(file.name, assertion.ancestorTitles, assertion.title),
+    })),
+  );
+  const bound = new Map<VitestAssertion, Extract<EvidenceReporterRecord, { kind: "console" }>[]>();
+  const matchedIds = new Set<string>();
+  leg.consoleScopes = [];
+  for (const identity of identities) {
+    if (!identity.id || identities.filter((item) => item.id === identity.id).length !== 1) continue;
+    if (isTainted(identity)) continue;
+    const messages = logs.filter((log) => log.taskId === identity.id);
+    if (identity.entity !== "test") {
+      matchedIds.add(identity.id);
+      if (messages.length)
+        leg.consoleScopes.push({
+          entity: identity.entity,
+          file: evidenceFileName(identity.file),
+          ancestors: identity.ancestors.slice(0, 16).map(boundedEvidenceIdentity),
+          title: boundedEvidenceIdentity(identity.title),
+          recordCount: messages.length,
+        });
+      continue;
+    }
+    const identityKey = key(identity.file, identity.ancestors, identity.title);
+    const matches = rows.filter((row) => row.key === identityKey);
+    if (
+      matches.length !== 1 ||
+      identities.filter(
+        (item) =>
+          item.entity === "test" && key(item.file, item.ancestors, item.title) === identityKey,
+      ).length !== 1
+    )
+      continue;
+    matchedIds.add(identity.id);
+    bound.set(matches[0].assertion, messages);
+  }
+  leg.unboundConsoleRecordCount = logs.filter((log) => !matchedIds.has(log.taskId)).length;
+  return bound;
+}
+
+function emptyLegEvidence(): LegEvidence {
+  return { availability: "unavailable", exitCode: null, assertions: [] };
+}
+
+// Redact COMPLETE fields before clipping, so a boundary cannot retain a secret prefix.
+function sanitizeEvidenceIdentity(value: string) {
+  for (const [name, secret] of Object.entries(process.env)) {
+    if (/(?:key|token|secret|password|credential)/i.test(name) && secret && secret.length >= 4) {
+      value = value.replaceAll(secret, "[redacted]");
+    }
+  }
+  return value
+    .replace(
+      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
+      "[redacted]",
+    )
+    .replace(/\bBearer\s+[^\s"'<>]+/gi, "Bearer [redacted]");
+}
+
+function boundedEvidenceIdentity(value: string) {
+  return stripVTControlCharacters(sanitizeEvidenceIdentity(value))
+    .split("")
+    .filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+    .join("")
+    .slice(0, 240);
+}
+
+function bedrockObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): BedrockObservation[] {
+  if (
+    file !== "src/__tests__/drift/bedrock-misbehavior-live.drift.ts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: BedrockObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("nativeComparison" in value)) continue;
+      const cell = value.nativeComparison;
+      if (
+        !cell ||
+        typeof cell !== "object" ||
+        !("wire" in cell) ||
+        (cell.wire !== "invoke" && cell.wire !== "converse") ||
+        !("fault" in cell) ||
+        (cell.fault !== "K5" && cell.fault !== "K9") ||
+        !("stream" in cell) ||
+        typeof cell.stream !== "boolean" ||
+        !("source" in value) ||
+        (value.source !== "native" && value.source !== "local") ||
+        !("outcome" in value) ||
+        !["TARGET_COMPARED", "NOT_TRIGGERED", "FAILED"].some(
+          (outcome) => outcome === value.outcome,
+        ) ||
+        !("sends" in value) ||
+        typeof value.sends !== "number" ||
+        !Number.isFinite(value.sends) ||
+        value.sends < 0 ||
+        !("requestedOutputTokens" in value) ||
+        typeof value.requestedOutputTokens !== "number" ||
+        !Number.isFinite(value.requestedOutputTokens) ||
+        value.requestedOutputTokens < 0
+      )
+        return [];
+      const nativeContext =
+        assertion.ancestorTitles.length === 1 &&
+        assertion.ancestorTitles[0] === "native AWS misbehavior" &&
+        assertion.title === `${cell.wire} ${cell.fault} stream=${cell.stream}`;
+      const localContext =
+        assertion.ancestorTitles.length === 0 &&
+        [
+          "coordinator accounts eight cells and blocks a ninth send",
+          "coordinator stops after actual SDK response fails classification",
+        ].includes(assertion.title);
+      if (value.source === "native" ? !nativeContext : !localContext) return [];
+      // Explicit enum checks also narrow untrusted JSON without a cast.
+      if (
+        value.outcome !== "TARGET_COMPARED" &&
+        value.outcome !== "NOT_TRIGGERED" &&
+        value.outcome !== "FAILED"
+      )
+        return [];
+      observations.push({
+        provider: "bedrock",
+        cell: { wire: cell.wire, fault: cell.fault, stream: cell.stream },
+        source: value.source,
+        disposition: value.outcome,
+        sends: value.sends,
+        requestedOutputTokens: value.requestedOutputTokens,
+      });
+    }
+  }
+  // One native assertion owns exactly one cell; duplicate/conflicting markers
+  // cannot certify it. The local coordinator legitimately reports eight cells.
+  if (observations.some((item) => item.source === "native") && observations.length !== 1) return [];
+  return observations;
+}
+
+function vertexObservations(
+  leg: LegEvidence,
+  file: string,
+  assertion: VitestAssertion,
+): VertexObservation[] {
+  const suite = "Vertex native recurring modeled-contract observations";
+  if (
+    file !== "src/__tests__/drift/vertex-misbehavior.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== suite ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const records = reporterChannels.get(leg) ?? [];
+  const identities = records.filter((record) => record.kind === "identity");
+  const owners = identities.filter(
+    (identity) =>
+      identity.entity === "suite" &&
+      evidenceFileName(identity.file) === file &&
+      identity.ancestors.length === 0 &&
+      identity.title === suite,
+  );
+  if (
+    owners.length !== 1 ||
+    !owners[0].id ||
+    identities.filter((identity) => identity.id === owners[0].id).length !== 1
+  )
+    return [];
+  const reports: VertexObservation[][] = [];
+  for (const record of records) {
+    if (record.kind !== "console" || record.taskId !== owners[0].id || record.stream !== "stdout")
+      continue;
+    for (const line of record.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("provider" in value) ||
+        value.provider !== "vertex"
+      )
+        continue;
+      if (
+        "proof" in value ||
+        !("results" in value) ||
+        !Array.isArray(value.results) ||
+        value.results.length !== 4
+      )
+        return [];
+      const observations: VertexObservation[] = [];
+      for (const row of value.results) {
+        if (
+          !row ||
+          typeof row !== "object" ||
+          !("cell" in row) ||
+          (row.cell !== "k5-object" &&
+            row.cell !== "k5-stream" &&
+            row.cell !== "k9-object" &&
+            row.cell !== "k9-stream") ||
+          !("classification" in row) ||
+          (row.classification !== "TARGET_COMPARED" &&
+            row.classification !== "NOT_TRIGGERED" &&
+            row.classification !== "FAILURE" &&
+            row.classification !== "UNATTEMPTED" &&
+            row.classification !== "SKIPPED")
+        )
+          return [];
+        if (observations.some((item) => item.cell === row.cell)) return [];
+        observations.push({
+          provider: "vertex",
+          cell: row.cell,
+          source: "native",
+          disposition: row.classification === "FAILURE" ? "FAILED" : row.classification,
+        });
+      }
+      reports.push(observations);
+    }
+  }
+  if (reports.length !== 1) return [];
+  return reports[0].filter(
+    (row) => assertion.title === `${row.cell} records a target comparison or approved non-trigger`,
+  );
+}
+
+function cohereObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): CohereObservation[] {
+  if (
+    file !== "src/__tests__/drift/cohere.drift.ts" ||
+    assertion.ancestorTitles.length !== 0 ||
+    assertion.title !== "P1 Cohere native K5 object modeled and stream observed comparison" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const reports: CohereObservation[][] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("cohereK5" in value)) continue;
+      if (!Array.isArray(value.cohereK5) || value.cohereK5.length !== 2) return [];
+      const observations: CohereObservation[] = [];
+      for (const row of value.cohereK5) {
+        if (
+          !row ||
+          typeof row !== "object" ||
+          !("stream" in row) ||
+          typeof row.stream !== "boolean" ||
+          !("classification" in row) ||
+          (row.classification !== "TARGET" && row.classification !== "NOT_TRIGGERED") ||
+          observations.some((item) => item.stream === row.stream)
+        )
+          return [];
+        observations.push({
+          provider: "cohere",
+          stream: row.stream,
+          source: "native",
+          disposition: row.classification === "TARGET" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+        });
+      }
+      reports.push(observations);
+    }
+  }
+  return reports.length === 1 ? reports[0] : [];
+}
+
+function anthropicObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): AnthropicObservation[] {
+  if (
+    file !== "src/__tests__/drift/anthropic.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Anthropic K9 modeled exhaustion drift" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const cell =
+    assertion.title === "object modeled localhost and bounded native trigger"
+      ? "object"
+      : assertion.title === "stream modeled localhost and bounded native trigger"
+        ? "stream"
+        : undefined;
+  if (!cell) return [];
+  let source: "native" | "captured" | undefined;
+  let observation: AnthropicObservation | undefined;
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("k9" in value)) continue;
+      if (value.k9 !== cell) return [];
+      if (
+        "mode" in value &&
+        (value.mode === "live paid provider; no retries" ||
+          value.mode === "retained native capture")
+      ) {
+        if (source || observation) return [];
+        if (
+          value.mode === "live paid provider; no retries" &&
+          (!("completed" in value) || value.completed !== true)
+        )
+          return [];
+        source = value.mode === "retained native capture" ? "captured" : "native";
+      }
+      if ("native" in value) {
+        if (
+          !source ||
+          observation ||
+          (value.native !== "TARGET_COMPARED" && value.native !== "NOT_TRIGGERED")
+        )
+          return [];
+        observation = { provider: "anthropic", cell, source, disposition: value.native };
+      }
+    }
+  }
+  return observation ? [observation] : [];
+}
+
+function geminiObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): GeminiObservation[] {
+  if (
+    file !== "src/__tests__/drift/gemini.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Gemini modeled K5/K9 recurring contracts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  let acquired = false;
+  let observation: GeminiObservation | undefined;
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object") continue;
+      const acquisition = "kind" in value && value.kind === "NATIVE_MODELED_COMPARISON";
+      if (!acquisition && !("outcome" in value)) continue;
+      if (
+        !("fault" in value) ||
+        (value.fault !== "stop-length-mid-tool" && value.fault !== "reasoning-only") ||
+        !("stream" in value) ||
+        typeof value.stream !== "boolean" ||
+        assertion.title !== `live Developer API bounded ${value.fault} stream=${value.stream}`
+      )
+        return [];
+      if (acquisition) {
+        if (
+          acquired ||
+          observation ||
+          !("provider" in value) ||
+          value.provider !== "Gemini Developer API" ||
+          !("status" in value) ||
+          value.status !== 200
+        )
+          return [];
+        acquired = true;
+      } else {
+        if (
+          !acquired ||
+          observation ||
+          !("outcome" in value) ||
+          (value.outcome !== "NATIVE_TARGET_COMPARED" && value.outcome !== "NOT_TRIGGERED")
+        )
+          return [];
+        observation = {
+          provider: "gemini",
+          fault: value.fault,
+          stream: value.stream,
+          source: "native",
+          disposition:
+            value.outcome === "NATIVE_TARGET_COMPARED" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+        };
+      }
+    }
+  }
+  return observation ? [observation] : [];
+}
+
+function realtimeObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): RealtimeObservation[] {
+  if (
+    file !== "src/__tests__/drift/ws-realtime.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Realtime K5 modeled contract" ||
+    assertion.title !== "native K5 bounded modeled comparison" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: RealtimeObservation[] = [];
+  const prefix = "Realtime K5 native ";
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      if (!line.startsWith(prefix)) continue;
+      let value: unknown;
+      try {
+        value = JSON.parse(line.slice(prefix.length));
+      } catch {
+        return [];
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("disposition" in value) ||
+        (value.disposition !== "MATCH" && value.disposition !== "NOT_TRIGGERED")
+      )
+        return [];
+      observations.push({
+        provider: "realtime",
+        source: "native",
+        disposition: value.disposition === "MATCH" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function interactionsObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): InteractionsObservation[] {
+  if (
+    file !== "src/__tests__/drift/gemini-interactions.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Gemini Interactions live modeled K5 stream" ||
+    assertion.title !==
+      "records genuine non-triggers and rejects contradictory triggered contracts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: InteractionsObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("disposition" in value)) continue;
+      if (
+        !("case" in value) ||
+        value.case !== "K5 stream" ||
+        "capture" in value ||
+        (value.disposition !== "TRIGGERED_MODELED_CONTRACT_MATCH" &&
+          value.disposition !== "NOT_TRIGGERED")
+      )
+        return [];
+      observations.push({
+        provider: "interactions",
+        cell: "K5 stream",
+        source: "native",
+        disposition:
+          value.disposition === "TRIGGERED_MODELED_CONTRACT_MATCH"
+            ? "TARGET_COMPARED"
+            : "NOT_TRIGGERED",
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function ollamaObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): OllamaObservation[] {
+  if (
+    file !== "src/__tests__/drift/ollama.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "P1 Ollama K9 native" ||
+    (assertion.title !== "object" && assertion.title !== "stream") ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: OllamaObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("cell" in value)) continue;
+      if (
+        (value.cell !== "native object" && value.cell !== "native stream") ||
+        value.cell !== `native ${assertion.title}` ||
+        !("attempts" in value) ||
+        typeof value.attempts !== "number" ||
+        !Number.isSafeInteger(value.attempts) ||
+        value.attempts < 0
+      )
+        return [];
+      observations.push({
+        provider: "ollama",
+        cell: value.cell,
+        source: "native",
+        disposition: "UNAVAILABLE",
+        attempts: value.attempts,
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function responsesWSObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): ResponsesWSObservation[] {
+  if (
+    file !== "src/__tests__/drift/ws-responses.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "OpenAI Responses WS exhaustion live drift" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: ResponsesWSObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("mode" in value) ||
+        value.mode !== "live WS decoded native events; not raw frames"
+      )
+        continue;
+      if (
+        !("kind" in value) ||
+        (value.kind !== "K5" && value.kind !== "K9") ||
+        assertion.title !== `WS ${value.kind} native comparison` ||
+        !("events" in value) ||
+        !Array.isArray(value.events)
+      )
+        return [];
+      const observation: ResponsesWSObservation = {
+        provider: "responses-ws",
+        cell: value.kind,
+        source: "native",
+        disposition: "UNAVAILABLE",
+        // Exact counts are bounded by the existing 256KiB reporter record limit.
+        eventCount: value.events.length,
+        unknownEventTypeCount: 0,
+        omittedEventTypeCount: 0,
+        eventTypes: [],
+      };
+      for (const event of value.events) {
+        const type =
+          event && typeof event === "object" && "type" in event
+            ? responsesWSEventTypes.find((known) => known === event.type)
+            : undefined;
+        if (!type) observation.unknownEventTypeCount++;
+        else if (observation.eventTypes.length < 128) observation.eventTypes.push(type);
+        else observation.omittedEventTypeCount++;
+      }
+      const terminal = value.events.at(-1);
+      if (
+        terminal &&
+        typeof terminal === "object" &&
+        "type" in terminal &&
+        ["response.incomplete", "response.completed", "response.done"].includes(terminal.type) &&
+        "response" in terminal &&
+        terminal.response &&
+        typeof terminal.response === "object"
+      ) {
+        const response = terminal.response;
+        if (
+          response.status === "incomplete" ||
+          response.status === "completed" ||
+          response.status === "failed"
+        )
+          observation.terminalStatus = response.status;
+        const details = response.incomplete_details;
+        if (
+          details &&
+          typeof details === "object" &&
+          (details.reason === "max_output_tokens" || details.reason === "content_filter")
+        )
+          observation.incompleteReason = details.reason;
+      }
+      observations.push(observation);
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function captureAssertionEvidence(leg: LegEvidence | undefined, result: VitestJsonResult) {
+  if (!leg) return;
+  const contexts = bindReporterContext(leg, result);
+  const unbound = describeUnboundAssertions(leg, result, contexts);
+  if (unbound.length) {
+    // Unavailable assertion stdout cannot establish a complete observation artifact.
+    observationUnavailability.set(leg, unbound);
+  }
+  const collected: LiveObservation[] = [];
+  for (const [assertion, messages] of contexts) {
+    if (!["passed", "failed"].includes(assertion.status)) continue;
+    for (const message of messages) {
+      if (message.stream !== "stdout") continue;
+      for (const line of message.content.split("\n")) {
+        try {
+          const observation = parseLiveObservation(line);
+          if (observation) collected.push(observation);
+        } catch {
+          // Defer only this new channel's rejection until the independent report is persisted.
+          observationRejections.add(leg);
+        }
+      }
+    }
+  }
+  liveObservations.set(leg, collected);
+  leg.assertions = result.testResults.flatMap((file) => {
+    const name = evidenceFileName(file.name);
+    return file.assertionResults.map((assertion): AssertionEvidence => {
+      const observations: (
+        | BedrockObservation
+        | VertexObservation
+        | CohereObservation
+        | AnthropicObservation
+        | GeminiObservation
+        | RealtimeObservation
+        | InteractionsObservation
+        | OllamaObservation
+        | ResponsesWSObservation
+      )[] = [
+        ...bedrockObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...cohereObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...anthropicObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...geminiObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...realtimeObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...interactionsObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...ollamaObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...responsesWSObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...(contexts.has(assertion) ? vertexObservations(leg, name, assertion) : []),
+      ];
+      const first = observations[0];
+      const agreement =
+        first &&
+        observations.every(
+          (item) => item.source === first.source && item.disposition === first.disposition,
+        );
+      return {
+        file: name,
+        ancestors: assertion.ancestorTitles.slice(0, 16).map(boundedEvidenceIdentity),
+        title: boundedEvidenceIdentity(assertion.title),
+        status: boundedEvidenceIdentity(assertion.status),
+        failureCount: assertion.failureMessages.length,
+        consoleContext: {
+          availability: contexts.has(assertion) ? "available" : "unavailable",
+          recordCount: contexts.get(assertion)?.length ?? 0,
+        },
+        ...(observations.length ? { observations } : {}),
+        source:
+          first && observations.every((item) => item.source === first.source)
+            ? first.source
+            : "unknown",
+        disposition:
+          assertion.status === "failed"
+            ? "FAILED"
+            : ["pending", "skipped", "todo", "disabled"].includes(assertion.status)
+              ? "SKIPPED"
+              : agreement
+                ? first.disposition
+                : "UNAVAILABLE",
+      };
+    });
+  });
+  leg.availability = "available";
+}
+
+// npx closes extra descriptors. Launch the candidate's installed CLI directly,
+// preserving test arguments and buffer limits while keeping fd3 private/in memory.
+function executeEvidenceVitest(command: string, leg: LegEvidence) {
+  const reporter = fileURLToPath(new URL("./drift-evidence-reporter.ts", import.meta.url));
+  const packagePath = createRequire(resolve(process.cwd(), "package.json")).resolve(
+    "vitest/package.json",
+  );
+  const manifest: unknown = JSON.parse(readFileSync(packagePath, "utf8"));
+  if (!manifest || typeof manifest !== "object" || !("bin" in manifest)) {
+    throw new Error("Installed Vitest package has no CLI entry");
+  }
+  const bin =
+    typeof manifest.bin === "string"
+      ? manifest.bin
+      : manifest.bin &&
+          typeof manifest.bin === "object" &&
+          "vitest" in manifest.bin &&
+          typeof manifest.bin.vitest === "string"
+        ? manifest.bin.vitest
+        : null;
+  if (!bin || !command.startsWith("npx vitest "))
+    throw new Error("Installed Vitest CLI is unavailable");
+  const cli = resolve(dirname(packagePath), bin);
+  if (!existsSync(cli) || !statSync(cli).isFile())
+    throw new Error("Installed Vitest CLI is unavailable");
+  const child = spawnSync(
+    process.execPath,
+    [cli, ...command.slice("npx vitest ".length).split(" "), "--reporter", reporter],
+    {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  leg.exitCode = child.status;
+  captureReporterChannel(leg, child.output[3] ?? "");
+  if (child.error || child.status !== 0) {
+    throw Object.assign(child.error ?? new Error(`Command failed: ${command}\n${child.stderr}`), {
+      stdout: child.stdout ?? "",
+      stderr: child.stderr ?? "",
+      status: child.status,
+    });
+  }
+  return child.stdout;
+}
+
+function withInvocationEvidence(run: (legs: { drift: LegEvidence; agui: LegEvidence }) => number) {
+  const invocationId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const legs = { drift: emptyLegEvidence(), agui: emptyLegEvidence() };
+  const numericId = (value: string | undefined) =>
+    value && /^\d{1,20}$/.test(value) ? value : undefined;
+  const persist = () => {
+    try {
+      mkdirSync("drift-evidence", { recursive: true });
+      writeFileSync(
+        resolve("drift-evidence", `${timestamp.replaceAll(":", "-")}-${invocationId}.json`),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            invocationId,
+            timestamp,
+            githubRunId: numericId(process.env.GITHUB_RUN_ID),
+            githubRunAttempt: numericId(process.env.GITHUB_RUN_ATTEMPT),
+            ...legs,
+          },
+          null,
+          2,
+        ) + "\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    } catch {
+      // Never include filesystem paths or raw streams in this new diagnostic.
+      throw new Error("Failed to write collector invocation evidence");
+    }
+  };
+  try {
+    return run(legs);
+  } finally {
+    persist();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +1594,7 @@ const WS_HANDSHAKE_PROBES: readonly {
   surface: keyof typeof SURFACE_REGISTRY;
 }[] = [
   { file: "ws-realtime.drift.ts", surface: "openai-realtime" },
+  { file: "ws-live.drift.ts", surface: "openai-live" },
   { file: "ws-gemini-live.drift.ts", surface: "gemini-live" },
   { file: "ws-responses.drift.ts", surface: "openai-responses-ws" },
 ];
@@ -771,21 +1923,30 @@ function parseVitestOutput(stdout: string, context: string): VitestJsonResult | 
   }
 }
 
-function runDriftTests(): VitestJsonResult {
+function runDriftTests(evidence?: LegEvidence): VitestJsonResult {
   try {
-    const stdout = execSync("npx vitest run --config vitest.config.drift.ts --reporter=json", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: 50 * 1024 * 1024,
-    });
+    const command = "npx vitest run --config vitest.config.drift.ts --reporter=json";
+    const stdout = evidence
+      ? executeEvidenceVitest(command, evidence)
+      : execSync(command, {
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+          maxBuffer: 50 * 1024 * 1024,
+        });
     const result = parseVitestOutput(stdout, "JSON parse of successful vitest run failed");
-    if (result) return result;
+    if (result) {
+      captureAssertionEvidence(evidence, result);
+      return result;
+    }
     throw new Error("Drift tests passed but produced unparseable output");
   } catch (err: unknown) {
     // execSync throws on non-zero exit — vitest exits 1 when tests fail
     if (hasStdout(err)) {
       const result = parseVitestOutput(err.stdout, "Primary JSON parse of vitest stdout failed");
-      if (result) return result;
+      if (result) {
+        captureAssertionEvidence(evidence, result);
+        return result;
+      }
       console.error(
         "Failed to parse JSON from drift test stdout. Original error:",
         err instanceof Error ? err.message : String(err),
@@ -981,6 +2142,42 @@ export function classifySingleUnparseableAsInfra(message: string): boolean {
   return hasInfraEvidence && !isDriftLike;
 }
 
+/** The WS probe's server-close error header, as `WSClosedError` reports it. */
+const WS_SERVER_CLOSE_HEADER = /^(?:WSClosedError: )?WebSocket closed by server during waitUntil:/;
+
+/**
+ * Recognize a leg that failed because the provider account ran out of credit.
+ * This is infra (the same class as a rate limit, a dead key or a network
+ * failure), never drift: the account cannot generate, so nothing was graded.
+ *
+ * Only STRUCTURED provider evidence counts, read from the failure's FIRST line
+ * (the thrown error's own header). A quota code that appears anywhere else in
+ * free text does not count. The two kinds of evidence are:
+ *   - the drift harness's quota marker (`providerQuotaMarker` in
+ *     drift-quota.ts). A leg throws it only after it reads the code from the
+ *     real provider's HTTP body, stream event or Live session.
+ *   - the WS probe's server-close error, when the close REASON names a quota
+ *     code. Realtime closes with 1013 `insufficient_quota.credit_balance_exhausted`.
+ * A test's own assertion that only mentions `insufficient_quota` (a
+ * `toStrictEqual`, a `toThrow`, a thrown Error that echoes a mock body) has
+ * neither, so it stays a test failure.
+ *
+ * When the evidence is a close frame, it is returned as `serverClose` so the
+ * caller can keep the frame on the record.
+ */
+export function parseProviderQuotaExhausted(
+  message: string,
+): { code: string; serverClose?: WSServerClose } | null {
+  const markerCode = parseProviderQuotaMarker(message);
+  if (markerCode !== null) return { code: markerCode };
+  const firstLine = message.split("\n", 1)[0];
+  if (!WS_SERVER_CLOSE_HEADER.test(firstLine)) return null;
+  const serverClose = parseWSServerClose(firstLine);
+  if (serverClose === null) return null;
+  const code = quotaCodeInCloseReason(serverClose.reason);
+  return code === null ? null : { code, serverClose };
+}
+
 export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
   // CLASS 1 — fail-loud on absent evidence. No messages means NO positive infra
   // evidence, so this is NOT a benign "all clear". `[].every(...)` is vacuously
@@ -1010,8 +2207,10 @@ export interface CollectResult {
   entries: DriftEntry[];
   quarantine: QuarantineEntry[];
   /**
-   * Live legs that timed out having observed nothing (see `parseLiveTimeout`).
-   * A recognized outcome in its own right — neither a drift finding nor
+   * Legs that graded nothing: live legs that timed out having observed nothing
+   * (see `parseLiveTimeout`), and legs whose provider account is out of credit
+   * (`providerQuotaExhausted` set; see `parseProviderQuotaExhausted`). Each is a
+   * recognized outcome in its own right — neither a drift finding nor
    * unparseable output.
    */
   timeouts: TimeoutEntry[];
@@ -1040,6 +2239,234 @@ export interface CollectResult {
 export const NO_GA_DELTA_ID = "openai-realtime:no-ga-family";
 export const TRUNCATED_DELTA_ID = "openai-realtime:unknown-models-truncated";
 
+// The shared usage codecs remain the registry's primary owners. These two
+// recognized non-usage WS lanes instead need actionable transport remediation.
+const WS_NON_USAGE_BUILDERS: Record<
+  "openai-realtime" | "openai-responses-ws",
+  Pick<SurfaceMapping, "builderFile" | "builderFunctions">
+> = {
+  "openai-realtime": {
+    builderFile: "src/ws-realtime.ts",
+    builderFunctions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
+  },
+  "openai-responses-ws": {
+    builderFile: "src/ws-responses.ts",
+    builderFunctions: ["handleWebSocketResponses"],
+  },
+};
+
+type ParsedSurfaceBuilder = Pick<SurfaceMapping, "builderFile" | "builderFunctions"> & {
+  usageRoots: string[];
+  usageScalars?: string[];
+  finishRoots?: string[];
+  finishFunctions?: string[];
+};
+
+// Only the W7 usage-retargeted surfaces need an ordinary report's field owner.
+// Mixed reports keep one assembly anchor; real shared functions remain navigation
+// targets across source files, rather than implying every repair edits this file.
+const ORDINARY_PARSED_BUILDERS: Record<string, ParsedSurfaceBuilder> = {
+  "openai-chat": {
+    builderFile: "src/helpers.ts",
+    builderFunctions: [
+      "buildTextCompletion",
+      "buildToolCallCompletion",
+      "buildTextChunks",
+      "buildToolCallChunks",
+    ],
+    usageRoots: ["usage"],
+  },
+  "openrouter-chat": {
+    builderFile: "src/openrouter-chat.ts",
+    builderFunctions: [
+      "shapeOpenRouterCompletion",
+      "shapeOpenRouterChunks",
+      "serializeOpenRouterError",
+      "handleOpenRouterModels",
+    ],
+    usageRoots: ["usage"],
+  },
+  "openai-responses": {
+    builderFile: "src/responses.ts",
+    builderFunctions: [
+      "buildTextResponse",
+      "buildToolCallResponse",
+      "buildTextStreamEvents",
+      "buildToolCallStreamEvents",
+    ],
+    usageRoots: [
+      "usage",
+      "SSE:response.completed.response.usage",
+      "SSE:response.incomplete.response.usage",
+    ],
+    finishRoots: [
+      "status",
+      "SSE:response.completed.response.status",
+      "SSE:response.incomplete.response.status",
+    ],
+    finishFunctions: ["responsesStatus", "mapResponsesFinish"],
+  },
+  "openai-responses-ws": {
+    ...WS_NON_USAGE_BUILDERS["openai-responses-ws"],
+    usageRoots: [
+      "usage",
+      "SSE:response.completed.response.usage",
+      "SSE:response.incomplete.response.usage",
+    ],
+    finishRoots: [
+      "status",
+      "SSE:response.completed.response.status",
+      "SSE:response.incomplete.response.status",
+    ],
+    finishFunctions: ["responsesStatus", "mapResponsesFinish"],
+  },
+  anthropic: {
+    builderFile: "src/messages.ts",
+    builderFunctions: [
+      "buildClaudeTextResponse",
+      "buildClaudeToolCallResponse",
+      "buildClaudeTextStreamEvents",
+      "buildClaudeToolCallStreamEvents",
+    ],
+    usageRoots: ["usage", "SSE:message_start.message.usage", "SSE:message_delta.usage"],
+    finishRoots: ["stop_reason", "SSE:message_delta.delta.stop_reason"],
+    finishFunctions: ["claudeStopReason", "mapAnthropicFinish"],
+  },
+  "bedrock-invoke": {
+    builderFile: "src/bedrock.ts",
+    builderFunctions: [
+      "handleBedrock",
+      "handleBedrockStream",
+      "bedrockToCompletionRequest",
+      "buildBedrockStreamTextEvents",
+      "buildBedrockStreamToolCallEvents",
+      "buildBedrockStreamContentWithToolCallsEvents",
+    ],
+    usageRoots: ["usage", "SSE:message_start.message.usage", "SSE:message_delta.usage"],
+    finishRoots: ["stop_reason", "SSE:message_delta.delta.stop_reason"],
+    finishFunctions: ["bedrockStopReason", "mapAnthropicFinish"],
+  },
+  "bedrock-invoke-stream": {
+    builderFile: "src/bedrock.ts",
+    builderFunctions: [
+      "handleBedrockStream",
+      "buildBedrockStreamTextEvents",
+      "buildBedrockStreamToolCallEvents",
+      "buildBedrockStreamContentWithToolCallsEvents",
+    ],
+    usageRoots: ["usage", "SSE:message_start.message.usage", "SSE:message_delta.usage"],
+    finishRoots: ["stop_reason", "SSE:message_delta.delta.stop_reason"],
+    finishFunctions: ["bedrockStopReason", "mapAnthropicFinish"],
+  },
+  gemini: {
+    builderFile: "src/gemini.ts",
+    builderFunctions: [
+      "buildGeminiTextResponse",
+      "buildGeminiToolCallResponse",
+      "buildGeminiTextStreamChunks",
+      "buildGeminiToolCallStreamChunks",
+    ],
+    usageRoots: ["usageMetadata"],
+    finishRoots: ["candidates[].finishReason"],
+    finishFunctions: ["geminiFinishReason", "mapGeminiFinish"],
+  },
+  "vertex-ai": {
+    builderFile: "src/gemini.ts",
+    builderFunctions: [
+      "handleGemini",
+      "buildGeminiTextResponse",
+      "buildGeminiToolCallResponse",
+      "buildGeminiTextStreamChunks",
+      "buildGeminiToolCallStreamChunks",
+    ],
+    usageRoots: ["usageMetadata"],
+    finishRoots: ["candidates[].finishReason"],
+    finishFunctions: ["geminiFinishReason", "mapGeminiFinish"],
+  },
+  "gemini-interactions": {
+    builderFile: "src/gemini-interactions.ts",
+    builderFunctions: [
+      "buildInteractionsTextResponse",
+      "buildInteractionsToolCallResponse",
+      "buildInteractionsContentWithToolCallsResponse",
+      "buildInteractionsTextSSEEvents",
+      "buildInteractionsToolCallSSEEvents",
+      "buildInteractionsContentWithToolCallsSSEEvents",
+    ],
+    usageRoots: ["usage", "SSE:interaction.completed.interaction.usage"],
+  },
+  "cohere-chat": {
+    builderFile: "src/cohere.ts",
+    builderFunctions: ["handleCohere", "cohereToCompletionRequest"],
+    usageRoots: ["usage", "SSE:message-end.delta.usage"],
+    finishRoots: ["finish_reason", "SSE:message-end.delta.finish_reason"],
+    finishFunctions: ["cohereFinishReason", "mapCohereFinish"],
+  },
+  ollama: {
+    builderFile: "src/ollama.ts",
+    builderFunctions: ["handleOllama", "handleOllamaGenerate", "ollamaToCompletionRequest"],
+    usageRoots: [],
+    usageScalars: ["prompt_eval_count", "eval_count"],
+  },
+  "openai-realtime": {
+    ...WS_NON_USAGE_BUILDERS["openai-realtime"],
+    usageRoots: ["response.usage", "SSE:response.done.response.usage"],
+  },
+  "bedrock-converse": {
+    builderFile: "src/bedrock-converse.ts",
+    builderFunctions: ["handleConverse", "converseToCompletionRequest"],
+    usageRoots: ["usage", "SSE:metadata.usage"],
+    finishRoots: ["stopReason", "SSE:messageStop.stopReason"],
+    finishFunctions: ["converseStopReason", "mapAnthropicFinish"],
+  },
+  "bedrock-converse-stream": {
+    builderFile: "src/bedrock-converse.ts",
+    builderFunctions: ["handleConverseStream", "converseToCompletionRequest"],
+    usageRoots: ["usage", "SSE:metadata.usage"],
+    finishRoots: ["stopReason", "SSE:messageStop.stopReason"],
+    finishFunctions: ["converseStopReason", "mapAnthropicFinish"],
+  },
+};
+
+function isDriftRoot(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}.`) || path.startsWith(`${root}[`);
+}
+
+function ordinaryParsedBuilder(
+  surface: string | undefined,
+  mapping: ProviderMapping,
+  diffs: ParsedDiff[],
+): Pick<SurfaceMapping, "builderFile" | "builderFunctions"> {
+  if (!surface || !Object.hasOwn(ORDINARY_PARSED_BUILDERS, surface)) return mapping;
+  const endpoint = ORDINARY_PARSED_BUILDERS[surface];
+  // schema.ts emits `(root)[]` for a root array and `[]` for array members.
+  const paths = diffs.map((diff) =>
+    diff.path.replace(/^\(root\)\[\]\./, "").replace(/\[\d+\]/g, "[]"),
+  );
+  const isUsage = (path: string) =>
+    endpoint.usageRoots.some((root) => isDriftRoot(path, root)) ||
+    (endpoint.usageScalars?.includes(path) ?? false);
+  if (paths.length > 0 && paths.every(isUsage)) return mapping;
+
+  const isOpenAIError = (path: string) => surface === "openai-chat" && isDriftRoot(path, "error");
+  if (paths.length > 0 && paths.every(isOpenAIError)) {
+    return {
+      builderFile: "src/response/errors.ts",
+      builderFunctions: ["renderError", "buildOpenAIError"],
+    };
+  }
+
+  const functions = [...endpoint.builderFunctions];
+  if (paths.some(isUsage)) functions.push(...mapping.builderFunctions);
+  if (paths.some(isOpenAIError)) {
+    functions.push("serializeErrorResponse", "renderError", "buildOpenAIError");
+  }
+  if (paths.some((path) => endpoint.finishRoots?.some((root) => isDriftRoot(path, root)))) {
+    functions.push(...(endpoint.finishFunctions ?? []));
+  }
+  return { builderFile: endpoint.builderFile, builderFunctions: [...new Set(functions)] };
+}
+
 export function collectDriftEntries(results: VitestJsonResult): CollectResult {
   const entries: DriftEntry[] = [];
   const quarantine: QuarantineEntry[] = [];
@@ -1058,6 +2485,28 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
       const testName = `${ancestorText} > ${assertion.title}`;
       const parsed = parseDriftBlock(fullMessage);
       if (!parsed || parsed.diffs.length === 0) {
+        // Out of credit, checked FIRST: the account cannot generate, so every
+        // surface fails the same way (an `error` event, a 1013 close, a refused
+        // Live session). That is infra, not drift and not a collector fault. It
+        // shares the exit-6 lane (nothing graded, alerted, never a clean
+        // baseline) and is named so the alert can say "top up credit".
+        const quota = parseProviderQuotaExhausted(fullMessage);
+        if (quota !== null) {
+          // `serverClose` keeps its contract: a REFUSAL code is never recorded
+          // there. A refusal close whose reason names a quota code is still out
+          // of credit; its frame stays in `message`.
+          const { serverClose } = quota;
+          timeouts.push({
+            testName,
+            rawLocation: extractRawLocation(fullMessage),
+            ...(serverClose !== undefined && !isRefusalCloseCode(serverClose.code)
+              ? { serverClose }
+              : {}),
+            providerQuotaExhausted: { code: quota.code },
+            message: fullMessage,
+          });
+          continue;
+        }
         // Check for the ws-realtime canary assertion shapes BEFORE classifying
         // as unparseable — both the unknown-models mode and the hasGA-false mode
         // (CLASS 2) are genuine, critical drift and must be surfaced (exit 2),
@@ -1065,6 +2514,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         const canary = parseKnownModelsCanary(fullMessage);
         if (canary !== null) {
           const mapping = SURFACE_REGISTRY["openai-realtime"];
+          const builder = WS_NON_USAGE_BUILDERS["openai-realtime"];
 
           // Build the critical diffs. F4: severity MUST be "critical" — the Fix
           // Drift workflow (.github/workflows/fix-drift.yml) gates remediation
@@ -1162,8 +2612,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           entries.push({
             provider: "OpenAI Realtime",
             scenario: "known-models canary",
-            builderFile: mapping.builderFile,
-            builderFunctions: mapping.builderFunctions,
+            builderFile: builder.builderFile,
+            builderFunctions: builder.builderFunctions,
             typesFile: mapping.typesFile ?? null,
             sdkShapesFile: SDK_SHAPES_FILE,
             diffs,
@@ -1182,13 +2632,17 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           // a rejected gemini-live handshake quarantine instead of routing to
           // src/ws-gemini-live.ts.
           const mapping = SURFACE_REGISTRY[wsFailure.surface];
+          const builder =
+            wsFailure.surface === "openai-realtime" || wsFailure.surface === "openai-responses-ws"
+              ? WS_NON_USAGE_BUILDERS[wsFailure.surface]
+              : mapping;
           entries.push({
             provider: mapping.provider,
             scenario: "WS handshake",
-            builderFile: mapping.builderFile,
-            builderFunctions: mapping.builderFunctions,
+            builderFile: builder.builderFile,
+            builderFunctions: builder.builderFunctions,
             typesFile: mapping.typesFile ?? null,
-            sdkShapesFile: SDK_SHAPES_FILE,
+            sdkShapesFile: mapping.sdkShapesFile ?? SDK_SHAPES_FILE,
             diffs: [
               {
                 severity: "critical" as const,
@@ -1243,13 +2697,17 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
               continue;
             }
             const mapping = SURFACE_REGISTRY[surface];
+            const builder =
+              surface === "openai-realtime" || surface === "openai-responses-ws"
+                ? WS_NON_USAGE_BUILDERS[surface]
+                : mapping;
             entries.push({
               provider: mapping.provider,
               scenario: "WS session refused",
-              builderFile: mapping.builderFile,
-              builderFunctions: mapping.builderFunctions,
+              builderFile: builder.builderFile,
+              builderFunctions: builder.builderFunctions,
               typesFile: mapping.typesFile ?? null,
-              sdkShapesFile: SDK_SHAPES_FILE,
+              sdkShapesFile: mapping.sdkShapesFile ?? SDK_SHAPES_FILE,
               diffs: [
                 {
                   severity: "critical" as const,
@@ -1290,6 +2748,19 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
             testName: `${assertion.ancestorTitles.join(" ")} > ${assertion.title}`,
             rawLocation: extractRawLocation(fullMessage),
             timeoutMs: liveTimeout.timeoutMs,
+            message: fullMessage,
+          });
+          continue;
+        }
+
+        // Live refusals, access failures and inconclusive probes are visible
+        // failures, never compatibility findings or benign skipped infra. Keep
+        // them here even when a sibling already produced a trusted drift entry.
+        if (resolveWSSurface(fullMessage, testName) === "openai-live") {
+          quarantine.push({
+            provider: SURFACE_REGISTRY["openai-live"].provider,
+            testName,
+            rawLocation: extractRawLocation(fullMessage),
             message: fullMessage,
           });
           continue;
@@ -1355,11 +2826,15 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         mapping = legacyMapping;
       }
 
+      const ordinarySurface =
+        surfaceKey ??
+        Object.keys(SURFACE_REGISTRY).find((slug) => SURFACE_REGISTRY[slug] === mapping);
+      const builder = ordinaryParsedBuilder(ordinarySurface, mapping, parsed.diffs);
       entries.push({
         provider,
         scenario: extractScenario(parsed.context),
-        builderFile: mapping.builderFile,
-        builderFunctions: mapping.builderFunctions,
+        builderFile: builder.builderFile,
+        builderFunctions: builder.builderFunctions,
         typesFile: mapping.typesFile,
         sdkShapesFile: mapping.sdkShapesFile ?? SDK_SHAPES_FILE,
         diffs: parsed.diffs,
@@ -1395,6 +2870,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           // handshake recognizer claimed nothing, so no input distinguishes the
           // two arguments today; passing the real name keeps that a property of
           // the precondition rather than of a value chosen here.)
+          // Out-of-credit legs were claimed by the exit-6 lane in the pass above.
+          if (parseProviderQuotaExhausted(fullMessage) !== null) continue;
           if (parseKnownModelsCanary(fullMessage) !== null) continue;
           if (parseWSHandshakeFailure(fullMessage, testName) !== null) continue;
           // Recognized zero-observation live timeouts were claimed by the
@@ -1458,17 +2935,30 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
     );
   }
 
-  if (timeouts.length > 0) {
+  const quotaLegs = timeouts.filter((t) => t.providerQuotaExhausted !== undefined);
+  if (quotaLegs.length > 0) {
+    console.warn(
+      `WARNING: ${quotaLegs.length} drift leg(s) failed because the provider account is out of ` +
+        `credit — provider quota exhausted — top up credit. This is infra, NOT API drift: nothing ` +
+        `was graded on these legs (exit 6).`,
+    );
+    for (const t of quotaLegs)
+      console.warn(
+        `  - ${t.testName} — ${t.providerQuotaExhausted?.code} @ ${t.rawLocation || "<no frame>"}`,
+      );
+  }
+  const silentLegs = timeouts.filter((t) => t.providerQuotaExhausted === undefined);
+  if (silentLegs.length > 0) {
     // Reported as what it is, with the one thing a reader needs to act on: the
     // surface that went quiet. Explicitly NOT the quarantine wording — nothing
     // here needs collector triage, so nobody should be sent looking for it.
     console.warn(
-      `WARNING: ${timeouts.length} live drift leg(s) timed out having observed ZERO messages — ` +
+      `WARNING: ${silentLegs.length} live drift leg(s) timed out having observed ZERO messages — ` +
         `the live surface accepted the connection and then sent nothing. This is neither drift ` +
         `nor unparseable output (exit 6, conclusion "live-timeout"): there is no collector fault ` +
         `to triage. Check the surface below for an outage, a retired model, or a rejected session.`,
     );
-    for (const t of timeouts) {
+    for (const t of silentLegs) {
       const why = t.serverClose
         ? `session closed by the server (code ${t.serverClose.code}` +
           `${t.serverClose.reason ? `: ${t.serverClose.reason}` : ", no reason given"})`
@@ -1501,11 +2991,9 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
  * or an empty array if the canonical repo is unavailable or tests pass.
  */
 /**
- * The one file the AG-UI drift tests actually read out of the canonical
- * checkout. A directory merely NAMED `ag-ui` proves nothing: if this file is
- * absent the drift suites' `describe.skipIf` gates fire and the whole AG-UI leg
- * silently reports NOTHING — which the collector would otherwise certify as a
- * clean baseline. Presence of this file is the checkout's usability test.
+ * Legacy source name retained for diagnostics and existing callers. Checkout
+ * validity is decided by the shared resolver: both generated source files or
+ * both legacy source files must exist before the canonical comparison runs.
  */
 export const AGUI_CANONICAL_TYPES_RELPATH = "sdks/typescript/packages/core/src/types.ts";
 
@@ -1541,11 +3029,11 @@ export function classifyAgUiCheckout(agUiPath: string): AgUiCheckoutStatus {
     };
   }
   if (!isDir) return { kind: "absent" };
-  if (!existsSync(resolve(agUiPath, AGUI_CANONICAL_TYPES_RELPATH))) {
+  if (!discoverAgUiSources(agUiPath)) {
     return {
       kind: "incomplete",
       reason:
-        `${agUiPath} exists but ${AGUI_CANONICAL_TYPES_RELPATH} is missing — the canonical ` +
+        `${agUiPath} lacks a complete generated types.ts/schemas.ts or legacy events.ts/types.ts pair (${AGUI_CANONICAL_TYPES_RELPATH}) — the canonical ` +
         `AG-UI checkout is STALE or INCOMPLETE. This is not a git/network failure: remove the ` +
         `directory and re-clone (git clone --depth 1 https://github.com/ag-ui-protocol/ag-ui.git).`,
     };
@@ -1554,13 +3042,12 @@ export function classifyAgUiCheckout(agUiPath: string): AgUiCheckoutStatus {
 }
 
 function ensureAgUiRepo(): boolean {
-  const agUiPath = resolve("..", "ag-ui");
+  const agUiPath = resolveAgUiRepo(resolve("..", "ag-ui"));
   const status = classifyAgUiCheckout(agUiPath);
   if (status.kind === "ok") return true;
   if (status.kind === "incomplete") {
     // N5: do NOT proceed. Running the drift suites against an unusable checkout
-    // makes every AG-UI assertion skip, and a leg that graded nothing must never
-    // be able to certify AG-UI as drift-free.
+    // cannot establish compatibility; never certify an ungraded checkout as clean.
     console.warn(`AG-UI canonical checkout unusable: ${status.reason}`);
     console.warn("AG-UI schema drift detection will be skipped.");
     return false;
@@ -1569,11 +3056,15 @@ function ensureAgUiRepo(): boolean {
   // Not present — try to clone
   console.log("AG-UI canonical repo not found. Cloning...");
   try {
-    execSync("git clone --depth 1 https://github.com/ag-ui-protocol/ag-ui.git ../ag-ui", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 60_000,
-    });
+    execFileSync(
+      "git",
+      ["clone", "--depth", "1", "https://github.com/ag-ui-protocol/ag-ui.git", agUiPath],
+      {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 60_000,
+      },
+    );
   } catch (cloneErr: unknown) {
     const msg = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
     console.warn(`Could not clone AG-UI repo: ${msg}`);
@@ -1618,7 +3109,10 @@ const defaultAgUiExec: VitestExec = (command) =>
  * garbage instead of a report certified AG-UI as drift-free. The two legs face
  * the same condition and must not disagree about whether it is clean.
  */
-export function runAgUiVitest(exec: VitestExec = defaultAgUiExec): VitestJsonResult | null {
+export function runAgUiVitest(
+  exec: VitestExec = defaultAgUiExec,
+  evidence?: LegEvidence,
+): VitestJsonResult | null {
   let stdout: string;
   try {
     stdout = exec(
@@ -1627,20 +3121,26 @@ export function runAgUiVitest(exec: VitestExec = defaultAgUiExec): VitestJsonRes
   } catch (err: unknown) {
     if (hasStdout(err)) {
       const result = parseVitestOutput(err.stdout, "AG-UI drift JSON parse of failed run");
-      if (result) return result;
+      if (result) {
+        captureAssertionEvidence(evidence, result);
+        return result;
+      }
     }
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`AG-UI schema drift tests failed to run: ${msg}`);
     return null;
   }
   const result = parseVitestOutput(stdout, "AG-UI drift JSON parse of successful run failed");
-  if (result) return result;
+  if (result) {
+    captureAssertionEvidence(evidence, result);
+    return result;
+  }
   throw new Error("AG-UI drift tests passed but produced unparseable output");
 }
 
-function runAgUiDriftTests(): VitestJsonResult | null {
+function runAgUiDriftTests(evidence: LegEvidence): VitestJsonResult | null {
   if (!ensureAgUiRepo()) return null;
-  return runAgUiVitest();
+  return runAgUiVitest((command) => executeEvidenceVitest(command, evidence), evidence);
 }
 
 /**
@@ -1842,11 +3342,11 @@ export function computeExitCode(
   if (criticalCount > 0) return 2;
   if (quarantineCount > 0) return 5;
   if (agUiSkipped) return 1;
-  // 6 — every leg that failed did so by observing nothing at all. Distinct from
-  // 5 so a silent live surface is never reported as a collector fault needing
-  // manual triage, and distinct from 0 so it is never a clean baseline: the legs
-  // that timed out graded NOTHING, and a run that graded nothing must not be
-  // able to certify that surface as drift-free.
+  // 6 — every leg that failed graded nothing: it observed nothing at all, or the
+  // provider account was out of credit. Distinct from 5 so neither is reported
+  // as a collector fault needing manual triage, and distinct from 0 so it is
+  // never a clean baseline: those legs graded NOTHING, and a run that graded
+  // nothing must not be able to certify that surface as drift-free.
   if (timeoutCount > 0) return 6;
   return 0;
 }
@@ -1856,8 +3356,13 @@ export function computeExitCode(
  * report, so the base-report reuse guard (`isBaseReportReusable`) can read
  * `report.conclusion` directly. Only exit 0 ("clean") is a reusable baseline;
  * "critical"/"quarantine" (and the exit-1 "skipped" case) are not.
+ *
+ * `quotaOnly` names an exit-6 run whose every ungraded leg was out of credit:
+ * its conclusion is "provider-quota-exhausted", not "live-timeout", because no
+ * surface went silent. A run with any silent leg stays "live-timeout"; its quota
+ * legs are still named in `timeouts[].providerQuotaExhausted`.
  */
-export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
+export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6, quotaOnly = false): string {
   switch (exitCode) {
     case 0:
       return "clean";
@@ -1867,9 +3372,9 @@ export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
       return "quarantine";
     case 6:
       // NOT in drift-delta's REUSABLE_CONCLUSIONS, deliberately: a run whose
-      // legs observed nothing cannot serve as a baseline that says they were
+      // legs graded nothing cannot serve as a baseline that says they were
       // clean.
-      return "live-timeout";
+      return quotaOnly ? "provider-quota-exhausted" : "live-timeout";
     default:
       return "skipped";
   }
@@ -1879,23 +3384,195 @@ export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5 | 6): string {
 // Main
 // ---------------------------------------------------------------------------
 
-function main(): void {
+/**
+ * Every registry surface that NO live provider leg grades.
+ *
+ * The source-only view reads `SURFACE_REGISTRY`: whether a surface has
+ * a live leg is a property of the SOURCE, not of what happened to execute, so
+ * this is the same answer on a credential-less run as on a fully-keyed one —
+ * which is exactly the point. A surface with no live leg is never "verified and
+ * clean", it is "not looked at", and the report now says so out loud instead of
+ * letting its absence from `entries` read as a pass.
+ */
+export function collectUnverifiedSurfaces(results?: VitestJsonResult): UnverifiedSurface[] {
+  const surfaces = Object.entries(SURFACE_REGISTRY)
+    .filter(([, mapping]) => mapping.liveCoverage === "none")
+    .map(([surface, mapping]) => ({
+      surface,
+      provider: mapping.provider,
+      // Narrowed by the filter above: `liveCoverage: "none"` makes
+      // `coverageNote` required in the SurfaceMapping union.
+      note: mapping.coverageNote as string,
+    }))
+    .sort((a, b) => a.surface.localeCompare(b.surface));
+
+  // Source capability is not runtime coverage. The Live provider suite has
+  // separate client/managed assertions; every selected assertion must pass.
+  // Keep the no-argument form for source-only callers that have no run report.
+  if (results) {
+    const assertions = results.testResults
+      .flatMap((file) => file.assertionResults)
+      .filter(
+        (assertion) =>
+          resolveWSProbeSurfaceByName(assertion.ancestorTitles.join(" ")) === "openai-live",
+      );
+    const passed = assertions.filter((a) => a.status === "passed").length;
+    const bothModesPassed = ["client lifecycle", "managed lifecycle"].every((title) =>
+      assertions.some((a) => a.title === title && a.status === "passed"),
+    );
+    if (!bothModesPassed || passed !== assertions.length) {
+      const failed = assertions.filter((a) => a.status === "failed").length;
+      const skipped = assertions.filter((a) =>
+        ["pending", "skipped", "todo", "disabled"].includes(a.status),
+      ).length;
+      surfaces.push({
+        surface: "openai-live",
+        provider: SURFACE_REGISTRY["openai-live"].provider,
+        note:
+          assertions.length === 0
+            ? "No Live assertions executed in this run. Live compatibility was not verified."
+            : `This run: ${passed} passed, ${failed} failed, ${skipped} skipped, ${assertions.length - passed - failed - skipped} other Live assertions. Live compatibility was not fully verified.`,
+      });
+    }
+  }
+  return surfaces.sort((a, b) => a.surface.localeCompare(b.surface));
+}
+
+function artifactTargetPath(path: string): string {
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (!entry) return resolve(artifactTargetPath(dirname(path)), basename(path));
+  if (entry.isSymbolicLink()) return artifactTargetPath(resolve(dirname(path), readlinkSync(path)));
+  return realpathSync(path);
+}
+
+function caseAliasProbeNames(first: string, second: string) {
+  const token = randomBytes(16).toString("hex");
+  let firstProbe = "";
+  let secondProbe = "";
+  for (let index = 0; index < first.length; index++) {
+    const firstLetter = first.charAt(index);
+    const secondLetter = second.charAt(index);
+    if (!/[a-z]/i.test(firstLetter)) {
+      firstProbe += firstLetter;
+      secondProbe += secondLetter;
+      continue;
+    }
+    const replacement = String.fromCharCode(
+      97 + Number.parseInt(token.charAt(index % token.length), 16),
+    );
+    firstProbe +=
+      firstLetter === firstLetter.toUpperCase() ? replacement.toUpperCase() : replacement;
+    secondProbe +=
+      secondLetter === secondLetter.toUpperCase() ? replacement.toUpperCase() : replacement;
+  }
+  return [firstProbe, secondProbe] as const;
+}
+
+function artifactCaseAliases(parent: string, first: string, second: string): boolean {
+  for (let attempt = 0; attempt < 32; attempt++) {
+    // Preserve the full ASCII case relation and byte length without adding a
+    // prefix that could exceed an otherwise valid destination's capacity.
+    const [firstProbe, secondProbe] = caseAliasProbeNames(first, second);
+    if ([first.toLowerCase(), second.toLowerCase()].includes(firstProbe.toLowerCase())) continue;
+    const probePath = resolve(parent, firstProbe);
+    let descriptor: number;
+    try {
+      descriptor = openSync(probePath, "wx");
+    } catch (err) {
+      if (typeof err === "object" && err !== null && "code" in err && err.code === "EEXIST")
+        continue;
+      throw err;
+    }
+
+    // The returned descriptor proves exclusive acquisition. Close and unlink
+    // are independent so a close failure cannot leave the owned entry behind.
+    const failures: { operation: string; error: unknown }[] = [];
+    let aliases = false;
+    try {
+      const owned = fstatSync(descriptor);
+      const alternate = lstatSync(resolve(parent, secondProbe), { throwIfNoEntry: false });
+      aliases = owned.dev === alternate?.dev && owned.ino === alternate?.ino;
+    } catch (err) {
+      failures.push({ operation: "lookup", error: err });
+    } finally {
+      try {
+        closeSync(descriptor);
+      } catch (err) {
+        failures.push({ operation: "close", error: err });
+      }
+      try {
+        unlinkSync(probePath);
+      } catch (err) {
+        failures.push({ operation: "unlink", error: err });
+      }
+    }
+    if (failures.length === 1) throw failures[0].error;
+    if (failures.length > 1) {
+      const details = failures.map(({ operation, error }) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const code =
+          typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+        return `${operation}: ${message}${typeof code === "string" ? ` (${code})` : ""}`;
+      });
+      throw new AggregateError(
+        failures.map(({ error }) => error),
+        `Could not compare artifact case aliases: ${details.join("; ")}`,
+      );
+    }
+    return aliases;
+  }
+  throw new Error("Could not acquire a temporary entry to compare artifact case aliases");
+}
+
+function artifactDestinationsAlias(first: string, second: string): boolean {
+  const firstTarget = artifactTargetPath(first);
+  const secondTarget = artifactTargetPath(second);
+  if (firstTarget === secondTarget) return true;
+  const firstName = basename(firstTarget);
+  const secondName = basename(secondTarget);
+  const sameName = firstName === secondName;
+  if (
+    !sameName &&
+    firstName.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) !==
+      secondName.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+  )
+    return false;
+  const firstParent = statSync(dirname(firstTarget), { throwIfNoEntry: false });
+  const secondParent = statSync(dirname(secondTarget), { throwIfNoEntry: false });
+  if (!firstParent?.isDirectory() || !secondParent?.isDirectory()) return false;
+  if (firstParent.dev !== secondParent.dev || firstParent.ino !== secondParent.ino) return false;
+  return sameName || artifactCaseAliases(dirname(firstTarget), firstName, secondName);
+}
+
+function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): number {
   const args = process.argv.slice(2);
   const outIndex = args.indexOf("--out");
   const outPath = resolve(
     outIndex !== -1 && args[outIndex + 1] ? args[outIndex + 1] : "drift-report.json",
   );
+  const observationsIndex = args.indexOf("--observations-out");
+  const observationsPath = resolve(
+    observationsIndex !== -1 && args[observationsIndex + 1]
+      ? args[observationsIndex + 1]
+      : "drift-observations.json",
+  );
+  if (outPath === observationsPath || artifactDestinationsAlias(outPath, observationsPath)) {
+    throw new Error("--out and --observations-out must resolve to different paths");
+  }
+
+  // This invocation owns the sidecar even if startup or collection fails early.
+  rmSync(observationsPath, { force: true });
 
   // Collect HTTP API drift entries
   console.log("Running HTTP API drift tests...");
-  const httpResults = runDriftTests();
+  const httpResults = runDriftTests(evidence.drift);
   console.log("Collecting HTTP API drift entries...");
   const httpResult = collectDriftEntries(httpResults);
   const httpEntries = httpResult.entries;
 
   // Collect AG-UI schema drift entries
   console.log("Running AG-UI schema drift tests...");
-  const agUiResults = runAgUiDriftTests();
+  const agUiResults = runAgUiDriftTests(evidence.agui);
   const agUiSkipped = agUiResults === null;
   let agUiEntries: DriftEntry[] = [];
   let agUiQuarantine: QuarantineEntry[] = [];
@@ -1918,10 +3595,24 @@ function main(): void {
   );
   const quarantineCount = quarantine.length;
   const timeoutCount = timeouts.length;
+  // Out-of-credit legs share the exit-6 lane but are not silence: counted and
+  // reported apart, so neither is described as the other.
+  const quotaCount = timeouts.filter((t) => t.providerQuotaExhausted !== undefined).length;
+  const silentCount = timeoutCount - quotaCount;
 
   // Compute the exit code BEFORE writing so the report can carry the coarse
   // `conclusion` derived from it (base-report reuse contract).
   const exitCode = computeExitCode(criticalCount, quarantineCount, agUiSkipped, timeoutCount);
+
+  const unverifiedSurfaces = collectUnverifiedSurfaces(httpResults);
+  const observationRejected =
+    observationRejections.has(evidence.drift) || observationRejections.has(evidence.agui);
+  const unboundAssertions = [
+    ...(observationUnavailability.get(evidence.drift) ?? []),
+    ...(observationUnavailability.get(evidence.agui) ?? []),
+  ];
+  const observationUnavailable =
+    observationUnavailability.has(evidence.drift) || observationUnavailability.has(evidence.agui);
 
   const timestamp = new Date().toISOString();
   const report: DriftReport = {
@@ -1929,18 +3620,39 @@ function main(): void {
     // Alias of `timestamp` read by the reuse guard; `timestamp` kept for
     // back-compat with existing consumers.
     generatedAt: timestamp,
-    conclusion: conclusionForExitCode(exitCode),
+    conclusion: conclusionForExitCode(exitCode, timeoutCount > 0 && silentCount === 0),
     entries,
     ...(quarantine.length > 0 ? { quarantine } : {}),
     ...(timeouts.length > 0 ? { timeouts } : {}),
+    // Written unconditionally (even when empty): an absent field must mean "an
+    // old report", never "every surface was verified".
+    unverifiedSurfaces,
   };
 
   try {
     writeFileSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf-8");
+    if (observationRejected || observationUnavailable) {
+      // Do not upload a stale or apparently complete artifact for a rejected invocation.
+      rmSync(observationsPath, { force: true });
+    } else {
+      writeFileSync(
+        observationsPath,
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            generatedAt: timestamp,
+            observations: liveObservations.get(evidence.drift) ?? [],
+          },
+          null,
+          2,
+        ) + "\n",
+        { mode: 0o600 },
+      );
+    }
   } catch (err) {
     console.error(`Failed to write drift report to ${outPath}:`, err);
     console.log(JSON.stringify(report, null, 2));
-    process.exit(1);
+    return 1;
   }
   console.log(`Drift report written to ${outPath}`);
   console.log(`  HTTP API entries: ${httpEntries.length}`);
@@ -1953,30 +3665,63 @@ function main(): void {
   console.log(`  Total entries: ${entries.length}`);
   console.log(`  Critical diffs: ${criticalCount}`);
   console.log(`  Quarantined failures: ${quarantineCount}`);
-  console.log(`  Live timeouts (zero observations): ${timeoutCount}`);
+  console.log(`  Live timeouts (zero observations): ${silentCount}`);
+  console.log(`  Provider quota exhausted (not graded — top up credit): ${quotaCount}`);
+  if (unverifiedSurfaces.length > 0) {
+    console.log(
+      `  Surfaces with NO live drift coverage (offline conformance only, not verified ` +
+        `against the vendor): ${unverifiedSurfaces.length}`,
+    );
+    for (const entry of unverifiedSurfaces) {
+      console.log(`    - ${entry.surface} (${entry.provider})`);
+    }
+  }
+
+  if (observationRejected) {
+    console.error("Invalid or unsafe live observation; observation artifact was not written.");
+    return 1;
+  }
+  if (observationUnavailable) {
+    console.error("Live observation evidence unavailable; observation artifact was not written.");
+    console.error(`  Assertions without console context: ${unboundAssertions.length}`);
+    for (const line of unboundAssertions.slice(0, MAX_UNBOUND_ASSERTION_LINES))
+      console.error(`    - ${line}`);
+    if (unboundAssertions.length > MAX_UNBOUND_ASSERTION_LINES)
+      console.error(`    ... and ${unboundAssertions.length - MAX_UNBOUND_ASSERTION_LINES} more`);
+    // Preserve existing failing ShapeDiff/infra grading; a clean report cannot certify this channel.
+    if (exitCode === 0) return 1;
+  }
 
   switch (exitCode) {
     case 2:
       console.log("Exiting with code 2 (critical diffs found).");
-      process.exit(2);
-    // eslint-disable-next-line no-fallthrough
+      return 2;
     case 5:
       console.warn(`Exiting with code 5 (${quarantineCount} failure(s) quarantined for review).`);
-      process.exit(5);
-    // eslint-disable-next-line no-fallthrough
+      return 5;
     case 6:
       console.warn(
-        `Exiting with code 6 (${timeoutCount} live leg(s) timed out with zero observations — ` +
-          `no drift graded on those surfaces; NOT a collector fault).`,
+        `Exiting with code 6 (${[
+          ...(silentCount > 0
+            ? [`${silentCount} live leg(s) timed out with zero observations`]
+            : []),
+          ...(quotaCount > 0
+            ? [`${quotaCount} leg(s) failed on provider quota exhaustion — top up credit`]
+            : []),
+        ].join("; ")} — no drift graded on those legs; NOT a collector fault).`,
       );
-      process.exit(6);
-    // eslint-disable-next-line no-fallthrough
+      return 6;
     case 1:
       console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
-      process.exit(1);
-    // eslint-disable-next-line no-fallthrough
+      return 1;
     default:
-      console.log("No critical diffs found.");
+      console.log(
+        unverifiedSurfaces.length > 0
+          ? `No critical diffs found (on the surfaces that were actually checked — ` +
+              `${unverifiedSurfaces.length} surface(s) have no live coverage at all).`
+          : "No critical diffs found.",
+      );
+      return 0;
   }
 }
 
@@ -1999,7 +3744,7 @@ function isDirectRun(): boolean {
 
 if (isDirectRun()) {
   try {
-    main();
+    process.exitCode = withInvocationEvidence(collectMain);
   } catch (err: unknown) {
     console.error("Fatal error:", err);
     process.exit(1);

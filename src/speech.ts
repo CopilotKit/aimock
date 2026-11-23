@@ -1,15 +1,15 @@
+import { renderError } from "./response/errors.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type * as http from "node:http";
 import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
 import {
   isAudioResponse,
   isErrorResponse,
-  serializeErrorResponse,
+  isJsonObject,
   flattenHeaders,
   getTestId,
   FORMAT_TO_CONTENT_TYPE,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
@@ -17,7 +17,7 @@ import {
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { prepareChaos, chaosIdentity } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 interface SpeechRequest {
@@ -57,18 +57,19 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
     );
     return;
   }
 
-  if (!speechReq.input) {
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `speechReq.input` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(speechReq)) {
     journal.add({
       method,
       path,
@@ -79,9 +80,42 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: { message: "Missing required parameter: 'input'", type: "invalid_request_error" },
-      }),
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  const input: unknown = speechReq.input;
+  const validInput =
+    typeof input === "string" ||
+    (Array.isArray(input) &&
+      input.length > 0 &&
+      input.every(
+        (part: unknown) =>
+          isJsonObject(part) &&
+          typeof part.type === "string" &&
+          (!("text" in part) || typeof part.text === "string"),
+      ));
+  if (!input || !validInput) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: !input
+          ? "Missing required parameter: 'input'"
+          : "Invalid parameter: 'input' must be a string or a nonempty array of content parts",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -108,23 +142,24 @@ export async function handleSpeech(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
@@ -142,13 +177,11 @@ export async function handleSpeech(
       writeErrorResponse(
         res,
         503,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -190,13 +223,11 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -212,7 +243,7 @@ export async function handleSpeech(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -229,9 +260,10 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: { message: "Fixture response is not an audio type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not an audio type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -248,13 +280,11 @@ export async function handleSpeech(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Object-form audio not supported for speech endpoint. Use string-form: { audio: '<base64>' }",
-          type: "server_error",
-        },
-      }),
+      renderError("openai", "unknown-response", {
+        message:
+          "Object-form audio not supported for speech endpoint. Use string-form: { audio: '<base64>' }",
+        type: "server_error",
+      }).body,
     );
     return;
   }

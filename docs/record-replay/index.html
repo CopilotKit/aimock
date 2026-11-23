@@ -69,6 +69,26 @@
           <li>Subsequent identical requests match the newly recorded fixture</li>
         </ol>
 
+        <h2 id="catalog-and-count-routes">Catalog and Count Routes</h2>
+        <p>
+          Native model catalogs and token-count routes always answer locally, including in record
+          and proxy-only modes. They never contact upstream providers or save recordings. Catalog
+          GETs do not create journal entries. Count POSTs create entries with
+          <code>source: "internal"</code> and <code>fixture: null</code>.
+        </p>
+        <p>
+          Count routes estimate the translated request, including system text and converted tools.
+          They do not read fixture usage or count-specific fixtures. The estimate can differ from
+          the usage on a replayed response. To make those values agree, set the response usage in
+          the fixture explicitly.
+        </p>
+        <p>
+          Native catalogs use provider paging by default. Clients must read
+          <code>has_more</code> or <code>nextPageToken</code> to collect all pages. See the
+          <a href="/claude-messages#model-catalog">Claude catalog and count routes</a> and
+          <a href="/gemini#model-catalog">Gemini catalog and count routes</a>.
+        </p>
+
         <h2>Proxy-Only Mode</h2>
         <p>
           Use <code>--proxy-only</code> instead of <code>--record</code> when you want unmatched
@@ -379,6 +399,280 @@
 }</code></pre>
         </div>
 
+        <h2 id="live-recording">GPT-Live Recording</h2>
+        <p>
+          GPT-Live uses the primary WebSocket endpoint <code>/v1/live/sessions</code>. Unlike HTTP
+          streams, Live recordings preserve both directions, event order, PCM audio, timing, and
+          identifier references. They do not collapse into a text response. Both client and managed
+          delegation use this endpoint.
+        </p>
+        <p>
+          Connect to <code>ws://127.0.0.1:4010/v1/live/sessions</code> for a default local server.
+          Send <code>session.start</code> first. Use the configuration and command sequence in the
+          <a href="/websocket">WebSocket guide</a>. The supported audio format is mono PCM16LE at
+          24,000 Hz. aimock replays supplied audio. It does not synthesize speech.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Live recording configuration <span class="lang-tag">ts</span>
+          </div>
+          <pre><code>import { LLMock } from "@copilotkit/aimock";
+
+const providerKey = process.env.OPENAI_API_KEY;
+if (!providerKey) throw new Error("Set OPENAI_API_KEY before recording");
+
+const mock = new LLMock({
+  live: { maxDurationMs: 120_000 },
+});
+await mock.start();
+try {
+  mock.enableRecording({
+    providers: { openai: "https://api.openai.com" },
+    providerKeys: { openai: providerKey },
+    fixturePath: "./fixtures/live-recorded",
+    upstreamTimeoutMs: 30_000,
+    bodyTimeoutMs: 30_000,
+  });
+  const liveUrl = new URL("/v1/live/sessions", mock.url);
+  liveUrl.protocol = "ws:";
+  // Connect your Live client to liveUrl.href and complete one session.
+  // Await session.closed and successful fixture export before stopping.
+} finally {
+  await mock.stop();
+}</code></pre>
+        </div>
+        <p>
+          This fragment configures recording. Add your awaited client scenario inside the
+          <code>try</code> block. Only a complete, successful <code>session.closed</code> capture
+          becomes a fixture. A disconnect, timeout, failed export, or resource limit does not
+          produce a partial replay fixture.
+        </p>
+        <p>
+          The upstream base accepts <code>https://api.openai.com</code> or
+          <code>https://api.openai.com/v1</code>. It cannot contain credentials, a query, or a
+          fragment. aimock uses an upstream WebSocket connection and forwards only the selected
+          Authorization header. POST SDP, WebRTC, sideband connections, session forks, and recording
+          downloads are outside this support.
+        </p>
+
+        <h3>Local and Provider Credentials</h3>
+        <p>
+          <code>auth.apiKeys</code> controls access to aimock. It does not grant provider access. A
+          matching local key in an Authorization Bearer or Key header is removed before the upstream
+          request. Configure a separate <code>record.providerKeys.openai</code> value for provider
+          access.
+        </p>
+        <p>
+          After local-key removal, a caller credential takes precedence unless it starts with
+          <code>sk-aimock-</code>. If the caller credential is absent or has that dummy prefix,
+          aimock selects the configured provider key. <code>AIMOCK_DUMMY_KEY_MARKER</code> changes
+          the prefix. Without a configured provider key, the remaining caller header stays
+          unchanged.
+        </p>
+        <p>
+          The CLI reads <code>AIMOCK_PROVIDER_OPENAI_KEY</code> for the provider key. Programmatic
+          code supplies <code>providerKeys.openai</code> explicitly, as in this example.
+          <code>OPENAI_API_KEY</code> is read by the example, not automatically by
+          <code>new LLMock()</code>. Offline replay needs no provider key or recording
+          configuration.
+        </p>
+
+        <h3>Retained Content and Export Safety</h3>
+        <p>
+          Recording explicitly retains input and output audio, transcripts, prompts, tool arguments,
+          tool results, and other semantic event content. These can contain personal or confidential
+          information. Use audio and text that you are permitted to retain and share.
+        </p>
+        <p>
+          Before export, aimock removes known credential metadata and replaces opaque identifiers
+          with stable fixture identifiers. Replay creates fresh server identifiers for each
+          connection while preserving their references. Sanitization preserves semantic content and
+          audio bytes.
+        </p>
+        <p>
+          Add known secret strings to <code>live.secretValues</code>. The recorder also checks the
+          selected upstream credential and configured local keys. If a secret occurs in semantic
+          content or cannot be removed safely, export fails with <code>unsafe-export</code>. There
+          is no unsafe-export override. A sanitized fixture is not a general personal-data scrub.
+        </p>
+        <p>
+          Recording journal entries retain status, failure category, and model metadata rather than
+          the raw capture or caller headers. Replay diagnostics can contain fixture content.
+          Configured literal-secret filtering does not identify arbitrary secrets or personal data.
+          Review retained fixtures and diagnostics before sharing them.
+        </p>
+        <p>
+          With <code>proxyOnly: true</code>, unmatched Live sessions still reach the provider.
+          aimock does not save or cache a replay fixture. Temporary bounded capture state exists
+          during the session and is cleared at completion. Provider charges still apply.
+        </p>
+
+        <h3 id="live-limits">Live Limits and Deadlines</h3>
+        <p>
+          Set these values in <code>new LLMock({ live: { ... } })</code>. All numeric Live limits
+          must be positive safe integers. Zero does not disable a limit. One MiB equals 1,048,576
+          bytes. Limits apply to each session unless the table states otherwise.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Live option</th>
+              <th>Default</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>maxSessions</code></td>
+              <td>16</td>
+              <td>Concurrent Live sessions per server, including pending startup.</td>
+            </tr>
+            <tr>
+              <td><code>maxMessageBytes</code></td>
+              <td>1 MiB</td>
+              <td>Each complete JSON message in either direction.</td>
+            </tr>
+            <tr>
+              <td><code>maxBufferedBytes</code></td>
+              <td>2 MiB</td>
+              <td>
+                Each transport receive buffer, including fragmented input. Also bounds queued
+                startup commands.
+              </td>
+            </tr>
+            <tr>
+              <td><code>maxWriteBytes</code></td>
+              <td>1 MiB</td>
+              <td>Pending encoded writes on each connection, in either relay direction.</td>
+            </tr>
+            <tr>
+              <td><code>maxDecodedAudioBytes</code></td>
+              <td>16 MiB</td>
+              <td>Cumulative decoded PCM bytes, separately for client input and server output.</td>
+            </tr>
+            <tr>
+              <td><code>maxDurationMs</code></td>
+              <td>120,000 ms</td>
+              <td>
+                Absolute session lifetime, including startup. Also bounds transcript timestamps.
+              </td>
+            </tr>
+            <tr>
+              <td><code>idleTimeoutMs</code></td>
+              <td>30,000 ms</td>
+              <td>Replay inactivity and startup when recording is disabled.</td>
+            </tr>
+            <tr>
+              <td><code>mismatchTimeoutMs</code></td>
+              <td>30,000 ms</td>
+              <td>Replay wait for the next required client command or PCM prefix.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Recording uses the following <code>enableRecording()</code> configuration instead of
+          replay idle and mismatch deadlines. The absolute <code>live.maxDurationMs</code> limit
+          remains active. Increase that limit too when you need a longer recording.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Record option</th>
+              <th>Default</th>
+              <th>Live behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>upstreamTimeoutMs</code></td>
+              <td>30,000 ms</td>
+              <td>Startup deadline and upstream connection/upgrade deadline.</td>
+            </tr>
+            <tr>
+              <td><code>bodyTimeoutMs</code></td>
+              <td>30,000 ms</td>
+              <td>
+                Upstream byte-idle deadline after the upgrade. Partial frame bytes count as
+                activity.
+              </td>
+            </tr>
+            <tr>
+              <td><code>maxProxyBufferBytes</code></td>
+              <td>64 MiB</td>
+              <td>
+                Combined serialized event bytes from both directions. Hard ceiling: 256 MiB. Pending
+                startup uses the smaller of this value and maxBufferedBytes.
+              </td>
+            </tr>
+            <tr>
+              <td><code>maxProxyBufferFrames</code></td>
+              <td>5,000,000</td>
+              <td>
+                Combined event count from both directions. Also bounds queued startup commands.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Live recording closes the session when a capture limit is exceeded. It does not continue
+          an unlimited relay after capture stops. Export and fixture loading also enforce a 64 MiB
+          JSON limit, depth 32, and at most 5,000,000 array entries. A larger capture allowance does
+          not remove those validation limits.
+        </p>
+
+        <h3>Restart and Replay Offline</h3>
+        <p>
+          After a successful export, start a fresh server with the saved directory. Do not enable
+          recording on this server. This also works with either authored example file:
+          <code>fixtures/openai-live-client.json</code> or
+          <code>fixtures/openai-live-managed.json</code>. Load one example mode per server because
+          both match the same model and endpoint.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Offline replay configuration <span class="lang-tag">ts</span>
+          </div>
+          <pre><code>import { LLMock } from "@copilotkit/aimock";
+
+const mock = new LLMock();
+mock.loadFixtureDir("./fixtures/live-recorded");
+await mock.start();
+try {
+  const liveUrl = new URL("/v1/live/sessions", mock.url);
+  liveUrl.protocol = "ws:";
+  // Await your client scenario against liveUrl.href here.
+} finally {
+  await mock.stop();
+}</code></pre>
+        </div>
+        <p>
+          Replay expects the recorded configuration and client commands. Use identifiers from
+          emitted events instead of copied fixture identifiers. In managed mode, send every pending
+          tool result before the explicit <code>response.create</code> continuation. Equivalent PCM
+          samples can use different chunk boundaries. Command order and required audio prefixes
+          still control when server events become eligible.
+        </p>
+        <p>
+          Saved recordings use recorded timing. <code>liveTiming: "immediate"</code> removes timed
+          waits but preserves client barriers. A provider access refusal or unavailable runtime does
+          not establish recording coverage. Offline authored examples establish replay behavior, not
+          live-provider compatibility.
+        </p>
+
+        <h3>Test Cleanup</h3>
+        <p>
+          Always close client sockets and await <code>mock.stop()</code> in a
+          <code>finally</code> block. To reuse a server, call <code>mock.closeLiveSessions()</code>
+          between tests. Pass a test ID to close only sessions assigned to that test.
+        </p>
+        <p>
+          The <code>@copilotkit/aimock/vitest</code> and
+          <code>@copilotkit/aimock/jest</code> helpers close their server's Live sessions before and
+          after each test. They reset match counts before each test.
+          <code>resetMatchCounts()</code> alone does not close sessions. A full
+          <code>mock.reset()</code> closes active sessions and clears fixtures.
+        </p>
+
         <h2>Stream Collapsing</h2>
         <p>
           When the upstream provider returns a streaming response, aimock collapses it into a
@@ -457,6 +751,31 @@
           faithfully block order is reconstructable on each provider's wire.
         </p>
 
+        <h2 id="recording-responses-tool-calls">
+          Recording Responses Namespaced and Custom Tool Calls
+        </h2>
+        <p>
+          With <code>responsesTools: "extended"</code>, a streamed OpenAI Responses turn keeps the
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >namespaced and custom tool calls</a
+          >
+          it contains. A <code>function_call</code> with a <code>namespace</code> is saved as a
+          <code>toolCalls</code> entry with that <code>namespace</code>. A
+          <code>custom_tool_call</code> is saved in <code>customToolCalls</code> as
+          <code>{ "type": "custom", "name", "input" }</code>, with the full free-text
+          <code>input</code> and its <code>namespace</code> if it has one; a turn with only custom
+          calls is saved with <code>"toolCalls": []</code>. When a custom call is interleaved with
+          text or comes before a function call, the full order is saved in
+          <code>responsesBlocks</code>. The replay sends the same items that the upstream sent.
+          Without the option, recordings are exactly what 1.44.0 wrote (namespaces dropped, custom
+          calls not recorded). A release that predates these keys replays such a recording as it
+          replays its own, because it ignores the new keys.
+        </p>
+        <p>
+          This applies to streamed (SSE) Responses recordings. Recording a non-streaming Responses
+          reply, or a Responses WebSocket session, is not supported yet.
+        </p>
+
         <h2 id="recording-usage">Recording Token Usage &amp; Cost</h2>
         <p>
           OpenAI-compatible recordings (including <a href="/openrouter-chat">OpenRouter</a>) keep
@@ -501,10 +820,14 @@
 
         <h2>Header Forwarding</h2>
         <p>
-          When proxying to upstream providers, aimock forwards the original request's headers except
-          for a small, fixed strip list: hop-by-hop headers (per RFC 2616 §13.5.1), headers the
-          upstream HTTP client must set from the target URL or body, and aimock's own mock-internal
-          control headers. Everything else passes through — custom gateway headers,
+          Live forwards only the selected Authorization header, as described in
+          <a href="#live-recording">GPT-Live Recording</a>.
+        </p>
+        <p>
+          When proxying HTTP requests to upstream providers, aimock forwards the original request's
+          headers except for a small, fixed strip list: hop-by-hop headers (per RFC 2616 §13.5.1),
+          headers the upstream HTTP client must set from the target URL or body, and aimock's own
+          mock-internal control headers. Everything else passes through — custom gateway headers,
           <code>openai-organization</code>, <code>anthropic-version</code>, and any other
           provider-specific auth or routing header all reach the upstream as-is.
         </p>
@@ -529,10 +852,17 @@
               >Mock-internal control headers (meaningless — and potentially confusing or leaky — on
               a real provider's wire):</strong
             >
-            <code>x-test-id</code>, <code>x-aimock-strict</code>, <code>x-aimock-context</code>, and
-            the <code>x-aimock-chaos-*</code> prefix family
+            <code>x-test-id</code>, <code>x-aimock-strict</code>, <code>x-aimock-policy</code>,
+            <code>x-aimock-context</code>, and the <code>x-aimock-chaos-*</code> prefix family
           </li>
         </ul>
+        <p>
+          The LLM HTTP recorder strips <code>X-AIMock-Policy</code> before forwarding. With
+          <code>requiredHeaders=enforce</code>, a missing Anthropic version header returns 400
+          before proxying. Other forwarded headers and recorded response content keep their existing
+          behavior. See
+          <a href="/claude-messages#required-header-policy">Required Header Policy</a>.
+        </p>
         <p>
           <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture contains
           the match criteria (derived from the last user message) and the response content — plus,
@@ -650,11 +980,33 @@
 
         <h2>Strict Mode</h2>
         <p>
-          When <code>--strict</code> is enabled, an unmatched request returns
+          When <code>--strict</code> is enabled, an unmatched HTTP request returns
           <strong>503 Service Unavailable</strong> <em>before any proxy attempt</em> &mdash; even
           when an upstream is configured for that provider, nothing is forwarded and nothing is
           recorded. Strict mode wins over record mode. This is useful for CI environments where you
           want to catch unexpected API calls instead of silently recording new fixtures.
+        </p>
+
+        <p>
+          Strict mode also prevents Live fixture misses from reaching the provider. After the
+          WebSocket upgrade, Live reports an aimock error and closes the session instead of sending
+          an HTTP 503 response.
+        </p>
+
+        <p>
+          Strict mode does not change how MCP fake calls are answered. To fail on a tool that a
+          scenario does not declare, use <code>"undeclaredTools": "deny"</code> in its
+          <code>mcpFakes</code> block (see <a href="/mcp-mock#closed-world">Closed world</a>). An
+          <code>mcpFakes</code> block that aimock cannot honor fails the load in every mode, strict
+          or not, and with or without <code>--validate-on-load</code>.
+        </p>
+
+        <p>
+          The CLI check for a start with no fixtures counts <code>mcpFakes</code> blocks as loaded.
+          A start with only fakes does not abort under <code>--strict</code> or
+          <code>--validate-on-load</code>. It prints
+          <code>Warning: No LLM fixtures loaded; LLM requests will return 404</code> and serves the
+          fakes.
         </p>
 
         <h2>Fixture Auto-Generation</h2>
@@ -693,6 +1045,13 @@
         </p>
 
         <h2 id="model-aware-recording">Model-Aware Recording</h2>
+        <p>
+          New Ollama and OpenAI-compatible embedding recordings also keep the operation, exact input
+          shape and requested dimensions in <code>match.embeddingRequest</code>. This separates
+          batches from strings with the same joined text, different widths, and other embedding
+          operations, both while recording and after loading the saved file. Re-record older
+          captures to add this match data.
+        </p>
         <p>
           When recording fixtures, aimock automatically includes the model name in match criteria.
           This prevents collisions when your app makes multiple LLM calls with the same user message
@@ -940,6 +1299,249 @@ describe(<span class="str">"agent chat"</span>, () => {
           <code>__default__</code>), recording falls back to the standard timestamp-based filename:
           <code>&lt;provider&gt;-&lt;timestamp&gt;-&lt;8-hex&gt;.json</code> (the suffix is the
           first 8 hex characters of a random UUID).
+        </p>
+
+        <h2 id="mcp-recording">Recording MCP servers</h2>
+        <p>
+          aimock can record a real MCP server and replay it offline. In record mode an MCP mount is
+          a pass-through proxy: it forwards each request to the upstream server, sends the answer
+          back to your client unchanged, and writes the <code>tools/list</code> and
+          <code>tools/call</code> exchanges to an
+          <a href="/mcp-mock#recorded-fakes"><code>mcpFakes</code></a> file. Later runs load that
+          file like any hand-written fake, with no upstream server. A call that does not match the
+          recording fails with <code>MCP_FAKE_MISMATCH</code>, and the
+          <a href="/mcp-mock#fakes-report">fakes report</a> lists it, so a changed call is never
+          hidden.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Minimum version:</strong> MCP recording and recorded <code>mcpFakes</code> files
+            need aimock 1.45.0 or later. An older aimock rejects a recorded file at load, because it
+            does not know the keys <code>list</code>, <code>recorded</code>,
+            <code>notifications</code>, <code>durationMs</code> and <code>timing</code>.
+          </p>
+        </div>
+
+        <h3>Record</h3>
+        <p>
+          The recording flags are on the flag-driven <code>llmock</code> bin, which is also the
+          Docker image&rsquo;s entry point.
+          <code>--mcp-record &lt;mount&gt;=&lt;url&gt;</code> records the MCP server at
+          <code>&lt;url&gt;</code> through the mount <code>&lt;mount&gt;</code>. Repeat the flag for
+          more servers. It needs a local <code>--fixtures</code> path: recordings go to
+          <code>&lt;fixtures&gt;/recorded</code>.
+          <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code> forwards in the same way but
+          writes nothing, and it does not need <code>--fixtures</code>. With
+          <code>aimock --config</code>, use <code>llm.record.mcp</code> with
+          <code>llm.enableMcpRecording: true</code> instead (see the
+          <a href="/aimock-cli#mcp-record-config">aimock CLI</a>).
+        </p>
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block" data-sample="inline:mcp-record-cli">
+              <div class="code-block-header">
+                Record an MCP server <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
+  --mcp-record /mcp=http://localhost:3001/mcp</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block" data-sample="inline:mcp-record-docker">
+              <div class="code-block-header">
+                Record an MCP server <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v $(pwd)/fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  -f /fixtures -h 0.0.0.0 \
+  --mcp-record /mcp=http://host.docker.internal:3001/mcp</code></pre>
+            </div>
+          </div>
+        </div>
+        <p>
+          Point your MCP client at <code>http://localhost:4010/mcp</code> instead of the real
+          server, and send a test id with each request: the <code>X-Test-Id</code> header
+          (percent-encoded) or <code>?testId=</code> on the URL. The test plugins&rsquo;
+          <a href="/test-plugins#fakes-for"><code>fakesFor()</code></a> returns both. A call with
+          neither a test id nor a context (<code>X-AIMock-Context</code>) is forwarded but not
+          written, and aimock warns once per mount.
+        </p>
+        <p>Each test id gets its own file. For the test id <code>search › refund policy</code>:</p>
+        <div class="code-block" data-sample="inline:mcp-record-layout">
+          <div class="code-block-header">Recording layout <span class="lang-tag">text</span></div>
+          <pre><code>fixtures/recorded/
+  search--refund-policy/
+    mcp.json</code></pre>
+        </div>
+        <p>
+          The directory name is the test id slugified as for
+          <a href="#snapshot-style-recording">snapshot-style recording</a>, and the file prefix
+          (<code>file.spec.ts ›</code>) is dropped. With only a context, the context is slugified.
+          The file has one block per scope and mount: the block&rsquo;s <code>scope</code> is the
+          test id (and context), and its <code>mount</code> is the mount path. A new call is added
+          at the end of its tool&rsquo;s <code>calls</code>; existing entries never change or move.
+          A completed <code>tools/list</code> replaces the block&rsquo;s <code>list</code>. Each
+          write validates the whole file first, then writes a temporary file and renames it (mode
+          <code>0600</code>).
+        </p>
+
+        <h3>Replay</h3>
+        <p>
+          Stop the upstream and start aimock with the same <code>--fixtures</code> path and without
+          <code>--mcp-record</code>. The recorded file loads like any <code>mcpFakes</code> file and
+          serves the same answers, in the recorded order, with the recorded progress notifications
+          and timing (<code>--replay-speed</code> scales the timing). See
+          <a href="/mcp-mock#recorded-fakes">Recorded fakes</a>.
+        </p>
+        <p>
+          While recording, a call that the file already answers is answered from the file, and only
+          a miss is forwarded and added. To re-record a test, delete its
+          <code>mcp.json</code> first. Under <code>undeclaredTools: "deny"</code>, a call to an
+          undeclared tool gets <code>MCP_FAKE_NOT_DECLARED</code> and is not forwarded. In strict
+          mode (<code>--strict</code> or <code>X-AIMock-Strict</code>) a miss is not forwarded
+          either: it gets the replay error.
+        </p>
+
+        <h3>What is recorded</h3>
+        <ul>
+          <li>
+            <code>tools/list</code>, as the block&rsquo;s <code>list</code> (all pages, once the
+            last page arrives).
+          </li>
+          <li>
+            Each <code>tools/call</code>: its arguments, the full result (or the error text when the
+            result is one text block with <code>isError: true</code>), the notifications sent before
+            the result, and the response time.
+          </li>
+          <li>
+            Where the recording came from, as <code>recorded</code>: the upstream origin (never its
+            path or query), the protocol version, the server info, the aimock version and the time.
+          </li>
+        </ul>
+        <p>
+          These are forwarded but not recorded, and the journal entry gets
+          <code>response.recordSkipped</code> with the reason: every method other than
+          <code>tools/list</code> and <code>tools/call</code>, JSON-RPC error responses, non-2xx
+          responses, batches, responses larger than the record buffer (64 MiB), results that ask for
+          more input or are task handles, calls during which the server sent a request to the
+          client, and sessions with a protocol version other than <code>2025-03-26</code>,
+          <code>2025-06-18</code> or <code>2025-11-25</code>. Recording the
+          <code>2026-07-28</code> protocol is not supported yet. Only Streamable HTTP servers can be
+          recorded.
+        </p>
+        <p>
+          While recording, the mount&rsquo;s registered tools and config tools do not answer: their
+          calls are forwarded. <code>tools/list</code> returns the upstream&rsquo;s list unchanged,
+          so tools that exist only as fakes are not listed while recording.
+        </p>
+
+        <h3>Credentials</h3>
+        <ul>
+          <li>
+            <code>Authorization</code> and API-key headers from your client are forwarded unchanged.
+          </li>
+          <li>
+            <code>AIMOCK_MCP_UPSTREAM_AUTH="Name: value"</code> (or <code>upstreamAuth</code> in the
+            config) sets that header on every forwarded request and replaces a client header of the
+            same name. It is required when aimock&rsquo;s inbound API-key auth
+            (<code>AIMOCK_API_KEYS</code>) is on, because aimock then removes the client&rsquo;s
+            key; without it, the answer is HTTP 502 <code>No configured upstream credential</code>.
+          </li>
+          <li>
+            OAuth is not supported through the recorder. An upstream 401, or a 403 with
+            <code>insufficient_scope</code>, is not passed on: aimock answers HTTP 502 and logs an
+            error. Record with a token you already have.
+          </li>
+        </ul>
+
+        <h3>Secrets</h3>
+        <p>
+          No request or response header is written to a recording. aimock replaces every occurrence
+          of a known secret with <code>[REDACTED]</code>, also in URL-encoded and re-encoded forms,
+          and adds a <code>_warnings</code> entry that names the JSON pointer, never the value.
+          Known secrets are the forwarded credential headers (and their token parts), the configured
+          upstream credential, the userinfo and query values of the URLs, and the values in
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> (one per line; each at least 8 characters, or
+          aimock does not start). A credential in a header name aimock does not recognize, or in a
+          URL path, is covered only when you list it in <code>AIMOCK_RECORD_SECRET_VALUES</code>. If
+          a known secret is still in the result after redaction, nothing is written. Strings that
+          look like tokens (<code>sk-</code>, <code>ghp_</code>, <code>AKIA…</code>, JWTs) add a
+          warning but are not changed; <code>aimock validate</code> prints the warnings.
+        </p>
+        <p>
+          When a write fails (an invalid merged file, an unsafe value, or a file system error),
+          aimock logs an error, journals <code>recordSkipped</code>, and adds an
+          <code>X-AIMock-Record-Error</code> header to a JSON answer. Your client still gets the
+          upstream answer.
+        </p>
+
+        <h3>Watch mode</h3>
+        <p>
+          With <code>--watch</code>, the recorder&rsquo;s own writes do not reload the fixtures. A
+          reload started by any other change accepts the recorded files as they are. An edit of your
+          own to the fakes in a recorded file is rejected, as for any <code>mcpFakes</code> file.
+        </p>
+
+        <h3>Code API</h3>
+        <p>
+          <code
+            >MCPMock.enableRecording({ upstream, fixturePath?, proxyOnly?, upstreamAuth?,
+            secretValues?, strict?, maxRecordBufferBytes? })</code
+          >
+          turns on record mode, and <code>disableRecording()</code> turns it off. A standalone
+          <code>MCPMock</code> (<code>mcp.start()</code>) records with <code>"mount": "/"</code>;
+          replay that file with <code>mcp.loadFakes()</code> on a standalone mock. When
+          <code>secretValues</code> or <code>upstreamAuth</code> is not given,
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> and <code>AIMOCK_MCP_UPSTREAM_AUTH</code> apply,
+          as on the CLI.
+        </p>
+
+        <h2 id="misbehavior-overlays">Model Misbehavior During Replay</h2>
+        <p>
+          <a href="/model-misbehavior">Model misbehavior</a> applies to matched fixture responses on
+          the <code>openai-chat</code> wire. It does not change proxied upstream responses or the
+          responses saved by the recorder. Existing <a href="/chaos-testing">transport chaos</a> can
+          still affect the live relay.
+        </p>
+        <p>
+          Without a terminal chaos action, a proxied OpenAI chat request with misbehavior configured
+          gets a bypass entry. The journal's
+          <code>response.misbehavior</code> reports <code>applied: false</code>,
+          <code>reason: "proxied"</code>, and an empty <code>evaluations</code> array. No
+          misbehavior roll or <code>times</code> budget is consumed.
+        </p>
+        <p>
+          Snapshot merging appends new captures and preserves existing fixture entries, including
+          any authored <code>misbehavior</code> field. It also preserves top-level metadata that the
+          recorder does not own. This does not add a <code>misbehavior</code> field to newly
+          recorded responses. Invalid snapshot files retain the replacement behavior described
+          above.
+        </p>
+        <p>
+          To test a recorded tool response without editing its file, load the recording for replay.
+          Then set a runtime fault for your test:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Replay overlay <span class="lang-tag">shell</span></div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/misbehavior \
+  -H 'Content-Type: application/json' \
+  -H 'X-Test-Id: replay-invalid-args' \
+  --data '{"seed":7,"faults":[{"fault":"tool-args-invalid-json","times":1}]}'</code></pre>
+        </div>
+        <p>
+          Send <code>X-Test-Id: replay-invalid-args</code> on the OpenAI Chat Completions request
+          that matches the recorded tool response. The runtime configuration affects that test's
+          replay responses without changing the stored fixture. A fixture's own
+          <code>misbehavior</code> takes precedence over the runtime configuration, including
+          <code>{ "faults": [] }</code>. The <code>X-AIMock-Misbehavior</code> request header
+          overrides both.
+        </p>
+        <p>
+          Check <code>response.misbehavior</code> in the journal for the applied fault and
+          <code>servedToolCalls</code>. The stored fixture remains the original response. Clear the
+          runtime override with <code>DELETE /__aimock/misbehavior</code> and the same
+          <code>X-Test-Id</code> header.
         </p>
 
         <h2>Fixture Lifecycle</h2>

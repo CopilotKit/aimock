@@ -71,6 +71,7 @@ export interface AGUIRunStartedEvent extends AGUIBaseEvent {
   type: "RUN_STARTED";
   threadId: string;
   runId: string;
+  protocolVersion?: string;
   parentRunId?: string;
   input?: AGUIRunAgentInput;
 }

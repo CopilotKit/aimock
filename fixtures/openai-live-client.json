@@ -1,0 +1,390 @@
+{
+  "$comment": "Authored offline protocol example, not a provider capture. PCM is six synthetic 16-bit samples per direction, not speech. Timings, usage and identifiers are illustrative; no interruption or live-provider behavior is proved by this fixture.",
+  "fixtures": [
+    {
+      "match": {
+        "endpoint": "openai-live",
+        "model": "gpt-live-1"
+      },
+      "response": {
+        "live": {
+          "version": 1,
+          "model": "gpt-live-1",
+          "mode": "client",
+          "audio": {
+            "encoding": "pcm16le",
+            "sampleRateHz": 24000,
+            "channels": 1
+          },
+          "configuration": {
+            "model": "gpt-live-1",
+            "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+            "audio": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "output": {
+                "voice": "marin"
+              }
+            },
+            "delegation": {
+              "type": "client"
+            }
+          },
+          "entries": [
+            {
+              "direction": "client",
+              "atMs": 0,
+              "event": {
+                "type": "session.start",
+                "event_id": "live-id-1",
+                "session": {
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "client"
+                  }
+                }
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 10,
+              "event": {
+                "event_id": "live-id-2",
+                "type": "session.started",
+                "client_event_id": "live-id-1",
+                "session": {
+                  "id": "live-id-3",
+                  "expires_at": 2000000000,
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "client"
+                  },
+                  "status": "active",
+                  "input": []
+                }
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 20,
+              "event": {
+                "type": "session.input_audio.append",
+                "audio": "AAABAP//AgD+/wAA"
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 30,
+              "event": {
+                "type": "session.delegation.created",
+                "offset_ms": 0,
+                "delegation": {
+                  "id": "live-id-5",
+                  "type": "delegation",
+                  "target": "client"
+                },
+                "event_id": "live-id-4"
+              },
+              "barrier": {
+                "command": 1,
+                "audioBytes": 12
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 40,
+              "event": {
+                "type": "session.thinking.append",
+                "event_id": "live-id-6",
+                "delegation_id": "live-id-5",
+                "content": "The fictional red and blue sensor checks are still pending."
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 50,
+              "event": {
+                "type": "session.thinking.appended",
+                "start_ms": 0,
+                "end_ms": 1,
+                "event_id": "live-id-7",
+                "client_event_id": "live-id-6"
+              },
+              "barrier": {
+                "command": 2,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 60,
+              "event": {
+                "type": "session.commentary.append",
+                "event_id": "live-id-8",
+                "delegation_id": "live-id-5",
+                "content": "The fictional red sensor reads seven."
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 70,
+              "event": {
+                "type": "session.commentary.appended",
+                "start_ms": 0,
+                "end_ms": 1,
+                "event_id": "live-id-9",
+                "client_event_id": "live-id-8"
+              },
+              "barrier": {
+                "command": 3,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 80,
+              "event": {
+                "type": "session.output_audio.delta",
+                "delta": "AAACAP7/AQD//wAA"
+              },
+              "barrier": {
+                "command": 3,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 90,
+              "event": {
+                "type": "session.usage.updated",
+                "usage": {
+                  "seconds": 1
+                },
+                "context_window": {
+                  "usage_ratio": 0.001
+                },
+                "event_id": "live-id-10"
+              },
+              "barrier": {
+                "command": 3,
+                "audioBytes": 0
+              }
+            },
+            {
+              "direction": "client",
+              "atMs": 100,
+              "event": {
+                "type": "session.close",
+                "event_id": "live-id-11"
+              }
+            },
+            {
+              "direction": "server",
+              "atMs": 110,
+              "event": {
+                "event_id": "live-id-12",
+                "type": "session.closed",
+                "reason": "close_requested",
+                "session": {
+                  "id": "live-id-3",
+                  "expires_at": 2000000000,
+                  "model": "gpt-live-1",
+                  "instructions": "Authored offline example: delegate fictional sensor checks. Audio is synthetic PCM, not speech.",
+                  "audio": {
+                    "format": {
+                      "type": "audio/pcm",
+                      "rate": 24000
+                    },
+                    "output": {
+                      "voice": "marin"
+                    }
+                  },
+                  "delegation": {
+                    "type": "client"
+                  },
+                  "status": "active",
+                  "input": []
+                },
+                "usage": {
+                  "seconds": 1
+                },
+                "client_event_id": "live-id-11"
+              },
+              "barrier": {
+                "command": 4,
+                "audioBytes": 0
+              }
+            }
+          ],
+          "bindings": [
+            {
+              "entry": 0,
+              "pointer": "/event_id",
+              "name": "binding-1",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 1,
+              "pointer": "/event_id",
+              "name": "binding-2",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 1,
+              "pointer": "/client_event_id",
+              "name": "binding-1",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 1,
+              "pointer": "/session/id",
+              "name": "binding-3",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 3,
+              "pointer": "/event_id",
+              "name": "binding-4",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 3,
+              "pointer": "/delegation/id",
+              "name": "binding-5",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 4,
+              "pointer": "/event_id",
+              "name": "binding-6",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 4,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/event_id",
+              "name": "binding-7",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 5,
+              "pointer": "/client_event_id",
+              "name": "binding-6",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 6,
+              "pointer": "/event_id",
+              "name": "binding-8",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 6,
+              "pointer": "/delegation_id",
+              "name": "binding-5",
+              "action": "reference",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/event_id",
+              "name": "binding-9",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 7,
+              "pointer": "/client_event_id",
+              "name": "binding-8",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 9,
+              "pointer": "/event_id",
+              "name": "binding-10",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 10,
+              "pointer": "/event_id",
+              "name": "binding-11",
+              "action": "define",
+              "owner": "client"
+            },
+            {
+              "entry": 11,
+              "pointer": "/event_id",
+              "name": "binding-12",
+              "action": "define",
+              "owner": "server"
+            },
+            {
+              "entry": 11,
+              "pointer": "/client_event_id",
+              "name": "binding-11",
+              "action": "reference",
+              "owner": "client"
+            },
+            {
+              "entry": 11,
+              "pointer": "/session/id",
+              "name": "binding-3",
+              "action": "reference",
+              "owner": "server"
+            }
+          ],
+          "capture": {
+            "source": "authored",
+            "complete": true,
+            "terminalEntry": 11
+          }
+        },
+        "liveTiming": "immediate"
+      }
+    }
+  ]
+}

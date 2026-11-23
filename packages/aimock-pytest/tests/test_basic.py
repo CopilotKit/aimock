@@ -3,7 +3,10 @@ import subprocess
 import sys
 from unittest import mock
 
+import pytest
 import requests
+
+from aimock_pytest import AIMockServer
 
 # ── Session-scoped fixture tests ──────────────────────────────────────────
 # These two tests share a single aimock_session instance, verifying that the
@@ -165,6 +168,51 @@ def test_add_fixture_and_match(aimock):
     assert r.status_code == 200
     body = r.json()
     assert body["choices"][0]["message"]["content"] == "Hi there!"
+
+
+@pytest.fixture
+def aimock_extended(request, _aimock_node_manager):
+    """An ``aimock`` server started with ``responses_tools="extended"``.
+    ``match.toolNamespace`` needs it; the default (legacy) ignores the key."""
+    server = AIMockServer(
+        _aimock_node_manager,
+        port=0,
+        api_key=request.config.getoption("--aimock-api-key"),
+        responses_tools="extended",
+    )
+    server.start()
+    server._default_test_id = request.node.nodeid
+    yield server
+    server.stop()
+
+
+def test_add_fixture_routes_tool_namespace_into_match(aimock_extended):
+    """toolNamespace=... is a match key: it lands under `match`, so it gates."""
+    aimock = aimock_extended
+    aimock.add_fixture(
+        {"toolName": "list_issues"}, {"content": "WRONG"}, toolNamespace="mcp__gitlab"
+    )
+    aimock.add_fixture(
+        {"toolName": "list_issues"}, {"content": "RIGHT"}, toolNamespace="mcp__github"
+    )
+
+    r = requests.post(
+        f"{aimock.base_url}/v1/responses",
+        json={
+            "model": "gpt-5",
+            "input": "list my issues",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__github",
+                    "description": "GitHub MCP",
+                    "tools": [{"type": "function", "name": "list_issues", "parameters": {}}],
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["output"][0]["content"][0]["text"] == "RIGHT"
 
 
 def test_reset_clears_fixtures(aimock):
@@ -470,6 +518,62 @@ def test_match_level_kwarg_opt_routed_under_match():
 
     # ...and must NOT leak to the top level where the server ignores it.
     assert "model" not in entry
+
+
+@pytest.mark.parametrize("operation", ["/api/embed", "/api/embeddings", "/v1/embeddings"])
+def test_add_fixture_embedding_request_kwarg_keeps_exact_matching(aimock, operation):
+    """The public kwarg constrains embedding operation, input shape and width."""
+    legacy = operation == "/api/embeddings"
+    raw_input = "same text" if legacy else ["same", "text"]
+    embedding_request = {"operation": operation, "input": raw_input, "dimensions": 2}
+    aimock.add_fixture(
+        {"inputText": "same text"},
+        {"embedding": [0.125, 0.875]},
+        embeddingRequest=embedding_request,
+    )
+    payload = {
+        "model": "nomic-embed-text",
+        "prompt" if legacy else "input": raw_input,
+        "dimensions": 2,
+    }
+    headers = {"X-AIMock-Strict": "true"}
+    matched = requests.post(
+        f"{aimock.base_url}{operation}", json=payload, headers=headers, timeout=5
+    )
+    assert matched.status_code == 200
+
+    changed_width = requests.post(
+        f"{aimock.base_url}{operation}",
+        json={**payload, "dimensions": 3},
+        headers=headers,
+        timeout=5,
+    )
+    assert changed_width.status_code == 503
+
+    if not legacy:
+        # Same joined text, different wire shape: the exact matcher must miss.
+        changed_shape = requests.post(
+            f"{aimock.base_url}{operation}",
+            json={**payload, "input": "same text"},
+            headers=headers,
+            timeout=5,
+        )
+        assert changed_shape.status_code == 503
+
+    other_operation = "/v1/embeddings" if legacy else "/api/embeddings"
+    other_payload = {
+        "model": "nomic-embed-text",
+        "input" if legacy else "prompt": "same text",
+        "dimensions": 2,
+    }
+    changed_operation = requests.post(
+        f"{aimock.base_url}{other_operation}",
+        json=other_payload,
+        headers=headers,
+        timeout=5,
+    )
+    assert changed_operation.status_code == 503
+    assert embedding_request == {"operation": operation, "input": raw_input, "dimensions": 2}
 
 
 def test_match_level_opt_keys_match_server_schema():

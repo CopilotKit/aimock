@@ -14,16 +14,16 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { applyChaos, chaosIdentity } from "./chaos.js";
+import { applyChaosAsync, responseGone } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
@@ -306,31 +306,30 @@ export async function handleVeoVideoCreate(
   // OpenRouter submit). An unmatched submit is proxied upstream when record
   // mode has a veo provider AND strict would not win — label that roll "proxy".
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       fixture,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
       fixture
         ? "fixture"
-        : resolveStrictMode(defaults.strict, req.headers)
+        : resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss
           ? "internal"
           : defaults.record?.providers.veo
             ? "proxy"
             : "internal",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req, raw),
     )
   )
     return;
 
   if (!fixture) {
     // Strict mode wins over record: a strict no-match fails loudly with 503.
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
@@ -387,7 +386,7 @@ export async function handleVeoVideoCreate(
   const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     const status = response.status ?? 500;
     journal.add({
       method,
@@ -403,7 +402,7 @@ export async function handleVeoVideoCreate(
   }
 
   if (!isVideoResponse(response)) {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journal.add({
       method,
       path,
@@ -419,7 +418,7 @@ export async function handleVeoVideoCreate(
     return;
   }
 
-  if (res.destroyed || res.writableEnded) return;
+  if (responseGone(res)) return;
   journal.add({
     method,
     path,
@@ -490,18 +489,17 @@ export async function handleVeoVideoStatus(
   // Chaos rolls BEFORE the job lookup — the label stays "internal" even in
   // record mode, and a chaos-dropped poll never reaches the upstream.
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       null,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: null },
       "internal",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req),
     )
   )
     return;
@@ -529,7 +527,7 @@ export async function handleVeoVideoStatus(
   if (job.kind === "record") {
     // Strict means nothing reaches an upstream — a record job's polls are pure
     // upstream proxies, so an effective-strict request is refused with 503.
-    if (resolveStrictMode(defaults.strict, req.headers)) {
+    if (!resolveRequestDecisions(defaults.strict, req.headers).upstream) {
       defaults.logger.error(
         `STRICT: Veo operation ${operationName} is proxied live upstream (record mode) — refusing the upstream poll`,
       );
@@ -573,7 +571,7 @@ export async function handleVeoVideoStatus(
 
   // Guard BEFORE advancing or journaling (file convention): a disconnected
   // client consumes no progression step or TTL refresh.
-  if (res.destroyed || res.writableEnded) return;
+  if (responseGone(res)) return;
   advanceVeoJob(job);
   // Refresh the TTL on every replay poll (delete-before-set also moves the
   // entry to the back of the FIFO eviction order).
@@ -647,7 +645,7 @@ async function proxyVeoVideoSubmit(args: {
 
   const proxyError = (msg: string): "handled" => {
     defaults.logger.error(`Veo video submit proxy failed: ${msg}`);
-    if (res.destroyed || res.writableEnded) return "handled";
+    if (responseGone(res)) return "handled";
     journal.add({
       method,
       path,
@@ -663,9 +661,10 @@ async function proxyVeoVideoSubmit(args: {
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
     return "handled";
   };
@@ -713,7 +712,7 @@ async function proxyVeoVideoSubmit(args: {
     defaults.logger.warn(
       `Upstream rejected the Veo video submit (${fetched.status}) — relaying the upstream status`,
     );
-    if (res.destroyed || res.writableEnded) return "handled";
+    if (responseGone(res)) return "handled";
     journal.add({
       method,
       path,
@@ -797,7 +796,7 @@ async function proxyVeoVideoSubmit(args: {
     );
   }
 
-  if (res.destroyed || res.writableEnded) return "handled";
+  if (responseGone(res)) return "handled";
   journal.add({
     method,
     path,
@@ -865,14 +864,15 @@ async function proxyVeoVideoRecordPoll(args: {
 
   const proxyError = (msg: string): void => {
     logger.error(`Veo video poll proxy failed: ${msg}`);
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(502);
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
   };
 
@@ -910,7 +910,7 @@ async function proxyVeoVideoRecordPoll(args: {
     logger.warn(
       `Upstream rejected the Veo status poll for operation ${job.upstreamOperationName} (${fetched.status}) — relaying the upstream status`,
     );
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(fetched.status);
     res.writeHead(fetched.status, { "Content-Type": fetched.contentType ?? "application/json" });
     res.end(fetched.text);
@@ -943,7 +943,7 @@ async function proxyVeoVideoRecordPoll(args: {
   const relayBody: Record<string, unknown> = { ...upstreamBody, name: job.operationName };
 
   const relayJson = (): void => {
-    if (res.destroyed || res.writableEnded) return;
+    if (responseGone(res)) return;
     journalProxy(200);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(relayBody));

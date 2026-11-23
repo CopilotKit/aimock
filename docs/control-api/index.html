@@ -80,12 +80,12 @@
             <tr>
               <td><code>GET</code></td>
               <td><code>/__aimock/journal</code></td>
-              <td>Read-only snapshot of recorded requests</td>
+              <td>Read-only snapshot of recorded requests, optionally filtered and paginated</td>
             </tr>
             <tr>
               <td><code>GET</code></td>
               <td><code>/__aimock/fixtures</code></td>
-              <td>How many fixtures are currently loaded</td>
+              <td>How many fixtures are loaded, and optionally what they match on</td>
             </tr>
             <tr>
               <td><code>POST</code></td>
@@ -95,14 +95,29 @@
             <tr>
               <td><code>DELETE</code></td>
               <td><code>/__aimock/fixtures</code></td>
-              <td>Clear all fixtures</td>
+              <td>Clear all fixtures and MCP fakes</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/mcp/fakes</code></td>
+              <td>
+                The MCP fakes that apply to a test id and context, with each entry&rsquo;s state
+              </td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td>
+                <code>/__aimock/mcp/fakes/<wbr />report</code>
+              </td>
+              <td>The per-test MCP fake report: served, unused and failed fakes for a test id</td>
             </tr>
             <tr>
               <td><code>POST</code></td>
               <td><code>/__aimock/reset</code></td>
               <td>
                 Full reset: fixtures, journal entries, fixture match-counts (sequence position),
-                video + fal.ai job state, and the Gemini interaction / event-id counters
+                video + fal.ai job state, the Files store, the Gemini interaction / event-id
+                counters, every runtime chaos override, the chaos warning latch and all MCP fakes
               </td>
             </tr>
             <tr>
@@ -120,20 +135,58 @@
               <td><code>/__aimock/error</code></td>
               <td>Queue a one-shot error injection</td>
             </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/chaos</code></td>
+              <td>Read the chaos config in effect for your test</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/chaos</code></td>
+              <td>Replace the chaos config at runtime, scoped to your test</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/__aimock/chaos</code></td>
+              <td>Drop the chaos override</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Read semantic fault configuration for your test</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Replace semantic fault configuration for your test</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Remove your semantic fault override</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/misbehavior/catalog</code></td>
+              <td>Read the fault catalog and wire support</td>
+            </tr>
           </tbody>
         </table>
 
         <h2>Reset Routes</h2>
         <p>
           aimock keeps several kinds of in-memory state between requests: the loaded
-          <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video and
-          fal.ai jobs, plus the Gemini interaction and event-id counters), the
-          <strong>fixture match-counts</strong> (sequence position), and the
+          <strong>fixtures</strong> and <strong>MCP fakes</strong>, the per-provider
+          <strong>generation state</strong> (video and fal.ai jobs, plus the Gemini interaction and
+          event-id counters), the <strong>fixture match-counts</strong> (sequence position), and the
           <strong>request journal</strong> (recorded requests). Two routes clear it:
-          <code>POST /__aimock/reset</code> clears all of it, and
-          <code>POST /__aimock/reset/journal</code> clears only the recorded requests and leaves
-          everything else intact. A third, <code>POST /__aimock/reset/fixtures</code>, is a
-          deprecated alias for the full reset.
+          <code>POST /__aimock/reset</code> clears all of it &mdash; including every runtime chaos
+          override, per-test and untagged alike, which reverts the server to the chaos config it was
+          started with, and the latch on <code>[chaos] &hellip; rejected</code> warnings for invalid
+          fixture or server chaos values, so a bad static value is reported again after the reset
+          &mdash; and <code>POST /__aimock/reset/journal</code> clears only the recorded requests
+          and leaves everything else intact, chaos included. A third,
+          <code>POST /__aimock/reset/fixtures</code>, is a deprecated alias for the full reset.
         </p>
 
         <div
@@ -166,7 +219,13 @@
           <strong>Full reset.</strong> Returns the server to a pristine, fixture-free state. It
           clears the in-memory fixtures, the journal entries <em>and</em> the per-test fixture
           match-counts (so sequenced fixtures rewind to their first response), the video and fal.ai
-          job and queue state, and the Gemini interaction and event-id counters.
+          job and queue state, the Gemini interaction and event-id counters, every runtime chaos
+          override set via <code>POST /__aimock/chaos</code> (every <code>X-Test-Id</code> scope and
+          the untagged baseline, reverting to the construction-time chaos config), and this server's
+          latch of once-per-value <code>[chaos]</code> rejection warnings so the next request
+          reports them again. It also clears the <a href="/files">Files API</a> store
+          (<code>clearFileStore</code>) and unloads every MCP fake (see
+          <a href="#reset-effects-on-mcp-fakes">Reset effects on MCP fakes</a>).
         </p>
         <div class="code-block">
           <div class="code-block-header">Full reset <span class="lang-tag">shell</span></div>
@@ -246,6 +305,79 @@
           <div class="code-block-header">Read the journal <span class="lang-tag">shell</span></div>
           <pre><code>$ curl http://localhost:4010/__aimock/journal</code></pre>
         </div>
+        <p>
+          With no query parameters the full array is returned. These parameters filter and paginate
+          it; <strong>any other parameter is rejected with <code>400</code></strong
+          >, so a typo can never quietly return the whole journal:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Param</th>
+              <th>Matching</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>path</code></td>
+              <td>Substring</td>
+              <td><code>?path=chat</code> matches a chat completions path</td>
+            </tr>
+            <tr>
+              <td><code>method</code></td>
+              <td>Exact, case-insensitive</td>
+              <td><code>?method=post</code></td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>Exact integer</td>
+              <td>Response status code</td>
+            </tr>
+            <tr>
+              <td><code>service</code></td>
+              <td>Exact</td>
+              <td>Not a substring: <code>?service=sear</code> matches nothing</td>
+            </tr>
+            <tr>
+              <td><code>testId</code></td>
+              <td>Exact</td>
+              <td>
+                Resolved per entry. An MCP entry stores the test id that its mount resolved: the
+                decoded <code>X-Test-Id</code> header, else the decoded <code>?testId=</code> on the
+                MCP URL, else the id bound to the session at <code>initialize</code>. That stored id
+                is used. Other entries use the <code>X-Test-Id</code> header, else
+                <code>?testId=</code> in the recorded path
+              </td>
+            </tr>
+            <tr>
+              <td><code>requestId</code></td>
+              <td>Exact</td>
+              <td>
+                Matches the entry's recorded <code>x-request-id</code>: the caller's
+                <code>X-Request-Id</code> when it was well-formed, else the id aimock minted and
+                echoed in that response's <code>X-Request-Id</code> header
+              </td>
+            </tr>
+            <tr>
+              <td><code>limit</code>, <code>offset</code></td>
+              <td>Integers &ge; 0</td>
+              <td>Applied last, after filtering</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Every response carries an <code>X-Total-Count</code> header with the number of entries
+          that <em>matched the filters</em>, before <code>limit</code> / <code>offset</code> were
+          applied &mdash; so a paging caller can tell when it is done. The body stays a bare array.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Filter and paginate <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>$ curl -i <span class="str">"http://localhost:4010/__aimock/journal?path=chat&amp;status=200&amp;limit=10"</span>
+<span class="cm">// X-Total-Count: 42   (response header)</span></code></pre>
+        </div>
         <div class="code-block">
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>[
@@ -253,14 +385,27 @@
 ]</code></pre>
         </div>
 
+        <h3>Legacy GET /v1/_requests</h3>
+        <p>
+          The legacy journal route accepts a positive safe integer for <code>limit</code>. Leading
+          zeros, surrounding whitespace, and an encoded plus sign remain accepted. Suffixes,
+          fractional values, exponent notation, and unsafe integers return HTTP 400. An absent or
+          empty parameter leaves the result unlimited. This rule does not change
+          <code>/__aimock/journal</code>, where <code>limit=0</code> remains valid.
+        </p>
+
         <h2>Fixtures</h2>
 
         <h3>GET /__aimock/fixtures</h3>
         <p>
           Read-only: how many fixtures are currently registered. Useful for asserting a CI job or
           test harness actually loaded its tape before it starts making requests, without having to
-          send a probe request and infer the answer from the reply. Returns the count only —
-          fixtures hold predicate functions, so nothing about their contents is serialized.
+          send a probe request and infer the answer from the reply. Returns the count only by
+          default.
+          <strong
+            >Any query parameter other than <code>include</code> is rejected with
+            <code>400</code></strong
+          >, so a typo can never quietly return the count-only body.
         </p>
         <div class="code-block">
           <div class="code-block-header">Count fixtures <span class="lang-tag">shell</span></div>
@@ -270,6 +415,33 @@
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>{ <span class="prop">"count"</span>: <span class="num">2</span> }</code></pre>
         </div>
+        <p>
+          Add <code>?include=fixtures</code> to also dump what each fixture matches on, so a harness
+          can assert which fixture <em>would</em> serve a request without sending one. Any other
+          <code>include</code> value is rejected with <code>400</code>. Match criteria are
+          JSON-safe: regexps are stringified and predicate functions become
+          <code>"[function]"</code>. Response bodies are never serialized &mdash; each fixture
+          reports only a one-word <code>responseKind</code> (<code>text</code>,
+          <code>toolCalls</code>, <code>error</code>, <code>audio</code>, <code>image</code>,
+          <code>factory</code>, &hellip;).
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Dump fixtures <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl <span class="str">"http://localhost:4010/__aimock/fixtures?include=fixtures"</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"count"</span>: <span class="num">1</span>,
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"index"</span>: <span class="num">0</span>,
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
+      <span class="prop">"responseKind"</span>: <span class="str">"text"</span>
+    }
+  ]
+}</code></pre>
+        </div>
 
         <h3>POST /__aimock/fixtures</h3>
         <p>
@@ -277,6 +449,37 @@
           <code>"fixtures"</code> array of fixtures to register. Returns the number of fixtures
           added.
         </p>
+        <p>
+          The body may also carry an <code>mcpFakes</code> key, in the same form as in a fixture
+          file (see <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>). Then
+          <code>"fixtures"</code> is optional, and the response is
+          <code>{ "added": &lt;LLM fixtures&gt;, "mcpFakesAdded": &lt;blocks&gt; }</code>. A request
+          without <code>mcpFakes</code> gets <code>{ "added": n }</code> as before. Each block goes
+          to the MCP mount at its <code>mount</code> path; when no mount serves that path, aimock
+          mounts an <code>MCPMock</code> there. The whole body is checked first. If any block is
+          invalid, or its path is held by a mount that is not an <code>MCPMock</code>, the response
+          is <code>400 {"error":"Validation failed","details":[...]}</code> with one detail per
+          error, and nothing is added, LLM fixtures included.
+        </p>
+        <p>
+          Add the fakes of a fixture file (here
+          <a href="/mcp-mock#closed-world"><code>account/read-only.json</code></a
+          >, which has no LLM fixtures). Blocks added this way get the block id
+          <code>control-api#&lt;n&gt;</code>.
+        </p>
+        <div class="code-block" data-sample="control-api/post-fakes.sh">
+          <div class="code-block-header">Add MCP fakes <span class="lang-tag">shell</span></div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/fixtures \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d @account/read-only.json</code></pre>
+        </div>
+        <div class="code-block" data-sample="control-api/post-fakes.response.json">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"added"</span>: <span class="num">0</span>,
+  <span class="prop">"mcpFakesAdded"</span>: <span class="num">1</span>
+}</code></pre>
+        </div>
         <div class="code-block">
           <div class="code-block-header">Add fixtures <span class="lang-tag">shell</span></div>
           <pre><code>$ curl -X POST http://localhost:4010/__aimock/fixtures \
@@ -290,8 +493,9 @@
 
         <h3>DELETE /__aimock/fixtures</h3>
         <p>
-          Clears all registered fixtures. Generation state and the journal are left untouched. To
-          clear everything at once, use <code>/__aimock/reset</code> instead.
+          Clears all registered fixtures and every MCP fake on every mount. Generation state and the
+          journal are left untouched. To clear everything at once, use
+          <code>/__aimock/reset</code> instead.
         </p>
         <div class="code-block">
           <div class="code-block-header">Clear fixtures <span class="lang-tag">shell</span></div>
@@ -301,6 +505,137 @@
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>{ <span class="prop">"cleared"</span>: <span class="kw">true</span> }</code></pre>
         </div>
+
+        <h3 id="mcp-fakes">GET /__aimock/mcp/fakes</h3>
+        <p>
+          Read-only: for each MCP mount, the <code>mcpFakes</code> blocks that apply to a test id
+          and context, with every entry&rsquo;s id and whether it is used for that test id. To check
+          a test at its end, use the <a href="#mcp-fakes-report">report</a> below. Query parameters:
+          <code>testId</code>, <code>context</code> and <code>mount</code> (a mount path; default:
+          all MCP mounts), all optional. An empty value counts as not sent. Any other query
+          parameter is rejected with <code>400</code>, and a <code>mount</code> with no MCP mock
+          gets <code>404</code>.
+        </p>
+        <p>
+          The response is <code>{ "testId", "context", "mounts": [{ "mount", "blocks" }] }</code>.
+          Each block has <code>blockId</code>, <code>source</code>, <code>mount</code>,
+          <code>scope</code>, <code>undeclaredTools</code>, <code>evicted</code> (true when the
+          test-id cap dropped this test id&rsquo;s state) and <code>tools</code>. Each tool has a
+          <code>name</code> and <code>entries</code>, and each entry has <code>id</code>,
+          <code>args</code> or <code>anyArgs</code>, and <code>consumed</code>.
+        </p>
+        <p>
+          After the request above and one <code>get_account</code> call in the test
+          <code>account › read only</code> (the test id is percent-encoded in the URL):
+        </p>
+        <div class="code-block" data-sample="control-api/get-fakes.sh">
+          <div class="code-block-header">List MCP fakes <span class="lang-tag">shell</span></div>
+          <pre><code>curl <span class="str">"http://localhost:4010/__aimock/mcp/fakes?testId=account%20%E2%80%BA%20read%20only"</span></code></pre>
+        </div>
+        <div class="code-block" data-sample="control-api/get-fakes.response.json">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"testId"</span>: <span class="str">"account › read only"</span>,
+  <span class="prop">"context"</span>: <span class="kw">null</span>,
+  <span class="prop">"mounts"</span>: [
+    {
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"blocks"</span>: [
+        {
+          <span class="prop">"blockId"</span>: <span class="str">"control-api#1"</span>,
+          <span class="prop">"source"</span>: <span class="str">"control-api#1"</span>,
+          <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+          <span class="prop">"scope"</span>: {
+            <span class="prop">"testId"</span>: <span class="str">"account › read only"</span>
+          },
+          <span class="prop">"undeclaredTools"</span>: <span class="str">"deny"</span>,
+          <span class="prop">"evicted"</span>: <span class="kw">false</span>,
+          <span class="prop">"tools"</span>: [
+            {
+              <span class="prop">"name"</span>: <span class="str">"get_account"</span>,
+              <span class="prop">"entries"</span>: [
+                {
+                  <span class="prop">"id"</span>: <span class="str">"control-api#1:get_account#0"</span>,
+                  <span class="prop">"args"</span>: {
+                    <span class="prop">"id"</span>: <span class="str">"u1"</span>
+                  },
+                  <span class="prop">"consumed"</span>: <span class="kw">true</span>
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h3 id="mcp-fakes-report">GET /__aimock/mcp/fakes/report</h3>
+        <p>
+          Read-only: the <a href="/mcp-mock#fakes-report">report</a> for one test id and context,
+          across every MCP mount. Query parameters: <code>testId</code> and <code>context</code>,
+          both optional; an empty value counts as not sent. Any other query parameter is rejected
+          with <code>400</code>. Otherwise the answer is <code>200</code> with
+          <code
+            >{ "testId", "context", "ok", "evicted", "served", "unconsumed", "unfaked", "failures",
+            "sharedUnconsumed" }</code
+          >. Reading it changes no state.
+        </p>
+        <p>
+          After one <code>create_ticket</code> call in the test
+          <code>tickets › retry on timeout</code> (the
+          <a href="/mcp-mock#scenario-fakes"><code>tickets/retry.json</code></a> sample), the first
+          entry is served and the second is unused, so <code>ok</code> is <code>false</code>:
+        </p>
+        <div class="code-block" data-sample="inline:fakes-report-curl">
+          <div class="code-block-header">
+            Read the fakes report <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>curl <span class="str">"http://localhost:4010/__aimock/mcp/fakes/report?testId=tickets%20%E2%80%BA%20retry%20on%20timeout"</span></code></pre>
+        </div>
+        <div class="code-block" data-sample="inline:fakes-report-response">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"testId"</span>: <span class="str">"tickets › retry on timeout"</span>,
+  <span class="prop">"context"</span>: <span class="kw">null</span>,
+  <span class="prop">"ok"</span>: <span class="kw">false</span>,
+  <span class="prop">"evicted"</span>: <span class="kw">false</span>,
+  <span class="prop">"served"</span>: [
+    {
+      <span class="prop">"entryId"</span>: <span class="str">"tickets/retry.json:first-try"</span>,
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"tool"</span>: <span class="str">"create_ticket"</span>,
+      <span class="prop">"args"</span>: {
+        <span class="prop">"title"</span>: <span class="str">"Refund"</span>
+      }
+    }
+  ],
+  <span class="prop">"unconsumed"</span>: [
+    {
+      <span class="prop">"entryId"</span>: <span class="str">"tickets/retry.json:retry"</span>,
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"tool"</span>: <span class="str">"create_ticket"</span>,
+      <span class="prop">"args"</span>: {
+        <span class="prop">"title"</span>: <span class="str">"Refund"</span>
+      }
+    }
+  ],
+  <span class="prop">"unfaked"</span>: [],
+  <span class="prop">"failures"</span>: [],
+  <span class="prop">"sharedUnconsumed"</span>: []
+}</code></pre>
+        </div>
+
+        <h3 id="reset-effects-on-mcp-fakes">Reset effects on MCP fakes</h3>
+        <p>
+          <code>POST /__aimock/reset</code>, its deprecated alias
+          <code>POST /__aimock/reset/fixtures</code>, and
+          <code>DELETE /__aimock/fixtures</code> unload every MCP fake along with the LLM fixtures,
+          and clear the fakes report&rsquo;s event log.
+          <code>POST /__aimock/reset/journal</code>
+          leaves fakes and their state as they are. None of them closes MCP sessions.
+        </p>
 
         <h2>Error Injection</h2>
 
@@ -320,6 +655,227 @@
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>{ <span class="prop">"queued"</span>: <span class="kw">true</span> }</code></pre>
         </div>
+        <p>
+          The payload is validated, and an invalid one is rejected with <code>400</code> and
+          <code>{ "error": "&hellip;" }</code> without queueing anything:
+        </p>
+        <ul>
+          <li>
+            <code>status</code> must be an integer from <strong>200 to 999</strong>. It may be
+            omitted or <code>null</code> (both mean 500). Outside that range the status could never
+            reach the client &mdash; 1xx cannot terminate a response and hangs the request, and
+            anything below 100, above 999 or fractional makes Node throw and degrade to a generic
+            500. A string such as <code>"500"</code> is rejected: send a number.
+          </li>
+          <li>
+            <code>body</code>, when present, must be an object &mdash; <code>null</code> means
+            absent; its <code>message</code>, <code>type</code> and <code>code</code> must be
+            strings. <code>null</code> is accepted for any of them and means &ldquo;absent&rdquo;,
+            so an error envelope captured from aimock or from OpenAI (both emit
+            <code>"code": null</code>) can be pasted back verbatim.
+          </li>
+        </ul>
+
+        <h2>Chaos</h2>
+
+        <div
+          class="callout"
+          style="
+            border: 1px solid var(--warning);
+            border-left-width: 4px;
+            border-radius: 6px;
+            background: var(--bg-card);
+            padding: 1rem 1.25rem;
+            margin: 1.5rem 0;
+          "
+        >
+          <strong style="color: var(--warning)">Send your <code>X-Test-Id</code></strong> &mdash;
+          chaos overrides are scoped to it, like fixture match-counts and video job state. An
+          override installed with <code>X-Test-Id: t1</code> applies only to traffic tagged
+          <code>t1</code>, so one test turning chaos on cannot fail the tests running beside it on a
+          shared <code>aimock</code> process. A call with <em>no</em> tag sets the server-wide
+          baseline, which applies to every test that has no override of its own. Both sides &mdash;
+          the control call and the traffic it affects &mdash; resolve the tag the same way the rest
+          of the server does: the <code>X-Test-Id</code> header, else <code>?testId=</code> in the
+          query string. An <code>X-Test-Id</code> that is present but <em>empty</em> is rejected
+          with <code>400</code> rather than silently treated as untagged. For chaos on a single
+          request, the <code>X-AIMock-Chaos-Drop</code>, <code>X-AIMock-Chaos-Malformed</code>,
+          <code>X-AIMock-Chaos-Ratelimit</code>, <code>X-AIMock-Chaos-Disconnect</code> and
+          <code>X-AIMock-Chaos-Latency</code> request headers still override everything, field by
+          field.
+        </div>
+
+        <p>
+          <strong>WebSocket connections are different.</strong> The WebSocket endpoints (the
+          Responses, Realtime and Gemini Live upgrades) read <code>X-Test-Id</code>,
+          <code>X-AIMock-Strict</code> and <code>X-AIMock-Context</code> from the upgrade request,
+          once, and hold that copy along with the server defaults for the life of the socket. The
+          WebSocket handlers do not evaluate chaos at all, so <code>POST /__aimock/chaos</code> and
+          the <code>X-AIMock-Chaos-*</code> headers affect HTTP requests only; a socket that is
+          already open keeps the strict and record settings it was opened with.
+        </p>
+
+        <h3>GET /__aimock/chaos</h3>
+        <p>
+          Reads the chaos config in effect for the caller's <code>X-Test-Id</code>: that test's
+          override if one is installed, otherwise the server-wide baseline &mdash; an untagged
+          override, or whatever the server was started with (<code>--chaos-drop</code> and friends).
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Read chaos <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl http://localhost:4010/__aimock/chaos</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"chaos"</span>: { <span class="prop">"dropRate"</span>: <span class="num">0.1</span> } }</code></pre>
+        </div>
+
+        <h3>POST /__aimock/chaos</h3>
+        <p>
+          Replaces the chaos config at runtime, no restart, for the caller's
+          <code>X-Test-Id</code>. The body is a JSON object with any subset of the five chaos
+          fields: <code>dropRate</code>, <code>malformedRate</code>, <code>rateLimitRate</code> and
+          <code>disconnectRate</code>, each a number in <code>[0, 1]</code>, and
+          <code>latencyMs</code>, a whole number of milliseconds in <code>[0, 30000]</code>. Unknown
+          fields and out-of-range values are rejected with <code>400</code>.
+          <code>POST {}</code> means &ldquo;explicitly no chaos&rdquo;.
+        </p>
+        <p>
+          <strong
+            >The body replaces the config for that scope wholesale &mdash; it is not merged with the
+            server baseline.</strong
+          >
+          A server started with <code>--chaos-latency 500</code> that is sent
+          <code>{ "dropRate": 1 }</code> for <code>X-Test-Id: t1</code> gives <code>t1</code>'s
+          traffic a drop and <em>no</em> latency, because <code>latencyMs</code> was not restated.
+          Restate every field you want to keep. This is what makes
+          <code>POST {}</code> (&ldquo;explicitly no chaos for my test&rdquo;) different from
+          <code>DELETE</code>
+          (&ldquo;fall back to what I was shadowing&rdquo;) &mdash; under a merge,
+          <code>POST {}</code> would do nothing at all. The 200 body echoes the config now in effect
+          for the scope, and any field that was in effect and is not restated is named in a server
+          warning, so a dropped baseline rate is never silent.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Set chaos <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/chaos \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -H <span class="str">"X-Test-Id: t1"</span> \
+  -d <span class="str">'{ "dropRate": 0.25 }'</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"chaos"</span>: { <span class="prop">"dropRate"</span>: <span class="num">0.25</span> } }</code></pre>
+        </div>
+
+        <h3>DELETE /__aimock/chaos</h3>
+        <p>
+          Drops the override for the caller's <code>X-Test-Id</code> (or the server-wide baseline
+          when untagged), falling back to whatever it was shadowing. Symmetric with
+          <code>POST</code>: an untagged <code>DELETE</code> touches the baseline only and leaves
+          every per-test override in place, so one test's cleanup cannot revoke another's.
+          <code>POST /__aimock/reset</code> drops <em>every</em> override at once, restoring the
+          config the server was started with.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Clear chaos <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X DELETE http://localhost:4010/__aimock/chaos \
+  -H <span class="str">"X-Test-Id: t1"</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"chaos"</span>: {} }</code></pre>
+        </div>
+        <h2 id="misbehavior">Model misbehavior</h2>
+        <p>
+          Misbehavior changes model output, such as tool arguments or stop reasons. Transport chaos
+          runs first. If chaos fires, no semantic fault fires for that request. Semantic fault
+          rendering currently supports the <code>openai-chat</code> wire, including Azure and
+          OpenRouter chat endpoints. Other wires remain unsupported.
+        </p>
+        <p>
+          Scope identity uses <code>X-Test-Id</code>, then <code>?testId=</code>. A present but
+          blank header returns <code>400</code>. A named scope uses its override, or the current
+          server baseline if no override exists. An untagged POST replaces the runtime baseline for
+          scopes without their own override. Selection order is request header, fixture, runtime
+          scope, then server baseline. Configurations replace one another; they do not merge.
+        </p>
+        <h3>GET /__aimock/misbehavior</h3>
+        <p>
+          Returns <code>200</code> with
+          <code>{ "misbehavior": &lt;effective configuration&gt; }</code>. With no configuration,
+          the value is <code>{ "faults": [] }</code>. A configured
+          <code>seed: "random"</code> appears as its chosen numeric seed for replay.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Read a scope <span class="lang-tag">shell</span></div>
+          <pre><code>curl 'http://localhost:4010/__aimock/misbehavior?testId=retry-tool'</code></pre>
+        </div>
+        <h3>POST /__aimock/misbehavior</h3>
+        <p>
+          Replaces the selected scope's entire configuration and returns the effective configuration
+          with <code>200</code>. The body accepts a fault ID string or
+          <code>{ "seed": 42, "faults": [...] }</code>. Only this route accepts <code>{}</code> as
+          shorthand for <code>{ "faults": [] }</code>. That empty list opts out at this scope; a
+          fixture or request header still takes precedence.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Fail the first tool response <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/misbehavior \
+  -H 'Content-Type: application/json' -H 'X-Test-Id: retry-tool' \
+  -d '{"seed":42,"faults":[{"fault":"tool-args-invalid-json","tool":"weather","times":1}]}'</code></pre>
+        </div>
+        <p>
+          Send the same test ID on model requests. <code>times: 1</code> spends its budget only when
+          the fault fires. Once exhausted, the fault is skipped and the normal fixture response can
+          pass through. A skipped fault does not automatically retry the application request.
+        </p>
+        <p>
+          Invalid configuration returns <code>400</code> and leaves the previous scope unchanged.
+          Unknown keys and invalid values fail validation before installation. For example,
+          <code>{ "faults": [], "typo": true }</code> returns:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Validation error <span class="lang-tag">json</span></div>
+          <pre><code>{
+  "error": "Validation failed",
+  "rule": "misbehavior/unknown-key",
+  "message": "misbehavior/unknown-key at misbehavior.typo: invalid value true"
+}</code></pre>
+        </div>
+        <h3>DELETE /__aimock/misbehavior</h3>
+        <p>
+          Removes only the selected override and returns <code>200</code> with the effective
+          configuration. A named DELETE reveals the current baseline. An untagged DELETE reveals the
+          construction or setter baseline. Other named scopes remain unchanged. Unlike POST with an
+          empty list, DELETE restores the fallback.
+        </p>
+        <h3>GET /__aimock/misbehavior/catalog</h3>
+        <p>
+          Returns <code>200</code> with <code>{ "catalog": {...}, "WIRE_SUPPORT": {...} }</code>.
+          Read support by wire, fault and mode before selecting a fault. JSON serialization omits
+          the catalog's parameter validator functions; this response is not a JSON Schema.
+        </p>
+        <h3>Request headers and WebSocket scope</h3>
+        <p>
+          For one HTTP request, use
+          <code
+            >X-AIMock-Misbehavior: tool-args-invalid-json; style=trailing-comma; tool=weather</code
+          >. The grammar is one fault ID followed by semicolon-separated scalar
+          <code>key=value</code> pairs. Values are literal text; quotes are not removed. Duplicate
+          keys are invalid. Headers do not accept <code>times</code>, <code>providers</code> or a
+          configuration-level <code>seed</code>. Send one header value. Repeated values are parsed
+          together, not as independent faults. Invalid header input returns <code>400</code> with
+          code <code>aimock_misbehavior_invalid</code>.
+        </p>
+        <p>
+          Do not send this header on a WebSocket upgrade. Use the runtime POST route with the same
+          <code>X-Test-Id</code> or <code>?testId=</code> as the socket instead. Runtime scope does
+          not enable unsupported wires: Responses, Realtime and Gemini Live semantic fault rendering
+          remains unsupported.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

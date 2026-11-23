@@ -24,7 +24,7 @@ import { join } from "node:path";
 import ts from "typescript";
 
 import { includeFamilies, excludeFamilies, deprecatedFamilies } from "./drift/model-registry.js";
-import { isVoiceModelId, knownVoiceModelFamilies } from "./drift/voice-models.js";
+import { isKnownVoiceModelFamily, isVoiceModelId } from "./drift/voice-models.js";
 import { MIN_LISTING_SIZE, FORWARD_LOOKING_FAMILIES } from "./drift/deprecation-detector.js";
 import {
   detectDeprecatedFamiliesForSync,
@@ -114,7 +114,7 @@ function fixtureRegistrySource(): string {
 }
 
 /**
- * `count` anthropic families that stand in for GENUINELY RETIRED ones: each is
+ * `count` families of `provider` that stand in for GENUINELY RETIRED ones: each is
  * classified INCLUDE, not forward-looking, and not already in the recorded
  * deprecation ledger — so the sync mirror's `missing` set really does report it.
  *
@@ -127,13 +127,13 @@ function fixtureRegistrySource(): string {
  * broke four tests across this file and the mirror-equivalence guard at once.
  * Throws loudly rather than letting a fixture go quietly vacuous.
  */
-function unrecordedAnthropicFamilies(count: number): string[] {
-  const usable = [...includeFamilies.anthropic].filter(
-    (f) => !deprecatedFamilies.anthropic.has(f) && !FORWARD_LOOKING_FAMILIES.anthropic.has(f),
+function unrecordedFamilies(provider: Provider, count: number): string[] {
+  const usable = [...includeFamilies[provider]].filter(
+    (f) => !deprecatedFamilies[provider].has(f) && !FORWARD_LOOKING_FAMILIES[provider].has(f),
   );
   if (usable.length < count) {
     throw new Error(
-      `need ${count} anthropic families that are neither forward-looking nor already recorded ` +
+      `need ${count} ${provider} families that are neither forward-looking nor already recorded ` +
         `as deprecated, but only ${usable.length} remain (${usable.join(", ")}). These fixtures ` +
         `need a family the deprecation detector will actually report; pick a different provider ` +
         `rather than deleting the assertion.`,
@@ -294,7 +294,7 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
   // missing from the same listing must still be proposed normally.
   it("a forward-looking family (claude-fable-5) absent from live is NEVER proposed for removal, while a genuinely-retired sibling still is", () => {
     const allAnthropic = [...includeFamilies.anthropic];
-    const [retired] = unrecordedAnthropicFamilies(1);
+    const [retired] = unrecordedFamilies("anthropic", 1);
     // Live listing omits BOTH claude-fable-5 (forward-looking, not launched)
     // AND a genuinely-retired stand-in.
     const liveFamilies = allAnthropic.filter((f) => f !== "claude-fable-5" && f !== retired);
@@ -759,7 +759,9 @@ describe("runDriftSyncCore", () => {
   it("a whole morning's worth of deprecations records in ONE run, still zero escalations", () => {
     // The production shape: Anthropic retired ten families at once. Every one
     // must land in the same mechanical run — not nine plus one escalation.
-    const absent = [...includeFamilies.openai].slice(0, 10);
+    // Derived (see `unrecordedFamilies`): a family the real ledger already
+    // records is, correctly, never reported missing again.
+    const absent = unrecordedFamilies("openai", 10);
     const { deps, registry } = makeFakeDeps({ isReferenced: (f) => f !== absent[0] });
     const outcome = runDriftSyncCore(
       [{ provider: "openai", liveModelIds: listingMissing(absent) }],
@@ -965,9 +967,9 @@ describe("runDriftSyncCore", () => {
 
   // THE VOICE HALF-CLASSIFICATION. `excludeFamilies` and
   // `knownVoiceModelFamilies` are deliberately disjoint surfaces and the sync
-  // writes only the first, so auto-applying a voice family's decision leaves
-  // ws-realtime.drift.ts reporting UNKNOWN_REALTIME_MODELS at critical severity:
-  // gate-3 refuses, both files revert, the note still says `Decision: exclude`,
+  // writes only the first, so auto-applying an OpenAI voice family's decision
+  // leaves ws-realtime.drift.ts reporting UNKNOWN_REALTIME_MODELS at critical
+  // severity: gate-3 refuses, both files revert, the note still says `Decision: exclude`,
   // and the identical apply/fail/revert/alert repeats every night forever.
   it("a DECIDED voice family is routed to a human instead of being half-applied", () => {
     for (const verdict of ["include", "exclude"] as const) {
@@ -977,7 +979,7 @@ describe("runDriftSyncCore", () => {
 
       const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
 
-      expect(needsVoiceSeedSetEdit("gpt-live")).toBe(true);
+      expect(needsVoiceSeedSetEdit("gpt-live", "openai")).toBe(true);
       expect(outcome.outcomes).toEqual([
         expect.objectContaining({ family: "gpt-live", action: "needs-human-voice-seed-set" }),
       ]);
@@ -996,24 +998,138 @@ describe("runDriftSyncCore", () => {
     // The predicate keys on the voice SEED SET, not on the id's shape. Every
     // seeded family is already classified in the registry, so the case is
     // constructed the way it arises in life: the human made the voice-models.ts
-    // half of the two-edit commit, and the registry half is what is left.
-    knownVoiceModelFamilies.add("gpt-live");
-    try {
-      expect(isVoiceModelId("gpt-live")).toBe(true);
-      expect(needsVoiceSeedSetEdit("gpt-live")).toBe(false);
+    // half of the two-edit commit, and the registry half is what is left. The
+    // seed set is private to voice-models.ts, so that half is modelled through
+    // the `isKnownVoiceFamily` seam (the same shape as `isRecorded`).
+    const seedSetWithGptLive = (family: string): boolean =>
+      family === "gpt-live" || isKnownVoiceModelFamily(family);
+    expect(isVoiceModelId("gpt-live")).toBe(true);
+    expect(isKnownVoiceModelFamily("gpt-live")).toBe(false);
+    expect(needsVoiceSeedSetEdit("gpt-live", "openai", seedSetWithGptLive)).toBe(false);
 
-      const { deps, registry } = makeFakeDeps();
-      notes_set(deps, proposalNoteRelPath("openai", "gpt-live", "new-family"), "exclude");
-      const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
+    const { deps, registry } = makeFakeDeps({ isKnownVoiceFamily: seedSetWithGptLive });
+    notes_set(deps, proposalNoteRelPath("openai", "gpt-live", "new-family"), "exclude");
+    const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: ["gpt-live"] }], deps);
 
-      expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
-      expect(outcome.outcomes).toEqual([
-        expect.objectContaining({ family: "gpt-live", action: "excluded" }),
-      ]);
-      const excludeSection = registry.text.slice(registry.text.indexOf("excludeFamilies"));
-      expect(excludeSection).toContain('"gpt-live"');
-    } finally {
-      knownVoiceModelFamilies.delete("gpt-live");
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.outcomes).toEqual([
+      expect.objectContaining({ family: "gpt-live", action: "excluded" }),
+    ]);
+    const excludeSection = registry.text.slice(registry.text.indexOf("excludeFamilies"));
+    expect(excludeSection).toContain('"gpt-live"');
+  });
+
+  // The voice seed set is read by ONE canary: ws-realtime.drift.ts, against the
+  // OpenAI /models listing only. A voice-SHAPED family from another provider
+  // (a gemini *-flash-tts id matches isVoiceModelId on `-tts`) is invisible to that
+  // canary, so its registry edit is the whole job — routing it to a
+  // `-voice-seed-set` note demands an edit no gate needs, and the decided family
+  // is never applied.
+  it("a DECIDED voice-shaped family from a non-OpenAI provider IS applied (the seed set is OpenAI-only)", () => {
+    // gemini-3.8-flash-tts itself is classified now (by hand, in the commit that
+    // also excluded its -lite sibling), so a same-shape successor stands in.
+    expect(isVoiceModelId("gemini-4.1-flash-tts")).toBe(true);
+    expect(needsVoiceSeedSetEdit("gemini-4.1-flash-tts", "gemini")).toBe(false);
+    expect(needsVoiceSeedSetEdit("gemini-4.1-flash-tts", "openai")).toBe(true);
+
+    const { deps, registry, logicPin, notes } = makeFakeDeps();
+    logicPin.text = logicPin.text.replace(
+      "};\n",
+      [
+        '  "excludeFamilies.gemini": {',
+        "    members: () => [...excludeFamilies.gemini].sort(),",
+        '    pin: "' + "2".repeat(64) + '",',
+        "  },",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    notes_set(
+      deps,
+      proposalNoteRelPath("gemini", "gemini-4.1-flash-tts", "new-family"),
+      "exclude",
+      {
+        provider: "gemini",
+        family: "gemini-4.1-flash-tts",
+      },
+    );
+
+    const sets = ["includeFamilies", "excludeFamilies", "deprecatedFamilies"] as const;
+    const providers = ["openai", "anthropic", "gemini"] as const;
+    const arraysOf = (text: string) =>
+      Object.fromEntries(
+        sets.flatMap((set) =>
+          providers.map((p) => [`${set}.${p}`, parsedFamilyArray(text, set, p)]),
+        ),
+      );
+    const arraysBefore = arraysOf(registry.text);
+    const pinBefore = logicPin.text;
+
+    const outcome = runDriftSyncCore(
+      [{ provider: "gemini", liveModelIds: ["gemini-4.1-flash-tts"] }],
+      deps,
+    );
+
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.outcomes).toEqual([
+      expect.objectContaining({ family: "gemini-4.1-flash-tts", action: "excluded" }),
+    ]);
+    // The family landed in excludeFamilies.gemini — appended, nothing else in
+    // that array moved — and every OTHER array (other providers' excludes,
+    // includeFamilies, the deprecation ledger) is exactly as it was.
+    const arraysAfter = arraysOf(registry.text);
+    expect(arraysAfter["excludeFamilies.gemini"]).toEqual([
+      ...arraysBefore["excludeFamilies.gemini"],
+      "gemini-4.1-flash-tts",
+    ]);
+    for (const key of Object.keys(arraysBefore)) {
+      if (key === "excludeFamilies.gemini") continue;
+      expect(arraysAfter[key], key).toEqual(arraysBefore[key]);
+      expect(arraysAfter[key], key).not.toContain("gemini-4.1-flash-tts");
+    }
+    // The gemini exclude pin was re-pinned in the same run; the OpenAI pins
+    // were not touched.
+    expect(pinFor(logicPin.text, "excludeFamilies.gemini")).not.toBe(
+      pinFor(pinBefore, "excludeFamilies.gemini"),
+    );
+    expect(pinFor(logicPin.text, "excludeFamilies.gemini")).toMatch(/^[0-9a-f]{64}$/);
+    for (const key of ["includeFamilies.openai", "excludeFamilies.openai"]) {
+      expect(pinFor(logicPin.text, key), key).toBe(pinFor(pinBefore, key));
+    }
+    expect(notes.has(proposalNoteRelPath("gemini", "gemini-4.1-flash-tts", "voice-seed-set"))).toBe(
+      false,
+    );
+  });
+
+  it("only an OpenAI new-family note carries the voice seed-set exception", () => {
+    const render = (provider: "openai" | "anthropic" | "gemini") =>
+      renderProposalNote(provider, "x-tts", "new-family", "detail", "2026-10-05");
+    expect(render("openai")).toContain("knownVoiceModelFamilies");
+    expect(render("openai")).toContain("-voice-seed-set.md");
+    for (const provider of ["gemini", "anthropic"] as const) {
+      const note = render(provider);
+      expect(note).not.toContain("knownVoiceModelFamilies");
+      expect(note).not.toContain("voice-seed-set");
+      // The decision block itself is intact: the comment closes and the
+      // fail-closed `pending` line follows it.
+      expect(note).toMatch(
+        /is a human-authored decision, not generated code\)\. -->\nDecision: pending\n/,
+      );
+    }
+    // Every provider's note — the OpenAI one included, whose comment runs on
+    // through the seed-set paragraph — closes its HTML comment before the
+    // `Decision: pending` line. An unclosed comment would hide that line from
+    // a rendered view and from any comment-aware parser.
+    for (const provider of ["openai", "gemini", "anthropic"] as const) {
+      const note = render(provider);
+      const opens = note.split("<!--").length - 1;
+      const closes = note.split("-->").length - 1;
+      expect(opens).toBe(1);
+      expect(closes).toBe(opens);
+      expect(note.indexOf("-->")).toBeGreaterThan(note.indexOf("<!--"));
+      const uncommented = note.replace(/<!--[\s\S]*?-->/g, "");
+      expect(uncommented).not.toContain("<!--");
+      expect(uncommented).toMatch(/^Decision: pending$/m);
     }
   });
 
@@ -1073,11 +1189,13 @@ describe("runDriftSyncCore", () => {
             detail: 'Frozen data set "includeFamilies.openai" membership changed',
           };
     });
+    // Derived (see `unrecordedFamilies`), never hard-coded: a stand-in the real
+    // ledger already records is, correctly, never reported missing again.
+    const dropped = unrecordedFamilies("openai", 3);
     const { deps, notes, registry, revertFiles } = makeFakeDeps({
-      isReferenced: (family) => family !== "gpt-4o",
+      isReferenced: (family) => family !== dropped[0],
       runSyncCheck,
     });
-    const dropped = ["gpt-4o", "gpt-4", "gpt-4-turbo"].filter((f) => includeFamilies.openai.has(f));
     const survivors = [...includeFamilies.openai].filter((f) => !dropped.includes(f));
     const liveIds = [...survivors, ...survivors.map((f) => `${f}-2025-01-01`)];
 
@@ -1479,14 +1597,26 @@ describe("buildSyncCommitMessage", () => {
   });
 });
 
-/** Set a note's Decision line to a human verdict. */
-function notes_set(deps: SyncCoreDeps, notePath: string, verdict: "include" | "exclude"): void {
+/**
+ * Set a note's Decision line to a human verdict. The body is the REAL
+ * renderProposalNote output for `subject` (default openai/gpt-zeta), not
+ * necessarily for the note at `notePath`.
+ */
+function notes_set(
+  deps: SyncCoreDeps,
+  notePath: string,
+  verdict: "include" | "exclude",
+  subject: { provider: Provider; family: string } = { provider: "openai", family: "gpt-zeta" },
+): void {
   deps.writeProposalNote(
     notePath,
-    renderProposalNote("openai", "gpt-zeta", "new-family", "detail", "2026-07-20").replace(
-      "Decision: pending",
-      `Decision: ${verdict}`,
-    ),
+    renderProposalNote(
+      subject.provider,
+      subject.family,
+      "new-family",
+      "detail",
+      "2026-07-20",
+    ).replace("Decision: pending", `Decision: ${verdict}`),
   );
 }
 

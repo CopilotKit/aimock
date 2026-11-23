@@ -59,6 +59,11 @@
           <code>cost</code>. Callers on the plain OpenAI base (<code>/v1/&hellip;</code>) are left
           byte-for-byte unchanged.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "openai-chat"</code>.
+        </p>
 
         <div class="info-box">
           <p>
@@ -106,6 +111,16 @@
             </tr>
           </tbody>
         </table>
+
+        <p>
+          If the client hangs up before the reply is complete, aimock stops delivery and journals
+          the request with <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>). To delay
+          <code>stream: false</code> replies, set <code>nonStreamingTiming: true</code> or
+          <code>nonStreamingTimingAllProviders: true</code> with a <code>streamingProfile</code> or
+          <code>recordedTimings</code> (see
+          <a href="/streaming-physics#non-streaming">Non-Streaming Responses</a>).
+        </p>
 
         <h2>Point the OpenAI SDK at aimock</h2>
         <p>

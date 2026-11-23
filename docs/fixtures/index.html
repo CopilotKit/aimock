@@ -78,6 +78,22 @@
 }</code></pre>
         </div>
 
+        <p>
+          A fixture file may also hold an optional top-level <code>mcpFakes</code> key, which
+          scripts MCP tool answers for one test scenario next to its LLM turns. A file may hold
+          <code>fixtures</code>, <code>mcpFakes</code>, or both. See
+          <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+        </p>
+        <p>
+          <a href="/record-replay#mcp-recording">MCP recording</a> writes
+          <code>mcpFakes</code> files with five more optional keys: <code>list</code>,
+          <code>recorded</code> and <code>timing</code> on a block, and
+          <code>notifications</code> and <code>durationMs</code> on a call entry. A recorded file
+          also has a top-level <code>_warnings</code> array, which the loader ignores. These keys
+          need aimock 1.45.0 or later; see
+          <a href="/mcp-mock#recorded-fakes">MCPMock: Recorded fakes</a>.
+        </p>
+
         <h2>Match Fields</h2>
 
         <table class="endpoint-table">
@@ -113,6 +129,17 @@
               <td>Match on embedding input text</td>
             </tr>
             <tr>
+              <td>embeddingRequest</td>
+              <td>{ operation, input, dimensions? }</td>
+              <td>
+                Exact operation, input shape and requested dimensions for <code>/api/embed</code>,
+                <code>/api/embeddings</code>, or <code>/v1/embeddings</code>. Recordings set this
+                alongside <code>inputText</code> and <code>model</code> so batches and widths stay
+                distinct and other embedding operations cannot match. Omit this field for broad
+                embedding fixtures.
+              </td>
+            </tr>
+            <tr>
               <td>toolCallId</td>
               <td>string</td>
               <td>
@@ -134,8 +161,33 @@
               <td>toolName</td>
               <td>string</td>
               <td>
-                Match on tool function name &mdash; compared against the names of tool definitions
-                in the request&rsquo;s <code>tools:</code> array
+                Match on tool name &mdash; compared against the names of tool definitions in the
+                request&rsquo;s <code>tools:</code> array (the function name on most APIs). On the
+                OpenAI Responses API, with <code>responsesTools: "extended"</code>, this also
+                includes tools inside a <code>namespace</code> tool, <code>custom</code> tools (by
+                their <code>name</code>), and tools in an <code>additional_tools</code> or
+                <code>tool_search_output</code> input item; by default only top-level function
+                tools, as before
+              </td>
+            </tr>
+            <tr>
+              <td>toolNamespace</td>
+              <td>string</td>
+              <td>
+                Exact match on the <code>namespace</code> of an offered tool. It matches any request
+                tool that carries a <code>namespace</code> field. The OpenAI Responses API sets it
+                on each tool inside a <code>namespace</code> tool. Chat Completions passes request
+                tools through unchanged, so a top-level <code>namespace</code> field that a client
+                sends there also matches. Anthropic Messages does not carry it. Fixture validation
+                (<code>aimock validate</code>, <code>--validate-on-load</code>) warns about a file
+                fixture that sets <code>toolNamespace</code> with an <code>endpoint</code> other
+                than <code>"chat"</code>. Alone, it matches when any offered tool sits in that
+                namespace; with <code>toolName</code>, one offered tool must carry both. No default
+                namespace is assumed. It sees every offered tool whatever the
+                <code>responsesTools</code> mode. See
+                <a href="/responses-api#namespaced-and-custom-tool-calls"
+                  >Namespaced and custom tool calls</a
+                >
               </td>
             </tr>
             <tr>
@@ -176,9 +228,9 @@
               <td>endpoint</td>
               <td>string</td>
               <td>
-                Restrict to endpoint type: chat, image, speech, transcription, video, embedding.
-                Search, rerank, and moderation services (added in 1.7.0) are registered through
-                their own fixture APIs rather than via this field
+                Restrict to endpoint type: chat, image, speech, transcription, video, embedding,
+                openai-live. Search, rerank, and moderation services (added in 1.7.0) are registered
+                through their own fixture APIs rather than via this field
               </td>
             </tr>
             <tr>
@@ -280,9 +332,9 @@
             check factors in <em>every</em> match discriminator the router gates on when deciding
             whether two fixtures truly collide &mdash; <code>userMessage</code>,
             <code>systemMessage</code>, <code>inputText</code>, <code>toolCallId</code>,
-            <code>toolResultContains</code>, <code>toolName</code>, <code>model</code>,
-            <code>responseFormat</code>, <code>endpoint</code>, <code>context</code>,
-            <code>sequenceIndex</code>, <code>turnIndex</code>, and
+            <code>toolResultContains</code>, <code>toolName</code>, <code>toolNamespace</code>,
+            <code>model</code>, <code>responseFormat</code>, <code>endpoint</code>,
+            <code>context</code>, <code>sequenceIndex</code>, <code>turnIndex</code>, and
             <code>hasToolResult</code> &mdash; so two fixtures that differ on any one of them do not
             trigger the warning. A <code>predicate</code> is a function that cannot be compared for
             equivalence, so any fixture carrying one is keyed by its own identity: it is treated as
@@ -337,7 +389,16 @@
             <tr>
               <td>Tool Call</td>
               <td>toolCalls[], finishReason?</td>
-              <td>Function call(s) with name + arguments</td>
+              <td>
+                Function call(s) <code>{ "name", "arguments", "id"?, "namespace"? }</code>.
+                <code>namespace</code> is emitted on the OpenAI Responses API only, with
+                <code>responsesTools: "extended"</code>. An entry is always a function call: a
+                <code>type</code> or <code>input</code> on it is ignored, as in earlier releases.
+                Custom tool calls go in <code>customToolCalls</code> (see
+                <a href="/responses-api#namespaced-and-custom-tool-calls"
+                  >Namespaced and custom tool calls</a
+                >)
+              </td>
             </tr>
             <tr>
               <td>Content + Tool Calls</td>
@@ -374,6 +435,13 @@
               <td>Transcribed text with optional timestamps</td>
             </tr>
             <tr>
+              <td>Live</td>
+              <td>live, liveTiming?</td>
+              <td>
+                A versioned bidirectional transcript. See <a href="#live">GPT-Live transcripts</a>.
+              </td>
+            </tr>
+            <tr>
               <td>Video</td>
               <td>video.id, video.status, video.url?, video.error?, video.b64?, video.cost?</td>
               <td>
@@ -381,6 +449,14 @@
                 surfaced by async video jobs, <code>b64</code> is base64-encoded video bytes served
                 by content-download endpoints, <code>cost</code> is the generation cost surfaced in
                 usage envelopes
+              </td>
+            </tr>
+            <tr>
+              <td>Raw</td>
+              <td>raw.wire, raw.events?, raw.json?, raw.status?, raw.headers?, raw.done?</td>
+              <td>
+                Provider events or JSON sent as written, framed for one wire. See
+                <a href="/raw-passthrough">Raw Passthrough Fixtures</a>.
               </td>
             </tr>
           </tbody>
@@ -395,6 +471,194 @@
           </p>
         </div>
 
+        <h2 id="live">GPT-Live transcripts</h2>
+        <p>
+          A Live fixture uses <code>match.endpoint: "openai-live"</code> and
+          <code>response: { live: transcript, liveTiming: "immediate" }</code>. It describes a
+          complete conversation on <code>GET /v1/live/sessions</code>. The
+          <a href="/websocket#openai-live">WebSocket guide</a> explains the connection and session
+          commands.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">live-fixture.ts <span class="lang-tag">ts</span></div>
+          <pre><code>import { readFileSync } from "node:fs";
+import { LLMock, type LiveTranscript } from "@copilotkit/aimock";
+
+// Run from the aimock repository. Choose one mode per server.
+const path = "./fixtures/openai-live-client.json";
+const mock = new LLMock();
+mock.loadFixtureFile(path);
+await mock.start();
+// Connect your application to mock.url at /v1/live/sessions.
+// After the conversation, close its socket and await mock.stop().
+
+// Alternative registration on a separate server:
+const document = JSON.parse(readFileSync(path, "utf8"));
+const transcript: LiveTranscript = document.fixtures[0].response.live;
+const builderMock = new LLMock();
+builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
+        </div>
+        <p>
+          The repository includes <code>fixtures/openai-live-client.json</code> and
+          <code>fixtures/openai-live-managed.json</code>. Both match the same endpoint and model, so
+          load one per server. These examples contain authored events and synthetic PCM samples.
+          Their timing and usage values are illustrative. They are not provider recordings or
+          speech. The builder takes the transcript directly and defaults to recorded timing. The
+          example files explicitly select immediate timing.
+        </p>
+
+        <h3>Transcript format</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>version, model, mode</td>
+              <td>
+                <code>version: 1</code>, <code>model: "gpt-live-1"</code>, and
+                <code>mode: "client"</code> or <code>"managed"</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>audio</td>
+              <td>
+                <code>{ encoding: "pcm16le", sampleRateHz: 24000, channels: 1 }</code>. Audio event
+                payloads contain base64-encoded PCM bytes.
+              </td>
+            </tr>
+            <tr>
+              <td>configuration</td>
+              <td>
+                The session configuration. It must equal the first
+                <code>session.start</code> command's <code>session</code> value.
+              </td>
+            </tr>
+            <tr>
+              <td>entries</td>
+              <td>
+                Ordered events, each with <code>direction</code> (<code>"client"</code> or
+                <code>"server"</code>), <code>atMs</code>, and <code>event</code>. Every server
+                entry also has a <code>barrier</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>bindings</td>
+              <td>
+                Identifier definitions and references. Each binding supplies <code>entry</code>,
+                <code>pointer</code>, <code>name</code>, <code>action</code>, and
+                <code>owner</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>capture</td>
+              <td>
+                <code>source</code> is <code>"authored"</code> or <code>"provider"</code>.
+                <code>complete</code> must be <code>true</code>. <code>terminalEntry</code> is the
+                zero-based index of the final <code>session.closed</code>. Provider captures include
+                provenance.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The final close reason must be <code>close_requested</code> or <code>remote_hangup</code>.
+          Partial captures and error probes are rejected. Server configuration snapshots must agree
+          with startup and accepted updates. Only managed backend <code>instructions</code> updates
+          are supported. Mode and audio format cannot change during a session.
+        </p>
+
+        <h3>Causal barriers and PCM chunks</h3>
+        <p>
+          A server barrier uses <code>{ command, audioBytes }</code> to identify required client
+          input. <code>command</code> counts accepted non-audio commands, including startup.
+          <code>audioBytes</code> counts decoded input bytes since that command. Barriers must
+          increase or stay equal and must refer to preceding client input. A server event cannot run
+          before client input that defines an identifier it references.
+        </p>
+        <p>
+          Replay compares decoded input PCM bytes across adjacent audio appends with identical
+          metadata. Clients can split or combine these chunks at sample boundaries. Each PCM16
+          sample uses two bytes. A non-audio command or metadata change ends the run. Annotated
+          audio commands retain their original frame boundary. Rechunking cannot move bytes across
+          these boundaries. Aimock replays fixture output audio and does not synthesize speech from
+          transcript text.
+        </p>
+
+        <h3>Identifier bindings</h3>
+        <p>
+          A binding's <code>pointer</code> is a JSON Pointer relative to its entry's event.
+          <code>action</code> is <code>"define"</code> or <code>"reference"</code>.
+          <code>owner</code> is <code>"client"</code> or <code>"server"</code>. One symbolic
+          <code>name</code> connects each definition to its later references. Replay creates fresh
+          server identifiers for each connection. Clients must use the identifiers received on that
+          connection, including delegation IDs and tool-call IDs.
+        </p>
+        <p>
+          The limited <code>origin: "imported-context"</code> exception defines a first-seen server
+          response ID at <code>/event/response/previous_response_id</code> in a response lifecycle
+          event. This represents earlier context outside the capture. It applies only to a non-null
+          identifier without an earlier definition. Later occurrences reference that same name.
+          Other forward references remain invalid, and null values have no binding.
+        </p>
+
+        <h3>Replay timing</h3>
+        <p>
+          <code>liveTiming: "recorded"</code> is the default. Replay uses each server event's
+          <code>atMs</code> offset from accepted startup, divided by the fixture's
+          <code>replaySpeed</code>, or the server value when omitted (default <code>1</code>). A
+          speed of <code>2</code> halves those offsets. <code>liveTiming: "immediate"</code> removes
+          the recorded delays. Both modes preserve server order and wait for causal barriers. Faster
+          timing does not bypass required client commands, tool results, or input audio. Session
+          limits and timeouts still apply. See <a href="/record-replay">Record &amp; Replay</a> for
+          capture and retention.
+        </p>
+
+        <h2 id="tool-arguments">Tool argument JSON</h2>
+        <p>
+          By default, malformed JSON in a tool call's <code>arguments</code> is logged as a warning
+          and replaced with <code>{}</code> on the APIs listed below (an object, or the string
+          <code>"{}"</code>), as in 1.44.0. The OpenAI APIs always send the string unchanged. To
+          send invalid JSON on purpose, use <code>misbehavior: tool-args-invalid-json</code>.
+        </p>
+        <p>
+          With <code>strictToolArguments: true</code> (CLI <code>--strict-tool-arguments</code>,
+          config <code>llm.strictToolArguments</code>) the malformed text is not replaced. The
+          response then depends on how the selected API carries arguments:
+        </p>
+        <ul>
+          <li>
+            <strong>String arguments:</strong> The malformed string is sent unchanged. This includes
+            Anthropic Messages, Bedrock InvokeModel, Bedrock Converse, and Gemini Interactions
+            streaming argument deltas, plus Cohere's streaming and non-streaming arguments. A client
+            or SDK may reject the malformed JSON when it parses the string.
+          </li>
+          <li>
+            <strong>Object arguments:</strong> Malformed JSON produces an explicit error before
+            response content is sent. This applies to non-streaming Anthropic Messages, Bedrock
+            InvokeModel, Bedrock Converse, and Gemini Interactions, and to Gemini, Gemini Live, and
+            Ollama. HTTP requests return status <code>500</code> with code
+            <code>aimock_invalid_tool_arguments</code>; Gemini Live sends an error on the existing
+            WebSocket connection.
+          </li>
+        </ul>
+        <p>
+          Valid JSON retains its existing behavior, including arrays, primitives, and
+          <code>null</code>. Empty or omitted legacy tool-call arguments still default to
+          <code>{}</code>; whitespace-only strings are malformed JSON. The OpenAI Responses API is
+          an exception: it sends a string unchanged, but a function call whose
+          <code>arguments</code> is omitted or not a string (an object or array too, in a fixture
+          passed to <code>addFixture</code>, <code>addFixtures</code>,
+          <code>prependFixture</code> or <code>createServer</code>; <code>on</code>, a response
+          factory's result and file loading convert it to a string) fails with HTTP 500 and no error
+          <code>code</code>. Fixture validation is unchanged: <code>validateFixtures()</code> can
+          still reject malformed arguments before replay, and a <code>toolCall</code> block still
+          requires an <code>arguments</code> field.
+        </p>
+
         <h2 id="ordered-blocks">Ordered blocks (tool-first &amp; interleaved streaming)</h2>
         <p>
           By default a <strong>Content + Tool Calls</strong> response streams its text first, then
@@ -407,14 +671,23 @@
           <li>
             <code>{ "type": "toolCall", "name": "...", "arguments": ..., "id": "..." }</code>
             &mdash; a tool call (<code>id</code> optional; <code>arguments</code> accepts an object
-            or string, same auto-stringify rules as elsewhere)
+            or string, same auto-stringify rules as elsewhere; optional <code>namespace</code>,
+            emitted on the OpenAI Responses API only, with <code>responsesTools: "extended"</code>)
           </li>
         </ul>
+        <p>
+          On the OpenAI Responses API, use <code>responsesBlocks</code> instead of
+          <code>blocks</code> to order custom tool calls too: it accepts the same blocks plus
+          <code>{ "type": "customToolCall", "name": "...", "input": "..." }</code> (see
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >Namespaced and custom tool calls</a
+          >).
+        </p>
         <p>
           When <code>blocks</code> is present it <strong>takes precedence</strong> over the
           <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
           streamed in array order. When <code>blocks</code> is <strong>absent</strong>, legacy
-          <code>{ content, toolCalls }</code> fixtures stream exactly as before &mdash; text-first,
+          <code>{ content, toolCalls }</code> fixtures stream as before &mdash; text-first,
           byte-identical to prior releases. The field is purely additive.
         </p>
 
@@ -456,11 +729,12 @@
             <code>blocks</code> must be an array; each entry must be an object with
             <code>type</code> <code>"text"</code> or <code>"toolCall"</code>; a
             <code>text</code> block needs a non-empty string <code>text</code>; a
-            <code>toolCall</code> block needs a non-empty <code>name</code>,
-            <code>arguments</code> that are a valid-JSON string or an object, and an optional string
-            <code>id</code>. If a fixture carries both <code>blocks</code> and legacy
-            <code>content</code>/<code>toolCalls</code> that disagree, loading warns (the redundant
-            legacy fields are ignored in favor of <code>blocks</code>).
+            <code>toolCall</code> block needs a non-empty <code>name</code> and
+            <code>arguments</code> that are a valid-JSON string or an object. When
+            <code>blocks</code> is non-empty, the builders stream only the blocks and ignore the
+            legacy <code>content</code>/<code>toolCalls</code>. Load validation still checks them
+            like any <code>toolCalls</code> entry, and only warns if their names disagree with
+            <code>blocks</code>.
           </p>
         </div>
 
@@ -501,9 +775,9 @@
               <td>OpenAI Responses API</td>
               <td>Full</td>
               <td>
-                Ordered <code>output</code> items (message vs <code>function_call</code>) carry
-                <code>output_index</code> &mdash; SDKs honor the order, so a tool call can precede
-                the message.
+                Ordered <code>output</code> items (message, <code>function_call</code> or
+                <code>custom_tool_call</code>) carry <code>output_index</code> &mdash; SDKs honor
+                the order, so a tool call can precede the message.
               </td>
             </tr>
             <tr>
@@ -669,8 +943,11 @@
                 Gemini field names (<code>promptTokenCount</code>,
                 <code>candidatesTokenCount</code>, <code>totalTokenCount</code>). OpenAI Chat
                 Completions includes usage in the response body; the Responses API uses a separate
-                <code>response.usage</code> object. When omitted, token counts are auto-computed
-                from content length
+                <code>response.usage</code> object. Claude Messages and Bedrock Claude invoke also
+                accept <code>cache_read_input_tokens</code>,
+                <code>cache_creation_input_tokens</code> and a <code>cache_creation</code> object
+                (see <a href="/claude-messages#cache-usage">Cache Usage</a>). When omitted, token
+                counts are auto-computed from content length
               </td>
             </tr>
             <tr>
@@ -691,6 +968,33 @@
               <td>role</td>
               <td>string</td>
               <td>Override message role (default: "assistant")</td>
+            </tr>
+            <tr>
+              <td>phase</td>
+              <td>"commentary" | "final_answer"</td>
+              <td>
+                OpenAI Responses API (HTTP and WebSocket) only: labels each assistant message output
+                item. Preserved in streaming added/done items, the completed response, and
+                non-streaming output. Omitted by default; never inferred from content or finish
+                reason. Does not label reasoning or tool-call items
+              </td>
+            </tr>
+            <tr>
+              <td>citations</td>
+              <td>array</td>
+              <td>
+                Source citations for the reply text, served on OpenAI Responses, Chat Completions,
+                Claude and Gemini (see
+                <a href="#citations-and-files">Citations and generated files</a>)
+              </td>
+            </tr>
+            <tr>
+              <td>files</td>
+              <td>array</td>
+              <td>
+                Model-generated files <code>{ mimeType, data }</code>, served on Gemini and OpenAI
+                Responses (see <a href="#citations-and-files">Citations and generated files</a>)
+              </td>
             </tr>
             <tr>
               <td>systemFingerprint</td>
@@ -724,6 +1028,194 @@
             </tr>
           </tbody>
         </table>
+
+        <h2 id="citations-and-files">Citations and generated files</h2>
+        <p>
+          A text reply can carry source citations, and a reply can carry model-generated files such
+          as images. Add <code>citations</code> or <code>files</code> next to <code>content</code>,
+          and aimock serves them in each provider's own wire shape, streaming and non-streaming. Use
+          them to test how your app shows sources and renders generated images.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">citations.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"capital of France"</span> },
+  <span class="prop">"response"</span>: {
+    <span class="prop">"content"</span>: <span class="str">"Paris is the capital of France."</span>,
+    <span class="prop">"citations"</span>: [
+      { <span class="prop">"url"</span>: <span class="str">"https://en.wikipedia.org/wiki/Paris"</span>, <span class="prop">"title"</span>: <span class="str">"Paris"</span>, <span class="prop">"startIndex"</span>: <span class="num">0</span>, <span class="prop">"endIndex"</span>: <span class="num">5</span> },
+      { <span class="prop">"type"</span>: <span class="str">"file"</span>, <span class="prop">"fileId"</span>: <span class="str">"file-abc123"</span>, <span class="prop">"filename"</span>: <span class="str">"notes.pdf"</span> }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          A URL citation needs <code>url</code>; <code>title</code>, <code>startIndex</code> and
+          <code>endIndex</code> are optional, and the span defaults to the whole text. Offsets are
+          JavaScript string positions in the reply text. A file citation (<code>type: "file"</code>)
+          needs <code>fileId</code> and <code>filename</code>; its optional
+          <code>index</code> defaults to the end of the text.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            generated-image.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"draw a cat"</span> },
+  <span class="prop">"response"</span>: {
+    <span class="prop">"content"</span>: <span class="str">"Here is a cat."</span>,
+    <span class="prop">"files"</span>: [{ <span class="prop">"mimeType"</span>: <span class="str">"image/png"</span>, <span class="prop">"data"</span>: <span class="str">"iVBORw0KGgo..."</span> }]
+  }
+}</code></pre>
+        </div>
+        <p>
+          <code>data</code> holds the base64 file bytes. Files are sent before the reply text and
+          tool calls.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Wire</th>
+              <th><code>citations</code></th>
+              <th><code>files</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI Responses (HTTP and WebSocket)</td>
+              <td>
+                <code>url_citation</code> and <code>file_citation</code> annotations on
+                <code>output_text</code>, streamed with
+                <code>response.output_text.annotation.added</code>
+              </td>
+              <td>
+                <code>image_generation_call</code> output items (<code>image/*</code> only),
+                streamed with the <code>response.image_generation_call.*</code> events
+              </td>
+            </tr>
+            <tr>
+              <td>Chat Completions (OpenAI, Azure, OpenRouter)</td>
+              <td>
+                <code>url_citation</code> in <code>message.annotations</code>; one
+                <code>delta.annotations</code> chunk when streaming. File citations are skipped
+              </td>
+              <td>500 <code>aimock_unsupported_generated_file</code></td>
+            </tr>
+            <tr>
+              <td>Claude Messages</td>
+              <td>
+                <code>web_search_result_location</code> citations on text blocks;
+                <code>citations_delta</code> when streaming. File citations are skipped
+              </td>
+              <td>500 <code>aimock_unsupported_generated_file</code></td>
+            </tr>
+            <tr>
+              <td>Gemini and Vertex AI</td>
+              <td>
+                <code>groundingMetadata</code> (<code>groundingChunks</code> and
+                <code>groundingSupports</code>, byte offsets). File citations are skipped
+              </td>
+              <td><code>inlineData</code> parts</td>
+            </tr>
+            <tr>
+              <td>Every other wire</td>
+              <td>Ignored</td>
+              <td>Ignored</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="info-box">
+          <p>
+            <strong>Errors:</strong> a malformed <code>citations</code> or <code>files</code> value
+            (wrong type, missing field, an offset outside the text, or citations on a reply with no
+            text) answers a 500 with <code>aimock_invalid_fixture_citation</code> or
+            <code>aimock_invalid_fixture_file</code> before any content is sent. A non-image file on
+            the Responses API answers <code>aimock_unsupported_generated_file</code>. On the
+            Responses WebSocket these come as an error event. Fixture loading warns about the same
+            problems, and the fixture still loads.
+          </p>
+        </div>
+
+        <h3 id="recording-citations">Recording citations</h3>
+        <p>
+          Recording keeps citations automatically; no option is needed. When a real OpenAI Responses
+          or Claude Messages turn carries native citations, the recorded fixture keeps them on its
+          text <code>blocks</code> (or <code>responsesBlocks</code> when a Responses turn has custom
+          tool calls): <code>annotations</code> for Responses, <code>citations</code> for Claude.
+          The text, tool calls, reasoning, usage and block order are the same as the recording of
+          that turn without citations; the citations are only added. A turn without citations
+          records exactly as before.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            recorded-citations.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"content"</span>: <span class="str">"A fact"</span>,
+  <span class="prop">"blocks"</span>: [
+    {
+      <span class="prop">"type"</span>: <span class="str">"text"</span>,
+      <span class="prop">"text"</span>: <span class="str">"A fact"</span>,
+      <span class="prop">"annotations"</span>: [
+        { <span class="prop">"type"</span>: <span class="str">"url_citation"</span>, <span class="prop">"url"</span>: <span class="str">"https://example.test/source"</span>, <span class="prop">"start_index"</span>: <span class="num">0</span>, <span class="prop">"end_index"</span>: <span class="num">6</span> }
+      ]
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          Each entry is kept as the provider sent it, unknown fields included, and replays on the
+          same provider in its own wire shape. A native entry on a text block takes the place of the
+          response-level <code>citations</code> for that block. You can write these blocks by hand
+          too.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Recorded from</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI Responses SSE</td>
+              <td>
+                Annotation events (<code>response.output_text.annotation.added</code>, and the
+                <code>response.output_text_annotation.added</code> name from openai 4.x) and the
+                annotations in part, item and final (completed or incomplete) response snapshots. A
+                message with several text parts records one block per part; later parts carry
+                <code>"continuesMessage": true</code>
+                so replay serves one message. A gpt-oss harmony turn moves each annotation's offsets
+                into the parsed answer text; with custom tool calls,
+                <code>responsesBlocks</code> keep the streamed text and the offsets it was sent with
+              </td>
+            </tr>
+            <tr>
+              <td>OpenAI Responses JSON</td>
+              <td>
+                Recorded when the body carries annotations, with its text, tool calls, reasoning and
+                usage. A Responses JSON body without annotations it can keep is saved as an error
+                fixture, as before
+              </td>
+            </tr>
+            <tr>
+              <td>Claude Messages SSE and JSON</td>
+              <td>
+                <code>citations_delta</code> events and the <code>citations</code> of each text
+                block. A JSON capture keeps its text before its tool calls, as without citations
+              </td>
+            </tr>
+            <tr>
+              <td>Every other wire</td>
+              <td>Not recorded</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          An entry that is not an object, an annotation whose offsets point outside its text, an
+          annotation that spans text the stream split across blocks, or a harmony annotation that
+          points outside the answer text, is left out and the recorder logs a warning.
+        </p>
 
         <h2>Fixture Options</h2>
 
@@ -765,6 +1257,29 @@
               </td>
             </tr>
             <tr>
+              <td>nonStreamingTiming</td>
+              <td>boolean</td>
+              <td>
+                Also delay <code>stream: false</code> OpenAI Chat Completions replies by the
+                fixture's <code>streamingProfile</code> or <code>recordedTimings</code> (default
+                <code>false</code>). Other providers ignore it (use
+                <code>nonStreamingTimingAllProviders</code>). See
+                <a href="/streaming-physics#non-streaming">Non-Streaming Responses</a>
+              </td>
+            </tr>
+            <tr>
+              <td>nonStreamingTimingAllProviders</td>
+              <td>boolean</td>
+              <td>
+                Delay <code>stream: false</code> replies the same way on OpenAI Chat Completions,
+                Anthropic Messages, OpenAI Responses, Gemini, Vertex AI, Gemini Interactions,
+                Cohere, Bedrock InvokeModel and Converse, and Ollama (default <code>false</code>).
+                Needs <code>streamingProfile</code> or <code>recordedTimings</code>. Error replies
+                and audio transcription are not delayed. See
+                <a href="/streaming-physics#non-streaming-all-providers">All Providers</a>
+              </td>
+            </tr>
+            <tr>
               <td>chaos</td>
               <td>object</td>
               <td>
@@ -773,10 +1288,181 @@
                 <a href="/chaos-testing">Chaos Testing</a>
               </td>
             </tr>
+            <tr>
+              <td>misbehavior</td>
+              <td>object | string</td>
+              <td>
+                Semantic fault config or fault ID shorthand. An empty fault list disables inherited
+                faults. See <a href="#misbehavior">Model Misbehavior</a>.
+              </td>
+            </tr>
           </tbody>
         </table>
 
+        <h2 id="misbehavior">Model Misbehavior</h2>
+        <p>
+          The optional <code>misbehavior</code> field injects a semantic fault after aimock selects
+          the fixture. Keep the authored response valid and describe the intentional fault
+          separately.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/misbehavior.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather" },
+      "response": {
+        "toolCalls": [{ "name": "weather", "arguments": { "city": "Paris" } }]
+      },
+      "misbehavior": {
+        "seed": 42,
+        "faults": [{ "fault": "tool-args-invalid-json", "times": 1 }]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          A fault ID also works as shorthand: <code>"misbehavior": "tool-args-invalid-json"</code>.
+          It means one fault with the default parameters and rate 1.
+        </p>
+        <p>
+          <code>"misbehavior": { "faults": [] }</code> disables faults for this fixture and prevents
+          fallback to runtime or server config. Omitting the field inherits the lower-priority
+          config. A request header can override either form.
+        </p>
+        <p>
+          Fixture configs replace the whole lower-priority config; fault lists do not merge. Only
+          OpenAI Chat Completions currently supports fault rendering, including Azure and
+          OpenRouter's chat wire.
+        </p>
+        <p>
+          See <a href="/model-misbehavior#catalog">the fault catalog</a> for parameters and
+          <a href="/model-misbehavior#precedence">scope precedence</a> for runtime behavior.
+        </p>
+
+        <h3 id="misbehavior-validation">Loading and validation errors</h3>
+        <p>
+          The loader rejects invalid misbehavior even without <code>--validate-on-load</code>, with
+          strict mode off, or with silent logging. The error is a <code>FixtureLoadError</code>.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Cause</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>misbehavior/unknown-key</code></td>
+              <td>An unknown config key or a parameter that belongs to another fault.</td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/bad-value</code></td>
+              <td>
+                An unknown fault, style, violation, or wire ID; an invalid seed, rate, count, or cut
+                fraction.
+              </td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/not-applicable</code></td>
+              <td>
+                The fault cannot apply to the fixture's static response, such as a tool fault on
+                text-only output.
+              </td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/unsupported-on-wire</code></td>
+              <td>
+                The endpoint and provider filter prove that no supported wire or output mode can
+                honor the fault.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The error names the logical source and original entry index, such as
+          <code>fixtures[1].misbehavior.faults[0].rate</code>, plus the offending value. Directory
+          sources use paths relative to the loaded root; downloaded sources retain their URL.
+        </p>
+        <p>
+          Request-dependent checks wait until the response is prepared. An ambiguous endpoint does
+          not imply that every wire supports the fault.
+        </p>
+        <p>
+          Run <code>aimock validate fixtures/misbehavior.json</code> for offline diagnostics. Errors
+          remain errors; <code>--strict</code> also rejects warnings.
+        </p>
+        <p>
+          A fault with <code>rate &lt; 1</code>, no seed, and no <code>times</code> produces this
+          warning:
+          <code
+            >probabilistic fault without a seed is reproducible only per test id order; set seed to
+            pin it</code
+          >.
+        </p>
+        <p>
+          Invalid authored tool argument JSON remains an error. The diagnostic adds:
+          <code>to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`</code>.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Older versions:</strong> Older aimock versions can silently ignore the unknown
+            <code>misbehavior</code> fixture field. A successful load alone does not prove that the
+            fault is active. Check the
+            <a href="/model-misbehavior#journal">misbehavior journal result</a> on a supported wire.
+          </p>
+        </div>
+
         <h2>Loading Fixtures</h2>
+
+        <p>
+          <code>addFixturesFromJSON()</code> accepts an array of fixture entries, either as a JSON
+          string or as a parsed array. Fixture files use the
+          <code>{ "fixtures": [...] }</code> envelope shown above; load those files with
+          <code>loadFixtureFile()</code>.
+        </p>
+
+        <p>
+          Each JSON fixture needs an object-valued <code>match</code>. An explicit empty object
+          (<code>{}</code>) remains a catch-all. Scalar and array values are invalid.
+        </p>
+        <ul>
+          <li>
+            File loading skips entries with scalar or array <code>match</code> values. It warns with
+            the file path and original zero-based entry index, and retains valid siblings in order.
+            This recovery does not apply to missing or <code>null</code> matches or other conversion
+            errors.
+          </li>
+          <li>
+            <code>addFixturesFromJSON()</code> throws a <code>TypeError</code> for an invalid
+            <code>match</code> value. It adds none of the entries in that batch.
+          </li>
+          <li>
+            <code>POST /__aimock/fixtures</code> returns HTTP 400 for an invalid
+            <code>match</code> value. It adds none of the entries in that batch.
+          </li>
+          <li>
+            <code>aimock validate</code> reports scalar or array <code>match</code> values as errors
+            and exits with status 1. Its fixture count excludes those entries, while diagnostics
+            retain their original source indices.
+          </li>
+        </ul>
+
+        <p>
+          <code>LLMock.loadFixtureFile()</code>, <code>LLMock.loadFixtureDir()</code> and
+          <code>llmock --fixtures</code> also load a file&rsquo;s <code>mcpFakes</code>. When no
+          mount serves a block&rsquo;s <code>mount</code> path (default <code>/mcp</code>), aimock
+          mounts an <code>MCPMock</code> there, so fakes need no other setup. The free functions
+          <code>loadFixtureFile()</code> and <code>loadFixturesFromDir()</code> return LLM fixtures
+          only and throw on a file with <code>mcpFakes</code>; use
+          <code>loadFixtureFileWithServices()</code> or
+          <code>loadFixturesFromDirWithServices()</code> for such files. See
+          <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+        </p>
 
         <h3>From a file</h3>
         <div class="code-block">
@@ -988,6 +1674,48 @@
               <td>&mdash;</td>
               <td>Yes</td>
             </tr>
+            <tr>
+              <td><a href="#citations-and-files">Citations</a></td>
+              <td>URL</td>
+              <td>URL + file</td>
+              <td>URL</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td>URL</td>
+            </tr>
+            <tr>
+              <td><a href="#citations-and-files">Generated files</a></td>
+              <td>Error</td>
+              <td>Images</td>
+              <td>Error</td>
+              <td>Yes</td>
+              <td>&mdash;</td>
+              <td>Yes</td>
+              <td>&mdash;</td>
+              <td>Error</td>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td>Error</td>
+            </tr>
+            <tr>
+              <td>Custom Tool Calls<sup>&Dagger;</sup></td>
+              <td>Error</td>
+              <td>Yes</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+            </tr>
           </tbody>
         </table>
         <p class="footnote">
@@ -998,6 +1726,21 @@
           <sup>&dagger;</sup> Gemini Interactions captures reasoning on record (its collapser
           assembles <code>thought_summary</code> deltas into <code>reasoning</code>), but its replay
           builders do not re-emit reasoning, so a replayed turn carries none.
+        </p>
+        <p class="footnote">
+          <sup>&Dagger;</sup> In this row, &ldquo;Error&rdquo; means a request that would emit a
+          custom tool call fails before any content with
+          <code>aimock_unsupported_tool_call</code> (see
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >Namespaced and custom tool calls</a
+          >). The Azure column is the deployment route
+          (<code>/openai/deployments/{id}/chat/completions</code>) and the OpenRouter column is
+          <code>/api/v1/chat/completions</code>. The Ollama column is <code>/api/chat</code>;
+          <code>/api/generate</code> rejects every tool-call fixture, custom calls included, with
+          HTTP 400 (<code>invalid_request_error</code>) and no aimock code. aimock serves
+          <code>/openai/v1/responses</code> and OpenRouter&rsquo;s
+          <code>/api/v1/responses</code> with its OpenAI Responses handler, so custom tool calls
+          work there. The Realtime and Gemini Live WebSockets reject them too.
         </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>

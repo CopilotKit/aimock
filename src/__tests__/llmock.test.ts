@@ -1,12 +1,34 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
+import * as net from "node:net";
 import { resolve, join } from "node:path";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { LLMock } from "../llmock.js";
-import { Journal } from "../journal.js";
+import { Journal, isChatCompletionBody } from "../journal.js";
+import { createServer } from "../server.js";
+import { loadFixtureFile } from "../fixture-loader.js";
+import { fixtureMisbehaviorSourceKey, getFixtureMisbehaviorPosition } from "../misbehavior.js";
+import type { ChatCompletionRequest, Fixture, JournalEntry, MisbehaviorConfig } from "../types.js";
 
 // ---- Helpers ----
+
+/**
+ * The chat request a journal entry recorded.
+ *
+ * `JournalEntry.body` is a union — not every service journals a chat request —
+ * so reading `messages` off one needs a narrowing step. Throwing here names the
+ * problem ("this entry is not a chat request") at the point it exists, instead
+ * of letting a non-chat entry surface as an undefined property inside an
+ * expectation.
+ */
+function chatBodyOf(entry: JournalEntry | null | undefined): ChatCompletionRequest {
+  const body = entry?.body;
+  if (!isChatCompletionBody(body)) {
+    throw new Error(`journal entry has no chat-completion body: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
 
 const FIXTURES_DIR = resolve(import.meta.dirname, "../../fixtures");
 
@@ -475,7 +497,7 @@ describe("LLMock", () => {
       expect(mock.journal.size).toBe(1);
       const entry = mock.journal.getLast();
       expect(entry).not.toBeNull();
-      expect(entry!.body!.messages[0].content).toBe("journal-test");
+      expect(chatBodyOf(entry).messages[0].content).toBe("journal-test");
     });
   });
 
@@ -884,6 +906,56 @@ describe("LLMock", () => {
       const body = JSON.parse(chat.data);
       expect(body.error.message).toBe("Overloaded");
     });
+
+    it("fires on an elevenlabs-voice-design request and is consumed by it", async () => {
+      mock = new LLMock();
+      mock.onElevenLabsVoiceDesign(/sea captain/, {
+        previews: [{ generated_voice_id: "p1", audio_base_64: "QQ==" }],
+        text: "Ahoy",
+      });
+      await mock.start();
+
+      // The router's endpoint-compat table marks the four elevenlabs-voice*
+      // types as error-compatible; the one-shot gate must agree or the error
+      // silently stays pending while the voice route answers normally.
+      mock.nextRequestError(503, { message: "Voice outage", type: "server_error" });
+
+      const design = {
+        voice_description: "A gruff old sea captain with a gravelly voice and a thick accent",
+      };
+      const first = await postTo(mock.url, "/v1/text-to-voice/design", design);
+      expect(first.status).toBe(503);
+      expect(JSON.parse(first.data).error.message).toBe("Voice outage");
+
+      // One-shot: the same request now reaches the voice fixture.
+      const second = await postTo(mock.url, "/v1/text-to-voice/design", design);
+      expect(second.status).toBe(200);
+      expect(second.data).toContain("p1");
+    });
+
+    it("fires on an elevenlabs-voice-get request and is consumed by it", async () => {
+      mock = new LLMock();
+      await mock.start();
+
+      mock.nextRequestError(503, { message: "Voice outage", type: "server_error" });
+
+      const first = await new Promise<{ status: number; data: string }>((res, rej) => {
+        http
+          .get(`${mock!.url}/v1/voices/aimock-nonexistent-voice`, (r) => {
+            let data = "";
+            r.on("data", (c: Buffer) => (data += c.toString()));
+            r.on("end", () => res({ status: r.statusCode ?? 0, data }));
+          })
+          .on("error", rej);
+      });
+      expect(first.status).toBe(503);
+      expect(JSON.parse(first.data).error.message).toBe("Voice outage");
+
+      // Consumed: a chat request no longer sees the pending error.
+      mock.onMessage("hello", { content: "Hi!" });
+      const chat = await post(mock.url, chatBody("hello"));
+      expect(chat.status).toBe(200);
+    });
   });
 
   describe("journal proxies", () => {
@@ -910,7 +982,7 @@ describe("LLMock", () => {
 
       const last = mock.getLastRequest();
       expect(last).not.toBeNull();
-      expect(last!.body!.messages[0].content).toBe("b");
+      expect(chatBodyOf(last).messages[0].content).toBe("b");
     });
 
     it("getLastRequest returns null when no requests", async () => {
@@ -1493,5 +1565,678 @@ describe("LLMock", () => {
       expect(res.status).toBe(200);
       expect(res.data).toContain("factory response");
     });
+  });
+
+  describe("nextRequestError is consumed when SERVED, not when evaluated", () => {
+    it("survives a request that a behind-the-count turnIndex fixture wins, then fires", async () => {
+      mock = new LLMock();
+      // turnIndex 0 is BEHIND a request carrying one assistant bubble
+      // (assistantCount = 1), so selectByTurnIndex prefers it over the
+      // unpositioned one-shot even though the one-shot's predicate matched.
+      mock.onTurn(0, "hello", { content: "Scripted turn" });
+      await mock.start();
+
+      mock.nextRequestError(503, { message: "Overloaded", type: "server_error" });
+
+      const behind = await post(mock.url, {
+        model: "gpt-4",
+        stream: false,
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "Scripted turn" },
+          { role: "user", content: "hello" },
+        ],
+      });
+      expect(behind.status).toBe(200);
+      expect(behind.data).toContain("Scripted turn");
+
+      // The one-shot was NOT served above, so it must still be pending: at
+      // assistantCount = 0 the exact-turn tie is broken by registration order
+      // and the front-inserted one-shot wins.
+      const next = await post(mock.url, chatBody("hello", false));
+      expect(next.status).toBe(503);
+      expect(JSON.parse(next.data).error.message).toBe("Overloaded");
+
+      // …and it is gone once served.
+      const after = await post(mock.url, chatBody("hello", false));
+      expect(after.status).toBe(200);
+    });
+  });
+});
+
+describe("LLMock — journal reports the truth (F4)", () => {
+  let mock: LLMock | null = null;
+
+  afterEach(async () => {
+    if (mock) {
+      try {
+        await mock.stop();
+      } catch {
+        // already stopped
+      }
+      mock = null;
+    }
+  });
+
+  function rawRequest(port: number, text: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = net.connect(port, "127.0.0.1", () => socket.write(text));
+      let buf = "";
+      socket.on("data", (d) => (buf += d));
+      socket.on("end", () => resolve(buf));
+      socket.on("error", reject);
+    });
+  }
+
+  it("clearRequests() empties the journal but keeps fixture match-counts", async () => {
+    mock = new LLMock();
+    const fixture = { match: { userMessage: "hi" }, response: { content: "Hello" } };
+    mock.addFixture(fixture);
+    await mock.start();
+
+    await post(mock.url, chatBody("hi"));
+    expect(mock.journal.size).toBe(1);
+    expect(mock.journal.getFixtureMatchCount(fixture)).toBe(1);
+
+    mock.clearRequests();
+    expect(mock.journal.size).toBe(0);
+    // Pre-fix: clearRequests() called journal.clear(), rewinding this to 0.
+    expect(mock.journal.getFixtureMatchCount(fixture)).toBe(1);
+  });
+
+  it("GET /__aimock/journal?testId= matches the id the request was actually scoped under (repeated header)", async () => {
+    mock = new LLMock();
+    mock.onMessage("hi", { content: "Hello" });
+    const url = await mock.start();
+    const port = Number(new URL(url).port);
+
+    // http.request() cannot send a duplicated header; write the wire bytes.
+    const dupHeaders = `X-Test-Id: a\r\nX-Test-Id: a\r\n`;
+    const chaos = JSON.stringify({ latencyMs: 1 });
+    const installed = await rawRequest(
+      port,
+      `POST /__aimock/chaos HTTP/1.1\r\nHost: x\r\n${dupHeaders}` +
+        `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(chaos)}\r\n` +
+        `Connection: close\r\n\r\n${chaos}`,
+    );
+    expect(installed.startsWith("HTTP/1.1 200")).toBe(true);
+    // Node folds the repeated header to "a, a"; that is the scope the override
+    // landed under — visible to a caller that sends the folded string, and NOT
+    // to one that sends the bare "a".
+    const seenFolded = await fetch(`${url}/__aimock/chaos`, { headers: { "X-Test-Id": "a, a" } });
+    expect(((await seenFolded.json()) as { chaos: { latencyMs?: number } }).chaos.latencyMs).toBe(
+      1,
+    );
+    const seenBare = await fetch(`${url}/__aimock/chaos`, { headers: { "X-Test-Id": "a" } });
+    expect(
+      ((await seenBare.json()) as { chaos: { latencyMs?: number } }).chaos.latencyMs,
+    ).toBeUndefined();
+
+    const body = JSON.stringify(chatBody("hi", false));
+    const reply = await rawRequest(
+      port,
+      `POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n${dupHeaders}` +
+        `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n` +
+        `Connection: close\r\n\r\n${body}`,
+    );
+    expect(reply.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(mock.getLastRequest()?.headers["x-test-id"]).toBe("a, a");
+
+    // The journal filter agrees with the scope: the folded id finds the chat
+    // request (the chaos control calls are not journaled), the bare id does not.
+    const folded = await fetch(`${url}/__aimock/journal?testId=${encodeURIComponent("a, a")}`);
+    expect(folded.status).toBe(200);
+    const foldedEntries = (await folded.json()) as { path: string }[];
+    expect(foldedEntries.map((e) => e.path)).toEqual(["/v1/chat/completions"]);
+    // Pre-fix: the filter split on "," and reported this request under "a",
+    // a scope it was never counted or chaos-evaluated in.
+    const bare = await fetch(`${url}/__aimock/journal?testId=a`);
+    expect(bare.status).toBe(200);
+    expect(await bare.json()).toEqual([]);
+  });
+
+  it("GET /__aimock/journal?testId= finds a request whose single X-Test-Id legitimately contains a comma", async () => {
+    mock = new LLMock();
+    mock.onMessage("hi", { content: "Hello" });
+    const url = await mock.start();
+
+    const res = await fetch(`${url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Id": "run-7,shard-2" },
+      body: JSON.stringify(chatBody("hi", false)),
+    });
+    expect(res.status).toBe(200);
+
+    // Pre-fix: the filter compared "run-7" (first comma token) against the
+    // full id and returned [] — a regression for any harness with commas in ids.
+    const found = await fetch(
+      `${url}/__aimock/journal?testId=${encodeURIComponent("run-7,shard-2")}`,
+    );
+    expect(found.status).toBe(200);
+    expect(((await found.json()) as unknown[]).length).toBe(1);
+    const prefix = await fetch(`${url}/__aimock/journal?testId=run-7`);
+    expect(await prefix.json()).toEqual([]);
+  });
+
+  it("the 'Fixture matched' debug line names a predicate fixture instead of printing {}", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+    try {
+      mock = new LLMock({ logLevel: "debug" });
+      mock.addFixture({
+        match: { predicate: (req) => /pred/.test(String(req.messages.at(-1)?.content)) },
+        response: { content: "P" },
+      });
+      await mock.start();
+      await post(mock.url, chatBody("hello pred", false));
+    } finally {
+      spy.mockRestore();
+    }
+    const matched = lines.find((l) => l.includes("Fixture matched"));
+    expect(matched).toBeDefined();
+    // Pre-fix: JSON.stringify drops the function → "Fixture matched: {}".
+    expect(matched).not.toContain("Fixture matched: {}");
+    expect(matched).toContain("[predicate]");
+  });
+});
+
+describe("LLMock — one-shot error is claimed at SELECTION, exactly once (G5/G8)", () => {
+  let mock: LLMock | null = null;
+
+  afterEach(async () => {
+    if (mock) {
+      await mock.stop();
+      mock = null;
+    }
+  });
+
+  it("G5: an OpenRouter models[] fallback request serves the one-shot instead of burning it", async () => {
+    mock = new LLMock();
+    mock.onMessage("route", { content: "plain ok" });
+    await mock.start();
+    mock.nextRequestError(503, { message: "Injected", type: "server_error" });
+
+    // Pre-fix: the primary candidate resolved the one-shot (consuming it via
+    // its factory), fell through to the fallback candidate and served a 200 —
+    // the injected error was never served, and the next request was 200 too.
+    const fallback = await postTo(mock.url, "/api/v1/chat/completions", {
+      model: "primary/bad",
+      models: ["primary/bad", "fallback/good"],
+      messages: [{ role: "user", content: "route" }],
+    });
+    expect(fallback.status).toBe(503);
+    expect(JSON.parse(fallback.data).error.message).toBe("Injected");
+
+    const next = await post(mock.url, chatBody("route", false));
+    expect(next.status).toBe(200);
+  });
+
+  it("G8: two concurrent requests under chaos latency — exactly one receives the one-shot", async () => {
+    mock = new LLMock({ chaos: { latencyMs: 300 } });
+    mock.onMessage("route", { content: "plain ok" });
+    await mock.start();
+    mock.nextRequestError(503, { message: "Injected", type: "server_error" });
+
+    // Pre-fix: both requests selected the one-shot before the latency await
+    // and both factories returned the error (the second's splice was a no-op).
+    const body = chatBody("route", false);
+    const [a, b] = await Promise.all([post(mock.url, body), post(mock.url, body)]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 503]);
+
+    const after = await post(mock.url, chatBody("route", false));
+    expect(after.status).toBe(200);
+  });
+});
+
+describe("LLMock — a claimed one-shot error is RELEASED when it is never served (H2/H3)", () => {
+  let mock: LLMock | null = null;
+
+  afterEach(async () => {
+    if (mock) {
+      await mock.stop();
+      mock = null;
+    }
+  });
+
+  /** `post` above cannot send headers, and the chaos gate is header-driven. */
+  function chat(url: string, headers: Record<string, string> = {}, signal?: AbortSignal) {
+    return fetch(`${url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(chatBody("route", false)),
+      signal,
+    });
+  }
+
+  it("a terminal chaos action does not burn the one-shot — the next clean request gets it", async () => {
+    mock = new LLMock();
+    mock.onMessage("route", { content: "plain ok" });
+    await mock.start();
+    mock.nextRequestError(503, { message: "Injected", type: "server_error" });
+
+    // Pre-fix: the one-shot was claimed at SELECTION, then the chaos roll
+    // answered the request instead — the injection was consumed unserved and
+    // this second request came back 200.
+    await chat(mock.url, { "x-aimock-chaos-drop": "1" });
+    const next = await chat(mock.url);
+    expect(next.status).toBe(503);
+    expect((await next.json()).error.message).toBe("Injected");
+
+    // Still exactly one-shot: the release re-arms, it does not duplicate.
+    const after = await chat(mock.url);
+    expect(after.status).toBe(200);
+  });
+
+  it("a client that leaves during the chaos-latency delay does not burn the one-shot", async () => {
+    mock = new LLMock();
+    mock.onMessage("route", { content: "plain ok" });
+    await mock.start();
+    mock.nextRequestError(503, { message: "Injected", type: "server_error" });
+
+    const ac = new AbortController();
+    const inflight = chat(mock.url, { "x-aimock-chaos-latency": "400" }, ac.signal).catch(
+      () => null,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    ac.abort();
+    await inflight;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const next = await chat(mock.url);
+    expect(next.status).toBe(503);
+  });
+
+  it("a queued one-shot reports responseKind 'error', not 'factory', in the fixture listing", async () => {
+    mock = new LLMock();
+    await mock.start();
+    mock.nextRequestError(503);
+
+    const listing = await (await fetch(`${mock.url}/__aimock/fixtures?include=fixtures`)).json();
+    expect(listing.fixtures[0].responseKind).toBe("error");
+  });
+});
+
+describe("LLMock caller fixture count identity", () => {
+  it.each(["addFixture", "addFixtures", "prependFixture"] as const)(
+    "%s retains one public caller entry through clear and reset",
+    async (method) => {
+      const fixture = { match: { userMessage: "identity" }, response: { content: "IDENTITY" } };
+      const mock = new LLMock({ port: 0, logLevel: "silent" });
+      const add = () => {
+        if (method === "addFixtures") mock.addFixtures([fixture]);
+        else mock[method](fixture);
+      };
+      add();
+      await mock.start();
+      try {
+        const journal = mock.journal;
+        const response = await post(mock.url, chatBody("identity"));
+        const counts = journal.fixtureMatchCounts;
+        const stored = mock.getFixtures()[0];
+        console.log(
+          JSON.stringify({
+            cell: method,
+            response,
+            original: counts.get(fixture) ?? 0,
+            stored: counts.get(stored),
+            hasOriginal: counts.has(fixture),
+            size: counts.size,
+            callerKeys: [...counts.keys()].map((key) => key === fixture),
+            values: [...counts.values()],
+          }),
+        );
+        expect(response.data).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+        expect(counts.get(fixture)).toBe(1);
+        expect(counts.has(fixture)).toBe(true);
+        expect(counts.get(stored)).toBe(1);
+        expect(counts.has(stored)).toBe(true);
+        expect(counts.size).toBe(1);
+        expect([...counts.keys()][0]).toBe(fixture);
+        expect([...counts.values()]).toEqual([1]);
+        expect([...counts.entries()]).toEqual([[fixture, 1]]);
+        expect([...counts]).toEqual([[fixture, 1]]);
+        counts.forEach((value, key, map) => {
+          expect(value).toBe(1);
+          expect(key).toBe(fixture);
+          expect(map).toBe(counts);
+        });
+        expect(mock.journal).toBe(journal);
+        expect(journal.fixtureMatchCounts).toBe(counts);
+        counts.set(stored, 3);
+        expect(counts.get(fixture)).toBe(3);
+        expect(counts.size).toBe(1);
+        expect(counts.delete(stored)).toBe(true);
+        expect(counts.has(fixture)).toBe(false);
+        counts.set(fixture, 1);
+        const tenant = await fetch(`${mock.url}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-test-id": "identity-tenant" },
+          body: JSON.stringify(chatBody("identity", false)),
+        });
+        expect(await tenant.text()).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture, "identity-tenant")).toBe(1);
+        const tenantCounts = journal.getFixtureMatchCountsForTest("identity-tenant");
+        expect(tenantCounts.get(fixture)).toBe(1);
+        expect([...tenantCounts.keys()][0]).toBe(fixture);
+        expect(tenantCounts.size).toBe(1);
+        expect(journal.getFixtureMatchCountsForTest("untouched").size).toBe(0);
+        expect(journal.getFixtureMatchCountsForTest("untouched")).not.toBe(
+          journal.getFixtureMatchCountsForTest("untouched"),
+        );
+        mock.clearRequests();
+        expect(journal.size).toBe(0);
+        expect(journal.fixtureMatchCounts).toBe(counts);
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+        mock.reset();
+        add();
+        expect(journal.getFixtureMatchCount(fixture)).toBe(0);
+        expect(journal.getFixtureMatchCount(fixture, "identity-tenant")).toBe(0);
+        expect((await post(mock.url, chatBody("identity"))).data).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+      } finally {
+        await mock.stop();
+      }
+    },
+  );
+
+  it("counts repeated matched identity once without adding a sequence turn", async () => {
+    const fixture = {
+      match: { userMessage: "repeat", sequenceIndex: 0 },
+      response: { content: "ONCE" },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.addFixtures([fixture, fixture]);
+    await mock.start();
+    try {
+      expect((await post(mock.url, chatBody("repeat"))).data).toContain("ONCE");
+      const counts = mock.journal.fixtureMatchCounts;
+      console.log(
+        JSON.stringify({
+          cell: "repeated matched",
+          original: counts.get(fixture) ?? 0,
+          size: counts.size,
+          values: [...counts.values()],
+        }),
+      );
+      expect(counts.get(fixture)).toBe(1);
+      expect(counts.size).toBe(1);
+      expect([...counts.keys()][0]).toBe(fixture);
+      for (const stored of mock.getFixtures()) expect(counts.get(stored)).toBe(1);
+      expect((await post(mock.url, chatBody("repeat"))).status).toBe(404);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("preserves duplicate other-sibling increments from the original sequence loop", async () => {
+    const first = {
+      match: { userMessage: "siblings", sequenceIndex: 0 },
+      response: { content: "FIRST" },
+    };
+    const second = {
+      match: { userMessage: "siblings", sequenceIndex: 1 },
+      response: { content: "SECOND" },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.addFixtures([first, second, second]);
+    await mock.start();
+    try {
+      expect((await post(mock.url, chatBody("siblings"))).data).toContain("FIRST");
+      const counts = mock.journal.fixtureMatchCounts;
+      console.log(
+        JSON.stringify({
+          cell: "duplicate sibling",
+          first: counts.get(first) ?? 0,
+          second: counts.get(second) ?? 0,
+          size: counts.size,
+          values: [...counts.values()],
+        }),
+      );
+      expect(counts.get(first)).toBe(1);
+      expect(counts.get(second)).toBe(2);
+      expect(counts.size).toBe(2);
+      expect([...counts.keys()][0]).toBe(first);
+      expect([...counts.keys()][1]).toBe(second);
+      expect((await post(mock.url, chatBody("siblings"))).status).toBe(404);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("keeps a shared caller's counts separate across instances", async () => {
+    const fixture = { match: { userMessage: "shared" }, response: { content: "SHARED" } };
+    const left = new LLMock({ port: 0, logLevel: "silent" }).addFixture(fixture);
+    const right = new LLMock({ port: 0, logLevel: "silent" }).addFixture(fixture);
+    await left.start();
+    await right.start();
+    try {
+      expect((await post(left.url, chatBody("shared"))).data).toContain("SHARED");
+      expect(left.journal.getFixtureMatchCount(fixture)).toBe(1);
+      expect(right.journal.getFixtureMatchCount(fixture)).toBe(0);
+      expect((await post(right.url, chatBody("shared"))).data).toContain("SHARED");
+      expect(left.journal.getFixtureMatchCount(fixture)).toBe(1);
+      expect(right.journal.getFixtureMatchCount(fixture)).toBe(1);
+    } finally {
+      await left.stop();
+      await right.stop();
+    }
+  });
+});
+
+/**
+ * #518 R4 — without enableMisbehavior, every identity API names the fixture
+ * object the caller passed in, as 1.44.0 did: getFixtures(), findByFixture,
+ * getFixtureMatchCount, the count-map keys and JournalEntry.response.fixture.
+ * Expected values are what published 1.44.0 returns for the same calls.
+ */
+describe("the caller's fixture objects are the identity, with misbehavior off or on (1.44.0)", () => {
+  const literal = (): Fixture[] => [
+    { match: { userMessage: "a" }, response: { content: "A" } },
+    { match: { userMessage: "s", sequenceIndex: 0 }, response: { content: "S0" } },
+    { match: { userMessage: "s", sequenceIndex: 1 }, response: { content: "S1" } },
+  ];
+  let tmp: string | undefined;
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    tmp = undefined;
+  });
+  const fixtureFile = (): string => {
+    tmp = makeTmpDir();
+    const file = join(tmp, "fx.json");
+    writeFileSync(file, JSON.stringify({ fixtures: literal() }));
+    return file;
+  };
+
+  /** Five requests (two under test id t1), then every identity API against `caller`. */
+  async function expectCallerIdentity(url: string, journal: Journal, caller: readonly Fixture[]) {
+    const send = (message: string, testId?: string) =>
+      fetch(`${url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(testId && { "x-test-id": testId }) },
+        body: JSON.stringify(chatBody(message, false)),
+      }).then((r) => r.status);
+    expect([await send("a"), await send("s"), await send("s"), await send("a", "t1")]).toEqual([
+      200, 200, 200, 200,
+    ]);
+    expect(await send("s", "t1")).toBe(200);
+    expect(caller.map((f) => journal.getFixtureMatchCount(f))).toEqual([1, 2, 2]);
+    expect(caller.map((f) => journal.getFixtureMatchCount(f, "t1"))).toEqual([1, 1, 1]);
+    expect(caller.map((f) => journal.findByFixture(f).length)).toEqual([2, 2, 1]);
+    expect([...journal.fixtureMatchCounts.keys()]).toEqual([...caller]);
+    expect([...journal.getFixtureMatchCountsForTest("t1").keys()]).toEqual([...caller]);
+    const refs = journal.getAll().map((e) => caller.indexOf(e.response.fixture as Fixture));
+    expect(refs).toEqual([0, 1, 2, 0, 1]);
+    // toEqual compares structure; the identity checks above are what fail on a copy.
+    for (const key of journal.fixtureMatchCounts.keys()) expect(caller).toContain(key);
+  }
+
+  it.each([
+    ["addFixture", (m: LLMock, c: Fixture[]) => c.forEach((f) => m.addFixture(f))],
+    ["addFixtures", (m: LLMock, c: Fixture[]) => m.addFixtures(c)],
+    [
+      "prependFixture",
+      (m: LLMock, c: Fixture[]) => [...c].reverse().forEach((f) => m.prependFixture(f)),
+    ],
+  ] as const)("LLMock.%s", async (_label, add) => {
+    const caller = literal();
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    add(mock, caller);
+    await mock.start();
+    try {
+      mock.getFixtures().forEach((f, i) => expect(f).toBe(caller[i]));
+      await expectCallerIdentity(mock.url, mock.journal, caller);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("LLMock.addFixtures(loadFixtureFile())", async () => {
+    const caller = loadFixtureFile(fixtureFile());
+    const mock = new LLMock({ port: 0, logLevel: "silent" }).addFixtures(caller);
+    await mock.start();
+    try {
+      mock.getFixtures().forEach((f, i) => expect(f).toBe(caller[i]));
+      await expectCallerIdentity(mock.url, mock.journal, caller);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it.each(["on()", "loadFixtureFile"] as const)("LLMock %s: getFixtures() objects", async (via) => {
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    if (via === "on()") for (const f of literal()) mock.on(f.match, f.response);
+    else mock.loadFixtureFile(fixtureFile());
+    await mock.start();
+    try {
+      await expectCallerIdentity(mock.url, mock.journal, [...mock.getFixtures()]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it.each([
+    ["a literal array", literal],
+    ["loadFixtureFile output", () => loadFixtureFile(fixtureFile())],
+  ] as const)("createServer with %s", async (_label, make) => {
+    const caller = make();
+    const s = await createServer(caller, { port: 0, logLevel: "silent" });
+    try {
+      await expectCallerIdentity(s.url, s.journal, caller);
+    } finally {
+      await new Promise<void>((r) => s.server.close(() => r()));
+    }
+  });
+
+  // With misbehavior enabled LLMock stores a copy per addition (each its own
+  // fault source), and the journal names the caller's object behind it.
+  it.each([
+    ["addFixture", (m: LLMock, c: Fixture[]) => c.forEach((f) => m.addFixture(f))],
+    ["addFixtures", (m: LLMock, c: Fixture[]) => m.addFixtures(c)],
+    [
+      "prependFixture",
+      (m: LLMock, c: Fixture[]) => [...c].reverse().forEach((f) => m.prependFixture(f)),
+    ],
+    ["addFixtures(loadFixtureFile())", (m: LLMock, c: Fixture[]) => m.addFixtures(c)],
+  ] as const)("enableMisbehavior, LLMock.%s", async (label, add) => {
+    const caller = label.includes("loadFixtureFile") ? loadFixtureFile(fixtureFile()) : literal();
+    const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
+    add(mock, caller);
+    await mock.start();
+    try {
+      await expectCallerIdentity(mock.url, mock.journal, caller);
+      // The stored copies resolve to the same caller fixtures.
+      const stored = mock.getFixtures();
+      expect(stored.map((f) => mock.journal.getFixtureMatchCount(f))).toEqual([1, 2, 2]);
+      expect(stored.map((f) => mock.journal.findByFixture(f).length)).toEqual([2, 2, 1]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("enableMisbehavior, LLMock on(): getFixtures() objects", async () => {
+    const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
+    for (const f of literal()) mock.on(f.match, f.response);
+    await mock.start();
+    try {
+      await expectCallerIdentity(mock.url, mock.journal, [...mock.getFixtures()]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it.each([false, true])(
+    "an object added twice is one caller fixture (1.44.0), enableMisbehavior=%s",
+    async (enableMisbehavior) => {
+      const fixture: Fixture = {
+        match: { userMessage: "twice" },
+        response: { toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }] },
+        ...(enableMisbehavior && {
+          misbehavior: { faults: [{ fault: "tool-args-invalid-json", rate: 0 }] },
+        }),
+      };
+      const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior });
+      mock.addFixture(fixture).addFixture(fixture);
+      await mock.start();
+      try {
+        expect((await post(mock.url, chatBody("twice", false))).status).toBe(200);
+        expect((await post(mock.url, chatBody("twice", false))).status).toBe(200);
+        // 1.44.0 stored the object twice; the first slot matched both requests.
+        const journal = mock.journal;
+        expect(journal.getFixtureMatchCount(fixture)).toBe(2);
+        expect(journal.findByFixture(fixture)).toHaveLength(2);
+        expect([...journal.fixtureMatchCounts.keys()]).toEqual([fixture]);
+        expect(journal.getAll().map((e) => e.response.fixture)).toEqual([fixture, fixture]);
+        for (const e of journal.getAll()) expect(e.response.fixture).toBe(fixture);
+        const [first, second] = mock.getFixtures();
+        if (!enableMisbehavior) {
+          expect(first).toBe(fixture);
+          expect(second).toBe(fixture);
+          return;
+        }
+        // Each addition stays its own fault source.
+        expect(first).not.toBe(second);
+        expect(getFixtureMisbehaviorPosition(first)).toBe("code#0");
+        expect(getFixtureMisbehaviorPosition(second)).toBe("code#1");
+        const config: MisbehaviorConfig = {
+          faults: [{ fault: "tool-args-invalid-json", rate: 0 }],
+        };
+        expect(first.misbehavior).toEqual(config);
+        expect(fixtureMisbehaviorSourceKey(first, config)).not.toBe(
+          fixtureMisbehaviorSourceKey(second, config),
+        );
+        for (const stored of [first, second]) {
+          expect(journal.getFixtureMatchCount(stored)).toBe(2);
+          expect(journal.findByFixture(stored)).toHaveLength(2);
+        }
+      } finally {
+        await mock.stop();
+      }
+    },
+  );
+
+  it("the journal JSON shows the copy each request was served from", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "json" },
+      response: { toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }] },
+      misbehavior: { faults: [{ fault: "tool-args-invalid-json", rate: 0 }] },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
+    mock.addFixture(fixture);
+    await mock.start();
+    try {
+      await post(mock.url, chatBody("json", false));
+      const served = mock.getFixtures()[0];
+      const body = (await (await fetch(`${mock.url}/__aimock/journal`)).json()) as {
+        response: { fixture: unknown };
+      }[];
+      expect(body[0].response.fixture).toEqual(JSON.parse(JSON.stringify(served)));
+      expect(mock.journal.getAll()[0].response.fixture).toBe(fixture);
+    } finally {
+      await mock.stop();
+    }
   });
 });

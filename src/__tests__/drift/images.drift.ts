@@ -81,6 +81,20 @@ const IMAGE_MULTI_FIXTURE: Fixture = {
   },
 };
 
+/**
+ * Keyed on the model a request gets when it names none. Guards the default
+ * against drifting back to an id OpenAI has removed.
+ */
+const IMAGE_DEFAULT_MODEL_FIXTURE: Fixture = {
+  match: { model: "gpt-image-1", userMessage: "Generate a fox" },
+  response: {
+    image: {
+      url: "https://mock.aimock.dev/fox.png",
+      revisedPrompt: "A red fox",
+    },
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
@@ -88,9 +102,10 @@ const IMAGE_MULTI_FIXTURE: Fixture = {
 let instance: ServerInstance;
 
 beforeAll(async () => {
-  instance = await createServer([IMAGE_URL_FIXTURE, IMAGE_B64_FIXTURE, IMAGE_MULTI_FIXTURE], {
-    port: 0,
-  });
+  instance = await createServer(
+    [IMAGE_URL_FIXTURE, IMAGE_B64_FIXTURE, IMAGE_MULTI_FIXTURE, IMAGE_DEFAULT_MODEL_FIXTURE],
+    { port: 0 },
+  );
 });
 
 afterAll(async () => {
@@ -106,7 +121,7 @@ describe("OpenAI Images API drift", () => {
     const sdkShape = openaiImageUrlResponseShape();
 
     const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
-      model: "dall-e-3",
+      model: "gpt-image-1",
       prompt: "Generate a cat",
     });
 
@@ -128,7 +143,7 @@ describe("OpenAI Images API drift", () => {
     const sdkShape = openaiImageB64ResponseShape();
 
     const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
-      model: "dall-e-3",
+      model: "gpt-image-1",
       prompt: "Generate a dog",
       response_format: "b64_json",
     });
@@ -150,7 +165,7 @@ describe("OpenAI Images API drift", () => {
     const sdkShape = openaiImageUrlResponseShape();
 
     const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
-      model: "dall-e-3",
+      model: "gpt-image-1",
       prompt: "Generate animals",
       n: 2,
     });
@@ -173,7 +188,7 @@ describe("OpenAI Images API drift", () => {
 
   it("missing prompt returns 400 error", async () => {
     const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
-      model: "dall-e-3",
+      model: "gpt-image-1",
     });
 
     expect(mockRes.status).toBe(400);
@@ -182,9 +197,21 @@ describe("OpenAI Images API drift", () => {
     expect(body.error.message).toContain("prompt");
   });
 
+  it("a request with no model falls back to the current default model", async () => {
+    const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
+      prompt: "Generate a fox",
+    });
+
+    expect(mockRes.status, `Expected 200 but got ${mockRes.status}: ${mockRes.body}`).toBe(200);
+    expect(
+      JSON.parse(mockRes.body).data[0].url,
+      "model-keyed fixture did not match — the default model is not gpt-image-1",
+    ).toBe("https://mock.aimock.dev/fox.png");
+  });
+
   it("response contains created timestamp as number", async () => {
     const mockRes = await httpPost(`${instance.url}/v1/images/generations`, {
-      model: "dall-e-3",
+      model: "gpt-image-1",
       prompt: "Generate a cat",
     });
 

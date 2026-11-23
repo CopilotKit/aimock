@@ -5,13 +5,27 @@
  * - /v1/sound-generation — binary audio with Content-Type header
  * - /v1/music — binary audio with song-id header
  * - /v1/music/stream — chunked binary audio
- * - /v1/music/plan — JSON composition plan
+ * - /v1/music/plan — JSON composition plan (passthrough conformance of a
+ *   test-authored fixture against the SDK's `MusicPrompt.Raw`; no vendor observation)
  *
  * Since ElevenLabs returns binary audio (not JSON), drift testing focuses on
  * Content-Type headers, binary payload presence, and JSON plan structure
  * rather than three-way JSON shape comparison.
  *
- * Requires: ELEVENLABS_API_KEY (for real API comparison; tests run mock-only otherwise)
+ * LIVE COVERAGE: the /v1/sound-generation case below fetches the real
+ * `api.elevenlabs.io` when ELEVENLABS_API_KEY is set and emits the one
+ * `elevenlabs` drift block graded against a vendor response (status,
+ * Content-Type, body presence — the body is opaque audio), which is what earns
+ * this surface `liveCoverage: "live"`. Every other case here is offline
+ * conformance against the local mock. Without the key the live case skips and
+ * the run proves nothing about the vendor.
+ *
+ * The Voice Design routes (`/v1/text-to-voice/design`, `/v1/text-to-voice`) are
+ * NOT covered here — they have no live leg at all and live in
+ * `elevenlabs-voice.drift.ts` as the separately-declared, offline-only
+ * `elevenlabs-voice` surface.
+ *
+ * Requires: ELEVENLABS_API_KEY (for the one real-API case; omitted → it skips)
  */
 
 import http from "node:http";
@@ -41,9 +55,26 @@ const MUSIC_FIXTURE: Fixture = {
   response: { audio: "SGVsbG8=", format: "mp3" },
 };
 
+// The plan handler (`src/elevenlabs-audio.ts`, `subType === "plan"`) writes
+// `response.content` to the wire VERBATIM, so the fixture itself has to be
+// vendor-shaped: this is a `MusicPrompt.Raw` (see `musicPlanResponseShape`).
 const PLAN_FIXTURE: Fixture = {
   match: { userMessage: "jazz composition", endpoint: "audio-gen" },
-  response: { content: JSON.stringify({ sections: ["intro", "verse", "chorus"], bpm: 120 }) },
+  response: {
+    content: JSON.stringify({
+      positive_global_styles: ["jazz", "swing"],
+      negative_global_styles: ["distorted"],
+      sections: [
+        {
+          section_name: "intro",
+          positive_local_styles: ["brushed drums", "walking bass"],
+          negative_local_styles: ["vocals"],
+          duration_ms: 12000,
+          lines: ["(instrumental)"],
+        },
+      ],
+    }),
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -60,6 +91,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // `instance` is unset when `beforeAll` threw; closing it then raises a
+  // TypeError here that REPLACES the real failure in the report.
+  if (!instance) return;
   await new Promise<void>((r) => instance.server.close(() => r()));
 });
 
@@ -81,9 +115,14 @@ function httpPostBinary(
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c) => chunks.push(c));
+        // A socket error or an abort AFTER the headers arrive settles nothing
+        // on `req`, so without these two the promise stays pending and the
+        // failure surfaces as a 60s testTimeout with no cause named.
+        res.on("error", reject);
+        res.on("aborted", () => reject(new Error("response aborted before end")));
         res.on("end", () =>
           resolve({
-            status: res.statusCode!,
+            status: res.statusCode ?? 0,
             headers: res.headers,
             bodyBuffer: Buffer.concat(chunks),
           }),
@@ -100,9 +139,13 @@ function httpPostBinary(
 // Real API helpers (used when ELEVENLABS_API_KEY is available)
 // ---------------------------------------------------------------------------
 
-async function realSoundGeneration(
-  text: string,
-): Promise<{ status: number; contentType: string | null; bodyLength: number }> {
+async function realSoundGeneration(text: string): Promise<{
+  status: number;
+  contentType: string | null;
+  bodyLength: number;
+  /** The vendor's error envelope on a non-2xx, so a failing live leg names its cause. */
+  errorBody: string | null;
+}> {
   const res = await fetch("https://api.elevenlabs.io/v1/sound-generation", {
     method: "POST",
     headers: {
@@ -116,6 +159,7 @@ async function realSoundGeneration(
     status: res.status,
     contentType: res.headers.get("content-type"),
     bodyLength: buf.byteLength,
+    errorBody: res.ok ? null : Buffer.from(buf).toString("utf8"),
   };
 }
 
@@ -124,19 +168,63 @@ async function realSoundGeneration(
 // ---------------------------------------------------------------------------
 
 /**
- * Expected shape for /v1/music/plan response — returns a JSON composition plan.
+ * Expected shape for the `POST /v1/music/plan` response.
+ *
+ * SOURCE (secondary — the official client, NOT a recorded vendor response):
+ * `@elevenlabs/elevenlabs-js@2.68.0`, read out of the published npm tarball
+ * (the package is not a dependency of this repo):
+ *   - `api/resources/music/resources/compositionPlan/client/Client.js` joins
+ *     `"v1/music/plan"` onto the base URL and parses the body with
+ *     `serializers.music.CompositionPlanCreateResponse.parseOrThrow`;
+ *   - `serialization/resources/music/resources/compositionPlan/types/
+ *     CompositionPlanCreateResponse.d.ts`:
+ *     `type Raw = MusicPrompt.Raw | CompositionPlan.Raw`;
+ *   - `serialization/types/MusicPrompt.d.ts` `Raw`:
+ *     `{ positive_global_styles: string[]; negative_global_styles: string[];
+ *     sections: SongSection.Raw[] }`;
+ *   - `serialization/types/SongSection.d.ts` `Raw`:
+ *     `{ section_name: string; positive_local_styles: string[];
+ *     negative_local_styles: string[]; duration_ms: number; lines: string[];
+ *     source_from?: SectionSource.Raw | null }` (`source_from` is optional
+ *     and omitted here).
+ *
+ * This is the `MusicPrompt.Raw` arm (the `music_v1` composition plan) — the
+ * shape the SDK will PARSE, not one this repo has observed on the wire: no
+ * live `/v1/music/plan` request has ever been made from here, and the
+ * `elevenlabs` surface's `liveCoverage: "live"` is earned by the
+ * `/v1/sound-generation` leg alone (see the file header).
+ *
+ * What the case below grades is passthrough conformance against a
+ * test-authored fixture, with no vendor observation: the plan handler writes
+ * `PLAN_FIXTURE`'s `response.content` verbatim, so the only things that can
+ * red it are a passthrough bug or the fixture and this shape disagreeing.
  */
 function musicPlanResponseShape() {
   return extractShape({
-    sections: ["intro", "verse", "chorus"],
-    bpm: 120,
+    positive_global_styles: ["jazz"],
+    negative_global_styles: ["distorted"],
+    sections: [
+      {
+        section_name: "intro",
+        positive_local_styles: ["brushed drums"],
+        negative_local_styles: ["vocals"],
+        duration_ms: 12000,
+        lines: ["(instrumental)"],
+      },
+    ],
   });
 }
 
 /**
- * Expected shape for ElevenLabs error responses.
+ * aimock's HOUSE error envelope — NOT ElevenLabs'. The real service answers a
+ * missing or invalid body field with 422 `{ detail: [ { type, loc, msg, ... } ] }`
+ * (a pydantic-style ARRAY; observed keyless on the Voice Design routes on
+ * 2026-09-15 — see the provenance block in `src/elevenlabs-voice.ts`) and an
+ * auth failure with 401 `{ detail: { type, code, message, status, request_id } }`.
+ * The 400 cases below pin aimock's own missing-parameter contract; they say
+ * nothing about the vendor's error shape.
  */
-function elevenLabsErrorShape() {
+function aimockErrorEnvelopeShape() {
   return extractShape({
     error: {
       message: "Missing required parameter: 'text'",
@@ -163,19 +251,19 @@ describe("ElevenLabs drift — sound generation", () => {
     expect(mockRes.bodyBuffer.byteLength).toBe(5);
   });
 
-  it("/v1/sound-generation missing text field returns 400 with error shape", async () => {
+  it("/v1/sound-generation missing text field returns 400 with aimock's error envelope (vendor shape not observed on this route)", async () => {
     const mockRes = await httpPostBinary(`${instance.url}/v1/sound-generation`, {});
 
     expect(mockRes.status).toBe(400);
     expect(mockRes.headers["content-type"]).toContain("application/json");
 
     const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
-    const sdkShape = elevenLabsErrorShape();
+    const expectedShape = aimockErrorEnvelopeShape();
     const mockShape = extractShape(body);
 
-    const diffs = triangulate(sdkShape, sdkShape, mockShape);
+    const diffs = triangulate(expectedShape, expectedShape, mockShape);
     const report = formatDriftReport(
-      "ElevenLabs /v1/sound-generation 400 error",
+      "ElevenLabs /v1/sound-generation 400 error (aimock envelope)",
       diffs,
       "elevenlabs",
     );
@@ -191,7 +279,7 @@ describe("ElevenLabs drift — sound generation", () => {
     async () => {
       const realRes = await realSoundGeneration("castle door opening");
 
-      expect(realRes.status).toBe(200);
+      expect(realRes.status, `vendor error body: ${realRes.errorBody}`).toBe(200);
       // Real API returns audio content type
       expect(realRes.contentType).toMatch(/^audio\//);
       expect(realRes.bodyLength).toBeGreaterThan(0);
@@ -202,6 +290,32 @@ describe("ElevenLabs drift — sound generation", () => {
       });
       expect(mockRes.status).toBe(200);
       expect(mockRes.headers["content-type"]).toMatch(/^audio\//);
+
+      // The only surface-keyed drift block in this file that is graded against
+      // a VENDOR response. The body is opaque audio, so what is compared is the
+      // response envelope: status, Content-Type presence/type, and whether any
+      // bytes came back. `elevenlabs`'s `liveCoverage: "live"` rests on this
+      // block alone; every other emit in this file is offline conformance.
+      const realShape = extractShape({
+        status: realRes.status,
+        contentType: realRes.contentType,
+        hasAudioBytes: realRes.bodyLength > 0,
+      });
+      const mockShape = extractShape({
+        status: mockRes.status,
+        contentType: mockRes.headers["content-type"] ?? null,
+        hasAudioBytes: mockRes.bodyBuffer.byteLength > 0,
+      });
+      const diffs = triangulate(realShape, realShape, mockShape);
+      const report = formatDriftReport(
+        "ElevenLabs /v1/sound-generation (live response envelope)",
+        diffs,
+        "elevenlabs",
+      );
+      expect(
+        diffs.filter((d) => d.severity === "critical"),
+        report,
+      ).toEqual([]);
     },
   );
 });
@@ -237,7 +351,7 @@ describe("ElevenLabs drift — music endpoints", () => {
     });
 
     expect(mockRes.status).toBe(200);
-    expect(mockRes.headers["content-type"]).toBe("application/json");
+    expect(mockRes.headers["content-type"]).toContain("application/json");
 
     const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
     const sdkShape = musicPlanResponseShape();
@@ -253,23 +367,22 @@ describe("ElevenLabs drift — music endpoints", () => {
     ).toEqual([]);
   });
 
-  it("/v1/music missing prompt returns 400 with error shape", async () => {
+  it("/v1/music missing prompt returns 400 with aimock's error envelope (vendor shape not observed on this route)", async () => {
     const mockRes = await httpPostBinary(`${instance.url}/v1/music`, {});
 
     expect(mockRes.status).toBe(400);
     expect(mockRes.headers["content-type"]).toContain("application/json");
 
     const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
-    const expectedShape = extractShape({
-      error: {
-        message: "Missing required parameter: 'prompt'",
-        type: "invalid_request_error",
-      },
-    });
+    const expectedShape = aimockErrorEnvelopeShape();
     const mockShape = extractShape(body);
 
     const diffs = triangulate(expectedShape, expectedShape, mockShape);
-    const report = formatDriftReport("ElevenLabs /v1/music 400 error", diffs, "elevenlabs");
+    const report = formatDriftReport(
+      "ElevenLabs /v1/music 400 error (aimock envelope)",
+      diffs,
+      "elevenlabs",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -277,7 +390,7 @@ describe("ElevenLabs drift — music endpoints", () => {
     ).toEqual([]);
   });
 
-  it("/v1/music song-id header absent on plan endpoint", async () => {
+  it("/v1/music/plan does not set the song-id header", async () => {
     const mockRes = await httpPostBinary(`${instance.url}/v1/music/plan`, {
       prompt: "jazz composition",
     });

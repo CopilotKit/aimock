@@ -79,17 +79,19 @@
         --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
         /* Rendered height of the fixed nav. Anything that sticks below the nav
            offsets from this instead of re-guessing the number. The value here is
-           the desktop/mobile fallback for a no-JS render; the nav measures itself
-           on load and on resize and overwrites it, so a change to nav padding,
-           brand font-size or link wrapping can no longer silently desync. */
+           the no-JS fallback and matches only the desktop nav; on narrower
+           screens the links wrap and the nav runs ~84-105px tall. The nav
+           measures itself on load and on resize and overwrites it, so a change
+           to nav padding, brand font-size or link wrapping can no longer
+           silently desync. */
         --nav-h: 70px;
       }
 
       html {
         font-size: 16px;
         scroll-behavior: smooth;
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
+        /* No font-smoothing override: forcing antialiased turns off macOS stroke
+           thickening, so thin grey text renders too thin on this dark background. */
       }
 
       body {
@@ -152,12 +154,11 @@
         align-items: center;
         gap: 2rem;
       }
-      /* Pushes both link groups to the right, so splitting them into two lists
-         leaves the desktop bar looking exactly as it did with one. */
+      /* margin-right: auto pushes both link groups to the right, so splitting
+         them into two lists leaves the desktop bar looking exactly as it did
+         with one. */
       .nav-brand {
         margin-right: auto;
-      }
-      .nav-brand {
         display: flex;
         flex-direction: column;
         gap: 0;
@@ -594,7 +595,9 @@
       }
       .record-grid {
         display: grid;
-        grid-template-columns: 1fr 1.2fr;
+        /* minmax(0, …): the terminal's long command line scrolls inside
+           .demo-body instead of widening the grid past the viewport. */
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
         gap: 4rem;
         align-items: start;
       }
@@ -812,6 +815,10 @@
         text-align: center;
         margin-bottom: 1rem;
       }
+      .section-suite h2 .highlight {
+        color: var(--accent);
+        position: relative;
+      }
       .section-suite .suite-sub {
         text-align: center;
         color: var(--text-secondary);
@@ -973,7 +980,7 @@
         font-weight: 700;
         letter-spacing: -0.02em;
         text-align: center;
-        margin-bottom: 3.5rem;
+        margin-bottom: 3rem;
       }
       .section-switch,
       .section-realworld {
@@ -999,7 +1006,8 @@
          TILE COUNT, so a tile always takes the same time to cross. Keep it
          inline rather than hardcoding a duration in this stylesheet: the wall
          grows, and a fixed duration would speed up every time it did. The
-         generator that will maintain the tile list also recomputes it. */
+         generator that maintains the tile list (scripts/update-adoption-wall.ts)
+         also recomputes it. */
       .section-adopters {
         padding: 2.5rem 0 1.5rem;
       }
@@ -1185,17 +1193,19 @@
       .comparison-wrap {
         -webkit-overflow-scrolling: touch;
       }
-      .comparison-table {
+      .comparison-table,
+      .agent-tools-table {
         width: 100%;
         border-collapse: separate;
         border-spacing: 0;
         font-size: 0.85rem;
       }
-      .comparison-table thead th {
+      .comparison-table thead th,
+      .agent-tools-table thead th {
         position: sticky;
         top: var(--nav-h);
         z-index: 10;
-        padding: 1rem;
+        padding: 1rem 0.6rem;
         background: var(--bg-deep);
         border-bottom: 1px solid var(--border);
         border-right: 1px solid var(--border);
@@ -1205,41 +1215,75 @@
         font-size: 0.8rem;
         white-space: nowrap;
       }
-      .comparison-table thead th:first-child {
+      .comparison-table thead th:first-child,
+      .agent-tools-table thead th:first-child {
+        padding-left: 1rem;
         text-align: left;
       }
-      .comparison-table thead th.col-aimock {
+      .comparison-table thead th.col-aimock,
+      .agent-tools-table thead th.col-aimock {
         background: var(--accent);
         color: var(--bg-deep);
         border-left: 2px solid var(--accent);
         border-right: 2px solid var(--accent);
       }
-      .comparison-table tbody td {
-        padding: 0.75rem 1rem;
+      /* The link would otherwise take the accent colour of its accent background. */
+      .comparison-table thead th.col-aimock a,
+      .agent-tools-table thead th.col-aimock a {
+        color: inherit;
+      }
+      .comparison-table tbody td,
+      .agent-tools-table tbody td {
+        padding: 0.75rem 0.6rem;
         border: 1px solid var(--border);
         text-align: center;
         color: var(--text-secondary);
       }
-      .comparison-table tbody th {
+      .comparison-table tbody th,
+      .agent-tools-table tbody th {
         padding: 0.75rem 1rem;
         border: 1px solid var(--border);
         text-align: left;
         color: var(--text-primary);
         font-weight: 500;
       }
-      .comparison-table tbody td.col-aimock {
+      .comparison-table tbody td.col-aimock,
+      .agent-tools-table tbody td.col-aimock {
         border-left: 2px solid var(--accent);
         border-right: 2px solid var(--accent);
         background: rgba(0, 255, 136, 0.03);
       }
-      .comparison-table tbody tr:hover td {
+      .comparison-table tbody tr:hover td,
+      .agent-tools-table tbody tr:hover td {
         background: var(--bg-card-hover);
       }
-      .comparison-table tbody tr:hover td.col-aimock {
+      .comparison-table tbody tr:hover td.col-aimock,
+      .agent-tools-table tbody tr:hover td.col-aimock {
         background: rgba(0, 255, 136, 0.06);
       }
-      .comparison-table tbody td.col-aimock:last-child {
+      .comparison-table tbody td.col-aimock:last-child,
+      .agent-tools-table tbody td.col-aimock:last-child {
         border-right: 2px solid var(--accent);
+      }
+      /* One heading row per comparison table: the title on the left and an
+         optional muted note on the right, aligned with the table's right edge
+         and sitting just above its top border. */
+      .comparison-table-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.25rem 1rem;
+        margin: 3rem 0 0.75rem;
+      }
+      .comparison-table-title {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+      .comparison-table-note {
+        margin: 0 0 0 auto;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
       }
       .yes {
         color: var(--accent);
@@ -1254,6 +1298,17 @@
       .manual {
         color: var(--blue);
         font-size: 0.75rem;
+      }
+      /* Muted release label, as in the comparison-table-note ("Requires 1.45.0+"). */
+      .version-note {
+        font-size: 0.75rem;
+        font-weight: 400;
+        color: var(--text-secondary);
+      }
+      .matrix-legend {
+        margin: 0.35rem 0 0;
+        font-size: 0.72rem;
+        color: var(--text-dim);
       }
 
       /* ─── Footer ─────────────────────────────────────────────────── */
@@ -1348,6 +1403,31 @@
         flex-shrink: 0;
       }
 
+      /* Below 1140px the tables scroll sideways inside their wrapper, not the
+         page: the 9-column matrix needs 1045px and only fits the content
+         column from a 1109px viewport (1140px leaves room for a classic
+         scrollbar). A scroll container would make the sticky header offset
+         by the nav height inside it, so the header is static here and the
+         row labels stay pinned on the left instead. At 1140px and up the
+         header stays sticky below the nav. */
+      @media (max-width: 1139px) {
+        .comparison-wrap {
+          overflow-x: auto;
+        }
+        .comparison-table thead th,
+        .agent-tools-table thead th {
+          position: static;
+        }
+        .comparison-table th:first-child,
+        .agent-tools-table th:first-child {
+          position: sticky;
+          top: auto;
+          left: 0;
+          z-index: 1;
+          background: var(--bg-deep);
+        }
+      }
+
       /* ─── Mobile ──────────────────────────────────────────────────── */
       @media (max-width: 768px) {
         /* The five section anchors used to be display:none below 768px, which
@@ -1384,7 +1464,7 @@
           grid-template-columns: 1fr;
         }
         .record-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
           gap: 2.5rem;
         }
         .service-strip {
@@ -1397,8 +1477,13 @@
         .feature-grid {
           grid-template-columns: 1fr;
         }
-        .comparison-table {
+        .comparison-table,
+        .agent-tools-table {
           font-size: 0.78rem;
+        }
+        .comparison-table th:first-child,
+        .agent-tools-table th:first-child {
+          min-width: 8.5rem;
         }
         .install-box {
           flex-wrap: wrap;
@@ -1569,7 +1654,7 @@
         <p class="adopter-eyebrow fade-in">Teams building on aimock</p>
         <!-- adoption-wall:start -->
         <!-- Generated by scripts/update-adoption-wall.ts — do not edit by hand. -->
-        <div class="adopter-marquee fade-in" style="--marquee-duration: 70s">
+        <div class="adopter-marquee fade-in" style="--marquee-duration: 104s">
           <div class="adopter-marquee-viewport">
             <div class="adopter-marquee-row">
               <div class="adopter-track">
@@ -1608,6 +1693,24 @@
                     referrerpolicy="no-referrer"
                   />
                   <span class="adopter-name">The Unwind AI</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://cherryai.com"
+                  data-repo="CherryHQ/cherry-studio"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/187777663?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Cherry Studio</span>
                 </a>
                 <a
                   class="adopter"
@@ -1719,6 +1822,24 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://checkmk.com/"
+                  data-repo="Checkmk/checkmk"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/47812383?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Checkmk</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://github.com/cortexkit/magic-context"
                   data-repo="cortexkit/magic-context"
                   target="_blank"
@@ -1755,6 +1876,24 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://www.skybridge.tech"
+                  data-repo="alpic-ai/skybridge"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/206831205?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Skybridge</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://www.zoocode.dev"
                   data-repo="Zoo-Code-Org/Zoo-Code"
                   target="_blank"
@@ -1770,6 +1909,24 @@
                     referrerpolicy="no-referrer"
                   />
                   <span class="adopter-name">Zoo Code</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://github.com/botiverse/oar"
+                  data-repo="botiverse/oar"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/132640357?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">botiverse</span>
                 </a>
                 <a
                   class="adopter"
@@ -1809,21 +1966,21 @@
                 </a>
                 <a
                   class="adopter"
-                  href="https://dawnai.org"
-                  data-repo="cacheplane/dawnai"
+                  href="https://pixtuoid.dev"
+                  data-repo="pixtuoid/pixtuoid"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/269322961?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/339882177?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
                     loading="lazy"
                     referrerpolicy="no-referrer"
                   />
-                  <span class="adopter-name">Dawn AI</span>
+                  <span class="adopter-name">Pixtuoid</span>
                 </a>
                 <a
                   class="adopter"
@@ -1863,8 +2020,62 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://dawnai.org"
+                  data-repo="cacheplane/dawnai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/269322961?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Dawn AI</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://flight-finder.org"
+                  data-repo="affromero/flight-finder"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/9055917?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Flight Finder</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://selene.engineer"
+                  data-repo="tercumantanumut/selene"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/128206040?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Selene</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://supaterm.com"
-                  data-repo="supabitapp/supaterm"
+                  data-repo="supabitapp/supaterm-legacy"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -1917,6 +2128,24 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://testomat.io"
+                  data-repo="testomatio/explorbot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/59105116?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Testomat.io</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://marieai.co"
                   data-repo="marieai/marie-ai"
                   target="_blank"
@@ -1936,13 +2165,13 @@
                 <a
                   class="adopter"
                   href="https://opilot.self.agency"
-                  data-repo="selfagency/opilot"
+                  data-repo="voxslopuli/opilot"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/2541728?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/326311478?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
@@ -1953,21 +2182,75 @@
                 </a>
                 <a
                   class="adopter"
-                  href="https://testomat.io"
-                  data-repo="testomatio/explorbot"
+                  href="https://covel.cc"
+                  data-repo="ackness/covel"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/59105116?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/19150500?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
                     loading="lazy"
                     referrerpolicy="no-referrer"
                   />
-                  <span class="adopter-name">Testomat.io</span>
+                  <span class="adopter-name">Covel</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://agentskillexchange.com"
+                  data-repo="agentskillexchange/skills"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/269156908?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Agent Skill Exchange</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://www.emberai.xyz"
+                  data-repo="EmberAGI/arbitrum-vibekit"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/112098355?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Ember AI</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://orka-agents.github.io/orka/"
+                  data-repo="orka-agents/orka"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/295239094?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Orka</span>
                 </a>
                 <a
                   class="adopter"
@@ -2004,6 +2287,24 @@
                     referrerpolicy="no-referrer"
                   />
                   <span class="adopter-name">Deepnote</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://haklex.innei.dev"
+                  data-repo="Innei/haklex"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/41265413?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Haklex</span>
                 </a>
               </div>
               <div class="adopter-track" aria-hidden="true">
@@ -2049,6 +2350,26 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://cherryai.com"
+                  data-repo="CherryHQ/cherry-studio"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/187777663?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Cherry Studio</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://composio.dev"
                   data-repo="ComposioHQ/composio"
                   target="_blank"
@@ -2169,6 +2490,26 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://checkmk.com/"
+                  data-repo="Checkmk/checkmk"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/47812383?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Checkmk</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://github.com/cortexkit/magic-context"
                   data-repo="cortexkit/magic-context"
                   target="_blank"
@@ -2209,6 +2550,26 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://www.skybridge.tech"
+                  data-repo="alpic-ai/skybridge"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/206831205?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Skybridge</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://www.zoocode.dev"
                   data-repo="Zoo-Code-Org/Zoo-Code"
                   target="_blank"
@@ -2226,6 +2587,26 @@
                     referrerpolicy="no-referrer"
                   />
                   <span class="adopter-name">Zoo Code</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://github.com/botiverse/oar"
+                  data-repo="botiverse/oar"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/132640357?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">botiverse</span>
                 </a>
                 <a
                   class="adopter"
@@ -2269,8 +2650,8 @@
                 </a>
                 <a
                   class="adopter"
-                  href="https://dawnai.org"
-                  data-repo="cacheplane/dawnai"
+                  href="https://pixtuoid.dev"
+                  data-repo="pixtuoid/pixtuoid"
                   target="_blank"
                   rel="noopener noreferrer"
                   data-clone="true"
@@ -2278,14 +2659,14 @@
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/269322961?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/339882177?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
                     loading="lazy"
                     referrerpolicy="no-referrer"
                   />
-                  <span class="adopter-name">Dawn AI</span>
+                  <span class="adopter-name">Pixtuoid</span>
                 </a>
                 <a
                   class="adopter"
@@ -2329,8 +2710,68 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://dawnai.org"
+                  data-repo="cacheplane/dawnai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/269322961?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Dawn AI</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://flight-finder.org"
+                  data-repo="affromero/flight-finder"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/9055917?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Flight Finder</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://selene.engineer"
+                  data-repo="tercumantanumut/selene"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/128206040?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Selene</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://supaterm.com"
-                  data-repo="supabitapp/supaterm"
+                  data-repo="supabitapp/supaterm-legacy"
                   target="_blank"
                   rel="noopener noreferrer"
                   data-clone="true"
@@ -2389,6 +2830,26 @@
                 </a>
                 <a
                   class="adopter"
+                  href="https://testomat.io"
+                  data-repo="testomatio/explorbot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/59105116?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Testomat.io</span>
+                </a>
+                <a
+                  class="adopter"
                   href="https://marieai.co"
                   data-repo="marieai/marie-ai"
                   target="_blank"
@@ -2410,7 +2871,7 @@
                 <a
                   class="adopter"
                   href="https://opilot.self.agency"
-                  data-repo="selfagency/opilot"
+                  data-repo="voxslopuli/opilot"
                   target="_blank"
                   rel="noopener noreferrer"
                   data-clone="true"
@@ -2418,7 +2879,7 @@
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/2541728?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/326311478?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
@@ -2429,8 +2890,8 @@
                 </a>
                 <a
                   class="adopter"
-                  href="https://testomat.io"
-                  data-repo="testomatio/explorbot"
+                  href="https://covel.cc"
+                  data-repo="ackness/covel"
                   target="_blank"
                   rel="noopener noreferrer"
                   data-clone="true"
@@ -2438,14 +2899,74 @@
                 >
                   <img
                     class="adopter-logo"
-                    src="https://avatars.githubusercontent.com/u/59105116?s=128&amp;v=4"
+                    src="https://avatars.githubusercontent.com/u/19150500?s=128&amp;v=4"
                     alt=""
                     width="40"
                     height="40"
                     loading="lazy"
                     referrerpolicy="no-referrer"
                   />
-                  <span class="adopter-name">Testomat.io</span>
+                  <span class="adopter-name">Covel</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://agentskillexchange.com"
+                  data-repo="agentskillexchange/skills"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/269156908?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Agent Skill Exchange</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://www.emberai.xyz"
+                  data-repo="EmberAGI/arbitrum-vibekit"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/112098355?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Ember AI</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://orka-agents.github.io/orka/"
+                  data-repo="orka-agents/orka"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/295239094?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Orka</span>
                 </a>
                 <a
                   class="adopter"
@@ -2486,6 +3007,26 @@
                     referrerpolicy="no-referrer"
                   />
                   <span class="adopter-name">Deepnote</span>
+                </a>
+                <a
+                  class="adopter"
+                  href="https://haklex.innei.dev"
+                  data-repo="Innei/haklex"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-clone="true"
+                  tabindex="-1"
+                >
+                  <img
+                    class="adopter-logo"
+                    src="https://avatars.githubusercontent.com/u/41265413?s=128&amp;v=4"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                  />
+                  <span class="adopter-name">Haklex</span>
                 </a>
               </div>
             </div>
@@ -2571,7 +3112,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 4: The Full Suite ────────────────────────────── -->
+    <!-- ─── Section 3: The Full Suite ────────────────────────────── -->
     <section class="section-suite" id="suite">
       <div class="container">
         <h2 class="fade-in">
@@ -2659,7 +3200,7 @@
             <div class="demo-body">
               <pre><span class="t-green">$</span> npx @copilotkit/aimock --config aimock.json
 
-<span class="t-blue">&#9889;</span> aimock v1.41.0
+<span class="t-blue">&#9889;</span> aimock v1.48.1
 
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/chat/completions
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/messages
@@ -2676,7 +3217,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 5: Feature Grid ──────────────────────────────── -->
+    <!-- ─── Section 4: Feature Grid ──────────────────────────────── -->
     <section class="section-features" id="features">
       <div class="container">
         <h2 class="fade-in">Everything you need</h2>
@@ -2696,8 +3237,9 @@
             <div class="feature-icon">&#128268;</div>
             <h3>MCP Protocol</h3>
             <p>
-              Mock tools, resources, and prompts with full session management. Test your MCP
-              integrations without running real tool servers.
+              Mock tools, resources, and prompts with full session management. Script each test's
+              tool answers in its fixture file: ordered results, exact-argument checks, and a
+              closed-world mode that fails on any undeclared tool.
             </p>
           </div>
 
@@ -2729,8 +3271,9 @@
             <div class="feature-icon">&#128165;</div>
             <h3>Chaos Testing</h3>
             <p>
-              Drop, malformed, or disconnect at any probability. Verify your app gracefully handles
-              every failure mode.
+              Transport faults (drop, malformed, disconnect, 429) and model misbehavior: broken
+              tool-call JSON, schema violations, unknown tools, and max-tokens cutoffs in every
+              provider's real wire format.
             </p>
           </div>
 
@@ -2762,7 +3305,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 6: Drift Detection / Reliability ──────────────── -->
+    <!-- ─── Section 5: Drift Detection / Reliability ──────────────── -->
     <section class="section-reliability" id="reliability">
       <div class="container">
         <h2 class="fade-in">Your mocks never go stale</h2>
@@ -2804,11 +3347,14 @@
       </div>
     </section>
 
-    <!-- ─── Section 7: Comparison ────────────────────────────────── -->
+    <!-- ─── Section 6: Comparison ────────────────────────────────── -->
     <section class="section-comparison" id="comparison">
       <div class="container">
         <h2 class="fade-in">How aimock compares</h2>
 
+        <div class="comparison-table-head fade-in">
+          <h3 class="comparison-table-title">LLM and protocol mocking</h3>
+        </div>
         <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
           <table class="comparison-table">
             <thead>
@@ -2826,6 +3372,10 @@
                 <th scope="col">
                   <a href="https://github.com/mokksy/ai-mocks">mokksy/ai-mocks</a>
                 </th>
+                <th scope="col">
+                  <a href="https://github.com/mock-server/mockserver-monorepo">MockServer</a>
+                </th>
+                <th scope="col"><a href="https://github.com/wiremock/wiremock">WireMock</a></th>
               </tr>
             </thead>
             <tbody>
@@ -2837,6 +3387,8 @@
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (Docker)</td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (Ktor)</td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
               </tr>
               <tr>
                 <th scope="row">Chat Completions SSE</th>
@@ -2846,15 +3398,19 @@
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Responses API SSE</th>
                 <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
                 <td><span class="manual">manual</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Claude Messages API</th>
@@ -2864,6 +3420,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Gemini streaming</th>
@@ -2873,6 +3431,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Multi-provider support</th>
@@ -2884,6 +3444,8 @@
                 <td>OpenAI only</td>
                 <td>OpenAI only</td>
                 <td>5 providers</td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">OpenRouter router / fallback simulation</th>
@@ -2893,6 +3455,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">WebSocket APIs</th>
@@ -2902,6 +3466,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="partial">partial</span></td>
               </tr>
               <tr>
                 <th scope="row">Embeddings API</th>
@@ -2911,6 +3477,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Image generation</th>
@@ -2920,6 +3488,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Image editing</th>
@@ -2929,15 +3499,19 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Text-to-Speech</th>
                 <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Audio transcription</th>
@@ -2947,6 +3521,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Audio translation</th>
@@ -2956,6 +3532,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Non-speech audio</th>
@@ -2965,15 +3543,19 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Video generation</th>
                 <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
-                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">AG-UI event mocking</th>
@@ -2983,15 +3565,41 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">MCP tool mocking</th>
                 <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Scenario-scoped MCP tool fakes</th>
+                <td class="col-aimock"><a href="#mcp-fakes-preview">&#10003;</a></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Fail on undeclared MCP tool</th>
+                <td class="col-aimock"><a href="#mcp-fakes-preview">&#10003;</a></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">A2A agent mocking</th>
@@ -3001,6 +3609,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Vector DB mocking</th>
@@ -3010,6 +3620,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Search &amp; rerank</th>
@@ -3019,6 +3631,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Record &amp; replay</th>
@@ -3028,6 +3642,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (HTTP)</td>
               </tr>
               <tr>
                 <th scope="row">Drift detection</th>
@@ -3039,6 +3655,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
               </tr>
               <tr>
                 <th scope="row">Sequential / stateful responses</th>
@@ -3048,6 +3666,8 @@
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (HTTP)</td>
               </tr>
               <tr>
                 <th scope="row">Request journal</th>
@@ -3055,10 +3675,12 @@
                   <span class="yes" role="img" aria-label="Yes">&#10003;</span>
                 </td>
                 <td><span class="manual">manual</span></td>
-                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
               </tr>
               <tr>
                 <th scope="row">Error injection</th>
@@ -3068,8 +3690,10 @@
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="partial">partial</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
-                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (HTTP)</td>
               </tr>
               <tr>
                 <th scope="row">Chaos testing</th>
@@ -3079,6 +3703,111 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td>
+                  <a href="https://wiremock.org/docs/simulating-faults/#bad-responses"
+                    >HTTP faults and delays</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)
+                </th>
+                <td class="col-aimock">
+                  <a href="/model-misbehavior"><span class="yes">Built-in &#10003;</span></a>
+                </td>
+                <!-- C-X40; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://github.com/mswjs/msw"><abbr title="Not documented">ND</abbr></a>
+                </td>
+                <!-- C-X41; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://github.com/vidaiUK/VidaiMock"
+                    ><abbr title="Not documented">ND</abbr></a
+                  >
+                </td>
+                <!-- C-X42; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://github.com/dwmkerr/mock-llm"
+                    ><abbr title="Not documented">ND</abbr></a
+                  >
+                </td>
+                <!-- C-X43; reviewed 2026-10-08: authored max_tokens/refusal, not automatic truncation or a tool-fault catalog -->
+                <td>
+                  <a
+                    href="https://github.com/piyook/llm-mock#truncated-and-refused-replies-stopreason"
+                    ><span class="partial">Partial</span></a
+                  ><br />
+                  stop-reason controls
+                </td>
+                <!-- C-X44; reviewed 2026-10-08: Partial inferred from String stop controls, not an abnormal-stop recipe or tool-fault catalog -->
+                <td>
+                  <span class="partial">Partial</span><br />
+                  stop-reason controls<br />
+                  <a href="https://mokksy.dev/docs/ai-mocks/openai/">OpenAI</a> /
+                  <a href="https://mokksy.dev/docs/ai-mocks/anthropic/">Anthropic</a>
+                </td>
+                <!-- C-S40; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://www.mock-server.com/mock_server/llm_response_mocking.html"
+                    ><span class="partial">Partial</span></a
+                  >
+                </td>
+                <!-- C-W30; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://wiremock.org/docs/solutions/ai/"
+                    ><abbr title="Not documented">ND</abbr></a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Provider-native source citations</th>
+                <td class="col-aimock">
+                  <a href="/fixtures#citations-and-files"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: no competitor emits url_citation, web_search_result_location or groundingMetadata; mokksy has citation model classes but its builders send empty annotations; VidaiMock, mock-llm, MockServer and WireMock need a hand-written body -->
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Model-generated images in replies</th>
+                <td class="col-aimock">
+                  <a href="/fixtures#citations-and-files"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: no competitor emits image_generation_call or Gemini inlineData replies; MockServer recognises inline_data on requests only -->
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="manual">manual</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Client disconnect stops the reply on every provider</th>
+                <td class="col-aimock">
+                  <a href="/error-injection#client-disconnects"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.47.0+</span>
+                </td>
+                <!-- reviewed 2026-10-26: piyook stops only its Claude stream on disconnect; mokksy handles cancellation in its Anthropic builder; no others document it -->
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Streaming physics</th>
@@ -3088,6 +3817,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="partial">partial</span></td>
               </tr>
               <tr>
                 <th scope="row">Structured output / JSON mode</th>
@@ -3097,6 +3828,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Programmatic API</th>
@@ -3110,6 +3843,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (Kotlin/JVM)</td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (8 languages)</td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (Java/JVM)</td>
               </tr>
               <tr>
                 <th scope="row">Fixture files</th>
@@ -3119,6 +3854,8 @@
                 <td>YAML config</td>
                 <td>JSON templates</td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (JSON)</td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (JSON)</td>
               </tr>
               <tr>
                 <th scope="row">GitHub Action</th>
@@ -3128,6 +3865,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Vitest / Jest plugins</th>
@@ -3137,6 +3876,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Docker + Helm</th>
@@ -3146,6 +3887,10 @@
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span> (Both)</td>
                 <td>Docker only</td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td>
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (Helm experimental)
+                </td>
               </tr>
               <tr>
                 <th scope="row">Prometheus metrics</th>
@@ -3155,6 +3900,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="partial">partial</span></td>
               </tr>
               <tr>
                 <th scope="row">Streaming usage chunks</th>
@@ -3164,6 +3911,8 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
               </tr>
               <tr>
                 <th scope="row">Rate limiting headers</th>
@@ -3171,8 +3920,58 @@
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Native model catalogs (Anthropic, Gemini)</th>
+                <td class="col-aimock">
+                  <a href="/claude-messages#model-catalog"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.46.0+</span>
+                </td>
+                <!-- reviewed 2026-10-20: VidaiMock serves the OpenAI list on its Gemini/Anthropic model routes; mock-llm ships an OpenAI /v1/models config rule; no model routes in piyook, mokksy or MockServer httpLlmResponse -->
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td>OpenAI format only</td>
+                <td>OpenAI format only</td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Token-count endpoints</th>
+                <td class="col-aimock">
+                  <a href="/claude-messages#token-counts"
+                    ><span class="yes">Built-in &#10003;</span></a
+                  ><br /><span class="version-note">1.46.0+</span>
+                </td>
+                <!-- reviewed 2026-10-20: VidaiMock gemini_count_tokens.yaml returns a fixed totalTokens; MockServer names count_tokens only as unaccounted proxied traffic -->
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td>Gemini only (fixed count)</td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Native 401 auth errors</th>
+                <td class="col-aimock">
+                  <a href="/claude-messages#authentication-errors"
+                    ><span class="yes">Opt-in &#10003;</span></a
+                  ><br /><span class="version-note">1.46.0+</span>
+                </td>
+                <!-- reviewed 2026-10-20: VidaiMock maps 401 to authentication_error / UNAUTHENTICATED; piyook and MockServer (LlmErrorBodies.kindForStatus) answer a 401 with api_error / INTERNAL; others need a hand-written body -->
+                <td><span class="manual">manual</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="manual">manual</span></td>
               </tr>
               <tr>
                 <th scope="row">Dependencies</th>
@@ -3182,10 +3981,175 @@
                 <td>Node+Express</td>
                 <td>Minimal</td>
                 <td>JVM (Kotlin)</td>
+                <td>JVM, or JVM-less binary</td>
+                <td>JVM</td>
               </tr>
             </tbody>
           </table>
         </div>
+        <p class="matrix-legend">
+          <span class="yes" aria-hidden="true">&#10003;</span> supported &middot;
+          <span class="partial">partial</span> &middot; <span class="manual">manual</span> &middot;
+          <span class="no" aria-hidden="true">&#10007;</span> not supported &middot;
+          <abbr title="Not documented">ND</abbr> not documented
+        </p>
+
+        <div
+          id="mcp-fakes-preview"
+          class="comparison-table-head fade-in"
+          style="scroll-margin-top: calc(var(--nav-h) + 3rem)"
+        >
+          <h3 class="comparison-table-title">Agent tool mocking</h3>
+          <p class="comparison-table-note">
+            Requires <a href="/mcp-mock#scenario-fakes">1.45.0+</a>
+          </p>
+        </div>
+        <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
+          <table class="agent-tools-table">
+            <thead>
+              <tr>
+                <th scope="col">Capability</th>
+                <th scope="col" class="col-aimock">
+                  <a href="/mcp-mock">aimock MCP fakes</a>
+                </th>
+                <th scope="col">
+                  <a href="https://mastra.ai/docs/evals/experiments"
+                    >Mastra Experiment Tool Mocks</a
+                  >
+                </th>
+                <th scope="col">
+                  <a href="https://www.mock-server.com/mock_server/ai_protocol_mocking.html"
+                    >MockServer MCP mocking</a
+                  >
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Works with any agent framework</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (over MCP HTTP)
+                </td>
+                <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
+                <td>
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (over MCP HTTP)
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">MCP tools</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+              </tr>
+              <tr>
+                <th scope="row">In-process (non-network) tools</th>
+                <td class="col-aimock">
+                  <span class="no" role="img" aria-label="No">&#10007;</span> (runs out of process
+                  by design)
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td>n/a</td>
+              </tr>
+              <tr>
+                <th scope="row">Ordered answers per tool</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Exact-argument matching</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Any-argument matching</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td>
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (one answer for
+                  every call)
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Fail on undeclared tool</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Scripted tool errors</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Per-test state and reset</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">LLM responses mocked in the same scenario</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span>
+                </td>
+                <td><abbr title="Not documented">ND</abbr></td>
+                <td><span class="partial">partial</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Create fakes from recorded runs</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (record live MCP,
+                  replay offline)
+                </td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Report unused mocks</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (per test; can fail
+                  the test)
+                </td>
+                <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
+                <td><abbr title="Not documented">ND</abbr></td>
+              </tr>
+              <tr>
+                <th scope="row">Workflow / multi-step pipeline targets</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (any caller over MCP
+                  HTTP)
+                </td>
+                <td>Planned</td>
+                <td>
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (any caller over MCP
+                  HTTP)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="matrix-legend">
+          <span class="yes" aria-hidden="true">&#10003;</span> supported &middot;
+          <span class="partial">partial</span> &middot;
+          <span class="no" aria-hidden="true">&#10007;</span> not supported &middot;
+          <abbr title="Not documented">ND</abbr> not documented
+        </p>
       </div>
     </section>
 
@@ -3197,7 +4161,7 @@
           class="fade-in"
           style="color: var(--text-secondary); margin: 1rem auto 1.5rem; max-width: 500px"
         >
-          Step-by-step migration guides for every major mock tool.
+          Step-by-step migration guides for the mock tools below.
         </p>
         <div
           class="fade-in"
@@ -3282,7 +4246,7 @@
       </div>
     </div>
 
-    <!-- ─── Section 8: Footer ────────────────────────────────────── -->
+    <!-- ─── Section 7: Footer ────────────────────────────────────── -->
     <footer>
       <div class="container">
         <div class="footer-brand"><span class="prompt">$</span> aimock &middot; MIT License</div>
@@ -3312,16 +4276,38 @@
         var codeEl = row && row.querySelector("code");
         var cmd = codeEl ? codeEl.textContent : "";
         if (!cmd) return;
-        navigator.clipboard.writeText(cmd).then(function () {
-          btn.textContent = "Copied!";
+        var flash = function (label) {
+          btn.textContent = label;
           setTimeout(function () {
             btn.textContent = "Copy";
           }, 2000);
-        });
+        };
+        // No clipboard API (insecure context, old browser) or a rejected write:
+        // select the command so it can be copied by hand, and say so.
+        var fail = function () {
+          try {
+            var range = document.createRange();
+            range.selectNodeContents(codeEl);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch (e) {
+            /* the label below still reports the failure */
+          }
+          flash("Copy failed");
+        };
+        try {
+          navigator.clipboard.writeText(cmd).then(function () {
+            flash("Copied!");
+          }, fail);
+        } catch (e) {
+          fail();
+        }
       }
 
-      // Publish the nav's rendered height as --nav-h so anything sticking below
-      // it (the comparison table's sticky header) offsets from the real number
+      // Publish the nav's rendered height as --nav-h so anything that sits
+      // below it (the comparison tables' sticky headers, 1140px and up, and
+      // #mcp-fakes-preview's scroll-margin-top) offsets from the real number
       // rather than a hard-coded guess that silently rots when the nav changes.
       (function () {
         try {
@@ -3411,7 +4397,7 @@
           delay: 400,
         },
         { type: "line", html: "", delay: 200 },
-        // Step 4: Stream the response — chunkSize: 20, latency: 50ms
+        // Step 4: Stream the response — chunkSize: 10, chunkDelay: 1000ms
         {
           type: "line",
           html: '<span class="info">  streaming \u2192</span> <span class="streamed" id="stream-target"></span>',

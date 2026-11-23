@@ -6,6 +6,10 @@ coverage/
 .remember/
 docs/pixels.js
 
+# Golden corpus: byte-exact files written only by `pnpm golden:capture`.
+# A formatter rewriting one would break the byte comparison it exists for.
+src/__tests__/golden/__snapshots__/
+
 # Drift-sync needs-human notes: a machine-generated, human-annotated audit
 # trail. Prettier's markdown formatter rewrites `__tests__` in prose to
 # `**tests**` (emphasis), so every cited test path in a note silently became a
@@ -17,3 +21,7 @@ examples/**/.next/
 examples/**/fixtures/agui-recorded/*.json
 examples/**/next-env.d.ts
 examples/**/tsconfig.tsbuildinfo
+
+# Public API reports: written by `pnpm api:report` and diffed byte-for-byte in
+# CI. A formatter rewriting one would make every run report a change.
+etc/

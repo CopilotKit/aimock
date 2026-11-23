@@ -7,6 +7,9 @@
  */
 
 import type * as http from "node:http";
+import { setEmbeddingRequest } from "./embedding-request.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -22,25 +25,30 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  validateEmbeddingDimensions,
+  isJsonObject,
+  normalizeEmbeddingInput,
+  MAX_EMBEDDING_DIMENSIONS,
 } from "./helpers.js";
-import { matchFixtureDiagnostic } from "./router.js";
+import { releaseOneShotError } from "./fixture-loader.js";
+import { selectFixtureForServing } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-import { prepareChaos, chaosIdentity } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Embeddings API request types ──────────────────────────────────────────
 
 interface EmbeddingRequest {
-  input: string | string[];
+  // Validated at runtime — these arrive as arbitrary JSON, so the declared
+  // type must not claim a shape the parser cannot guarantee.
+  input: unknown;
   model: string;
   encoding_format?: "float" | "base64";
-  dimensions?: number;
+  dimensions?: unknown;
   [key: string]: unknown;
 }
 
@@ -55,13 +63,8 @@ export async function handleEmbeddings(
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
   providerKey: RecordProviderKey = "openai",
-  /**
-   * The payload exactly as the client sent it, when the caller had to rewrite
-   * `raw` before dispatching. Azure deployments may omit `model`, which the
-   * router fills in from the deployment id; that is a routing addition and must
-   * not reach the chaos key, or two genuinely different bodies collide.
-   */
-  wireBody: string = raw,
+  // Native HTTP dispatch opts in; direct callers and compatible routes retain defaults.
+  requireModel = false,
 ): Promise<void> {
   const { logger } = defaults;
   setCorsHeaders(res);
@@ -81,13 +84,33 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+        code: "invalid_json",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `embeddingReq.input` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(embeddingReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -104,20 +127,58 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Missing required parameter: 'input'",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'input'",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  // Normalize input to array of strings
-  const inputs: string[] = Array.isArray(embeddingReq.input)
-    ? embeddingReq.input
-    : [embeddingReq.input];
+  if (requireModel && embeddingReq.model === undefined) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: "Missing required parameter: 'model'",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Normalize input to array of strings — reject non-string inputs with 400
+  // instead of crashing downstream in createHash().update() (500).
+  const inputs = normalizeEmbeddingInput(embeddingReq.input);
+  if (inputs === null) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message:
+          "Invalid parameter: 'input' must be a string, an array of strings, or an array of tokens",
+        type: "invalid_request_error",
+        param: null,
+        code: null,
+        includeParam: true,
+      }).body,
+    );
+    return;
+  }
 
   // Concatenate all inputs for matching purposes
   const combinedInput = inputs.join(" ");
@@ -131,9 +192,14 @@ export async function handleEmbeddings(
     _endpointType: "embedding",
     _context: getContext(req),
   };
+  setEmbeddingRequest(syntheticReq, {
+    operation: "/v1/embeddings",
+    input: embeddingReq.input,
+    ...(embeddingReq.dimensions !== undefined && { dimensions: embeddingReq.dimensions }),
+  });
 
   const testId = getTestId(req);
-  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+  const { fixture, skippedBySequenceOrTurn } = selectFixtureForServing(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -147,25 +213,28 @@ export async function handleEmbeddings(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/embeddings",
-      headers: flattenHeaders(req.headers),
-      body: syntheticReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, wireBody),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/embeddings",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  ) {
+    releaseOneShotError(fixtures, fixture);
+    return;
+  }
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);
@@ -213,19 +282,17 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError("openai", "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  if (resolveStrictMode(defaults.strict, req.headers)) {
+  if (resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
       strictNoMatchLogLine(
@@ -248,13 +315,11 @@ export async function handleEmbeddings(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -287,7 +352,34 @@ export async function handleEmbeddings(
   logger.warn(
     `No embedding fixture matched for "${combinedInput.slice(0, 80)}" — returning deterministic fallback`,
   );
-  const dimensions = embeddingReq.dimensions ?? 1536;
+  // Validate dimensions here, on the only path that reads it: a bad value
+  // either throws RangeError in `new Array()` below or, past the serialization
+  // budget MAX_EMBEDDING_DIMENSIONS encodes, kills the process outright. The
+  // fixture-replay, chaos, strict and record/proxy branches above never touch
+  // it, so they must not be gated.
+  const dimensions = validateEmbeddingDimensions(embeddingReq.dimensions);
+  if (dimensions === null) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("openai", "validation", {
+        message: `Invalid parameter: 'dimensions' must be an integer between 1 and ${MAX_EMBEDDING_DIMENSIONS}`,
+        type: "invalid_request_error",
+        param: null,
+        code: null,
+        includeParam: true,
+      }).body,
+    );
+    return;
+  }
+
   const embeddings = inputs.map((input) => generateDeterministicEmbedding(input, dimensions));
 
   journal.add({

@@ -1,6 +1,182 @@
 # @copilotkit/aimock
 
-## [Unreleased]
+## [1.48.1] - 2026-11-20
+
+### Changed
+
+- `aimock-pytest` 0.7.3 defaults to `@copilotkit/aimock` 1.48.1
+
+### Fixed
+
+- Record uncited non-streamed Responses replies as fixtures, not `proxy_error` (#619)
+- Record Gemini `embedContent` and Cohere v2 `embed` replies as embeddings, not `proxy_error` (#624)
+- Record empty non-streamed Anthropic, Gemini and Ollama replies as empty, not `proxy_error` (#623)
+
+## [1.48.0] - 2026-11-10
+
+### Added
+
+- A2A `onConversation()` scripts multi-turn tasks that ask for input, then complete (#591)
+- Record and replay native citations and annotations from real provider turns (#594)
+- Record and replay BytePlus Seed Speech TTS, ElevenLabs Scribe and Audio Isolation (#601)
+
+### Changed
+
+- `aimock-pytest` 0.7.2 defaults to `@copilotkit/aimock` 1.48.0
+
+### Fixed
+
+- A2A Get/CancelTask return task as `result`; split Responses attachment turns match (#595, #611)
+
+## [1.47.0] - 2026-10-26
+
+### Added
+
+- Fixture `citations` serve sources on Responses, Chat Completions, Claude and Gemini (#550, #578)
+- Fixture `files` serve generated images on Gemini and OpenAI Responses (#550, #578)
+- Raw passthrough fixtures send provider SSE events or JSON exactly as written (#580)
+- Opt-in `nonStreamingTimingAllProviders` delays non-streaming replies on every provider (#579)
+
+### Fixed
+
+- Client disconnects stop and journal every LLM reply; Docker image on Node 22.23.4 (#579, #576)
+
+## [1.46.0] - 2026-10-20
+
+### Added
+
+- Gemini model list/detail, Anthropic model detail, and token-count routes (#542, #551)
+- Opt-in policies: `requiredHeaders`, native `authErrors`, native `modelCatalog` (#542, #566, #568)
+- Opt-in fixture `nonStreamingTiming: true` delays non-streaming OpenAI chat replies (#545, #567)
+- Anthropic/Bedrock cache usage kept in replay and record; Responses `phase` override (#531, #542)
+
+### Fixed
+
+- Ollama embed batches, AG-UI thread/run IDs, empty MCP reads, Anthropic aborts (#533, #553, #557)
+
+## [1.45.1] - 2026-10-11
+
+### Changed
+
+- OpenRouter Video: `openai/sora-2` now returns OpenRouter's 400 removal error, not a job (#520)
+
+### Fixed
+
+- MCP `tools/list`: a tool registered without `inputSchema` now lists `{"type":"object"}` (#529)
+- MCP `tools/list`: a registered `inputSchema` with no `type` now gets `"type": "object"` (#529)
+
+## [1.45.0] - 2026-10-10
+
+Every fixture, config and request that 1.44.0 accepted behaves the same by default. New behavior that would change those inputs is opt-in.
+
+### Added
+
+- Record live MCP servers into `mcpFakes` files and replay them offline: `--mcp-record <mount>=<url>` and `--mcp-proxy-only <mount>=<url>` (`llmock` bin and Docker image), `llm.record.mcp` with the opt-in `llm.enableMcpRecording: true` for `aimock --config` (without the opt-in, `llm.record.mcp` is ignored with a warning, as 1.44.0 ignored it), and `MCPMock.enableRecording()` / `disableRecording()` (#509).
+- Recordings never contain headers and redact known secrets (`AIMOCK_RECORD_SECRET_VALUES`, `AIMOCK_MCP_UPSTREAM_AUTH`); a file is not written while a secret remains (#509).
+- Recorded MCP fakes replay list order, progress and log notifications, and call timing (scaled by `--replay-speed`). The recorded `mcpFakes` keys (`list`, `recorded`, `timing`, `notifications`, `durationMs`) need 1.45.0 or later (#509).
+- Per-test MCP fake report at `GET /__aimock/mcp/fakes/report` (#509).
+- Vitest and Jest: `fakesFor()` and `fakesReport()` on a new `AimockFakesHandle` returned by `useAimock()`, and opt-in `useAimock({ fakesReport: "warn" | "fail" })` (default `"off"`); Jest option `testIdRoot`. New exports `assertFakesReport`, `AimockFakesReportError` and `AimockTestIdCollisionError` (#509).
+- aimock-pytest 0.7.0: `fakes_for`, `fakes_report` and `assert_fakes_report` (#509), and `AIMockServer` opt-ins `enable_misbehavior` and `responses_tools` (#508, #511).
+- Workflow-target examples: a Mastra Workflow and a LangGraph JS graph call MCP fakes with no LLM (`examples/mcp-workflow-targets`), plus record and report proofs (#509).
+- Model misbehavior faults (invalid tool arguments, schema violations, unknown tools, duplicate IDs, length stops, empty responses, refusals, content filtering, reasoning-only) across provider wires, with seeded rates, `/__aimock/misbehavior` runtime controls, journal evidence and the `aimock_misbehavior_total` metric. Off unless enabled with `enableMisbehavior: true` (programmatic, including `useAimock`), `llmock --misbehavior` / `aimock validate --misbehavior`, or `aimock --misbehavior`, or the config opt-in `llm.enableMisbehavior: true` (an `llm.misbehavior` key alone never enables it, as in 1.44.0). Invalid misbehavior settings throw the new `MisbehaviorConfigError` (#508).
+- Namespaced function calls and custom tool calls on the OpenAI Responses API, over HTTP, SSE and WebSocket, plus `match.toolNamespace` (#511). Like the fixture fields below, `match.toolNamespace` applies only with `responsesTools: "extended"`; in the default mode it is ignored, as in 1.44.0.
+- Responses namespaced and custom tool calls: with `responsesTools: "extended"` (CLI `--responses-tools extended`, also on `aimock validate`; config `llm.responsesTools`), tools inside `namespace` tools, `custom` tools and `additional_tools` / `tool_search_output` tools are visible to `toolName`, `toolNamespace` and predicates, custom tool rounds count for `hasToolResult`, `toolCallId` and `turnIndex`, and fixtures can answer with namespaced calls and `customToolCalls` / `responsesBlocks`. The default `"legacy"` keeps 1.44.0 behavior. New types: `CustomToolCallMessage`, `ResponsesToolsMode` (#511).
+- Record mode keeps Responses namespaces and custom tool calls (`customToolCalls`, `responsesBlocks`, `CollapseResult.customToolCalls`) in streamed recordings when `responsesTools: "extended"` is set (#513).
+- Strict tool arguments: with `strictToolArguments` (CLI `--strict-tool-arguments`, config `llm.strictToolArguments`), malformed tool-call argument strings are sent unchanged on string wires and return an explicit error on object wires. The default keeps 1.44.0 behavior (#501).
+- Vertex and Bedrock modeled-contract comparisons for the misbehavior faults in the daily drift checks (#508).
+
+### Fixed
+
+- MCP recording checks its config at start, redacts credentials in errors, fails loudly when the upstream dies mid-body (502 or a terminated stream, logged and journaled), and defaults `aimock --config` with record mounts to `logLevel: "warn"` (#517).
+- Kept 1.44.0 default behavior for strict tool arguments, model misbehavior, Responses namespaced and custom tools, `llm.record.mcp`, fixture identity and the exported stream helpers, and made each new behavior opt-in (#518).
+- Kept the published types compatible with 1.44.0: `AimockHandle`, `Mountable` and `McpFakeAddOrigin` keep their 1.44.0 shape, and every entry point type-checks with `skipLibCheck: false` (#517).
+- Align Cohere streaming length-stop faults with captured provider framing (#508).
+- Retain drift evidence across retries and for oversized records (#510, #512).
+- Classify `claude-haiku-5-5` in the drift model registry (#515).
+- Docs: dark-site font smoothing, consistent homepage comparison headings, the test-suite highlight, and the copy-button fallback (#504, #506, #514).
+- Invalid opt-in values never stop startup: an invalid `responsesTools` warns once and runs `"legacy"`, and a non-boolean `llm.strictToolArguments`, `llm.enableMisbehavior` or `llm.enableMcpRecording` warns once and stays off (#518).
+
+## [1.44.0] - 2026-10-07
+
+### Added
+
+- Script MCP tool answers and errors per scenario, including aimock-pytest 0.6.0 support.
+- Mock OpenAI Vector Stores, file batches and deterministic search (#497).
+- Discover supported HTTP routes through the OpenAPI 3.1 catalog (#451).
+
+### Fixed
+
+- Reject malformed requests and fixtures with clear validation errors (#474).
+- Correct video status, browser PUT access, model classification and comparison docs.
+
+## [1.43.0] - 2026-09-22
+
+> **BREAKING** — `aimock -h` is `--help`, not `--host`: `aimock -h 0.0.0.0` exits 1 with `Error: Unexpected argument '0.0.0.0'. This command does not take positional arguments`. Migration: `--host <string>` (long form only). The `llmock` bin (the Docker ENTRYPOINT) keeps `-h, --host` (#453).
+
+### Added
+
+- OpenAI GPT-Live mock, record and offline replay on `GET /v1/live/sessions`, with `onLive` fixtures (#468)
+- Live sessions enforce message/audio/queue/lifetime limits; recordings sanitize credentials (#468)
+- Live drift canaries for lifecycle, audio/transcript, delegation and usage, attributed to `openai-live` (#468)
+- Chaos `rateLimitRate` / `--chaos-ratelimit`: deterministic 429 with `Retry-After` (#449)
+- Chaos `latencyMs` / `--chaos-latency` now actually delays responses on every path (#449)
+- OpenAI Files API mock — byte-exact uploads, create-purpose enum, CORS on faults (#445)
+- OpenAI fine-tuning jobs mock — deterministic lifecycle, events, cursor pages (#447)
+- OpenAI Batches API mock — create/list/retrieve/cancel with real output files (#446)
+- `X-Request-Id` echoed or minted on every response; `?requestId=` filters the journal (#450)
+- `aimock validate` lints fixture files or directories offline, failing on broken files (#453)
+- ElevenLabs Voice Design record/replay — design, save-as-voice, and voice slot management (#452)
+- ElevenLabs Voice Design provenance block and strict-mode 503 coverage (#454)
+
+### Changed
+
+- **BREAKING:** `aimock -h` is `--help`, matching `aimock convert -h` and `aimock validate -h`; the host override is `--host` only. The `llmock` bin (the Docker entrypoint) keeps its own `-h, --host` — see the note above (#453)
+- `aimock --config ""`, `--port ""` and `--host ""` are usage errors naming the option (#453)
+- Realtime `OpenAI-Beta: realtime=v1` now returns the real sunset rejection, not a session (#461)
+- `POST /v1/images/variations` now replays the real removal 404; OpenAI deleted it (#462)
+- `ChaosAction` gains `"rateLimit"` — an exhaustive switch over it needs a case (#449)
+- `applyChaosAsync()` returns `false | "handled" | "unwritable"` instead of a bare `boolean` (#449)
+- Journal `headers` now ALWAYS carry `x-request-id` — exact `toEqual` asserts break (#450)
+
+### Deprecated
+
+- Synchronous `applyChaos()` warns once per process; it skips chaos latency. Use `await applyChaosAsync(...)` (#449)
+
+### Fixed
+
+- Reasoning-first chat streams with content and tool calls carry the assistant role in the first chunk (#470)
+- Journals and metrics reflect delivered vs interrupted responses; one-shot errors never double-deliver (#466)
+- Nonstreaming OpenAI chat returns block text and tools; text-only blocks finish normally on every provider (#467)
+- AG-UI drift reads generated 1.0 schemas; `AGUIRunStartedEvent` gains optional `protocolVersion` (#469)
+- Drift reports list `unverifiedSurfaces`; offline Bedrock/Vertex checks no longer skip silently (#460)
+- Drift docs match actual coverage; ElevenLabs drift separates vendor observations from fixture checks (#465)
+- Chaos no longer treats committed headers as a dead response; only status-writing actions are skipped (#449)
+- Chaos skip logs name what happened; `aimock_chaos_triggered_total` counts only written responses (#449)
+- A request whose chaos latency was cancelled by client hang-up is no longer served or journalled (#449)
+- Moderations echoes the request's `model`; default is now `omni-moderation-latest` (#459)
+- Image endpoints default to `gpt-image-1` — `dall-e-2`/`dall-e-3` were removed (#459)
+- AG-UI record/proxy forwards the caller's headers and raw body upstream; `Accept` is forced to SSE (#455)
+- The AG-UI recorder refuses to write a fixture from a non-stream or empty 2xx upstream reply (#455)
+- A MINTED `x-request-id` is no longer forwarded upstream in record/proxy mode (#450)
+
+## [1.42.1] - 2026-09-18
+
+### Fixed
+
+- Identify reasoning-first tool streams as assistant messages for MCP Apps (#470).
+
+## [1.42.0] - 2026-09-13
+
+### Added
+
+- Filtering and pagination on `GET /__aimock/journal`, with an `X-Total-Count` header (#435)
+- Runtime chaos control at `/__aimock/chaos`, and a `?include=fixtures` fixture dump (#435)
+
+### Fixed
+
+- Every wrapper path journals now — exact-length or `X-Total-Count` asserts see more (#441)
+- Moderation, rerank and search honour strict mode; non-object JSON bodies now `400` (#440, #438)
+- `POST /__aimock/error` validates its payload; quoted multipart boundaries parse (#434)
 
 ## [1.41.0] - 2026-09-10
 

@@ -1,0 +1,463 @@
+[
+  {
+    "id": "veo-submit-proxy-failure",
+    "exchanges": [
+      {
+        "step": "target",
+        "wire": {
+          "status": 502,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#0>"
+          },
+          "body": "{\"error\":{\"message\":\"Proxy to upstream failed: fetch failed\",\"type\":\"proxy_error\"}}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#1>"
+      },
+      "body": "[{\"id\":\"req-<#2>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/v1beta/models/veo-3.1-generate-preview:predictLongRunning\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"47\",\"x-request-id\":\"req-<#0>\"},\"body\":{\"model\":\"veo-3.1-generate-preview\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 submit failure\"}],\"_endpointType\":\"video\",\"_videoProvider\":\"veo\"},\"response\":{\"status\":502,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"instances\":[{\"prompt\":\"a10 submit failure\"}]}"
+      }
+    ],
+    "recorded": [],
+    "logs": [
+      "[aimock] Veo video submit proxy failed: fetch failed"
+    ]
+  },
+  {
+    "id": "veo-poll-proxy-failure",
+    "exchanges": [
+      {
+        "step": "actual-record-job-submit",
+        "wire": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": "{\"name\":\"operations/<uuid#3>\"}"
+        }
+      },
+      {
+        "step": "native-nonterminal-poll-control",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#4>"
+          },
+          "body": "{\"name\":\"operations/<uuid#3>\",\"done\":false}"
+        }
+      },
+      {
+        "step": "target",
+        "wire": {
+          "status": 502,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#5>"
+          },
+          "body": "{\"error\":{\"message\":\"Proxy to upstream failed: fetch failed\",\"type\":\"proxy_error\"}}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#6>"
+      },
+      "body": "[{\"id\":\"req-<#7>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/v1beta/models/veo-3.1-generate-preview:predictLongRunning\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"content-length\":\"48\",\"connection\":\"keep-alive\",\"x-request-id\":\"req-<#8>\"},\"body\":{\"model\":\"veo-3.1-generate-preview\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 real record job\"}],\"_endpointType\":\"video\",\"_videoProvider\":\"veo\"},\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#9>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/v1beta/operations/<uuid#3>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#4>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#10>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/v1beta/operations/<uuid#3>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#5>\"},\"body\":null,\"response\":{\"status\":502,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"instances\":[{\"prompt\":\"a10 real record job\"}]}"
+      },
+      {
+        "method": "GET",
+        "url": "/v1beta/operations/a10-veo-operation",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "url": "/v1beta/operations/a10-veo-operation",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      }
+    ],
+    "recorded": [],
+    "logs": [
+      "[aimock] Veo video poll proxy failed: fetch failed"
+    ]
+  },
+  {
+    "id": "openrouter-content-proxy-failure",
+    "exchanges": [
+      {
+        "step": "actual-record-job-submit",
+        "wire": {
+          "status": 202,
+          "contentType": "application/json",
+          "body": "{\"id\":\"<uuid#11>\",\"polling_url\":\"http://a10-local.test/api/v1/videos/<uuid#11>\",\"status\":\"pending\"}"
+        }
+      },
+      {
+        "step": "actual-native-completed-poll",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#12>"
+          },
+          "body": "{\"id\":\"<uuid#11>\",\"status\":\"completed\",\"unsigned_urls\":[\"http://a10-local.test/api/v1/videos/<uuid#11>/content?index=0\"],\"usage\":{\"cost\":0.25}}"
+        }
+      },
+      {
+        "step": "target",
+        "wire": {
+          "status": 502,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#13>"
+          },
+          "body": "{\"error\":{\"message\":\"Proxy to upstream failed: fetch failed\",\"type\":\"proxy_error\"}}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#14>"
+      },
+      "body": "[{\"id\":\"req-<#15>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/api/v1/videos\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"content-length\":\"65\",\"connection\":\"keep-alive\",\"x-request-id\":\"req-<#16>\"},\"body\":{\"model\":\"bytedance/seedance-2.0\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 real record job\"}],\"_endpointType\":\"video\"},\"response\":{\"status\":202,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#17>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#11>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#12>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#18>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#11>/content?index=0\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#13>\"},\"body\":null,\"response\":{\"status\":502,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"a10 real record job\"}"
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job/content?index=0",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      }
+    ],
+    "recorded": [],
+    "logs": [
+      "[aimock] OpenRouter video content proxy failed: fetch failed"
+    ]
+  },
+  {
+    "id": "openrouter-submit-proxy-failure",
+    "exchanges": [
+      {
+        "step": "target",
+        "wire": {
+          "status": 502,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#19>"
+          },
+          "body": "{\"error\":{\"message\":\"Proxy to upstream failed: fetch failed\",\"type\":\"proxy_error\"}}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#20>"
+      },
+      "body": "[{\"id\":\"req-<#21>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/api/v1/videos\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"64\",\"x-request-id\":\"req-<#19>\"},\"body\":{\"model\":\"bytedance/seedance-2.0\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 submit failure\"}],\"_endpointType\":\"video\"},\"response\":{\"status\":502,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"a10 submit failure\"}"
+      }
+    ],
+    "recorded": [],
+    "logs": [
+      "[aimock] OpenRouter video submit proxy failed: fetch failed"
+    ]
+  },
+  {
+    "id": "openrouter-poll-proxy-failure",
+    "exchanges": [
+      {
+        "step": "actual-record-job-submit",
+        "wire": {
+          "status": 202,
+          "contentType": "application/json",
+          "body": "{\"id\":\"<uuid#22>\",\"polling_url\":\"http://a10-local.test/api/v1/videos/<uuid#22>\",\"status\":\"pending\"}"
+        }
+      },
+      {
+        "step": "native-nonterminal-poll-control",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#23>"
+          },
+          "body": "{\"id\":\"<uuid#22>\",\"status\":\"pending\"}"
+        }
+      },
+      {
+        "step": "target",
+        "wire": {
+          "status": 502,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#24>"
+          },
+          "body": "{\"error\":{\"message\":\"Proxy to upstream failed: fetch failed\",\"type\":\"proxy_error\"}}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#25>"
+      },
+      "body": "[{\"id\":\"req-<#26>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/api/v1/videos\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"content-length\":\"65\",\"connection\":\"keep-alive\",\"x-request-id\":\"req-<#27>\"},\"body\":{\"model\":\"bytedance/seedance-2.0\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 real record job\"}],\"_endpointType\":\"video\"},\"response\":{\"status\":202,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#28>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#22>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#23>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#29>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#22>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#24>\"},\"body\":null,\"response\":{\"status\":502,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"a10 real record job\"}"
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      }
+    ],
+    "recorded": [],
+    "logs": [
+      "[aimock] OpenRouter video poll proxy failed: fetch failed"
+    ]
+  },
+  {
+    "id": "veo-native-poll-control",
+    "exchanges": [
+      {
+        "step": "actual-record-job-submit",
+        "wire": {
+          "status": 200,
+          "contentType": "application/json",
+          "body": "{\"name\":\"operations/<uuid#30>\"}"
+        }
+      },
+      {
+        "step": "native-nonterminal-poll-control",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#31>"
+          },
+          "body": "{\"name\":\"operations/<uuid#30>\",\"done\":false}"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#32>"
+      },
+      "body": "[{\"id\":\"req-<#33>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/v1beta/models/veo-3.1-generate-preview:predictLongRunning\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"content-length\":\"48\",\"connection\":\"keep-alive\",\"x-request-id\":\"req-<#34>\"},\"body\":{\"model\":\"veo-3.1-generate-preview\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 real record job\"}],\"_endpointType\":\"video\",\"_videoProvider\":\"veo\"},\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#35>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/v1beta/operations/<uuid#30>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#31>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"instances\":[{\"prompt\":\"a10 real record job\"}]}"
+      },
+      {
+        "method": "GET",
+        "url": "/v1beta/operations/a10-veo-operation",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      }
+    ],
+    "recorded": [],
+    "logs": []
+  },
+  {
+    "id": "openrouter-native-content-control",
+    "exchanges": [
+      {
+        "step": "actual-record-job-submit",
+        "wire": {
+          "status": 202,
+          "contentType": "application/json",
+          "body": "{\"id\":\"<uuid#36>\",\"polling_url\":\"http://a10-local.test/api/v1/videos/<uuid#36>\",\"status\":\"pending\"}"
+        }
+      },
+      {
+        "step": "actual-native-completed-poll",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-type": "application/json",
+            "x-request-id": "req-<#37>"
+          },
+          "body": "{\"id\":\"<uuid#36>\",\"status\":\"completed\",\"unsigned_urls\":[\"http://a10-local.test/api/v1/videos/<uuid#36>/content?index=0\"],\"usage\":{\"cost\":0.25}}"
+        }
+      },
+      {
+        "step": "target",
+        "wire": {
+          "status": 200,
+          "headers": {
+            "access-control-allow-headers": "*",
+            "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+            "content-length": "22",
+            "content-type": "video/mp4",
+            "x-request-id": "req-<#38>"
+          },
+          "body": "a10 native video bytes"
+        }
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "headers": {
+        "access-control-allow-headers": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+        "content-type": "application/json",
+        "x-request-id": "req-<#39>"
+      },
+      "body": "[{\"id\":\"req-<#40>\",\"timestamp\":\"<epoch>\",\"method\":\"POST\",\"path\":\"/api/v1/videos\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"content-length\":\"65\",\"connection\":\"keep-alive\",\"x-request-id\":\"req-<#41>\"},\"body\":{\"model\":\"bytedance/seedance-2.0\",\"messages\":[{\"role\":\"user\",\"content\":\"a10 real record job\"}],\"_endpointType\":\"video\"},\"response\":{\"status\":202,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#42>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#36>\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#37>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null,\"source\":\"proxy\",\"strictOverride\":false}},{\"id\":\"req-<#43>\",\"timestamp\":\"<epoch>\",\"method\":\"GET\",\"path\":\"/api/v1/videos/<uuid#36>/content?index=0\",\"headers\":{\"host\":\"a10-local.test\",\"authorization\":\"[REDACTED]\",\"content-type\":\"application/json\",\"x-aimock-strict\":\"false\",\"connection\":\"close\",\"content-length\":\"0\",\"x-request-id\":\"req-<#38>\"},\"body\":null,\"response\":{\"status\":200,\"fixture\":null}}]"
+    },
+    "upstream": [
+      {
+        "method": "POST",
+        "url": "/api/v1/videos",
+        "authorization": "Bearer a10-local-key",
+        "body": "{\"model\":\"bytedance/seedance-2.0\",\"prompt\":\"a10 real record job\"}"
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "url": "/api/v1/videos/a10-openrouter-job/content?index=0",
+        "authorization": "Bearer a10-local-key",
+        "body": ""
+      }
+    ],
+    "recorded": [
+      "{\n  \"fixtures\": [\n    {\n      \"match\": {\n        \"endpoint\": \"video\",\n        \"userMessage\": \"a10 real record job\",\n        \"model\": \"bytedance/seedance-2.0\"\n      },\n      \"response\": {\n        \"video\": {\n          \"id\": \"a10-openrouter-job\",\n          \"status\": \"completed\",\n          \"b64\": \"YTEwIG5hdGl2ZSB2aWRlbyBieXRlcw==\",\n          \"cost\": 0.25\n        }\n      }\n    }\n  ]\n}"
+    ],
+    "logs": []
+  }
+]

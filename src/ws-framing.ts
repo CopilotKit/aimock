@@ -6,12 +6,12 @@
  * Designed for a mock server — no extensions, no binary frames, no compression.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type * as net from "node:net";
 import type * as http from "node:http";
 
-const WS_GUID = "258EAFA5-E914-47DA-95CA-5AB5DC799C07";
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // Opcodes
 const OP_CONTINUATION = 0x0;
@@ -19,6 +19,14 @@ const OP_TEXT = 0x1;
 const OP_CLOSE = 0x8;
 const OP_PING = 0x9;
 const OP_PONG = 0xa;
+
+export interface WebSocketLimits {
+  maxMessageBytes?: number;
+  maxBufferedBytes?: number;
+  maxWriteBytes?: number;
+  /** Client role: mask outgoing frames and require unmasked incoming frames. */
+  maskOutgoing?: boolean;
+}
 
 export class WebSocketConnection extends EventEmitter {
   private socket: net.Socket;
@@ -28,20 +36,52 @@ export class WebSocketConnection extends EventEmitter {
   // For fragmented messages (continuation frames)
   private fragments: Buffer[] = [];
 
-  constructor(socket: net.Socket) {
+  private fragmentBytes = 0;
+  private fragmented = false;
+  private pendingWriteBytes = 0;
+  private pendingWrites = new Set<(error: Error) => void>();
+  private limits: WebSocketLimits;
+
+  constructor(socket: net.Socket, limits: WebSocketLimits = {}) {
     super();
+    for (const value of [limits.maxMessageBytes, limits.maxBufferedBytes, limits.maxWriteBytes]) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new RangeError("WebSocket limits must be positive safe integers");
+      }
+    }
+    this.limits = { ...limits };
     this.socket = socket;
 
     socket.on("data", (data: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, data]);
-      this.parseFrames();
+      // Byte-idle consumers must see partial frames and control traffic too.
+      // Emit no payload, and notify before parsing can dispatch a message.
+      if (data.length > 0 && !this.closed) this.emit("activity");
+      let offset = 0;
+      while (offset < data.length && !this.closed) {
+        const room =
+          (this.limits.maxBufferedBytes ?? Infinity) - this.fragmentBytes - this.buffer.length;
+        if (room <= 0) {
+          this.close(1009, "WebSocket buffer limit exceeded");
+          return;
+        }
+        const end = offset + Math.min(room, data.length - offset);
+        this.buffer = Buffer.concat([this.buffer, data.subarray(offset, end)]);
+        offset = end;
+        this.parseFrames();
+      }
     });
 
-    socket.on("close", () => {
-      if (!this.closed) {
-        this.closed = true;
-        this.emit("close", 1006, "Connection lost");
-      }
+    socket.on("close", () => this.lost());
+
+    // A peer FIN without a close frame is a disconnect. HTTP upgrade sockets
+    // allow half-open, so without this the loss surfaces only on a later
+    // failed write. Data events precede "end", so frames that arrive just
+    // before the FIN still parse, but any turn they start is cancelled at once
+    // because the connection is then lost.
+    socket.on("end", () => {
+      if (this.closed) return;
+      this.socket.destroy();
+      this.lost();
     });
 
     socket.on("error", (err: Error) => {
@@ -51,15 +91,82 @@ export class WebSocketConnection extends EventEmitter {
 
   send(data: string): void {
     if (this.closed) return;
-    const payload = Buffer.from(data, "utf-8");
-    this.writeFrame(OP_TEXT, payload);
+    void this.sendAsync(data).catch(() => {
+      /* Legacy fire-and-forget API. */
+    });
+  }
+
+  sendAsync(data: string, signal?: AbortSignal): Promise<void> {
+    if (this.closed || this.socket.destroyed) return Promise.reject(new Error("WebSocket closed"));
+    if (signal?.aborted) return Promise.reject(new Error("WebSocket send aborted"));
+    const length = Buffer.byteLength(data);
+    const frameBytes =
+      length + (length < 126 ? 2 : length < 65536 ? 4 : 10) + (this.limits.maskOutgoing ? 4 : 0);
+    if (
+      frameBytes >
+      (this.limits.maxWriteBytes ?? Infinity) -
+        Math.max(this.pendingWriteBytes, this.socket.writableLength)
+    ) {
+      this.close(1009, "WebSocket write limit exceeded");
+      return Promise.reject(new Error("WebSocket write limit exceeded"));
+    }
+    this.pendingWriteBytes += frameBytes;
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        this.pendingWriteBytes -= frameBytes;
+        this.pendingWrites.delete(fail);
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const fail = (error: Error) => finish(error);
+      const abort = () => {
+        finish(new Error("WebSocket send aborted"));
+        this.destroy();
+      };
+      this.pendingWrites.add(fail);
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
+        this.socket.write(this.encodeFrame(OP_TEXT, Buffer.from(data)), (error?: Error | null) => {
+          if (error) finish(new Error("WebSocket write failed"));
+          else finish();
+        });
+      } catch {
+        finish(new Error("WebSocket write failed"));
+      }
+    });
+  }
+
+  /** Mark an unannounced connection loss and emit close once. */
+  private lost(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.release(new Error("WebSocket closed"));
+    this.emit("close", 1006, "Connection lost");
+  }
+
+  private release(error: Error): void {
+    this.buffer = Buffer.alloc(0);
+    this.fragments = [];
+    this.fragmentBytes = 0;
+    for (const fail of this.pendingWrites) fail(error);
   }
 
   close(code = 1000, reason = ""): void {
     if (this.closed) return;
     this.closed = true;
+    this.release(new Error("WebSocket closed"));
 
-    const reasonBuf = Buffer.from(reason, "utf-8");
+    const encodedReason = Buffer.from(reason, "utf-8");
+    let reasonEnd = Math.min(encodedReason.length, 123);
+    // A continuation byte at the cut means its code point straddles the limit.
+    while (reasonEnd < encodedReason.length && (encodedReason[reasonEnd] & 0xc0) === 0x80) {
+      reasonEnd--;
+    }
+    const reasonBuf = encodedReason.subarray(0, reasonEnd);
     const payload = Buffer.alloc(2 + reasonBuf.length);
     payload.writeUInt16BE(code, 0);
     reasonBuf.copy(payload, 2);
@@ -80,6 +187,7 @@ export class WebSocketConnection extends EventEmitter {
   destroy(): void {
     if (this.closed) return;
     this.closed = true;
+    this.release(new Error("WebSocket destroyed"));
     if (!this.socket.destroyed) {
       this.socket.destroy();
     }
@@ -90,40 +198,42 @@ export class WebSocketConnection extends EventEmitter {
     return this.closed;
   }
 
+  private encodeFrame(opcode: number, payload: Buffer): Buffer {
+    const length = payload.length;
+    const headerSize = length < 126 ? 2 : length < 65536 ? 4 : 10;
+    const maskSize = this.limits.maskOutgoing ? 4 : 0;
+    const frame = Buffer.allocUnsafe(headerSize + maskSize + length);
+    frame[0] = 0x80 | opcode;
+    frame[1] = (maskSize ? 0x80 : 0) | (length < 126 ? length : length < 65536 ? 126 : 127);
+    if (headerSize === 4) frame.writeUInt16BE(length, 2);
+    if (headerSize === 10) frame.writeBigUInt64BE(BigInt(length), 2);
+    if (maskSize) {
+      const mask = randomBytes(4);
+      mask.copy(frame, headerSize);
+      for (let i = 0; i < length; i++) frame[headerSize + 4 + i] = payload[i] ^ mask[i % 4];
+    } else payload.copy(frame, headerSize);
+    return frame;
+  }
+
   private writeFrame(opcode: number, payload: Buffer): void {
     if (this.socket.destroyed) return;
-
-    // Server-to-client frames are NOT masked (per RFC 6455 §5.1)
-    const length = payload.length;
-    let header: Buffer;
-
-    if (length < 126) {
-      header = Buffer.alloc(2);
-      header[0] = 0x80 | opcode; // FIN + opcode
-      header[1] = length;
-    } else if (length < 65536) {
-      header = Buffer.alloc(4);
-      header[0] = 0x80 | opcode;
-      header[1] = 126;
-      header.writeUInt16BE(length, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[0] = 0x80 | opcode;
-      header[1] = 127;
-      header.writeUInt32BE(0, 2);
-      header.writeUInt32BE(length, 6);
-    }
-
-    try {
-      this.socket.write(Buffer.concat([header, payload]));
-    } catch (err: unknown) {
-      // Expected when socket is destroyed between our check and write.
-      // Log unexpected errors so they don't vanish silently.
-      if (!this.socket.destroyed) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[LLMock] Unexpected writeFrame error: ${msg}`);
+    const available =
+      (this.limits.maxWriteBytes ?? Infinity) -
+      Math.max(this.pendingWriteBytes, this.socket.writableLength);
+    const headerBytes = 2 + (this.limits.maskOutgoing ? 4 : 0);
+    if (opcode === OP_CLOSE && payload.length + headerBytes > available) {
+      // Keep even the final control frame inside the configured socket budget.
+      if (available < headerBytes + 2) {
+        this.socket.destroy();
+        return;
       }
+      payload = payload.subarray(0, 2);
+    } else if (payload.length + headerBytes > available) {
+      this.close(1009, "WebSocket write limit exceeded");
+      return;
     }
+    const frame = this.encodeFrame(opcode, payload);
+    this.socket.write(frame);
   }
 
   private parseFrames(): void {
@@ -134,6 +244,17 @@ export class WebSocketConnection extends EventEmitter {
       const fin = (byte0 & 0x80) !== 0;
       const opcode = byte0 & 0x0f;
       const masked = (byte1 & 0x80) !== 0;
+      if (
+        byte0 & 0x70 ||
+        masked === Boolean(this.limits.maskOutgoing) ||
+        ![OP_CONTINUATION, OP_TEXT, 2, OP_CLOSE, OP_PING, OP_PONG].includes(opcode) ||
+        (opcode >= 8 && (!fin || (byte1 & 0x7f) > 125)) ||
+        (opcode === OP_CONTINUATION && !this.fragmented) ||
+        (opcode === OP_TEXT && this.fragmented)
+      ) {
+        this.close(1002, "Invalid WebSocket frame");
+        return;
+      }
       let payloadLength = byte1 & 0x7f;
       let offset = 2;
 
@@ -143,11 +264,40 @@ export class WebSocketConnection extends EventEmitter {
         offset = 4;
       } else if (payloadLength === 127) {
         if (this.buffer.length < 10) return;
-        // Read lower 32 bits (upper 32 should be 0 for reasonable payloads)
-        payloadLength = this.buffer.readUInt32BE(6) + this.buffer.readUInt32BE(2) * 0x100000000;
+        const advertised = this.buffer.readBigUInt64BE(2);
+        if (advertised & (1n << 63n)) {
+          this.close(1002, "Invalid WebSocket length");
+          return;
+        }
+        if (advertised > BigInt(Number.MAX_SAFE_INTEGER)) {
+          this.close(1009, "WebSocket message limit exceeded");
+          return;
+        }
+        payloadLength = Number(advertised);
         offset = 10;
       }
 
+      if (
+        ((byte1 & 0x7f) === 126 && payloadLength < 126) ||
+        ((byte1 & 0x7f) === 127 && payloadLength < 65536)
+      ) {
+        this.close(1002, "Invalid WebSocket length");
+        return;
+      }
+      if (
+        opcode < 8 &&
+        payloadLength > (this.limits.maxMessageBytes ?? Infinity) - this.fragmentBytes
+      ) {
+        this.close(1009, "WebSocket message limit exceeded");
+        return;
+      }
+      if (
+        payloadLength + offset + (masked ? 4 : 0) >
+        (this.limits.maxBufferedBytes ?? Infinity) - this.fragmentBytes
+      ) {
+        this.close(1009, "WebSocket buffer limit exceeded");
+        return;
+      }
       const maskSize = masked ? 4 : 0;
       const totalFrameSize = offset + maskSize + payloadLength;
 
@@ -189,11 +339,16 @@ export class WebSocketConnection extends EventEmitter {
     }
 
     if (opcode === OP_CLOSE) {
+      if (payload.length === 1) {
+        this.close(1002, "Invalid WebSocket close");
+        return;
+      }
       const code = payload.length >= 2 ? payload.readUInt16BE(0) : 1005;
       const reason = payload.length > 2 ? payload.subarray(2).toString("utf-8") : "";
 
       if (!this.closed) {
         this.closed = true;
+        this.release(new Error("WebSocket closed"));
         // Echo close frame back
         this.writeFrame(OP_CLOSE, payload);
         this.socket.end();
@@ -206,11 +361,14 @@ export class WebSocketConnection extends EventEmitter {
 
     // Text or continuation frames
     if (opcode === OP_TEXT || opcode === OP_CONTINUATION) {
-      this.fragments.push(payload);
+      this.fragmented = !fin;
+      this.fragmentBytes += payload.length;
+      if (payload.length) this.fragments.push(payload);
 
       if (fin) {
         const message = Buffer.concat(this.fragments).toString("utf-8");
         this.fragments = [];
+        this.fragmentBytes = 0;
         this.emit("message", message);
       }
       // If !fin, wait for more continuation frames
@@ -230,6 +388,7 @@ export function computeAcceptKey(wsKey: string): string {
 export function upgradeToWebSocket(
   req: http.IncomingMessage,
   socket: net.Socket,
+  limits?: WebSocketLimits,
 ): WebSocketConnection {
   const key = req.headers["sec-websocket-key"];
   if (!key) {
@@ -258,5 +417,5 @@ export function upgradeToWebSocket(
 
   socket.write(responseHeaders);
 
-  return new WebSocketConnection(socket);
+  return new WebSocketConnection(socket, limits);
 }

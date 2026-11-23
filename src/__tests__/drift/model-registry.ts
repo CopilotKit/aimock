@@ -21,9 +21,14 @@
  *
  *   - `exclude` — families we deliberately DO NOT treat as text-generation drift:
  *     retired/legacy ids, preview-only ids, and non-text families (embeddings,
- *     image, tts/audio/transcribe voice families — the last are the realtime
- *     canary's responsibility in `voice-models.ts`, not this text check). A live
- *     family in this set is expected and generates no drift.
+ *     image, tts/audio/transcribe voice families). OpenAI voice families are
+ *     also watched by the OpenAI realtime canary (`ws-realtime.drift.ts`, which
+ *     checks the OpenAI listing against `voice-models.ts`'s
+ *     `knownVoiceModelFamilies`). No voice canary watches Gemini voice/tts ids:
+ *     the realtime canary never reads the Gemini listing, and the Gemini Live
+ *     leg (`ws-gemini-live.drift.ts`) only picks a `bidiGenerateContent` model
+ *     to exercise the Live protocol shape — it never classifies families. A
+ *     live family in this set is expected and generates no drift.
  *
  * A family MUST NOT appear in both `include` and `exclude` for the same provider
  * (asserted in the unit test) — the two sets partition the "already classified"
@@ -94,8 +99,8 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "gpt-5.6-terra",
     // gpt-6 named variant (text chat), first listed 2026-08-27. Classified on a
     // DECLARED-CAPABILITY probe, not on the name — "astra" carries no modality
-    // signal, and the /v1/models listing exposes none either (id / owned_by /
-    // created only), so shape alone could not decide this. A minimal
+    // signal, and the /v1/models listing exposes no capability field either,
+    // so shape alone could not decide this. A minimal
     // /v1/chat/completions call returns 200 with `finish_reason: "stop"` and a
     // real assistant turn, byte-for-byte the same shape the already-included
     // `gpt-5.6-luna` returns; the negative control `whisper-1` is refused on the
@@ -105,6 +110,79 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/openai-gpt-6-astra-new-family.md.
     "gpt-6-astra",
+    // gpt-6 named variants (text chat), first listed 2026-09-23 (drift run
+    // 35827604040). The gpt-6 generation of the already-included
+    // `gpt-5.6-luna` / `gpt-5.6-sol`, and siblings of the probe-verified
+    // `gpt-6-astra` above. No name token places them in an excluded cluster
+    // (image / audio / realtime / transcribe / tts / search).
+    //
+    // First classified by lineage on 2026-09-23 (no probe then). Confirmed by
+    // a LIVE PROBE on 2026-10-05: /v1/models exposes no capability field
+    // (`GET /v1/models/<id>` returns only `id` / `object` / `created` /
+    // `owned_by` / `shutdown_date: null`), so the probe is the evidence. A
+    // minimal /v1/chat/completions call to each id returned 200,
+    // `object: "chat.completion"`, `finish_reason: "stop"` and a real
+    // assistant text turn — the same shape `gpt-6-astra` returned.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6-luna-new-family.md and
+    // drift-proposals/openai-gpt-6-sol-new-family.md.
+    "gpt-6-luna",
+    "gpt-6-sol",
+    // gpt-6.1 point release of the included `gpt-6-sol`, first listed
+    // 2026-09-30 (drift run 36677279980; `created: 1790552874`). The normalizer
+    // keeps the `.1` version token, so it is its own family, separate from
+    // `gpt-6-sol`, and must be enumerated.
+    //
+    // Classified on a LIVE PROBE, not on lineage alone. /v1/models exposes no
+    // capability field (`id` / `object` / `created` / `owned_by` /
+    // `shutdown_date` only), so the probe is the evidence: a minimal
+    // /v1/chat/completions call with `model: "gpt-6.1-sol"` returned 200,
+    // `object: "chat.completion"`, `finish_reason: "stop"` and a real assistant
+    // text turn (2026-10-02). No name token places it in an excluded cluster.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6.1-sol-new-family.md.
+    "gpt-6.1-sol",
+    // gpt-6.1 point release of the included `gpt-5.6-terra` line, sibling of
+    // `gpt-6.1-sol` above. First listed by drift run 40422235776 (2026-10-26;
+    // `created: 1791908780`). The normalizer keeps the `.1` version token, so
+    // it is its own family and must be enumerated.
+    //
+    // Classified on a LIVE PROBE (2026-10-26), not on lineage alone.
+    // `GET /v1/models/gpt-6.1-terra` returns only `id` / `object` / `created` /
+    // `owned_by: "system"` / `shutdown_date: null`, the same shape as
+    // `gpt-6.1-sol`. A minimal /v1/chat/completions call returned 200,
+    // `object: "chat.completion"`, `finish_reason: "stop"` and a real assistant
+    // text turn, the same shape `gpt-6.1-sol` returned. No name token places it
+    // in an excluded cluster, and it is not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6.1-terra-new-family.md.
+    "gpt-6.1-terra",
+    // gpt-6.2 point releases of the included `gpt-6-astra` and `gpt-6.1-sol`
+    // lines. Both were first flagged by Drift Tests run 44249205468
+    // (2026-11-17, 10:09 PM PST) and routed to needs-human PR #625. The
+    // normalizer keeps the `.2` version token, so each is its own family and
+    // must be enumerated.
+    //
+    // Classified on a LIVE PROBE (2026-11-20, drift-live-pr run 44799305557),
+    // not on lineage alone. `GET /v1/models/<id>` returns only `id` / `object` /
+    // `created` / `owned_by: "system"` / `shutdown_date: null`, the same shape
+    // as `gpt-6.1-sol`. A minimal /v1/chat/completions call to each returned
+    // 200, `object: "chat.completion"`, `finish_reason: "stop"` and a real
+    // assistant text turn, and /v1/responses returned 200, `status:
+    // "completed"` with an `output_text` part: the same shape `gpt-6.1-sol`
+    // returned in the same run. No name token places them in an excluded
+    // cluster, and they are not voice/audio families, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6.2-astra-new-family.md and
+    // drift-proposals/openai-gpt-6.2-sol-new-family.md.
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     // Codex line (coding chat; text output)
     "gpt-5-codex",
     "gpt-5.1-codex",
@@ -152,18 +230,77 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // `claude-opus-4-1` is of `claude-opus-4` — `display_name: "Claude Fable
     // 5.1"`, `created_at: 2026-08-28`, against Fable 5's 2026-06-07.
     //
-    // Classified on a DECLARED-CAPABILITY probe like the rest of this wave.
-    // Anthropic's /v1/models carries no capability field (id / display_name /
-    // created_at only), so there is no `supportedGenerationMethods` to compare
-    // — but /v1/messages answers the same question directly: a minimal call
-    // returns 200 with `stop_reason: "end_turn"` and a real assistant turn.
-    // Corroborating: all 11 ids on the live listing are text-chat Claude
-    // families, and the canary reported exactly ONE unclassified anthropic
-    // family, so every other live id already normalized into this set.
+    // Classified 2026-09-08 on a live /v1/messages probe: a minimal call
+    // returned 200 with `stop_reason: "end_turn"` and a real assistant turn.
+    // As of 2026-10-05 its /v1/models entry carries a `capabilities` object
+    // that does not list generation methods.
     //
     // Decision: INCLUDE, recorded in
     // drift-proposals/anthropic-claude-fable-5-1-new-family.md.
     "claude-fable-5-1",
+    // Claude Fable 5.2, first listed 2026-11-10 (Fix Drift run 42768106181,
+    // routed to needs-human PR #602). Point release of the already-included
+    // `claude-fable-5`, as `claude-fable-5-1` is. `claude-fable-5` is a strict
+    // prefix of it, so it must be enumerated; the negative controls in
+    // text-drift.test.ts prove a further point release is still reported.
+    //
+    // Classified by LINEAGE and a maintainer decision, NOT by a live probe: no
+    // probe was run. Not a voice/audio family, so no knownVoiceModelFamilies
+    // pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-fable-5-2-new-family.md.
+    "claude-fable-5-2",
+    // Claude Opus 5.5, first listed 2026-09-23 (drift run 35827604040). Point
+    // release of the already-included `claude-opus-5`, exactly as
+    // `claude-opus-4-5` is of `claude-opus-4`. Every Claude family on
+    // Anthropic's listing is text chat on /v1/messages; the only anthropic
+    // excludes are retired ids.
+    //
+    // First classified by lineage on 2026-09-23 (no probe then). Confirmed by
+    // a LIVE PROBE on 2026-10-05: `GET /v1/models/claude-opus-5-5` returned
+    // 200 with `display_name: "Claude Opus 5.5"`, `line: "opus"` and
+    // `created_at: 2026-09-21` as top-level fields, plus a `capabilities`
+    // object declaring image_input / pdf_input / structured_outputs /
+    // thinking (adaptive) / batch / citations, among others, as supported. A
+    // minimal /v1/messages call returned 200, `stop_reason: "end_turn"` and a
+    // real text content block.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-opus-5-5-new-family.md.
+    "claude-opus-5-5",
+    // Claude Sonnet 5.5, first listed 2026-09-29 (drift run 36530084241). Point
+    // release of the already-included `claude-sonnet-5`, exactly as
+    // `claude-sonnet-4-5` is of `claude-sonnet-4`.
+    //
+    // Classified by a LIVE PROBE on 2026-10-02: a minimal /v1/messages call
+    // returned 200, `stop_reason: "end_turn"` and a real text content block.
+    // Its /v1/models entry carries `display_name: "Claude Sonnet 5.5"`,
+    // `line: "sonnet"` and `created_at: 2026-09-28` as top-level fields, plus a
+    // `capabilities` object declaring image_input / pdf_input /
+    // structured_outputs / thinking (adaptive) / batch / citations as
+    // supported.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-sonnet-5-5-new-family.md.
+    "claude-sonnet-5-5",
+    // Claude Haiku 5.5, first listed 2026-10-08 (drift run 37738956337). Point
+    // release of the Haiku line after the already-included `claude-haiku-4-5`,
+    // as `claude-opus-5-5` and `claude-sonnet-5-5` are of theirs. There is no
+    // `claude-haiku-5` family, so it is not a prefix of any included key and
+    // must be enumerated.
+    //
+    // Classified by LINEAGE plus Anthropic's official models overview
+    // (platform.claude.com/docs/en/docs/about-claude/models/overview, fetched
+    // 2026-10-09), NOT by a live probe: no probe was run. The overview lists it
+    // as a current model, API id `claude-haiku-5-5`, text and image input, text
+    // output, tool use, adaptive thinking, retirement not sooner than
+    // 2027-10-07. Not a voice/audio family, so no knownVoiceModelFamilies
+    // pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-haiku-5-5-new-family.md.
+    "claude-haiku-5-5",
   ]),
   gemini: familySet("gemini", [
     // Gemini 2.0 / 2.5 text families
@@ -190,14 +327,71 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/gemini-gemini-3.8-flash-new-family.md.
     "gemini-3.8-flash",
+    // Gemini 4 Argon, first listed 2026-10-14 (drift run 38523200980). A named
+    // variant of a new generation, so "argon" carries no modality signal and it
+    // is classified on the live listing plus a LIVE PROBE, not on the name (the
+    // `gpt-6-astra` precedent).
+    //
+    // Listing (2026-10-20): `displayName` and `description` both "Gemini 4
+    // Argon", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]`; `inputTokenLimit: 1048576`; `thinking: true`. No
+    // `bidiGenerateContent`, `embedContent` or `predict`. A plain text
+    // generateContent call returned 200 with a text part, `finishReason: "STOP"`
+    // and `candidatesTokensDetails` `modality: "TEXT"`, the same shape as the
+    // included `gemini-3.8-flash` probed in the same run. That is the text
+    // surface aimock mocks. Not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-argon-new-family.md.
+    "gemini-4-argon",
+    // Gemini 4 Hydrogen, first listed 2026-11-13 (Drift Tests run 43376684576,
+    // routed to needs-human PR #616). Google calls it a short-term GA release
+    // with no allowlist. Classified on the live listing plus a LIVE PROBE, not
+    // on the name, exactly as its sibling `gemini-4-argon`.
+    //
+    // Listing (2026-11-13): `displayName` and `description` both "Gemini 4
+    // Hydrogen", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]` (set-identical to `gemini-4-argon`);
+    // `inputTokenLimit: 1048576`; `thinking: true`. No `bidiGenerateContent`,
+    // `embedContent` or `predict`. A plain text generateContent call returned
+    // 200 with a text part, `finishReason: "STOP"` and `candidatesTokensDetails`
+    // `modality: "TEXT"`, the same shape as `gemini-4-argon` probed in the same
+    // run. Not a voice/audio family, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-hydrogen-new-family.md.
+    "gemini-4-hydrogen",
+    // Gemini 4 Neon, first flagged 2026-11-18 (Drift Tests run 44470085876,
+    // routed to needs-human PR #625). Classified on the live listing plus a
+    // LIVE PROBE, not on the name, exactly as its siblings `gemini-4-argon` and
+    // `gemini-4-hydrogen`.
+    //
+    // Listing (2026-11-20): `displayName` and `description` both "Gemini 4
+    // Neon", with no preview, experimental, confidential or EAP marker;
+    // `supportedGenerationMethods: [generateContent, countTokens,
+    // batchGenerateContent]` (set-identical to `gemini-4-hydrogen`);
+    // `inputTokenLimit: 1048576`; `thinking: true`. No `bidiGenerateContent`,
+    // `embedContent` or `predict`. A plain text generateContent call returned
+    // 200 with a text part, `finishReason: "STOP"` and `candidatesTokensDetails`
+    // `modality: "TEXT"`, the same shape as `gemini-4-hydrogen` probed in the
+    // same run (drift-live-pr run 44799305557). Not a voice/audio family, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/gemini-gemini-4-neon-new-family.md.
+    "gemini-4-neon",
   ]),
 };
 
 /**
  * Families we deliberately DO NOT count as text-generation drift, per provider:
  * retired/legacy ids, preview-only ids, and non-text families (embeddings,
- * image, and the voice/audio/tts/transcribe families the realtime canary in
- * `voice-models.ts` owns). A live family here is expected, not drift.
+ * image, voice/audio/tts/transcribe). OpenAI voice families are also watched by
+ * the OpenAI realtime canary (`ws-realtime.drift.ts`, against `voice-models.ts`'s
+ * `knownVoiceModelFamilies`). A live family here is expected, not drift.
  */
 export const excludeFamilies: Record<Provider, Set<string>> = {
   openai: familySet("openai", [
@@ -226,6 +420,10 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // text-generation drift. Same treatment as every other gpt-image-* family.
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    // 2026-11-04 image line (Drift Tests run 41978509138): the 2.6 point
+    // release of the same flare/sunburst pair. Image generation, not chat.
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
     "chatgpt-image-latest",
     // Bare chat alias — a moving alias (not a stable mocked family); matches the
     // *-latest exclude policy (chatgpt-image-latest, omni-moderation-latest, etc.)
@@ -241,7 +439,8 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "o3-deep-research",
     "o4-mini-deep-research",
     "gpt-5-search-api",
-    // Voice / audio / tts / transcribe — owned by the realtime canary
+    // Voice / audio / tts / transcribe — classified here; also watched by the
+    // OpenAI realtime canary (ws-realtime.drift.ts)
     "tts-1",
     "tts-1-hd",
     "whisper-1",
@@ -298,6 +497,36 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/openai-gpt-live-1-new-family.md.
     "gpt-live-1",
+    // Point release of the same full-duplex voice line (`created` 2026-11-17),
+    // first flagged by Drift Tests run 44685766665 (2026-11-19, 10:09 PM PST) and
+    // routed to needs-human PR #625. The normalizer keeps the `.1` version
+    // token, so it does not collapse onto `gpt-live-1` and must be enumerated.
+    // `GET /v1/models/gpt-live-1.1` returns the bare `id` / `object` /
+    // `created` / `owned_by: "system"` / `shutdown_date: null` shape. Same
+    // reading as `gpt-live-1` above: a classification for the `/models`
+    // listing only, not a claim that aimock mocks it.
+    //
+    // PAIRED ENTRY: also in `knownVoiceModelFamilies` (voice-models.ts), for the
+    // same disjoint-surface reason as `gpt-live-1`.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-gpt-live-1.1-new-family.md.
+    "gpt-live-1.1",
+    // Pre-GA `-alpha` codenames. The Drift Tests run on 2026-10-18 (run
+    // 39103216353) saw all three on the live listing. By the next run they were
+    // gone, and on 2026-10-20 `GET /v1/models/<id>` and /v1/chat/completions
+    // return 404 `model_not_found` for each. The id itself declares the
+    // pre-GA status, the same policy PREVIEW_FAMILY applies to `-preview` and
+    // the `-eap` entry under excludeFamilies.gemini applies to early access:
+    // aimock does not mock pre-GA surfaces. No rule matches `-alpha`, so they
+    // are enumerated. This also keeps the canary quiet if they are listed
+    // again. Not voice families, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-aurora-{blue,green,red}-alpha-new-family.md.
+    "aurora-blue-alpha",
+    "aurora-green-alpha",
+    "aurora-red-alpha",
     // NOTE: `-preview` families (gpt-4o-realtime-preview,
     // gpt-4o-mini-realtime-preview, gpt-4o-search-preview,
     // gpt-4o-mini-search-preview, computer-use-preview, …) are auto-excluded by
@@ -326,15 +555,18 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "text-embedding-004",
     "gemini-embedding",
     "gemini-embedding-2",
-    // Image models (non-text)
+    // Image-generation models (outside text-generation drift scope)
     "gemini-2.5-flash-image",
     "gemini-3-pro-image",
     "gemini-3.1-flash-image",
     "gemini-3.1-flash-lite-image",
+    // Flash Image successor; outputs Image AND Text (provider card, 2026-10-06).
+    // https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1
+    "gemini-nano-banana-2.1",
     "imagen-4.0-fast-generate",
     "imagen-4.0-generate",
     "imagen-4.0-ultra-generate",
-    // Audio / native-audio (realtime canary domain)
+    // Audio / native-audio (voice, not text)
     "gemini-2.5-flash-native-audio-latest",
     // NOTE: the open-weight Gemma line (`gemma-4-26b-a4b-it`, `gemma-4-31b-it`,
     // and any future variant) is auto-excluded by the GEMMA_FAMILY rule (see
@@ -354,7 +586,7 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Experimental / thinking (kept explicit — historic `-exp`, not `-preview`)
     "gemini-2.0-flash-exp",
     "gemini-2.0-flash-thinking-exp",
-    // Live/full-duplex voice — owned by the realtime canary, not this text check
+    // Live/full-duplex voice — a voice surface, not text; classified only here
     "gemini-live",
     // The Gemini 3.5 Transcribe line, GA 2026-08-26, first observed by the daily
     // /models canary on 2026-08-27 (that later date is the `Detected:` stamp in
@@ -366,9 +598,10 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Google's model card gives both the same signature — input `Audio (up to
     // 1 hour)`, output `Text, Word annotations` — i.e. speech->text only. They
     // emit no chat completion of their own; the text they return is a
-    // transcript of the caller's audio. That is the realtime/audio canary's
-    // domain (voice-models.ts), exactly like `gemini-live` above, and it can
-    // never be TEXT-GENERATION drift.
+    // transcript of the caller's audio. That is a voice/audio surface, exactly
+    // like `gemini-live` above (and, as with it, classified only here — the
+    // realtime canary reads only the OpenAI listing), and it can never be
+    // TEXT-GENERATION drift.
     //
     // `-live` carries a second, independently observed capability fact. The Live
     // leg's discovery filters SOLELY on declared `bidiGenerateContent` (no name
@@ -405,6 +638,17 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-gemini-omni-1.1-flash-new-family.md.
     "gemini-omni-1.1-flash",
+    // Gemini Omni 1.2 Flash, first listed 2026-11-05 (Fix Drift run
+    // 42174168128): the stable successor to `gemini-omni-1.1-flash` on the same
+    // model card (`/docs/models/gemini-omni-flash`), which says 1.1 routes to
+    // 1.2 on 2026-12-03. Same category: video generation and editing. Input
+    // text/image/video, output video with native audio plus text. The text is
+    // a by-product of a video turn, not a chat turn, so the family is excluded
+    // like `gemini-nano-banana-2.1` (image AND text output) and not included.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/gemini-gemini-omni-1.2-flash-new-family.md.
+    "gemini-omni-1.2-flash",
     // Restricted EARLY-ACCESS (EAP) surface, not a GA tier. Google's own live
     // /models entry declares `displayName` AND `description` as
     // "[Confidential] Gemini 3.7 Flash Video Understanding EAP" — the only one
@@ -420,6 +664,9 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-gemini-3.7-flash-video-understanding-eap-new-family.md.
     "gemini-3.7-flash-video-understanding-eap",
+    // Access-restricted (Fairwind cyber-defender program only), no GA yet; flip to include at GA like gemini-4-argon.
+    // Decision: EXCLUDE, recorded in drift-proposals/gemini-gemini-4-carbon-new-family.md.
+    "gemini-4-carbon",
     // Lyria 3.5, the GA tier of Google's music-generation line. Non-text
     // generative media, same category as the imagen-* / veo-* /
     // gemini-omni-1.1-flash entries.
@@ -440,6 +687,52 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-lyria-3.5-new-family.md.
     "lyria-3.5",
+    // Pre-GA moving alias, first listed 2026-09-22 (drift runs 35695604021 and
+    // 35827604040). The id says both things itself: `-preview` (aimock does not
+    // mock preview surfaces — the PREVIEW_FAMILY policy) and `-latest` (a
+    // moving alias, not a stable family — the same policy as
+    // `gemini-flash-latest` / `gemini-flash-lite-latest` / `gemini-pro-latest`
+    // above). Its pinned sibling `antigravity-preview-05` is already
+    // auto-excluded by PREVIEW_FAMILY; this id ends in `-latest`, not `-preview`
+    // or `-preview-<digits>`, so that rule cannot reach it and it must be
+    // enumerated. Not a voice family, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/gemini-antigravity-preview-latest-new-family.md.
+    "antigravity-preview-latest",
+    // Gemini 3.8 Flash TTS and Flash Lite TTS, first listed 2026-09-24 (drift
+    // run 35963561763). Text-to-speech, the same category as the enumerated
+    // `gemini-2.5-*-preview-tts` entries above and the pattern-excluded
+    // `gemini-3.1-flash-tts-preview`. These ids end in `-tts`, not `-preview`,
+    // so no rule reaches them and they must be enumerated.
+    //
+    // Classified on the live model, not on the "tts" substring alone, and NOT
+    // on `supportedGenerationMethods` alone. Both ids declare `generateContent`
+    // (their list, `[generateContent, countTokens, batchGenerateContent]`, is
+    // the text tier `gemini-3.8-flash`'s list minus `createCachedContent`), so a
+    // methods-only rule would have argued INCLUDE (the `lyria-3.5` trap above).
+    //
+    // The deciding fact is the probe: a plain text generateContent call to each
+    // id returned 200 with a single `inlineData` part, `mimeType: "audio/wav"`,
+    // no text part, and `candidatesTokensDetails` `modality: "AUDIO"`
+    // (`gemini-3.8-flash-lite-tts` probed live 2026-10-02;
+    // `gemini-3.8-flash-tts` probed live 2026-10-02 and re-probed 2026-10-05,
+    // the re-probe recording the `modality: "AUDIO"` field). They emit audio,
+    // not a text turn, so they can never be text-generation drift. The listing
+    // entries corroborate it: `displayName: "Gemini 3.8 Flash TTS"` /
+    // `"Gemini 3.8 Flash Lite TTS"`, and `inputTokenLimit: 8192` (vs 1048576 for the text
+    // tier `gemini-3.8-flash`) — identical to `gemini-2.5-flash-preview-tts`.
+    //
+    // No knownVoiceModelFamilies pairing: that seed set is watched only by the
+    // OpenAI realtime canary (ws-realtime.drift.ts reads listOpenAIModels), and
+    // neither id declares `bidiGenerateContent`, so the Gemini Live leg does
+    // not select them.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/gemini-gemini-3.8-flash-tts-new-family.md and
+    // drift-proposals/gemini-gemini-3.8-flash-lite-tts-new-family.md.
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     // NOTE: every `-preview` family (gemini-3.x preview tiers, deep-research
     // previews, antigravity-preview-05, computer-use-preview-10, image/tts/robotics
     // previews, lyria/veo/nano-banana previews, gemini-embedding-2-preview, …) is
@@ -495,6 +788,23 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
 export const deprecatedFamilies: Record<Provider, Set<string>> = {
   openai: familySet("openai", [
     // drift-sync appends recorded deprecations here.
+    "gpt-3.5-turbo", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4-turbo", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-4.1-nano", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "gpt-5-chat-latest", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5-codex", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.1-chat-latest", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.1-codex", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.1-codex-max", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.1-codex-mini", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.2-chat-latest", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.2-codex", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "gpt-5.3-chat-latest", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "o1", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o1-pro", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "o3-mini", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "o4-mini", // DEPRECATED 2026-11-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
   ]),
   anthropic: familySet("anthropic", [
     // drift-sync appends recorded deprecations here.

@@ -73,6 +73,13 @@
           </tbody>
         </table>
 
+        <p>
+          If the client hangs up during a streamed transcription (<code>stream=true</code>), aimock
+          stops the stream and journals the request with
+          <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>).
+        </p>
+
         <h2>Unit Test: Simple Transcription</h2>
         <p>
           Using the programmatic API with vitest, register a fixture and assert on the response.

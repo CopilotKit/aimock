@@ -192,7 +192,14 @@ describe("image edit endpoint", () => {
   });
 });
 
-describe("image variations endpoint", () => {
+describe("image variations endpoint — REMOVED upstream", () => {
+  // `/v1/images/variations` only ever served `dall-e-2`, which OpenAI removed on
+  // 2026-05-12; the endpoint went with it. Observed against api.openai.com on
+  // 2026-09-15, keyless AND with a live key: HTTP 404, zero-byte body, no
+  // `content-type`, no `openai-version`/`x-request-id` — identical to a made-up
+  // path, and the 404 lands BEFORE auth (a keyless /v1/images/generations 401s).
+  // Per the deprecation policy aimock mocks the removal, not a success.
+  // These tests were CONVERTED from ones that graded a 200 image envelope.
   let mock: LLMock | undefined;
 
   afterEach(async () => {
@@ -200,13 +207,19 @@ describe("image variations endpoint", () => {
     mock = undefined;
   });
 
-  test("multipart image variations request returns fixture", async () => {
-    mock = new LLMock({ port: 0 });
-    mock.addFixture({
+  /** The fixture that USED to make this endpoint answer 200. */
+  const startWithMatchingImageFixture = async (): Promise<LLMock> => {
+    const m = new LLMock({ port: 0 });
+    m.addFixture({
       match: { endpoint: "image" },
       response: { image: { url: "https://example.com/variation.png" } },
     });
-    await mock.start();
+    await m.start();
+    return m;
+  };
+
+  test("multipart variations request returns the removed-endpoint 404, not a fixture", async () => {
+    mock = await startWithMatchingImageFixture();
 
     const formData = new FormData();
     formData.append("image", new Blob(["fake image data"], { type: "image/png" }), "image.png");
@@ -220,21 +233,19 @@ describe("image variations endpoint", () => {
       body: formData,
     });
 
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.data[0].url).toBe("https://example.com/variation.png");
-    expect(typeof data.created).toBe("number");
+    expect(res.status).toBe(404);
+    // The real API sends a zero-byte body with NO content-type — not a JSON
+    // error envelope. A mock that answered `{"error":{...}}` would be inventing
+    // a shape the upstream does not send.
+    expect(res.headers.get("content-type")).toBeNull();
+    expect(await res.text()).toBe("");
   });
 
-  test("image variations does not require prompt", async () => {
-    mock = new LLMock({ port: 0 });
-    mock.addFixture({
-      match: { endpoint: "image" },
-      response: { image: { url: "https://example.com/var.png" } },
-    });
-    await mock.start();
+  test("a matching fixture cannot resurrect the endpoint, with or without a model", async () => {
+    mock = await startWithMatchingImageFixture();
 
-    // No prompt field — should still work
+    // No `model`, no `prompt` — the shape that used to be accepted. Upstream
+    // never reaches model validation, so neither does aimock.
     const formData = new FormData();
     formData.append("image", new Blob(["fake"]), "image.png");
 
@@ -244,35 +255,42 @@ describe("image variations endpoint", () => {
       body: formData,
     });
 
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.data[0].url).toBe("https://example.com/var.png");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("");
   });
 
-  test("image variations response shape matches generations format", async () => {
-    mock = new LLMock({ port: 0 });
-    mock.addFixture({
-      match: { endpoint: "image" },
-      response: {
-        images: [{ url: "https://example.com/v1.png" }, { b64Json: "iVBORw0KGgo=" }],
-      },
-    });
-    await mock.start();
+  test("the removal is journaled, so a caller can see the call was made", async () => {
+    mock = await startWithMatchingImageFixture();
 
     const formData = new FormData();
     formData.append("image", new Blob(["fake"]), "image.png");
+    await fetch(`${mock.url}/v1/images/variations`, { method: "POST", body: formData });
 
-    const res = await fetch(`${mock.url}/v1/images/variations`, {
+    const entries = mock.journal.getAll().filter((e) => e.path.includes("/v1/images/variations"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].response.status).toBe(404);
+    expect(entries[0].response.fixture).toBeNull();
+  });
+
+  // GUARD: the sibling image endpoints are ALIVE upstream (verified in the same
+  // 2026-09-15 session — both reach the OpenAI app and answer with
+  // `openai-version`/`x-request-id` headers). The sunset must not leak onto them.
+  test("GUARD: /v1/images/generations and /v1/images/edits still serve fixtures", async () => {
+    mock = await startWithMatchingImageFixture();
+
+    const gen = await fetch(`${mock.url}/v1/images/generations`, {
       method: "POST",
-      headers: { Authorization: "Bearer test" },
-      body: formData,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-image-1", prompt: "a cat" }),
     });
+    expect(gen.status).toBe(200);
+    expect((await gen.json()).data[0].url).toBe("https://example.com/variation.png");
 
-    const data = await res.json();
-    expect(data).toHaveProperty("created");
-    expect(data).toHaveProperty("data");
-    expect(data.data).toHaveLength(2);
-    expect(data.data[0].url).toBe("https://example.com/v1.png");
-    expect(data.data[1].b64_json).toBe("iVBORw0KGgo=");
+    const editForm = new FormData();
+    editForm.append("image", new Blob(["fake"]), "image.png");
+    editForm.append("prompt", "a cat");
+    const edit = await fetch(`${mock.url}/v1/images/edits`, { method: "POST", body: editForm });
+    expect(edit.status).toBe(200);
+    expect((await edit.json()).data[0].url).toBe("https://example.com/variation.png");
   });
 });

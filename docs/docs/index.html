@@ -248,9 +248,9 @@
               </div>
               <pre><code>{
   <span class="key">"llm"</span>:    { <span class="key">"fixtures"</span>: <span class="str">"./fixtures/llm"</span> },
-  <span class="key">"mcp"</span>:    { <span class="key">"tools"</span>: [<span class="str">"search"</span>, <span class="str">"fetch"</span>] },
-  <span class="key">"a2a"</span>:    { <span class="key">"agents"</span>: [<span class="str">"planner"</span>] },
-  <span class="key">"vector"</span>: { <span class="key">"provider"</span>: <span class="str">"pinecone"</span> }
+  <span class="key">"mcp"</span>:    { <span class="key">"tools"</span>: [{ <span class="key">"name"</span>: <span class="str">"search"</span>, <span class="key">"result"</span>: <span class="str">"3 results"</span> }] },
+  <span class="key">"a2a"</span>:    { <span class="key">"agents"</span>: [{ <span class="key">"name"</span>: <span class="str">"planner"</span> }] },
+  <span class="key">"vector"</span>: { <span class="key">"collections"</span>: [{ <span class="key">"name"</span>: <span class="str">"docs"</span>, <span class="key">"dimension"</span>: <span class="num">1536</span> }] }
 }</code></pre>
             </div>
             <p><a href="/aimock-cli">Quick Start: full suite &rarr;</a></p>
@@ -262,41 +262,88 @@
 
         <div class="highlight-grid">
           <div class="highlight-card">
-            <span class="highlight-card-title">Framework Guides</span>
+            <span class="highlight-card-title">Citations &amp; Generated Images</span>
+            <span class="version-note">New in 1.47.0</span>
             <p class="highlight-card-desc">
-              Test your LangChain, CrewAI, PydanticAI, LlamaIndex, Mastra, ADK, or MAF agents
+              Script source citations on OpenAI, Claude and Gemini replies, and generated images on
+              the Responses API and Gemini, in each provider's own format
             </p>
-            <a href="/integrate-langchain" class="highlight-card-cta">Guides <span>&rarr;</span></a>
+            <a href="/fixtures#citations-and-files" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Multimedia APIs</span>
+            <span class="highlight-card-title">Raw Passthrough</span>
+            <span class="version-note">New in 1.47.0</span>
             <p class="highlight-card-desc">
-              Image generation, text-to-speech, transcription, and video mocking
+              Send provider events or JSON exactly as written, for fields aimock does not model yet,
+              with timing, chaos and disconnects still applied
             </p>
-            <a href="/images" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/raw-passthrough" class="highlight-card-cta">Docs <span>&rarr;</span></a>
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">AG-UI Protocol</span>
+            <span class="highlight-card-title">Stream Realism</span>
+            <span class="version-note">New in 1.47.0</span>
             <p class="highlight-card-desc">
-              Mock agent-to-UI event streams for CopilotKit frontends
+              Every LLM provider stops sending and journals the request when the client hangs up,
+              and non-streaming replies on every provider can opt in to realistic timing
             </p>
-            <a href="/agui-mock" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/error-injection#client-disconnects" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">GitHub Action</span>
-            <p class="highlight-card-desc">One-line CI setup for mock-backed test suites</p>
-            <a href="/github-action" class="highlight-card-cta">Setup <span>&rarr;</span></a>
+            <span class="highlight-card-title">Native Catalogs &amp; Auth Errors</span>
+            <span class="version-note">New in 1.46.0</span>
+            <p class="highlight-card-desc">
+              Gemini and Anthropic model lists, token counts, and opt-in provider-native 401s, so
+              you can test model pickers and bad-key handling
+            </p>
+            <a href="/claude-messages#model-catalog" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
           </div>
 
           <div class="highlight-card">
-            <span class="highlight-card-title">Context Routing</span>
+            <span class="highlight-card-title">Model Misbehavior</span>
             <p class="highlight-card-desc">
-              Scope fixtures per integration with <code>X-AIMock-Context</code> header
+              Opt-in faults that real models produce: invalid tool JSON, unknown tools, schema
+              violations, length stops, refusals, and empty replies
             </p>
-            <a href="/fixtures#context" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+            <a href="/model-misbehavior" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">MCP Record &amp; Replay</span>
+            <p class="highlight-card-desc">
+              Record a live MCP server once, replay it offline, script tool answers per scenario,
+              and see which fakes each test used
+            </p>
+            <a href="/mcp-mock#recorded-fakes" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">Responses API Tools</span>
+            <p class="highlight-card-desc">
+              Opt-in namespaced functions and custom tool calls, plus <code>commentary</code> /
+              <code>final_answer</code> message phases (new in 1.46.0)
+            </p>
+            <a href="/responses-api#namespaced-and-custom-tool-calls" class="highlight-card-cta"
+              >Docs <span>&rarr;</span></a
+            >
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">OpenAI Platform APIs</span>
+            <p class="highlight-card-desc">
+              Files, Batches, Fine-tuning jobs, and Vector Stores with deterministic search
+            </p>
+            <a href="/vector-stores" class="highlight-card-cta">Docs <span>&rarr;</span></a>
           </div>
         </div>
 
@@ -344,6 +391,11 @@
               <td>Vector DBs</td>
               <td>Pinecone, Qdrant, ChromaDB</td>
               <td><a href="/vector-mock">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>Upload, list, retrieve, download and delete, byte-exact</td>
+              <td><a href="/files">Docs &rarr;</a></td>
             </tr>
             <tr>
               <td>Services</td>

@@ -967,7 +967,7 @@ describe("VectorMock", () => {
       expect(requests[0].service).toBe("vector");
     });
 
-    it("does NOT journal unhandled requests in standalone mode", async () => {
+    it("journals unhandled requests in standalone mode", async () => {
       vector = new VectorMock();
       const journal = new Journal();
       vector.setJournal(journal);
@@ -976,9 +976,12 @@ describe("VectorMock", () => {
       const res = await get(url, "/nonexistent");
       expect(res.status).toBe(404);
 
-      // Unhandled 404 should NOT create a journal entry
+      // An unhandled 404 is still traffic the control plane must see
+      // (journal filters, fixtures dump) — every other handler journals
+      // its 404s, so the vector wrapper does too.
       const requests = vector.getRequests();
-      expect(requests).toHaveLength(0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].response.status).toBe(404);
     });
 
     it("journals handled requests in standalone mode", async () => {

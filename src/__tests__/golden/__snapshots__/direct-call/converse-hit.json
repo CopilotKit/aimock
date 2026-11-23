@@ -1,0 +1,7 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"Hi there.\"}]}},\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+}

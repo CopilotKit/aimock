@@ -25,7 +25,10 @@
  *   model-registry.ts — PREVIEW_FAMILY, GEMMA_FAMILY, NON_MODEL_TOKENS,
  *                       familySet, isClassifiedFamily
  *   voice-models.ts   — isVoiceModelId, normalizeVoiceModelFamily,
- *                       detectVoiceModelDrift
+ *                       detectVoiceModelDrift, detectOpenAIVoiceModelDrift
+ *                       (normalizeVoiceModelFamily and detectVoiceModelDrift
+ *                       are module-private; their behaviour is reached
+ *                       through detectOpenAIVoiceModelDrift)
  *
  * Frozen surfaces — DATA, membership-pinned in `DATA_FROZEN`:
  *   model-registry.ts      — includeFamilies and excludeFamilies, per provider
@@ -50,7 +53,7 @@
  * re-recorded). Its invariants are asserted behaviourally in
  * `model-registry.test.ts` instead.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -67,11 +70,27 @@ import { normalizeModelFamily } from "./model-family.js";
 import { FORWARD_LOOKING_FAMILIES, MIN_LISTING_SIZE } from "./deprecation-detector.js";
 import {
   isVoiceModelId,
-  knownVoiceModelFamilies,
+  listKnownVoiceModelFamilies,
   gaRealtimeModels,
-  normalizeVoiceModelFamily,
-  detectVoiceModelDrift,
+  detectOpenAIVoiceModelDrift,
+  type VoiceModelDriftResult,
 } from "./voice-models.js";
+
+/**
+ * Run the module-private voice detector on `ids` through its only exported
+ * entry, with `fetch` stubbed to serve `ids` as the OpenAI `/v1/models` listing.
+ */
+async function detectOnListing(ids: string[]): Promise<VoiceModelDriftResult> {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }))),
+  );
+  return detectOpenAIVoiceModelDrift("test-key");
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /**
  * Read a sibling drift module's source, memoized. LAZY on purpose — see the
@@ -227,19 +246,32 @@ const FROZEN: Record<string, { source: () => string; pin: string }> = {
     source: () =>
       extractSole(
         src("voice-models.ts"),
-        /^export function normalizeVoiceModelFamily\([\s\S]*?\n}/m,
+        /^function normalizeVoiceModelFamily\([\s\S]*?\n}/m,
         "normalizeVoiceModelFamily",
       ),
-    pin: "79c1f879d5c00746c4312ce41d06a492148e105af42e4ad57733c7eef130444a",
+    pin: "2065a1d63a4980b5853710b0990fd172394c90f6ea34778c4ab4f81d5672935b",
   },
   detectVoiceModelDrift: {
     source: () =>
       extractSole(
         src("voice-models.ts"),
-        /^export function detectVoiceModelDrift\([\s\S]*?\n}/m,
+        /^function detectVoiceModelDrift\([\s\S]*?\n}/m,
         "detectVoiceModelDrift",
       ),
-    pin: "4a365ed2b74084ba5d664476b872ba8fc9bc4036820bb86f42c840789c6269d1",
+    pin: "c423dff326945806b5acae2503b02cbb4e760189f4a31be64f7a3a7e36254355",
+  },
+  // The realtime canary's ONLY live entry point: it fetches OpenAI's listing and
+  // hands it to `detectVoiceModelDrift`. Pinning the detector alone leaves this
+  // wrapper open — feeding it an empty or filtered listing (`.slice(0, 0)`)
+  // silences the canary with every other pin still green.
+  detectOpenAIVoiceModelDrift: {
+    source: () =>
+      extractSole(
+        src("voice-models.ts"),
+        /^export async function detectOpenAIVoiceModelDrift\([\s\S]*?\n}/m,
+        "detectOpenAIVoiceModelDrift",
+      ),
+    pin: "eb1b0fd8113254f5abf9669a9ef2f443411060b235370e5431936950ba112094",
   },
 };
 
@@ -318,25 +350,26 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
   // sets must MEAN, so they survive a legitimate refactor and still catch a
   // neutered function. Each case below was verified to fail against the specific
   // one-line silencing edit it exists to catch.
-  it("keeps normalizeVoiceModelFamily collapsing snapshots but not short tails", () => {
-    // Dated snapshots and build tags collapse onto the family. An identity
-    // normalizer (`return id`) fails here — and would NOT move the
+  it("keeps normalizeVoiceModelFamily collapsing snapshots but not short tails", async () => {
+    // The normalizer is module-private, so it is observed through the detector
+    // it feeds. Dated snapshots and build tags collapse onto the family. An
+    // identity normalizer (`return id`) fails here — and would NOT move the
     // knownVoiceModelFamilies data pin, because those seeds are already
     // normalized, so this is the only thing standing in its way.
-    expect(normalizeVoiceModelFamily("gpt-audio-2025-08-28")).toBe("gpt-audio");
-    expect(normalizeVoiceModelFamily("tts-1-1106")).toBe("tts-1");
+    expect(
+      (await detectOnListing(["gpt-audio-2025-08-28", "tts-1-1106", "gpt-live-1"])).unknown,
+    ).toEqual([]);
     // A single-digit tail is deliberately NOT stripped: `gpt-live-1-mini` must
     // stay an UNKNOWN family rather than collapsing onto the now-classified
     // `gpt-live-1`. Over-stripping here silences the exact case the canary was
     // broadened for.
-    expect(normalizeVoiceModelFamily("gpt-live-1")).toBe("gpt-live-1");
-    expect(normalizeVoiceModelFamily("gpt-live-1-mini")).toBe("gpt-live-1-mini");
+    expect((await detectOnListing(["gpt-live-1-mini"])).unknown).toEqual(["gpt-live-1-mini"]);
     // Already-normalized input is a fixed point (the seed-set build relies on it).
-    expect(normalizeVoiceModelFamily("gpt-realtime")).toBe("gpt-realtime");
+    expect((await detectOnListing(["gpt-realtime"])).hasGA).toBe(true);
   });
 
-  it("keeps detectVoiceModelDrift reporting a genuinely new voice family", () => {
-    const { candidateModels, unknown } = detectVoiceModelDrift([
+  it("keeps detectVoiceModelDrift reporting a genuinely new voice family", async () => {
+    const { candidateModels, unknown } = await detectOnListing([
       "gpt-4o", // not voice — must not be a candidate at all
       "gpt-realtime-2025-08-28", // known family via a dated snapshot
       "gpt-live-1", // classified voice family (2026-09-10) — must NOT be unknown
@@ -347,17 +380,17 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
     expect(unknown).toEqual(["gpt-live-1-mini"]);
   });
 
-  it("keeps detectVoiceModelDrift reporting hasGA=false when the GA family is gone", () => {
+  it("keeps detectVoiceModelDrift reporting hasGA=false when the GA family is gone", async () => {
     // THE silencing edit nothing in the repo caught: hard-wiring `hasGA = true`
     // permanently suppresses NO_GA_REALTIME_MODELS — the alarm that fires when
     // OpenAI renames or removes the entire GA realtime family. A voice-only list
     // with no GA family present must report false.
-    expect(detectVoiceModelDrift(["whisper-1", "tts-1", "gpt-4o-transcribe"]).hasGA).toBe(false);
-    expect(detectVoiceModelDrift([]).hasGA).toBe(false);
+    expect((await detectOnListing(["whisper-1", "tts-1", "gpt-4o-transcribe"])).hasGA).toBe(false);
+    expect((await detectOnListing([])).hasGA).toBe(false);
     // …and true only when a GA family really is present, including via a dated
     // snapshot that has to be normalized to be recognized.
-    expect(detectVoiceModelDrift(["gpt-realtime-2025-08-28"]).hasGA).toBe(true);
-    expect(detectVoiceModelDrift(["gpt-realtime-mini"]).hasGA).toBe(true);
+    expect((await detectOnListing(["gpt-realtime-2025-08-28"])).hasGA).toBe(true);
+    expect((await detectOnListing(["gpt-realtime-mini"])).hasGA).toBe(true);
   });
 
   // ---------------------------------------------------------------------------
@@ -415,7 +448,7 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
  * `members` is a THUNK, for exactly the reason `FROZEN.source` is one: every
  * entry here reads an imported binding, and vitest resolves a renamed export to
  * `undefined` rather than failing the import, so a module-scope `[...binding]`
- * threw during COLLECTION and took the whole FILE down — all twelve source pins,
+ * threw during COLLECTION and took the whole FILE down — all thirteen source pins,
  * every behavioural anchor, and every other data pin reported as zero tests.
  * Reading the set inside the `it` keeps the blast radius to the one entry whose
  * data actually moved.
@@ -423,19 +456,19 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
 const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "includeFamilies.openai": {
     members: () => [...includeFamilies.openai].sort(),
-    pin: "65899f85f8a87178b19fdb0be4ea1b37c3f18aabe925733c8d78e1beaf956c8e",
+    pin: "06dbb3107a63594655d3ccd5bcb84761588c1985b8a35bbf153ecc4d4c2cc83a",
   },
   "includeFamilies.anthropic": {
     members: () => [...includeFamilies.anthropic].sort(),
-    pin: "3934772426666eb3cc770fe879c53e02b0432368b40b0cdcf8a6d4a6c4cad272",
+    pin: "2e4a9019ca5d772a778e2c75b281e9b644b5a6f1732f27d2df8963a93e83bb20",
   },
   "includeFamilies.gemini": {
     members: () => [...includeFamilies.gemini].sort(),
-    pin: "eded621072bfe853b144378c8988a4ab3c471861f44dacc56c75c90a6016cd55",
+    pin: "770b23282c7a855c92e310d12831ff7bce816757c761099acaf60740b44f1b5f",
   },
   "excludeFamilies.openai": {
     members: () => [...excludeFamilies.openai].sort(),
-    pin: "ccf086b3e7f07b6698f0c875088bd59f1250833d4248e0d624e87c6f592e4021",
+    pin: "d9bc85a9e8796c80e6f283b606b5fc47ed9fb196bd337e9fb3808bbe1aec14f9",
   },
   "excludeFamilies.anthropic": {
     members: () => [...excludeFamilies.anthropic].sort(),
@@ -443,7 +476,7 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "excludeFamilies.gemini": {
     members: () => [...excludeFamilies.gemini].sort(),
-    pin: "748359a2dc129363e1a3d754c007ec6f1ef7b2a731a2fd58650bdbb62cbf6265",
+    pin: "47871d0731501dccdf5c8684444b5f5e981f541c128aeb2fa7738b8dcdab3d3f",
   },
   // The realtime canary's seed sets, previously pinned NOWHERE. An edit to
   // either one was invisible to every guard in the repo: adding a family to
@@ -453,8 +486,8 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   // Both are one-line silencing edits, which is exactly what this file exists
   // to make impossible.
   knownVoiceModelFamilies: {
-    members: () => [...knownVoiceModelFamilies].sort(),
-    pin: "221ae974089cb3d6d0f0a200a3d1f31a7bac7f26551f7c317aac0fe2e7b20a5e",
+    members: () => listKnownVoiceModelFamilies(),
+    pin: "ecbcb3028e98d5bdf2ec5368cd35c7bf1f772e4c610d33135a98270f2785bfec",
   },
   gaRealtimeModels: {
     members: () => [...gaRealtimeModels].sort(),

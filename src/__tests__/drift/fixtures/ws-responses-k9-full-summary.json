@@ -1,0 +1,1032 @@
+[
+  {
+    "type": "response.created",
+    "response": {
+      "id": "resp_090aa1a6eb964077006acad721985087d0b28a9af967c0665a",
+      "object": "response",
+      "created_at": 1791678241,
+      "status": "in_progress",
+      "access_programs": null,
+      "background": false,
+      "completed_at": null,
+      "error": null,
+      "frequency_penalty": 0,
+      "incomplete_details": null,
+      "instructions": null,
+      "max_output_tokens": 32,
+      "max_tool_calls": null,
+      "model": "o4-mini-2025-04-16",
+      "moderation": null,
+      "output": [],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "auto",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": null,
+      "user": null,
+      "metadata": {}
+    },
+    "sequence_number": 0
+  },
+  {
+    "type": "response.in_progress",
+    "response": {
+      "id": "resp_090aa1a6eb964077006acad721985087d0b28a9af967c0665a",
+      "object": "response",
+      "created_at": 1791678241,
+      "status": "in_progress",
+      "access_programs": null,
+      "background": false,
+      "completed_at": null,
+      "error": null,
+      "frequency_penalty": 0,
+      "incomplete_details": null,
+      "instructions": null,
+      "max_output_tokens": 32,
+      "max_tool_calls": null,
+      "model": "o4-mini-2025-04-16",
+      "moderation": null,
+      "output": [],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "auto",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": null,
+      "user": null,
+      "metadata": {}
+    },
+    "sequence_number": 1
+  },
+  {
+    "type": "response.output_item.added",
+    "item": {
+      "id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABqytchHpjxuUFufrPCDZpLaH1gx6aCNqVhAXAdjrugS4uxUz5X1MZYw8caJmmp_eNM2w9TVVcCwrIEW_x8CP4cl_WfvAN8WW1hsMx64jUIFcSa_uARBVv4DR1jOOobWGTuKguzsvSfOx06m58qOEFhXi8y0kR17070NASUzp5MYH2YaJE5q1UpB4qPJBG7CZJl-mPCj_XCF_cZusEYQJKUfFBH7kOPTVFpBrrtQTjkKlP2b-JDVy85aI1xOkO9CyW9CZatFTOVU5UPKPXnR9_0UJZk2UpijXUge8-GtjCLeRMKUq3WqHY03-TTqVUHriPGGfALkSquR_5VIHeUDY8Dy8popaKc1wL-p7OmKDQOvUGJUCeWKCP6xhnxMXpQu6vxYZUfddX3oIZDtE92takzY0m-FbthjS1hxTyd8aOlCs-_OucWh3F7wi-MeSDOcsbFsRuZxP1XUmh00Hn1fPFQ85rILADHisOGxWlVhJ8AFKHo8AUMzm0rNuPjY6bgw6y_-QOQsAXK34enbxKQdqfKLcHxqI9AvHB88qIsE_3jaSli0nz3s3wUbdrlKSDn0mY-k3E5HUBG8hn7qRADrs-L7MBEJFbVNbp1nz5IChmy2Rq68fHH3yERJGOc_6r-9BxOT8sTrF7QwyiE7FYXJJWmakExz548aySCv9RC6Bhch4BIn4nxxT6LodnVevqGigV5oHyGgj0vCbFxfazt6EO-57ZDPKiPD32yMyPUURpP9myAeVXZskGC_6J85qYDGGRMH8ozQ__hIeJW2kezhZnhzuEIR-SUVhZoorjYwjhKvKOqx7TiJhEO-F7yeWULjLk0t6ZZk-37WG9mMBw92RXfRhehw3f50Hpp4VDB3XrHjhpyknugbLztzFwj3dicP68f4cEAmIoxF_9Vq4A8TxWNMR_zZvQ7RJKbEYjump-0fyTz39J9480h-svmbVbAfHwJ2tfgKaoJZ9vnB3YvJxuDiJo4W74R_iXFqRePxsBkLXn-b6W8-kB7eol4NVYoCy0VfOAZFzJzrhwxKC2LEfK4at2Skk-0NVdV4R0cRAsao2s5GNz971W6ZbWm9jiPVm4z_Y2_C0jpF_WRRgFwVa8te5POLUf1vaLwc7QCj3HXHM84T8hU-6zWt6iP2f2giDKWaVtyC1piCBnt5K2lZAbkv-Ucb8no8dR0M_qyDqho7acVACAN7ZSAXEncCeeGMAK3awPU85WtxNFX2-chISypUzZVjg==",
+      "summary": []
+    },
+    "output_index": 0,
+    "sequence_number": 2
+  },
+  {
+    "type": "response.reasoning_summary_part.added",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "output_index": 0,
+    "part": {
+      "type": "summary_text",
+      "text": ""
+    },
+    "sequence_number": 3,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "**Exploring positive integers for primes**\n\nThe",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "p",
+    "output_index": 0,
+    "sequence_number": 4,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " user",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "CCA7AVaZ3eC",
+    "output_index": 0,
+    "sequence_number": 5,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " is",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "qKU68ecSsNrAk",
+    "output_index": 0,
+    "sequence_number": 6,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " interested",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "iQLz7",
+    "output_index": 0,
+    "sequence_number": 7,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " in",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "CrF0oTlYNKi8P",
+    "output_index": 0,
+    "sequence_number": 8,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " finding",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "3YIYEmsp",
+    "output_index": 0,
+    "sequence_number": 9,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " all",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "0L7vAyDAsr3i",
+    "output_index": 0,
+    "sequence_number": 10,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " positive",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "4CVvLAU",
+    "output_index": 0,
+    "sequence_number": 11,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " integers",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "qlHTsMU",
+    "output_index": 0,
+    "sequence_number": 12,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " n",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "IvjlK9rBPQRjOj",
+    "output_index": 0,
+    "sequence_number": 13,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " below",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "EIA0mKn7sa",
+    "output_index": 0,
+    "sequence_number": 14,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " 100",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "0GtYshZmimlB",
+    "output_index": 0,
+    "sequence_number": 15,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ",",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "DToedk9vabrPQxQ",
+    "output_index": 0,
+    "sequence_number": 16,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "000",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "gBodftzgt7SXw",
+    "output_index": 0,
+    "sequence_number": 17,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " where",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "xYZazGfEUa",
+    "output_index": 0,
+    "sequence_number": 18,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " the",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "8uRYLIXiN6Nr",
+    "output_index": 0,
+    "sequence_number": 19,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " expression",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "SIkFp",
+    "output_index": 0,
+    "sequence_number": 20,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " n",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "ilBRbtlw1lt6AK",
+    "output_index": 0,
+    "sequence_number": 21,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "²",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "ndqXn6wz6bxunhT",
+    "output_index": 0,
+    "sequence_number": 22,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " +",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "tPtIDr2Farz1TF",
+    "output_index": 0,
+    "sequence_number": 23,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " n",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "xVsKRzmkI0ayaa",
+    "output_index": 0,
+    "sequence_number": 24,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " +",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "CQFz3IlZsZSJlx",
+    "output_index": 0,
+    "sequence_number": 25,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " 41",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "54eCz3KWNG0Zo",
+    "output_index": 0,
+    "sequence_number": 26,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " yields",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "4Adk01XjS",
+    "output_index": 0,
+    "sequence_number": 27,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " a",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "1Zwpk5aSXZhFMu",
+    "output_index": 0,
+    "sequence_number": 28,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " prime",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "oTaHIFvaOp",
+    "output_index": 0,
+    "sequence_number": 29,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " number",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "TsDL9yeZk",
+    "output_index": 0,
+    "sequence_number": 30,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ".",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "kvlRQDQDvBsgNc3",
+    "output_index": 0,
+    "sequence_number": 31,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " That's",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "nbC4cghJB",
+    "output_index": 0,
+    "sequence_number": 32,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " a",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "p6aXqHnPgclWBb",
+    "output_index": 0,
+    "sequence_number": 33,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " fascinating",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "Gql2",
+    "output_index": 0,
+    "sequence_number": 34,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " mathematical",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "H7O",
+    "output_index": 0,
+    "sequence_number": 35,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " challenge",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "KRdwZN",
+    "output_index": 0,
+    "sequence_number": 36,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "!",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "wjqSCbleAqDN1wR",
+    "output_index": 0,
+    "sequence_number": 37,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " I",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "PEWlAUAlCULUco",
+    "output_index": 0,
+    "sequence_number": 38,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " need",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "nOtg3VZzvwQ",
+    "output_index": 0,
+    "sequence_number": 39,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " to",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "xs0myK7QtgyA7",
+    "output_index": 0,
+    "sequence_number": 40,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " think",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "9CGhEbUZAa",
+    "output_index": 0,
+    "sequence_number": 41,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " about",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "rO9HqjjwI0",
+    "output_index": 0,
+    "sequence_number": 42,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " checking",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "SWgQXpL",
+    "output_index": 0,
+    "sequence_number": 43,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " each",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "nsEhairKdK3",
+    "output_index": 0,
+    "sequence_number": 44,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " integer",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "iOG9KGZm",
+    "output_index": 0,
+    "sequence_number": 45,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " in",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "HMErf3FVHrMjo",
+    "output_index": 0,
+    "sequence_number": 46,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " that",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "TdPZMKGLjqC",
+    "output_index": 0,
+    "sequence_number": 47,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " range",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "TrJolltm0t",
+    "output_index": 0,
+    "sequence_number": 48,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ",",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "bVpxIUVX3GG960h",
+    "output_index": 0,
+    "sequence_number": 49,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " calculating",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "dpG8",
+    "output_index": 0,
+    "sequence_number": 50,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " the",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "g27fwKJqKRD2",
+    "output_index": 0,
+    "sequence_number": 51,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " expression",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "Sr0U0",
+    "output_index": 0,
+    "sequence_number": 52,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ",",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "xY6C6Dd1oCstFPG",
+    "output_index": 0,
+    "sequence_number": 53,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " and",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "uWEzt9pgV8Q1",
+    "output_index": 0,
+    "sequence_number": 54,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " verifying",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "gwrJYK",
+    "output_index": 0,
+    "sequence_number": 55,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " if",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "gLHAlQaXd3BiX",
+    "output_index": 0,
+    "sequence_number": 56,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " the",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "EldSAKuWqmmj",
+    "output_index": 0,
+    "sequence_number": 57,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " result",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "ofeDDwix0",
+    "output_index": 0,
+    "sequence_number": 58,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " is",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "u1MEkm13hFVjb",
+    "output_index": 0,
+    "sequence_number": 59,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " prime",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "HmIzIKWjSz",
+    "output_index": 0,
+    "sequence_number": 60,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ".",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "PTJoUCFVA94y5ku",
+    "output_index": 0,
+    "sequence_number": 61,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " It",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "vfUXX3uZyJbKf",
+    "output_index": 0,
+    "sequence_number": 62,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " could",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "B9vXBcFIL5",
+    "output_index": 0,
+    "sequence_number": 63,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " involve",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "mItvNayt",
+    "output_index": 0,
+    "sequence_number": 64,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " looping",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "DTBZblbl",
+    "output_index": 0,
+    "sequence_number": 65,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " through",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "s2jqj0wb",
+    "output_index": 0,
+    "sequence_number": 66,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " numbers",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "TIqOGn25",
+    "output_index": 0,
+    "sequence_number": 67,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " and",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "1nuxS5lbFU4m",
+    "output_index": 0,
+    "sequence_number": 68,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " applying",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "nCyvRIQ",
+    "output_index": 0,
+    "sequence_number": 69,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " a",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "jWQTzg3xpY8Wz1",
+    "output_index": 0,
+    "sequence_number": 70,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " primal",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "RAGVyX26X",
+    "output_index": 0,
+    "sequence_number": 71,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "ity",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "zxecdnw0pLNcF",
+    "output_index": 0,
+    "sequence_number": 72,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " test",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "XGCOAwgPbU3",
+    "output_index": 0,
+    "sequence_number": 73,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ".",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "Qgga5iUoHNtcKlb",
+    "output_index": 0,
+    "sequence_number": 74,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " I'll",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "cfEwhNUenl4",
+    "output_index": 0,
+    "sequence_number": 75,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " dive",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "eoG2xbWtAVO",
+    "output_index": 0,
+    "sequence_number": 76,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " into",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "QfefeJ2ySbi",
+    "output_index": 0,
+    "sequence_number": 77,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " this",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "znYmCPjW1Ff",
+    "output_index": 0,
+    "sequence_number": 78,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " step",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "us6nL9umesO",
+    "output_index": 0,
+    "sequence_number": 79,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "-by",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "4lRrYlLRWbHQP",
+    "output_index": 0,
+    "sequence_number": 80,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "-step",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "L89uZCZcnIo",
+    "output_index": 0,
+    "sequence_number": 81,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " to",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "NxNyybQLjaQb1",
+    "output_index": 0,
+    "sequence_number": 82,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " ensure",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "wspmUwGFX",
+    "output_index": 0,
+    "sequence_number": 83,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": " accuracy",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "LlYeDEs",
+    "output_index": 0,
+    "sequence_number": 84,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": ".",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "obfuscation": "CZlb5jZasF8izp4",
+    "output_index": 0,
+    "sequence_number": 85,
+    "summary_index": 0
+  },
+  {
+    "type": "response.reasoning_summary_text.done",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "output_index": 0,
+    "sequence_number": 86,
+    "summary_index": 0,
+    "text": "**Exploring positive integers for primes**\n\nThe user is interested in finding all positive integers n below 100,000 where the expression n² + n + 41 yields a prime number. That's a fascinating mathematical challenge! I need to think about checking each integer in that range, calculating the expression, and verifying if the result is prime. It could involve looping through numbers and applying a primality test. I'll dive into this step-by-step to ensure accuracy."
+  },
+  {
+    "type": "response.reasoning_summary_part.done",
+    "item_id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+    "output_index": 0,
+    "part": {
+      "type": "summary_text",
+      "text": "**Exploring positive integers for primes**\n\nThe user is interested in finding all positive integers n below 100,000 where the expression n² + n + 41 yields a prime number. That's a fascinating mathematical challenge! I need to think about checking each integer in that range, calculating the expression, and verifying if the result is prime. It could involve looping through numbers and applying a primality test. I'll dive into this step-by-step to ensure accuracy."
+    },
+    "sequence_number": 87,
+    "summary_index": 0
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABqytcj9N6I9Crl8NR5-UDXVVko85nOk1MBvflHFZP-rxGY4ZDUxxk4qZqrZF_p2SnDxV-jgQYUMEBUi3hZbgZM3Eg-WCdpF1FuZSIpdosE8ggzoHdA8UrFY9JN5R0PdBmJaBN3PCJ4Bns2XhbS7bb4TniufcV7VU3BsOXdLK1yC8zM7XXEUv_ZZMt39v_fJrZdyY07K9AUmyVAHFSsNOdDDt0fSi66BQYc9hMA92I0niYtsnV82wvutaZTPbcb1qFFCGjFj_P9UkthWZqaCUXalgbx3o4b3mkx3vwF4andXQGaUCuykDehzlKjAvdBePzfHGChfSh15gmNMyIt9wgF2kUkZpoSVbg1xgqsqnbRn1iG-L6erqb35UDP4oCO_PCxQcWKgZsI9XA-euFt6H25-jj3y4rP26MG3N6hltam4uGa4B3-eW6z3QoH6iyoEpIyhrbOaVac0b-9hNH2bFRgMaTEQrno9-tlYdBNvaWv2MhGTz-lCKthoddmW4War2M_VdM1vetEhqOJZdauaDZYfOMYM5mD4bkGMXco3kXA4MZYxcRqFUqzW1CNje2x46v1re6dHINKjaaQY00AZ4iQv1W7dIxAE_98zyaz97aFhR2FQjwyzxWeUdRitLj--rYvA2y-XN6mj3NzlR0MTypd0gPVtUqeFYL58VyVyvvuCXcgXeOzzAHe2P00pfhFzoii1z7Faa3rmt4HVXzxRdpLrceRLGan00QjdSg-aBYSONopaoTm5hrwZdBRCUsqmOVq1AMsnBfiOJHJa-aMraWCVs-cO6DnSQr9SIhFVMRJjinQLkgkcj3u3PuSKOM_CHVsnW_1tl86of_PmmNObD68ekOjP1WIyhkbOzRjcIgYlHyRH_4MlBE_JoMj3FKRvqwpjUSWCKhhvvR5RNGmL_ZnR3i_BhUqjuecUuD8gOpRJP6QB12w5F2CAhsFG-xNMvwsBsjm3s--tPD3xzgh2_BvIA0EvDlN3tFU1Qei11RQe9GM31PH6h0gDFuIAFdcjpqXBCn0CrvHwd7zWLQ3_VIs82KhuM8Iop0rDI6Q1GW8j8PsL9lXD2ffVBAbmcUfw_pXVepb5v2yHx5ocCJVFhW2gPCcMIsvdUriRFFMpxhPlwF0dmgpRp4i2HWn0jkV-irPv5oHmflX9O4bp5aRVcXdVyc2sfm0ekYNmkRjxBVpekcCPcZVXUYtSI-JB671qJ09Q-DfSEMYC_U9vT744ItK-iCzIPFPL9gVXwibv2kLgYogHhdg5BunGgka477e_WlifWIIMul0KQGtUdE2NA55uHme87r0Dg_blhnBUY1R0MYw7YOhXPcCmfUgrR55WaZMHiFV4FvunaVwtDojIVHF_ORMCEpfN7fAcn1jGEsyGySVPMM=",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Exploring positive integers for primes**\n\nThe user is interested in finding all positive integers n below 100,000 where the expression n² + n + 41 yields a prime number. That's a fascinating mathematical challenge! I need to think about checking each integer in that range, calculating the expression, and verifying if the result is prime. It could involve looping through numbers and applying a primality test. I'll dive into this step-by-step to ensure accuracy."
+        }
+      ]
+    },
+    "output_index": 0,
+    "sequence_number": 88
+  },
+  {
+    "type": "response.incomplete",
+    "response": {
+      "id": "resp_090aa1a6eb964077006acad721985087d0b28a9af967c0665a",
+      "object": "response",
+      "created_at": 1791678241,
+      "status": "incomplete",
+      "access_programs": null,
+      "background": false,
+      "completed_at": null,
+      "error": null,
+      "frequency_penalty": 0,
+      "incomplete_details": {
+        "reason": "max_output_tokens"
+      },
+      "instructions": null,
+      "max_output_tokens": 32,
+      "max_tool_calls": null,
+      "model": "o4-mini-2025-04-16",
+      "moderation": null,
+      "output": [
+        {
+          "id": "rs_090aa1a6eb964077006acad721f28487d082e52191dc135f90",
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqytcjKYBV45w3gPg85cbkw1Q9nlbZg-Oig6j0vf5m-VDwzZNtSh6PpGIvI-bN9zL1yuGCeQ-L1xkP2uD2Favc7F7Juj4zn-C83lG8TatLxYXYDrHPDvfJHY_JpJ1lCST-1lF1RgSfVU4oHECrYkuJ_BE1Pb5DZ34z3RKyZFRruMKS_mwoylvvV48MF7EPCe1IDx2XuDcpKv31I86Eg8SnERbFVlCtSSBLJzEUstz_FT74oPfETKixPqpKfgLCRHsSj1SAHmrLfMVpjyHfZaFnJWUx0-z51XAZ4bI0-vpjEcaaInzjm1t-iPUMV0MIpH0geTXq9KuvYLC0XvNq96d27jHywlPK0Z8rUGF01_qRwuLx5HtGYgTV5LsJbsQWwfEBRQozbhhaLqts9-Srkwg1yN-OA3RbSefI9l_42GFSl3aVYYMo1BNpB1CD9xJzZxm1YOM9p7zpKeBtMEzK8Tsm8uU21tFSGNi-Kzx7cHLzXTBJQJTRfOPHDMtpSGRiS88mm8tHKtCsPfLnZMwYvl-UKzlxd5UjmYaft_vYAXP5ddsQGw1fTk-BgBf1hvsO8YaR0e1kTzXc-ZqlJV0py1HbttKRwge51bC7pS6-RfSjy86VBl9fo767oTxroWzWPpjDpU_xsztkvbPy5fuOkx_hLy945BURQ49QiZpYgR33AvxL6kR_eENI079EaS7skR2CVLFP16S6LalSZ-4WVAkHfCbWV3Fwri8mr2TtFqIkzvEsrK97RuO5Mjn9-VzzYeUd82QAX6O5qRtf3mT8G3p4NyLu2dT2Dk7GsG5djCj6lO9yeaoe61GviN-Rs4UnZRoOYdm-PkGLM_eJugJzhTVFkwgWFcmgiklrOpCN2LKiVZuuazNqsU53JWueMXxw30yGlrfLyHafGZEYn__877KjAHsxwpqaJ5p9UYUQ6MokvmnlgyH7vYfjKerX4iksq4RiNX41UKkOUxguOzUGdvJ8tCoF6si7ncwUbxyZe5deCaAvfC0rTSwgc4VtC8A45JjRNLTixSYNCu7AWKuWPQX4GZFY0InrDIY2AZ-mhdeBl17g9PZSYr6AklwEsLQv58jti-v025YwjM5nSfrunhonI5AUHETjgpoUYMwl7lhikP1TwWfKI15aqbk65lHludBqMvsoZjsAetosPTma58rzU365tI9sxUN0L6NmsGTgwx7hvUmGEFwPFs5MliwChBQslEIrC4EtcQD41n5wVf_4C3aAHZDO25F5YqlFSJQSsGHntUCV7GtX0lHfbyHPkfYuAg-XDzqTZRKVjCzB6ljbEX58N7vPQ8CeAJeixXicR00KbVH5FirfsHwqr5hP9bvvLE_EJ2FH23owFwgHykep_tymJbnZFUoVYh4CR0tjeENQgjw=",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "**Exploring positive integers for primes**\n\nThe user is interested in finding all positive integers n below 100,000 where the expression n² + n + 41 yields a prime number. That's a fascinating mathematical challenge! I need to think about checking each integer in that range, calculating the expression, and verifying if the result is prime. It could involve looping through numbers and applying a primality test. I'll dive into this step-by-step to ensure accuracy."
+            }
+          ]
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 34,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 34
+      },
+      "user": null,
+      "metadata": {}
+    },
+    "sequence_number": 89
+  }
+]

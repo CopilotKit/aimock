@@ -1,3 +1,7 @@
+import {
+  resolve as resolveOpenRouterUsage,
+  render as renderOpenRouterUsage,
+} from "./response/usage/codecs/openrouter.js";
 import type * as http from "node:http";
 import type {
   ChatCompletion,
@@ -10,6 +14,9 @@ import type {
 } from "./types.js";
 import type { Journal } from "./journal.js";
 import { flattenHeaders } from "./helpers.js";
+import { collect } from "./response/catalog/collect.js";
+import { renderOpenRouterChatModels } from "./response/catalog/render.js";
+import { buildOpenAIError } from "./response/errors.js";
 
 /**
  * OpenRouter chat/LLM router shaping. aimock detects an OpenRouter request by
@@ -93,39 +100,6 @@ export interface OpenRouterShaping {
 }
 
 /**
- * `usage` keys that are already accounted for elsewhere and must therefore NOT
- * be re-emitted through the forward-compat passthrough below: the canonical
- * token counts (and their per-provider aliases), which `resolveUsage` folds into
- * `prompt_tokens` / `completion_tokens` / `total_tokens` on the base usage
- * object, plus every field this function shapes explicitly.
- */
-const SHAPED_OR_CANONICAL_USAGE_KEYS = new Set([
-  "prompt_tokens",
-  "completion_tokens",
-  "total_tokens",
-  "input_tokens",
-  "output_tokens",
-  "promptTokenCount",
-  "candidatesTokenCount",
-  "totalTokenCount",
-  "cost",
-  "cost_details",
-  "prompt_tokens_details",
-  "completion_tokens_details",
-  "is_byok",
-]);
-
-/**
- * Keys that must never flow through the passthrough assignment below: a
- * JSON-parsed usage frame (fixtures are attacker-adjacent — they mirror upstream
- * provider responses) can carry a real own `__proto__`/`constructor`/`prototype`
- * key, and a plain `usageExtras[key] = value` for one of those hits the
- * prototype setter, corrupting the emitted object's prototype chain instead of
- * emitting a data field. Real providers never send these, so skipping is safe.
- */
-const UNSAFE_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
-/**
  * Resolve the shaping context from a fixture's response overrides and the
  * winning model slug. `provider` defaults to the winning slug's author;
  * `native_finish_reason` mirrors `finish_reason` unless overridden. `cost` and
@@ -140,47 +114,7 @@ export function resolveOpenRouterShaping(
   overrides: ResponseOverrides | undefined,
   winningModel: string | undefined,
 ): OpenRouterShaping {
-  const u = overrides?.usage;
-  const usageExtras: OpenRouterUsageExtras = {};
-  if (u?.cost !== undefined) {
-    usageExtras.cost = u.cost;
-    const cd = u.cost_details;
-    usageExtras.cost_details = {
-      ...(cd ?? {}),
-      upstream_inference_cost: cd?.upstream_inference_cost ?? 0,
-      upstream_inference_prompt_cost: cd?.upstream_inference_prompt_cost ?? 0,
-      upstream_inference_completions_cost: cd?.upstream_inference_completions_cost ?? 0,
-    };
-  }
-  if (u?.prompt_tokens_details !== undefined) {
-    usageExtras.prompt_tokens_details = {
-      ...u.prompt_tokens_details,
-      cached_tokens: u.prompt_tokens_details.cached_tokens ?? 0,
-    };
-  }
-  if (u?.completion_tokens_details !== undefined) {
-    usageExtras.completion_tokens_details = {
-      ...u.completion_tokens_details,
-      reasoning_tokens: u.completion_tokens_details.reasoning_tokens ?? 0,
-    };
-  }
-  if (u?.is_byok !== undefined) {
-    usageExtras.is_byok = u.is_byok;
-  }
-  // Forward-compat passthrough (#368): a fixture's `usage` may carry provider
-  // fields aimock does not model — typically written by the recorder straight
-  // from a real upstream usage frame (OpenRouter `native_tokens_prompt`,
-  // `native_tokens_completion`, …). Emit them verbatim rather than silently
-  // dropping them, so a recorded usage object round-trips on replay. The
-  // canonical token counts and every field shaped above are excluded: those are
-  // already resolved onto the base usage object (see helpers.ts `resolveUsage`)
-  // or handled with their own required-member defaults.
-  for (const [key, value] of Object.entries(u ?? {})) {
-    if (value === undefined) continue;
-    if (SHAPED_OR_CANONICAL_USAGE_KEYS.has(key)) continue;
-    if (UNSAFE_PROTO_KEYS.has(key)) continue;
-    usageExtras[key] = value;
-  }
+  const usageExtras = resolveOpenRouterUsage(overrides);
   return {
     provider: overrides?.provider ?? deriveOpenRouterProvider(winningModel),
     ...(overrides?.nativeFinishReason !== undefined && {
@@ -195,7 +129,7 @@ function augmentUsage<T extends object>(
   usage: T,
   shaping: OpenRouterShaping,
 ): T & OpenRouterUsageExtras {
-  return { ...usage, ...shaping.usageExtras };
+  return renderOpenRouterUsage(usage, shaping.usageExtras);
 }
 
 /** Resolve a choice's native_finish_reason (mirrors finish_reason unless overridden). */
@@ -279,100 +213,10 @@ export function serializeOpenRouterError(
   message: string,
   metadata?: Record<string, unknown>,
 ): string {
-  return JSON.stringify({
-    error: {
-      code: status,
-      message,
-      ...(metadata !== undefined && { metadata }),
-    },
-  });
+  return JSON.stringify(buildOpenAIError("openrouter-error", { code: status, message, metadata }));
 }
 
 // ─── Discovery endpoints ─────────────────────────────────────────────────────
-
-/** Default model slug set for `GET /api/v1/models` when no chat fixtures name one. */
-const DEFAULT_OPENROUTER_MODELS = [
-  "openai/gpt-4o",
-  "anthropic/claude-3.5-sonnet",
-  "google/gemini-2.0-flash-001",
-];
-
-/**
- * Build one OpenRouter model-catalog object (deterministic static filler).
- * Field set mirrors real OpenRouter bytes (or-capture/models-first.json):
- * pricing values are STRINGS; the object also carries hugging_face_id,
- * knowledge_cutoff, supported_voices, links, default_parameters,
- * expiration_date, and a `reasoning` descriptor (SDKs tolerate extras).
- */
-function openRouterModelObject(id: string): Record<string, unknown> {
-  return {
-    id,
-    canonical_slug: id,
-    hugging_face_id: null,
-    name: id,
-    created: 0,
-    description: `Mock OpenRouter model ${id} served by aimock.`,
-    context_length: 128000,
-    architecture: {
-      modality: "text->text",
-      input_modalities: ["text"],
-      output_modalities: ["text"],
-      tokenizer: "Other",
-      instruct_type: null,
-    },
-    pricing: {
-      prompt: "0",
-      completion: "0",
-      request: "0",
-      image: "0",
-      web_search: "0",
-      internal_reasoning: "0",
-      input_cache_read: "0",
-      input_cache_write: "0",
-    },
-    top_provider: {
-      context_length: 128000,
-      max_completion_tokens: 16384,
-      is_moderated: false,
-    },
-    per_request_limits: null,
-    supported_parameters: [
-      "tools",
-      "tool_choice",
-      "max_tokens",
-      "temperature",
-      "top_p",
-      "stop",
-      "reasoning",
-    ],
-    default_parameters: null,
-    supported_voices: null,
-    knowledge_cutoff: null,
-    expiration_date: null,
-    links: { details: `/api/v1/models/${id}/endpoints` },
-    reasoning: { mandatory: false, default_enabled: false },
-  };
-}
-
-/**
- * Collect the model ids advertised by `GET /api/v1/models`: every loaded chat
- * (or endpoint-less) fixture with a string `match.model`, in first-seen order;
- * the default set when none contribute one. Mirrors the Ollama `/api/tags` and
- * OpenRouter video `/models` synthesis idioms.
- */
-function collectModelIds(fixtures: Fixture[]): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const f of fixtures) {
-    if (f.match.endpoint !== undefined && f.match.endpoint !== "chat") continue;
-    const m = f.match.model;
-    if (typeof m === "string" && m.length > 0 && !seen.has(m)) {
-      seen.add(m);
-      ids.push(m);
-    }
-  }
-  return ids.length > 0 ? ids : DEFAULT_OPENROUTER_MODELS;
-}
 
 function journalGet(
   req: http.IncomingMessage,
@@ -400,10 +244,10 @@ export function handleOpenRouterModels(
 ): void {
   setCorsHeaders(res);
   const path = req.url ?? "/api/v1/models";
-  const data = collectModelIds(fixtures).map(openRouterModelObject);
+  const body = renderOpenRouterChatModels(collect(fixtures, "chat").ids);
   journalGet(req, journal, path, 200);
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ data }));
+  res.end(JSON.stringify(body));
 }
 
 /** GET /api/v1/key — the caller's key metadata/limits/usage (static defaults). */

@@ -16,6 +16,7 @@ import {
 import { collapseGeminiInteractionsSSE } from "../stream-collapse.js";
 import { Logger } from "../logger.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
+import { fnArgs } from "./helpers/tool-calls.js";
 
 // --- helpers ---
 
@@ -1442,7 +1443,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
     // Fragments concatenate into valid JSON by step.stop.
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("call_1");
   });
 
@@ -1484,8 +1485,8 @@ describe("collapseGeminiInteractionsSSE", () => {
     // unparseable assembly is NOT persisted — it falls back to valid "{}" so the
     // fixture reloads cleanly (the loader JSON.parses arguments). See #274.
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe("{}");
-    expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    expect(fnArgs(result.toolCalls![0])).toBe("{}");
+    expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     expect(result.droppedChunks).toBe(1);
     expect(result.firstDroppedSample).toMatch(/not valid JSON/);
   });
@@ -1504,7 +1505,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     // The call still surfaces (identity preserved), opening with empty args.
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("fn");
-    expect(result.toolCalls![0].arguments).toBe("{}");
+    expect(fnArgs(result.toolCalls![0])).toBe("{}");
   });
 
   it("preserves identity of a function_call step.start that arrives without an index", () => {
@@ -1515,7 +1516,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     const result = collapseGeminiInteractionsSSE(sse);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("fn");
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
   });
 
   it("uses step.start arguments object when no arguments_delta streams (SDK 2.x)", () => {
@@ -1525,7 +1526,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     ].join("\n\n");
     const result = collapseGeminiInteractionsSSE(sse);
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
   });
 
   it("collapses content + tool calls (SDK 2.x)", () => {
@@ -1541,7 +1542,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     expect(result.content).toBe("Help");
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("fn");
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
   });
 
   it("collapses thought_summary deltas as reasoning (SDK 2.x nested content)", () => {
@@ -1602,7 +1603,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     expect(result.content).toBe("Let me check");
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("call_1");
   });
 
@@ -1624,7 +1625,7 @@ describe("collapseGeminiInteractionsSSE", () => {
     const result = collapseGeminiInteractionsSSE(sse);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("call_1");
   });
 

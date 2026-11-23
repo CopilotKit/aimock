@@ -9,16 +9,25 @@ export {
   loadFixtureFile,
   loadFixturesFromDir,
   validateFixtures,
+  renderValidationRef,
   normalizeResponse,
 } from "./fixture-loader.js";
-export type { ValidationResult } from "./fixture-loader.js";
+export type { ValidationRef, ValidationResult } from "./fixture-loader.js";
+export { FixtureLoadError, MisbehaviorConfigError } from "./fixture-loader.js";
+export type { FixtureLoadErrorJSON, MisbehaviorConfigErrorJSON } from "./fixture-loader.js";
+export type { MisbehaviorRule } from "./misbehavior.js";
+export {
+  loadFixtureFileWithServices,
+  loadFixturesFromDirWithServices,
+} from "./fixture-loader-services.js";
+export type { FixturesWithServices } from "./fixture-loader-services.js";
 
 // Logger
 export { Logger } from "./logger.js";
 export type { LogLevel } from "./logger.js";
 
 // Journal
-export { Journal, DEFAULT_TEST_ID } from "./journal.js";
+export { Journal, DEFAULT_TEST_ID, isChatCompletionBody } from "./journal.js";
 
 // Router
 export { matchFixture, matchFixtureDiagnostic, getTextContent } from "./router.js";
@@ -78,10 +87,77 @@ export { handleRerank } from "./rerank.js";
 export type { RerankResult, RerankFixture } from "./rerank.js";
 export { handleModeration } from "./moderation.js";
 export type { ModerationResult, ModerationFixture } from "./moderation.js";
+export { CATALOG_ROUTES, buildOpenApiDocument } from "./openapi.js";
+export type { CatalogRoute } from "./openapi.js";
+export { ROUTE_DEFINITIONS } from "./route-registry.js";
+export type { RouteDefinition } from "./route-registry.js";
+export {
+  handleBatchesCreate,
+  handleBatchesList,
+  handleBatchesRetrieve,
+  handleBatchesCancel,
+  clearBatchStore,
+} from "./batches.js";
+export type { BatchObject } from "./batches.js";
+export {
+  handleFilesCreate,
+  handleFilesList,
+  handleFilesRetrieve,
+  handleFilesContent,
+  handleFilesDelete,
+  clearFileStore,
+} from "./files.js";
+export type { FileObject } from "./files.js";
+export {
+  handleFineTuningCreate,
+  handleFineTuningList,
+  handleFineTuningRetrieve,
+  handleFineTuningCancel,
+  handleFineTuningEvents,
+  clearFineTuningStore,
+} from "./fine-tuning.js";
+export type {
+  FineTuningJob,
+  FineTuningJobError,
+  FineTuningJobEvent,
+  FineTuningJobHyperparameters,
+  FineTuningJobStatus,
+} from "./fine-tuning.js";
+export {
+  handleVectorStoresCreate,
+  handleVectorStoresList,
+  handleVectorStoresRetrieve,
+  handleVectorStoresModify,
+  handleVectorStoresDelete,
+  handleVectorStoreFilesCreate,
+  handleVectorStoreFilesList,
+  handleVectorStoreFilesRetrieve,
+  handleVectorStoreFilesDelete,
+  handleVectorFileBatchesCreate,
+  handleVectorFileBatchesRetrieve,
+  handleVectorFileBatchesCancel,
+  handleVectorFileBatchesFiles,
+  handleVectorStoresSearch,
+  clearVectorStoreStore,
+} from "./vector-stores.js";
+export type {
+  VectorStoreObject,
+  VectorStoreFileObject,
+  VectorFileBatchObject,
+  VectorSearchResult,
+  VectorStoreStatus,
+  VectorStoreFileStatus,
+  VectorFileBatchStatus,
+} from "./vector-stores.js";
 export type { ServiceFixtures } from "./server.js";
 
 // WebSocket
-export { WebSocketConnection, upgradeToWebSocket, computeAcceptKey } from "./ws-framing.js";
+export {
+  WebSocketConnection,
+  upgradeToWebSocket,
+  computeAcceptKey,
+  type WebSocketLimits,
+} from "./ws-framing.js";
 export { handleWebSocketResponses } from "./ws-responses.js";
 export { handleWebSocketRealtime } from "./ws-realtime.js";
 export { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
@@ -121,6 +197,14 @@ export {
   buildBytePlusMatchText,
 } from "./byteplus-video.js";
 export { handleElevenLabsAudio } from "./elevenlabs-audio.js";
+export {
+  handleElevenLabsVoiceDesign,
+  handleElevenLabsVoiceCreate,
+  handleElevenLabsVoiceGet,
+  handleElevenLabsVoiceDelete,
+  clearElevenLabsVoices,
+  voiceDesignToJson,
+} from "./elevenlabs-voice.js";
 export { handleFalQueue } from "./fal-audio.js";
 export { handleFal, FalQueueStateMap } from "./fal.js";
 
@@ -128,6 +212,7 @@ export { handleFal, FalQueueStateMap } from "./fal.js";
 export {
   flattenHeaders,
   generateId,
+  resolveRequestId,
   generateToolCallId,
   generateMessageId,
   generateToolUseId,
@@ -138,10 +223,17 @@ export {
   buildToolCallCompletion,
   buildContentWithToolCallsCompletion,
   extractOverrides,
+  isLiveResponse,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
   resolveFixtureBlocks,
+  resolveResponsesBlocks,
+  UnsupportedToolCallError,
+  InvalidFixtureToolCallError,
+  UnsupportedGeneratedFileError,
+  InvalidFixtureOutputError,
+  requireFunctionToolCalls,
   isErrorResponse,
   isEmbeddingResponse,
   isImageResponse,
@@ -155,7 +247,7 @@ export {
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
-export type { EmbeddingAPIResponse } from "./helpers.js";
+export type { EmbeddingAPIResponse, FunctionFixtureBlock } from "./helpers.js";
 
 // Interruption
 export { createInterruptionSignal } from "./interruption.js";
@@ -166,19 +258,24 @@ export { writeSSEStream, writeErrorResponse, delay, calculateDelay } from "./sse
 export type { StreamOptions, ErrorResponseOptions } from "./sse-writer.js";
 
 // Chaos
+// `applyChaos` is intentionally the DEPRECATED wrapper, not the raw sync function:
+// the sync form cannot await and so skips the configured chaos latency, and the
+// repo now forbids internal sync callers outright. It stays exported (published
+// since v1.10.0) but warns once, naming the gap. New code uses `applyChaosAsync`.
 export {
   evaluateChaos,
-  applyChaos,
-  chaosIdentity,
-  effectiveChaosRates,
-  CHAOS_SEED_HEADER,
-  CHAOS_KEY_HEADER,
-  CHAOS_OCCURRENCE_HEADER,
+  applyChaosDeprecated as applyChaos,
+  applyChaosAsync,
+  resolveChaosLatencyMs,
 } from "./chaos.js";
-export type { ChaosRequestContext } from "./chaos.js";
 export type { ChaosAction } from "./types.js";
-export { createJitterSource } from "./chaos-random.js";
-export type { JitterSource } from "./chaos-random.js";
+// `applyChaosAsync` returns this instead of a bare boolean so callers can tell
+// "a chaos action fired" from "the response was already dead". Both non-`false`
+// members are truthy, so `if (await applyChaosAsync(...)) return;` is
+// unaffected; `false` means the caller still owns the request, including when
+// an action was rolled but could not be applied to an already-committed
+// response.
+export type { ChaosAsyncOutcome } from "./chaos.js";
 
 // Recorder
 export { proxyAndRecord } from "./recorder.js";
@@ -216,6 +313,45 @@ export type {
   MCPPromptResult,
   MCPSession,
 } from "./mcp-types.js";
+export { MCP_FAKE_ERROR_CODES } from "./types.js";
+export type {
+  McpFakeScope,
+  McpFakeDeepReadonly,
+  McpFakeAnnotations,
+  McpFakeIcon,
+  McpFakeResourceContents,
+  McpFakeContentBlock,
+  McpFakeFullResult,
+  McpFakeStructuredResult,
+  McpFakeResult,
+  McpFakeCallMatch,
+  McpFakeCallAnswer,
+  McpFakeCall,
+  McpFakeTool,
+  McpFakeBlock,
+  McpFakeUndeclaredPolicy,
+  McpFakeIdentity,
+  McpFakeSource,
+  McpFakeOutcome,
+  McpFakeErrorCode,
+} from "./types.js";
+export { McpFakesAddError } from "./mcp-fakes.js";
+export type {
+  McpFakesAddErrorJSON,
+  McpFakeIssue,
+  McpFakeAddOrigin,
+  McpFakeAddResult,
+  McpFakeBlockSnapshot,
+  McpFakeDeclaredEntry,
+} from "./mcp-fakes.js";
+export {
+  assertFakesReport,
+  AimockFakesReportError,
+  AimockTestIdCollisionError,
+} from "./mcp-fakes-report.js";
+export type { McpFakesReport } from "./mcp-fakes-report.js";
+export type { McpFakeReportPart, McpFakeReportEvent, RecordReplayLoadRule } from "./mcp-fakes.js";
+export type { McpRecordConfig, McpFakeNotification, McpFakeRecorded } from "./types.js";
 
 // Vector
 export { VectorMock } from "./vector-mock.js";
@@ -235,6 +371,8 @@ export type {
   A2AAgentDefinition,
   A2APart,
   A2AArtifact,
+  A2AConversationTurn,
+  A2AConversationOptions,
   A2ATaskResponse,
   A2AStreamEvent,
   A2ATask,
@@ -367,7 +505,13 @@ export type {
   FixtureMatch,
   TextResponse,
   ToolCall,
+  CustomToolCall,
+  FixtureToolCall,
   FixtureBlock,
+  ResponsesFixtureBlock,
+  CustomToolDefinition,
+  CustomToolCallMessage,
+  ResponsesToolsMode,
   ToolCallResponse,
   ErrorResponse,
   EmbeddingResponse,
@@ -375,13 +519,18 @@ export type {
   Fixture,
   FixtureFile,
   FixtureFileEntry,
+  JournalBody,
   JournalEntry,
   SSEChunk,
   SSEChoice,
   SSEDelta,
   SSEToolCallDelta,
   ChaosConfig,
+  MisbehaviorFaultId,
+  MisbehaviorFault,
+  MisbehaviorConfig,
   MockServerOptions,
+  AimockPolicy,
   StreamingProfile,
   FixtureOpts,
   EmbeddingFixtureOpts,
@@ -391,17 +540,43 @@ export type {
   ChatCompletion,
   ChatCompletionChoice,
   ChatCompletionMessage,
+  ChatCompletionAnnotation,
   ImageItem,
   ImageResponse,
   AudioResponse,
+  VoiceDesignPreview,
+  VoiceDesignResponse,
   TranscriptionResponse,
   VideoResponse,
   RawJSONResponse,
+  RawResponse,
+  RawWireId,
+  WireId,
   ResponseOverrides,
+  FixtureCitation,
+  FixtureUrlCitation,
+  FixtureFileCitation,
+  FixtureGeneratedFile,
   ContentWithToolCallsResponse,
   FixtureFileResponse,
   FixtureFileToolCall,
+  FixtureFileCustomToolCall,
+  FixtureFileResponsesBlock,
   FixtureFileTextResponse,
   FixtureFileToolCallResponse,
   FixtureFileContentWithToolCallsResponse,
 } from "./types.js";
+
+// OpenAI Live
+export type {
+  LiveJson,
+  LiveObject,
+  LiveMode,
+  LivePosition,
+  LiveBinding,
+  LiveEntry,
+  LiveTranscript,
+  LiveFixtureResponse,
+  LiveOptions,
+  LiveFailureCategory,
+} from "./live-types.js";

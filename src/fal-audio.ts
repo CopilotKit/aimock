@@ -1,3 +1,5 @@
+import { renderError } from "./response/errors.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type http from "node:http";
 import crypto from "node:crypto";
 import type {
@@ -11,14 +13,12 @@ import {
   isAudioResponse,
   isErrorResponse,
   isJSONResponse,
-  serializeErrorResponse,
+  isJsonObject,
   flattenHeaders,
   FORMAT_TO_CONTENT_TYPE,
   getContext,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
@@ -34,7 +34,7 @@ import {
 import { isAuthenticatedRequest } from "./api-key-auth.js";
 import { walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
-import { applyChaos, chaosIdentity, prepareChaos } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 
 // ─── FalJobMap with TTL and size bound ───────────────────────────────────
 
@@ -188,42 +188,7 @@ export async function handleFalQueue(
   fixtures: Fixture[],
   defaults: HandlerDefaults,
   journal: Journal,
-  /**
-   * The payload exactly as the client sent it. `body` carries a literal `"{}"`
-   * on the methods this route reads no body from, which the sub-handlers want
-   * and a chaos key must not see: it is a routing construct, and keying off it
-   * would give a bodyless poll and a poll carrying `{}` one identity.
-   */
-  wireBody: string = body,
 ): Promise<void> {
-  // Status, cancel and result serve aimock's own job state and match no
-  // fixture, so they roll here, exactly as the video poll routes do. Submit
-  // and sync-run roll inside their own handlers once the fixture is known,
-  // so no request rolls twice.
-  if (pathname.startsWith("/fal/queue/requests/")) {
-    if (
-      applyChaos(
-        res,
-        null,
-        defaults.chaos,
-        req.headers,
-        journal,
-        {
-          method: req.method ?? "GET",
-          path: pathname,
-          headers: flattenHeaders(req.headers),
-          body: null,
-        },
-        "internal",
-        defaults.registry,
-        defaults.logger,
-        defaults.chaosRandom,
-        chaosIdentity(req, wireBody),
-      )
-    )
-      return;
-  }
-
   const testId = getTestId(req);
   const matchCounts = journal.getFixtureMatchCountsForTest(testId);
 
@@ -284,7 +249,10 @@ export async function handleFalQueue(
   }
 
   // Unknown fal path
-  const errorBody = { error: { message: "Unknown fal.ai endpoint", type: "not_found" } };
+  const errorBody = renderError("openai", "route-failure", {
+    message: "Unknown fal.ai endpoint",
+    type: "not_found",
+  }).body;
   journal.add({
     method: req.method ?? "GET",
     path: pathname,
@@ -293,7 +261,7 @@ export async function handleFalQueue(
     response: { status: 404, fixture: null },
   });
   res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(errorBody));
+  res.end(errorBody);
 }
 
 // ─── Sub-handlers ────────────────────────────────────────────────────────
@@ -325,12 +293,35 @@ async function handleQueueSubmit(
       });
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: { message: `Malformed JSON: ${detail}`, type: "invalid_request_error" },
-        }),
+        renderError("openai", "validation", {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `parsed.prompt` throws a TypeError that
+  // surfaces as a 500 instead of a 400. An empty body keeps the historical
+  // `{}` default above and is unaffected.
+  if (!isJsonObject(parsed)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: pathname,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
   }
 
   const prompt =
@@ -357,11 +348,12 @@ async function handleQueueSubmit(
   }
 
   if (
-    applyChaos(
+    await applyChaosAsync(
       res,
       fixture,
       defaults.chaos,
       req.headers,
+      req.url,
       journal,
       {
         method: req.method ?? "POST",
@@ -372,14 +364,12 @@ async function handleQueueSubmit(
       fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
-      defaults.chaosRandom,
-      chaosIdentity(req, body),
     )
   )
     return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
@@ -398,13 +388,11 @@ async function handleQueueSubmit(
       });
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -437,13 +425,11 @@ async function handleQueueSubmit(
     });
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -459,7 +445,7 @@ async function handleQueueSubmit(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -485,12 +471,10 @@ async function handleQueueSubmit(
       });
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            message: "Recorded fal audio fixture has non-object json",
-            type: "server_error",
-          },
-        }),
+        renderError("openai", "unknown-response", {
+          message: "Recorded fal audio fixture has non-object json",
+          type: "server_error",
+        }).body,
       );
       return;
     }
@@ -505,9 +489,10 @@ async function handleQueueSubmit(
     });
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: "Fixture response is not an audio type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not an audio type",
+        type: "server_error",
+      }).body,
     );
     return;
   }
@@ -643,9 +628,10 @@ async function tryRecordAudioQueueWalk(args: {
     });
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Proxy to upstream failed: ${msg}`,
+        type: "proxy_error",
+      }).body,
     );
     return true;
   }
@@ -663,9 +649,10 @@ async function tryRecordAudioQueueWalk(args: {
     });
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: "Upstream result body was not a JSON object", type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: "Upstream result body was not a JSON object",
+        type: "proxy_error",
+      }).body,
     );
     return true;
   }
@@ -747,9 +734,10 @@ function handleQueueStatus(
     });
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: `Request ${requestId} not found`, type: "not_found" },
-      }),
+      renderError("openai", "route-failure", {
+        message: `Request ${requestId} not found`,
+        type: "not_found",
+      }).body,
     );
     return;
   }
@@ -792,9 +780,10 @@ function handleQueueResult(
     });
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: `Request ${requestId} not found`, type: "not_found" },
-      }),
+      renderError("openai", "route-failure", {
+        message: `Request ${requestId} not found`,
+        type: "not_found",
+      }).body,
     );
     return;
   }
@@ -890,12 +879,35 @@ async function handleSyncRun(
       });
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: { message: `Malformed JSON: ${detail}`, type: "invalid_request_error" },
-        }),
+        renderError("openai", "validation", {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `parsed.prompt` throws a TypeError that
+  // surfaces as a 500 instead of a 400. An empty body keeps the historical
+  // `{}` default above and is unaffected.
+  if (!isJsonObject(parsed)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: pathname,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(
+      renderError("openai", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
   }
 
   const prompt =
@@ -925,28 +937,29 @@ async function handleSyncRun(
     journal.incrementFixtureMatchCount(fixture, fixtures, getTestId(req));
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: pathname,
-      headers: flattenHeaders(req.headers),
-      body: syntheticReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, body),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
@@ -965,13 +978,11 @@ async function handleSyncRun(
       });
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-            code: "no_fixture_match",
-          },
-        }),
+        renderError("openai", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        }).body,
       );
       return;
     }
@@ -1012,13 +1023,11 @@ async function handleSyncRun(
     });
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
-        },
-      }),
+      renderError("openai", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+        code: "no_fixture_match",
+      }).body,
     );
     return;
   }
@@ -1034,7 +1043,7 @@ async function handleSyncRun(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1062,12 +1071,10 @@ async function handleSyncRun(
       });
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            message: "Recorded fal audio fixture has non-object json",
-            type: "server_error",
-          },
-        }),
+        renderError("openai", "unknown-response", {
+          message: "Recorded fal audio fixture has non-object json",
+          type: "server_error",
+        }).body,
       );
       return;
     }
@@ -1082,9 +1089,10 @@ async function handleSyncRun(
     });
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { message: "Fixture response is not an audio type", type: "server_error" },
-      }),
+      renderError("openai", "unknown-response", {
+        message: "Fixture response is not an audio type",
+        type: "server_error",
+      }).body,
     );
     return;
   }

@@ -241,7 +241,8 @@
           </li>
           <li>
             <strong>Large inline media can exceed the body cap.</strong> The client base64-inlines
-            any non-URL media source, and aimock caps request bodies at 10 MB. Pass a public URL
+            any non-URL media source, and aimock caps this route's request body at 10 MB (the
+            <a href="/files">Files</a> upload route has its own, larger bound). Pass a public URL
             instead — Ark fetches it server-side.
           </li>
           <li>

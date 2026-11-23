@@ -1,7 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import * as net from "node:net";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Fixture } from "../types.js";
+import type { Journal } from "../journal.js";
 import { createServer, type ServerInstance } from "../server.js";
 
 // --- helpers ---
@@ -218,7 +222,8 @@ const errorFixture: Fixture = {
 // Fixture whose response matches no known type guard — exercises the fallback path
 const badResponseFixture: Fixture = {
   match: { userMessage: "badtype" },
-  response: { content: 42 } as unknown as Fixture["response"],
+  // @ts-expect-error Deliberately malformed fixture exercises runtime validation.
+  response: { content: 42 },
 };
 
 const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture, badResponseFixture];
@@ -533,6 +538,264 @@ describe("POST /v1/chat/completions (non-streaming)", () => {
     expect(tc[0].function.name).toBe("get_weather");
     expect(tc[0].function.arguments).toBe('{"city":"NYC"}');
   });
+
+  it("applies opted-in streamingProfile timing to a non-streaming response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming" },
+      response: { content: "Hi there!" },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    // 60ms ttft dominates here (tps is fast); allow scheduling slack, but a
+    // regression back to "non-streaming ignores streamingProfile" would
+    // return in a few ms, well under this floor.
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming tool-call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-tool" },
+      response: { toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }] },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-tool" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].finish_reason).toBe("tool_calls");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming content + tool-call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-combined" },
+      response: {
+        content: "Checking the weather.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-combined" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    const message = JSON.parse(res.body).choices[0].message;
+    expect(message.content).toBe("Checking the weather.");
+    expect(message.tool_calls[0].function.name).toBe("get_weather");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in streamingProfile timing to a non-streaming blocks response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-blocks" },
+      response: {
+        content: "",
+        blocks: [
+          { type: "text", text: "Checking the weather." },
+          { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+        ],
+      },
+      streamingProfile: { ttft: 60, tps: 1000 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-blocks" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].finish_reason).toBe("tool_calls");
+    expect(body.choices[0].message.content).toBe("Checking the weather.");
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("applies opted-in recordedTimings to a non-streaming response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "slow-non-streaming-recorded" },
+      response: { content: "Hi there!" },
+      recordedTimings: { ttftMs: 60, interChunkDelaysMs: [], totalDurationMs: 60 },
+      nonStreamingTiming: true,
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "slow-non-streaming-recorded" }],
+      stream: false,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("does not delay a non-streaming response for streamingProfile or recordedTimings by default", async () => {
+    // Default (no nonStreamingTiming): the v1.45.1 behavior. A fixture with a
+    // streamingProfile or recorded stream timings returns its non-streaming
+    // reply immediately; only the SSE path uses those values.
+    const profile = { ttft: 300, tps: 1000 };
+    const toolCalls = [{ name: "get_weather", arguments: '{"city":"NYC"}' }];
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "default-profile-text" },
+        response: { content: "Hi there!" },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-tool" },
+        response: { toolCalls },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-combined" },
+        response: { content: "Checking the weather.", toolCalls },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-profile-blocks" },
+        response: {
+          content: "",
+          blocks: [
+            { type: "text", text: "Checking the weather." },
+            { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+          ],
+        },
+        streamingProfile: profile,
+      },
+      {
+        match: { userMessage: "default-recorded-text" },
+        response: { content: "Hi there!" },
+        recordedTimings: { ttftMs: 300, interChunkDelaysMs: [300], totalDurationMs: 600 },
+      },
+      {
+        match: { userMessage: "explicit-false-profile-text" },
+        response: { content: "Hi there!" },
+        streamingProfile: profile,
+        nonStreamingTiming: false,
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    for (const content of [
+      "default-profile-text",
+      "default-profile-tool",
+      "default-profile-combined",
+      "default-profile-blocks",
+      "default-recorded-text",
+      "explicit-false-profile-text",
+    ]) {
+      const started = Date.now();
+      const res = await post(`${instance.url}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content }],
+        stream: false,
+      });
+      const elapsed = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      // The 300ms ttft alone would exceed this ceiling if the reply waited.
+      expect(elapsed, content).toBeLessThan(150);
+    }
+  });
+
+  it("still applies streamingProfile timing to a streamed response by default", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "default-profile-streamed" },
+      response: { content: "Hi there!" },
+      streamingProfile: { ttft: 60, tps: 1000 },
+    };
+    instance = await createServer([fixture]);
+
+    const started = Date.now();
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "default-profile-streamed" }],
+      stream: true,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it("does not delay a non-streaming response for bare latency (no streamingProfile)", async () => {
+    // `latency` / `--latency` is the gap between SSE chunks. It is not a
+    // non-streaming delay, even with nonStreamingTiming: true.
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "bare-latency-text" }, response: { content: "x".repeat(200) } },
+      {
+        match: { userMessage: "bare-latency-fixture" },
+        response: { content: "x".repeat(200) },
+        latency: 200,
+        nonStreamingTiming: true,
+      },
+      {
+        match: { userMessage: "bare-latency-tool" },
+        response: { toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }] },
+      },
+      {
+        match: { userMessage: "bare-latency-combined" },
+        response: {
+          content: "x".repeat(200),
+          toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+        },
+      },
+    ];
+    instance = await createServer(fixtures, { latency: 200 });
+
+    for (const content of [
+      "bare-latency-text",
+      "bare-latency-fixture",
+      "bare-latency-tool",
+      "bare-latency-combined",
+    ]) {
+      const started = Date.now();
+      const res = await post(`${instance.url}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content }],
+        stream: false,
+      });
+      const elapsed = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      // One latency gap alone is 200ms; a regression would wait at least that.
+      expect(elapsed).toBeLessThan(150);
+    }
+  });
 });
 
 describe("routing", () => {
@@ -840,7 +1103,7 @@ describe("createServer journal caps (defaults)", () => {
 });
 
 describe("readBody error path", () => {
-  it("returns 500 when the request body stream is destroyed mid-read", async () => {
+  it("journals a torn socket, not a 500, when the client destroys the body stream mid-read", async () => {
     instance = await createServer(allFixtures);
     const parsed = new URL(instance.url);
     const port = parseInt(parsed.port, 10);
@@ -889,14 +1152,18 @@ describe("readBody error path", () => {
       });
     });
 
-    // The journal should have recorded the failed request regardless of
-    // whether we received the response on the destroyed socket.
+    // The journal records the request even though the socket is gone — as a
+    // client abort. Nothing reached the client, so no delivered status: the
+    // entry carries status 0 and `interrupted`, the same shape the proxy arm
+    // and chaos `disconnect` give a torn socket.
     // Give the server a moment to finish processing the error path.
     await new Promise((r) => setTimeout(r, 50));
 
     const entry = instance.journal.getLast();
     expect(entry).not.toBeNull();
-    expect(entry!.response.status).toBe(500);
+    expect(entry!.response.status).toBe(0);
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("client aborted");
     expect(entry!.response.fixture).toBeNull();
   });
 });
@@ -1571,4 +1838,975 @@ describe("Anthropic streaming with truncateAfterChunks", () => {
     expect(entry!.response.interrupted).toBe(true);
     expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
   });
+});
+
+// ===========================================================================
+// Route error observability — every route error path logs and journals, and a
+// crash after headers are on the wire aborts the stream instead of ending it.
+// ===========================================================================
+
+describe("route error observability", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Drive a raw GET and report whether the response ended cleanly or aborted. */
+  function rawGet(url: string): Promise<{ outcome: "clean_end" | "aborted"; body: string }> {
+    return new Promise((resolve) => {
+      let body = "";
+      let settled = false;
+      const settle = (outcome: "clean_end" | "aborted") => {
+        if (!settled) {
+          settled = true;
+          resolve({ outcome, body });
+        }
+      };
+      const req = http.get(url, (res) => {
+        res.on("data", (c: Buffer) => (body += c.toString()));
+        res.on("end", () => settle(res.complete ? "clean_end" : "aborted"));
+        res.on("aborted", () => settle("aborted"));
+        res.on("error", () => settle("aborted"));
+      });
+      req.on("error", () => settle("aborted"));
+    });
+  }
+
+  it("a handler crash is logged at error, journaled as a 500, and answered with CORS", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fixture: Fixture = {
+      match: { inputText: "route-error-boom" },
+      response: () => {
+        throw new Error("factory boom");
+      },
+    };
+    instance = await createServer([fixture], { logLevel: "warn" });
+
+    const before = instance.journal.getAll().length;
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "route-error-boom",
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.headers["access-control-allow-origin"]).toBe("*");
+    expect(JSON.parse(res.body)).toEqual({
+      error: { message: "Response factory threw: factory boom", type: "server_error" },
+    });
+
+    const entries = instance.journal.getAll();
+    expect(entries.length).toBe(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.method).toBe("POST");
+    expect(entry.path).toBe("/v1/embeddings");
+    expect(entry.body).toBeNull();
+    expect(entry.response).toEqual({ status: 500, fixture: null, source: "internal" });
+
+    const logged = errorSpy.mock.calls.map((c) => c.map(String).join(" "));
+    expect(
+      logged.some((l) => l.includes("POST /v1/embeddings") && l.includes("factory boom")),
+    ).toBe(true);
+  });
+
+  it("a crash after headers are sent aborts the stream instead of ending it cleanly", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const crashMount = {
+      async handleRequest(_req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write("data: first\n\n");
+        await new Promise((r) => setTimeout(r, 10));
+        throw new Error("mid-stream boom");
+      },
+    };
+    instance = await createServer([], { logLevel: "warn" }, [
+      { path: "/crash", handler: crashMount },
+    ]);
+
+    const { outcome, body } = await rawGet(`${instance.url}/crash`);
+
+    // The bytes already relayed reach the client, but the connection must be
+    // torn down — a clean EOF would read as a complete stream.
+    expect(body).toBe("data: first\n\n");
+    expect(outcome).toBe("aborted");
+
+    const logged = errorSpy.mock.calls.map((c) => c.map(String).join(" "));
+    expect(logged.some((l) => l.includes("GET /crash") && l.includes("mid-stream boom"))).toBe(
+      true,
+    );
+  });
+
+  it("journals a proxied stream the recorder destroyed as interrupted, not a clean 200", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // Upstream sends SSE headers + one frame, then destroys the socket.
+    const upstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.write('data: {"choices":[{"delta":{"content":"par"}}]}\n\n');
+      setTimeout(() => upRes.socket?.destroy(), 20);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (upstream.address() as { port: number }).port;
+    const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-route-error-"));
+
+    try {
+      instance = await createServer([], {
+        logLevel: "warn",
+        record: { providers: { openai: `http://127.0.0.1:${upstreamPort}` }, fixturePath },
+      });
+
+      const outcome = await new Promise<"clean_end" | "aborted">((resolve) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: new URL(instance!.url).port,
+            path: "/v1/chat/completions",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          },
+          (res) => {
+            res.on("data", () => {});
+            res.on("end", () => resolve(res.complete ? "clean_end" : "aborted"));
+            res.on("aborted", () => resolve("aborted"));
+            res.on("error", () => resolve("aborted"));
+          },
+        );
+        req.on("error", () => resolve("aborted"));
+        req.end(
+          JSON.stringify({
+            model: "gpt-4",
+            stream: true,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        );
+      });
+      expect(outcome).toBe("aborted");
+
+      await new Promise((r) => setTimeout(r, 50));
+      const entry = instance.journal.getLast();
+      expect(entry).not.toBeNull();
+      expect(entry!.path).toBe("/v1/chat/completions");
+      expect(entry!.response.source).toBe("proxy");
+      expect(entry!.response.interrupted).toBe(true);
+      expect(entry!.response.interruptReason).toBe("proxy stream destroyed");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+  it("does not journal a second entry when the handler already journaled before it threw", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let mounted: Journal | null = null;
+    const journalThenThrow = {
+      setJournal(j: Journal): void {
+        mounted = j;
+      },
+      async handleRequest(req: http.IncomingMessage): Promise<boolean> {
+        mounted!.add({
+          method: req.method ?? "GET",
+          path: req.url ?? "/journal-then-throw",
+          headers: req.headers as Record<string, string>,
+          body: null,
+          response: { status: 200, fixture: null, source: "internal" },
+        });
+        throw new Error("boom after journal");
+      },
+    };
+    instance = await createServer([], { logLevel: "warn" }, [
+      { path: "/journal-then-throw", handler: journalThenThrow },
+    ]);
+
+    const before = instance.journal.getAll().length;
+    const res = await rawGet(`${instance.url}/journal-then-throw`);
+    expect(res.outcome).toBe("clean_end");
+
+    const entries = instance.journal.getAll();
+    // One request, one entry — the handler's 200 amended to the 500 the client
+    // actually got, not a 200 followed by a contradicting 500.
+    expect(entries.length).toBe(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.path).toBe("/journal-then-throw");
+    expect(entry.response.status).toBe(500);
+    expect(entry.response.source).toBe("internal");
+  });
+
+  it("marks the journal and destroys the socket when a streamEvent route crashes mid-stream", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // ttft covers chunk 0, so the first frame reaches the wire (headers sent);
+    // every later chunk reads `tps`, which throws — a crash mid-stream.
+    const streamingProfile = {
+      ttft: 0,
+      get tps(): number {
+        throw new Error("mid-stream boom");
+      },
+    };
+    const fixture: Fixture = {
+      match: { userMessage: "stream-crash" },
+      response: { content: "one two three four five six seven eight" },
+      streamingProfile,
+    };
+    instance = await createServer([fixture], { logLevel: "warn" });
+
+    const outcome = await new Promise<"clean_end" | "aborted">((resolve) => {
+      const parsed = new URL(instance!.url);
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: "/v1/messages",
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        },
+        (res) => {
+          res.on("data", () => {});
+          res.on("end", () => resolve(res.complete ? "clean_end" : "aborted"));
+          res.on("aborted", () => resolve("aborted"));
+          res.on("error", () => resolve("aborted"));
+        },
+      );
+      req.on("error", () => resolve("aborted"));
+      req.end(
+        JSON.stringify({
+          model: "claude-3-5-sonnet-20241022",
+          stream: true,
+          max_tokens: 64,
+          messages: [{ role: "user", content: "stream-crash" }],
+        }),
+      );
+    });
+    // A clean end would read as a complete stream; the crash must abort.
+    expect(outcome).toBe("aborted");
+
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.path).toBe("/v1/messages");
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("handler crashed mid-stream");
+  });
+
+  it("journals a client hang-up on a proxied stream as a client abort, not a recorder destroy", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // Upstream streams forever; the CLIENT is the one that hangs up.
+    const timers: NodeJS.Timeout[] = [];
+    const upstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.write('data: {"choices":[{"delta":{"content":"par"}}]}\n\n');
+      timers.push(
+        setInterval(() => {
+          if (!upRes.writableEnded)
+            upRes.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n');
+        }, 20),
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (upstream.address() as { port: number }).port;
+    const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-client-abort-"));
+
+    try {
+      instance = await createServer([], {
+        logLevel: "warn",
+        record: { providers: { openai: `http://127.0.0.1:${upstreamPort}` }, fixturePath },
+      });
+
+      await new Promise<void>((resolve) => {
+        const parsed = new URL(instance!.url);
+        const req = http.request(
+          {
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: "/v1/chat/completions",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          },
+          (res) => {
+            res.once("data", () => {
+              setTimeout(() => {
+                req.destroy();
+                resolve();
+              }, 20);
+            });
+            res.on("data", () => {});
+            res.on("error", () => resolve());
+          },
+        );
+        req.on("error", () => resolve());
+        req.end(
+          JSON.stringify({
+            model: "gpt-4",
+            stream: true,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        );
+      });
+
+      await new Promise((r) => setTimeout(r, 150));
+      const entry = instance.journal.getLast();
+      expect(entry).not.toBeNull();
+      expect(entry!.path).toBe("/v1/chat/completions");
+      expect(entry!.response.interrupted).toBe(true);
+      expect(entry!.response.interruptReason).toBe("client aborted");
+    } finally {
+      for (const t of timers) clearInterval(t);
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("tags a crash on an unwrapped files GET with its service", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    instance = await createServer([], { logLevel: "warn" });
+
+    // Force the handler itself to throw: the files handler answers the 404
+    // first and journals second, so its journal write blowing up is a crash
+    // AFTER the response went out. The client already has its 404; the only
+    // trace the crash can leave is the journal entry routeError adds.
+    const realAdd = instance.journal.add.bind(instance.journal);
+    let armed = true;
+    instance.journal.add = ((entry: Parameters<typeof realAdd>[0]) => {
+      if (armed && entry.path?.startsWith("/v1/files/")) {
+        armed = false;
+        throw new Error("files journal boom");
+      }
+      return realAdd(entry);
+    }) as typeof instance.journal.add;
+
+    const before = instance.journal.getAll().length;
+    const res = await rawGet(`${instance.url}/v1/files/file-nope`);
+    expect(res.outcome).toBe("clean_end");
+
+    // Exactly one entry for the request, carrying the status the client got.
+    const entries = instance.journal.getAll();
+    expect(entries.length).toBe(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.path).toBe("/v1/files/file-nope");
+    expect(entry.response.status).toBe(404);
+    // The client got the whole 404, so the entry must not claim a torn
+    // response; the crash rides in `error`, where a consumer reading
+    // `interrupted` as "the client did not get a complete body" is not misled.
+    expect(entry.response.interrupted).toBeUndefined();
+    expect(entry.response.interruptReason).toBeUndefined();
+    expect(entry.response.error).toBe("files journal boom");
+    expect(entry.service).toBe("files");
+  });
+
+  it("journals a post-response crash with the delivered status and an error marker, not interrupted", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const endThenThrow = {
+      async handleRequest(_req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+        res.writeHead(201, { "Content-Type": "text/plain" });
+        res.end("done");
+        throw new Error("boom after end");
+      },
+    };
+    instance = await createServer([], { logLevel: "warn" }, [
+      { path: "/end-then-throw", handler: endThenThrow },
+    ]);
+
+    const before = instance.journal.getAll().length;
+    const res = await rawGet(`${instance.url}/end-then-throw`);
+    expect(res.outcome).toBe("clean_end");
+    expect(res.body).toBe("done");
+
+    const entries = instance.journal.getAll();
+    expect(entries.length).toBe(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.path).toBe("/end-then-throw");
+    expect(entry.response.status).toBe(201);
+    expect(entry.response.interrupted).toBeUndefined();
+    expect(entry.response.interruptReason).toBeUndefined();
+    expect(entry.response.error).toBe("boom after end");
+  });
+
+  it("keeps interrupted for a crash after headers but before the body ended", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const headersThenThrow = {
+      async handleRequest(_req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.write("partial");
+        await new Promise((r) => setTimeout(r, 20));
+        throw new Error("boom mid-body");
+      },
+    };
+    instance = await createServer([], { logLevel: "warn" }, [
+      { path: "/headers-then-throw", handler: headersThenThrow },
+    ]);
+
+    const before = instance.journal.getAll().length;
+    const res = await rawGet(`${instance.url}/headers-then-throw`);
+    // Torn down, not ended: the client must not read it as a complete body.
+    expect(res.outcome).toBe("aborted");
+
+    const entries = instance.journal.getAll();
+    expect(entries.length).toBe(before + 1);
+    const entry = entries[entries.length - 1];
+    expect(entry.path).toBe("/headers-then-throw");
+    expect(entry.response.status).toBe(200);
+    expect(entry.response.interrupted).toBe(true);
+    expect(entry.response.interruptReason).toBe("handler crashed mid-stream");
+    expect(entry.response.error).toBeUndefined();
+  });
+});
+
+describe("per-request journal attribution and client-fault classification", () => {
+  // `post()` rejects when the server destroys the socket, which is exactly
+  // what an over-cap body read does. This variant resolves with whatever
+  // arrived instead, so the test can assert on the journal and the logs.
+  function postTolerant(
+    url: string,
+    raw: string,
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve) => {
+      const parsed = new URL(url);
+      const chunks: Buffer[] = [];
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(raw),
+            ...headers,
+          },
+        },
+        (res) => {
+          res.on("data", (c: Buffer) => chunks.push(c));
+          const done = (): void =>
+            resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() });
+          res.on("end", done);
+          res.on("close", done);
+          res.on("error", () => resolve({ status: 0, body: "" }));
+        },
+      );
+      req.on("error", () => resolve({ status: 0, body: Buffer.concat(chunks).toString() }));
+      req.write(raw);
+      req.end();
+    });
+  }
+
+  it("keeps two requests that share one X-Request-Id on separate journal entries", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const boom: Fixture = {
+      match: { inputText: "shared-boom" },
+      response: () => {
+        throw new Error("factory boom");
+      },
+    };
+    const ok: Fixture = {
+      match: { inputText: "shared-ok" },
+      response: { embedding: [0.1, 0.2] },
+    };
+    instance = await createServer([ok, boom], { logLevel: "warn" });
+
+    // A caller-supplied id is echoed verbatim and nothing makes it unique, so
+    // a second request can carry the id of one already served.
+    const rid = "shared-rid-1";
+    const a = await post(
+      `${instance.url}/v1/embeddings`,
+      { model: "text-embedding-3-small", input: "shared-ok" },
+      { "X-Request-Id": rid },
+    );
+    const b = await post(
+      `${instance.url}/v1/embeddings`,
+      { model: "text-embedding-3-small", input: "shared-boom" },
+      { "X-Request-Id": rid },
+    );
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(500);
+
+    const mine = instance.journal.getAll().filter((e) => e.headers["x-request-id"] === rid);
+    expect(mine.length).toBe(2);
+    // The request that really was served 200 keeps its 200 and its fixture.
+    expect(mine[0].response.status).toBe(200);
+    expect(mine[0].response.fixture).not.toBeNull();
+    // The crash gets its OWN entry rather than rewriting the earlier one.
+    expect(mine[1].response.status).toBe(500);
+    expect(mine[1].response.fixture).toBeNull();
+    expect(mine[1].response.source).toBe("internal");
+  });
+
+  it.each([
+    ["/v1/chat/completions", undefined, undefined],
+    ["/v1/responses", "internal", undefined],
+    ["/v1/embeddings", "internal", undefined],
+    ["/v1/batches", "internal", "batches"],
+  ])(
+    "journals an oversized body on %s as an undelivered client fault",
+    async (route, source, service) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      instance = await createServer([], { logLevel: "warn", metrics: true });
+      const raw = JSON.stringify({ model: "m", input: "x".repeat(11 * 1024 * 1024) });
+      const wire = await postTolerant(`${instance.url}${route}`, raw);
+      expect(wire).toEqual({ status: 0, body: "" });
+      await vi.waitFor(() => expect(instance!.journal.getAll()).toHaveLength(1));
+      const [entry] = instance.journal.getAll();
+      expect(entry.path).toBe(route);
+      expect(entry.service).toBe(service);
+      expect(entry.response).toMatchObject({
+        status: 0,
+        fixture: null,
+        interrupted: true,
+        interruptReason: "request body exceeded size limit",
+      });
+      expect(entry.response.source).toBe(source);
+      const metrics = await get(`${instance.url}/metrics`);
+      expect(metrics.body).toContain(
+        `aimock_requests_total{method="POST",path="${route}",status="destroyed"} 1`,
+      );
+      expect(metrics.body).not.toContain(`path="${route}",status="400"`);
+      const warned = warnSpy.mock.calls.map((c) => c.map(String).join(" "));
+      expect(
+        warned.some(
+          (line) => line.includes(`POST ${route}`) && line.includes("exceeded size limit"),
+        ),
+      ).toBe(true);
+      expect(errorSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/v1/chat/completions", "/v1/responses"])(
+    "keeps a deliverable malformed-body 400 on %s",
+    async (route) => {
+      instance = await createServer([], { metrics: true });
+      const wire = await postRaw(`${instance.url}${route}`, "{");
+      expect(wire.status).toBe(400);
+      const entries = instance.journal.getAll();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].response.status).toBe(400);
+      expect(entries[0].response.interrupted).toBeUndefined();
+      const metrics = await get(`${instance.url}/metrics`);
+      expect(metrics.body).toContain(
+        `aimock_requests_total{method="POST",path="${route}",status="400"} 1`,
+      );
+    },
+  );
+
+  // Headers plus a partial body under an overstated Content-Length, then the
+  // socket is destroyed: Node rejects the body read with `aborted`. Resolves
+  // once the server has journaled the request (polled), so the assertions
+  // run against the entry the abort produced.
+  async function abortMidBody(journal: Journal, port: string, path: string): Promise<void> {
+    const before = journal.getAll().length;
+    await new Promise<void>((resolve) => {
+      const sock = net.connect(Number(port), "127.0.0.1", () => {
+        sock.write(
+          `POST ${path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n` +
+            `Content-Length: 1000\r\n\r\n{"model":"gpt-4","messages":[{"role":"user","con`,
+        );
+        setTimeout(() => {
+          sock.destroy();
+          resolve();
+        }, 50);
+      });
+      sock.on("error", () => {});
+    });
+    for (let i = 0; i < 40 && journal.getAll().length === before; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it.each([
+    ["/v1/chat/completions", "the completions read arm"],
+    ["/v1/messages", "routeError"],
+  ])(
+    "journals a client abort mid-body on %s as interrupted, at warn, not a delivered 500 (%s)",
+    async (route) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      instance = await createServer([], { logLevel: "warn" });
+
+      const before = instance.journal.getAll().length;
+      await abortMidBody(instance.journal, new URL(instance.url).port, route);
+
+      const entries = instance.journal.getAll().slice(before);
+      expect(entries.length).toBe(1);
+      expect(entries[0].path).toBe(route);
+      // Nothing reached the client, so no delivered status — the same shape the
+      // proxy arm and chaos `disconnect` give a torn socket.
+      expect(entries[0].response.status).toBe(0);
+      expect(entries[0].response.interrupted).toBe(true);
+      expect(entries[0].response.interruptReason).toBe("client aborted");
+
+      // A peer hang-up is caller behaviour: warn, never error.
+      const warned = warnSpy.mock.calls.map((c) => c.map(String).join(" "));
+      expect(warned.some((l) => l.includes(`POST ${route}`) && l.includes("client aborted"))).toBe(
+        true,
+      );
+      const errored = errorSpy.mock.calls.map((c) => c.map(String).join(" "));
+      expect(errored.some((l) => l.includes(`POST ${route}`))).toBe(false);
+    },
+  );
+
+  it("tags a voice-design crash with its service", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    instance = await createServer([], { logLevel: "warn" });
+
+    // Crash BEFORE anything is written: the voice-design handler reads the
+    // per-test match counts while selecting a fixture, which precedes the
+    // response write. (The handler journals AFTER the write, so a throwing
+    // `journal.add` would land after the real 422 was already on the wire.)
+    const realCounts = instance.journal.getFixtureMatchCountsForTest.bind(instance.journal);
+    let armed = true;
+    instance.journal.getFixtureMatchCountsForTest = ((testId: string) => {
+      if (armed) {
+        armed = false;
+        throw new Error("voice design boom");
+      }
+      return realCounts(testId);
+    }) as typeof instance.journal.getFixtureMatchCountsForTest;
+
+    const before = instance.journal.getAll().length;
+    const res = await post(`${instance.url}/v1/text-to-voice/design`, { voice_description: "x" });
+    expect(res.status).toBe(500);
+
+    const entries = instance.journal.getAll().slice(before);
+    expect(entries.length).toBe(1);
+    expect(entries[0].response.status).toBe(500);
+    expect(entries[0].service).toBe("elevenlabs-voice");
+  });
+
+  it("journals the malformed-voice-id 400 under the voice service", async () => {
+    instance = await createServer([], { logLevel: "warn" });
+
+    const before = instance.journal.getAll().length;
+    const res = await get(`${instance.url}/v1/voices/%E0%A4%A`);
+    expect(res.status).toBe(400);
+
+    const entries = instance.journal.getAll().slice(before);
+    expect(entries.length).toBe(1);
+    expect(entries[0].response.status).toBe(400);
+    expect(entries[0].service).toBe("elevenlabs-voice");
+    expect(entries[0].path).toBe("/v1/voices/%E0%A4%A");
+  });
+});
+
+describe("POST /v1/chat/completions (citations and files)", () => {
+  const citeFixture: Fixture = {
+    match: { userMessage: "cite-me" },
+    response: {
+      content: "Mastra is a TypeScript framework.",
+      citations: [
+        { url: "https://mastra.ai", title: "Mastra" },
+        { url: "https://mastra.ai/docs", startIndex: 0, endIndex: 6 },
+      ],
+    },
+  };
+  const expectedAnnotations = [
+    {
+      type: "url_citation",
+      url_citation: { url: "https://mastra.ai", title: "Mastra", start_index: 0, end_index: 33 },
+    },
+    {
+      type: "url_citation",
+      url_citation: {
+        url: "https://mastra.ai/docs",
+        title: "https://mastra.ai/docs",
+        start_index: 0,
+        end_index: 6,
+      },
+    },
+  ];
+  const chatBody = (msg: string, stream: boolean) => ({
+    model: "gpt-4",
+    stream,
+    messages: [{ role: "user", content: msg }],
+  });
+  type ChatChunk = {
+    choices: { delta: { content?: string; annotations?: unknown }; finish_reason: string | null }[];
+  };
+
+  it("non-streaming message carries url_citation annotations", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-me", false));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(expectedAnnotations);
+  });
+
+  it("streaming sends one delta.annotations chunk after the content, before the finish chunk", async () => {
+    instance = await createServer([citeFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-me", true));
+    const chunks = parseSSEEvents(res.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations).toHaveLength(1);
+    expect(withAnnotations[0].choices[0].delta.annotations).toEqual(expectedAnnotations);
+    const idx = chunks.indexOf(withAnnotations[0]);
+    expect(chunks[idx + 1].choices[0].finish_reason).toBe("stop");
+    expect(chunks.slice(0, idx).some((c) => c.choices[0].delta.content)).toBe(true);
+  });
+
+  it("content+toolCalls turns carry the annotations on both modes", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-tools" },
+        response: {
+          content: "Checking.",
+          toolCalls: [{ name: "lookup", arguments: "{}" }],
+          citations: [{ url: "https://example.com" }],
+        },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-tools", false));
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual([
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 9,
+        },
+      },
+    ]);
+    const streamed = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("cite-tools", true),
+    );
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    expect(chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined)).toHaveLength(1);
+  });
+
+  it("blocks turns carry the annotations on both modes", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-blocks" },
+        response: {
+          blocks: [
+            { type: "text", text: "Checking." },
+            { type: "toolCall", name: "lookup", arguments: "{}" },
+          ],
+          citations: [{ url: "https://example.com" }],
+        },
+      },
+    ]);
+    const expected = [
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 9,
+        },
+      },
+    ];
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-blocks", false));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(expected);
+    const streamed = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("cite-blocks", true),
+    );
+    expect(streamed.status).toBe(200);
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations.map((c) => c.choices[0].delta.annotations)).toEqual([expected]);
+    const idx = chunks.indexOf(withAnnotations[0]);
+    expect(chunks[idx + 1].choices[0].finish_reason).toBe("tool_calls");
+  });
+
+  it("skips file citations, which Chat Completions has no annotation for (both modes)", async () => {
+    instance = await createServer([
+      {
+        match: { userMessage: "cite-file" },
+        response: {
+          content: "Hello.",
+          citations: [
+            { type: "file", fileId: "file-abc123", filename: "plan.pdf" },
+            { url: "https://example.com" },
+          ],
+        },
+      },
+      {
+        match: { userMessage: "file-only" },
+        response: {
+          content: "Hello.",
+          citations: [{ type: "file", fileId: "file-abc123", filename: "plan.pdf" }],
+        },
+      },
+    ]);
+    const urlOnly = [
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "https://example.com",
+          start_index: 0,
+          end_index: 6,
+        },
+      },
+    ];
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-file", false));
+    expect(JSON.parse(res.body).choices[0].message.annotations).toEqual(urlOnly);
+    const streamed = await post(`${instance.url}/v1/chat/completions`, chatBody("cite-file", true));
+    const chunks = parseSSEEvents(streamed.body) as ChatChunk[];
+    const withAnnotations = chunks.filter((c) => c.choices[0]?.delta.annotations !== undefined);
+    expect(withAnnotations.map((c) => c.choices[0].delta.annotations)).toEqual([urlOnly]);
+
+    const fileOnly = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("file-only", false),
+    );
+    expect("annotations" in JSON.parse(fileOnly.body).choices[0].message).toBe(false);
+    const fileOnlyStream = await post(
+      `${instance.url}/v1/chat/completions`,
+      chatBody("file-only", true),
+    );
+    expect(fileOnlyStream.body).not.toContain("annotations");
+  });
+
+  it.each([false, true])(
+    "omitting citations leaves the wire byte-identical to the no-citations baseline (stream: %s)",
+    async (stream) => {
+      instance = await createServer([
+        { match: { userMessage: "plain" }, response: { content: "hi" } },
+      ]);
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("plain", stream));
+      // Ids and timestamps are random; everything else must match byte for byte.
+      const normalized = res.body
+        .replace(/"id":"[^"]*"/g, '"id":"<id>"')
+        .replace(/"created":\d+/g, '"created":0');
+      const envelope = '"id":"<id>","object":"chat.completion","created":0,"model":"gpt-4"';
+      if (!stream) {
+        expect(normalized).toBe(
+          `{${envelope},"choices":[{"index":0,"message":{"role":"assistant","content":"hi","refusal":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+        );
+        return;
+      }
+      const chunk = (delta: string, finish: string) =>
+        `data: {"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4","choices":[{"index":0,"delta":${delta},"logprobs":null,"finish_reason":${finish}}]}\n\n`;
+      expect(normalized).toBe(
+        chunk('{"role":"assistant","content":""}', "null") +
+          chunk('{"content":"hi"}', "null") +
+          chunk("{}", '"stop"') +
+          "data: [DONE]\n\n",
+      );
+    },
+  );
+
+  it.each([false, true])("rejects fixture files with a coded 500 (stream: %s)", async (stream) => {
+    instance = await createServer([
+      {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      },
+    ]);
+    const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("aimock_unsupported_generated_file");
+    expect(body.error.message).toContain("OpenAI Chat Completions");
+  });
+
+  const generatedFile = [{ mimeType: "image/png", data: "iVBORw0KGgo=" }];
+
+  it.each<[string, Fixture["response"]]>([
+    ["tool-only", { toolCalls: [{ name: "lookup", arguments: "{}" }], files: generatedFile }],
+    [
+      "content + tool calls",
+      {
+        content: "Checking.",
+        toolCalls: [{ name: "lookup", arguments: "{}" }],
+        files: generatedFile,
+      },
+    ],
+  ])("rejects fixture files on the %s path with a coded 500", async (_label, response) => {
+    instance = await createServer([{ match: { userMessage: "draw" }, response }]);
+    for (const stream of [false, true]) {
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      expect(res.status).toBe(500);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe("aimock_unsupported_generated_file");
+      expect(body.error.message).toContain("OpenAI Chat Completions");
+    }
+  });
+
+  // What a turn looks like on the wire, folded the same way for both modes.
+  const chatTurn = (body: string, stream: boolean) => {
+    if (!stream) {
+      const choice = JSON.parse(body).choices[0];
+      return {
+        content: choice.message.content ?? "",
+        refusal: choice.message.refusal ?? "",
+        finish: choice.finish_reason,
+      };
+    }
+    const chunks = body
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)).choices[0]);
+    return {
+      content: chunks.map((c) => c.delta.content ?? "").join(""),
+      refusal: chunks.map((c) => c.delta.refusal ?? "").join(""),
+      finish: chunks.map((c) => c.finish_reason).filter((f) => f !== null)[0],
+    };
+  };
+
+  it.each([
+    {
+      fault: { fault: "refusal" as const },
+      turn: { content: "", refusal: "I can't help with that.", finish: "stop" },
+    },
+    {
+      fault: { fault: "content-filter" as const },
+      turn: { content: "", refusal: "", finish: "content_filter" },
+    },
+    {
+      fault: { fault: "reasoning-only" as const, reasoning: "Thinking only." },
+      turn: { content: "", refusal: "", finish: "length" },
+    },
+  ])(
+    "rejects fixture files under the $fault.fault misbehavior with a coded 500",
+    async ({ fault, turn }) => {
+      const misbehavior = { faults: [{ ...fault, rate: 1 }] };
+      instance = await createServer(
+        [
+          {
+            match: { userMessage: "draw" },
+            response: { content: "Here.", files: generatedFile },
+            misbehavior,
+          },
+          // Control: the same fault on a servable fixture is applied on this wire.
+          { match: { userMessage: "plain" }, response: { content: "Here." }, misbehavior },
+        ],
+        { enableMisbehavior: true },
+      );
+      for (const stream of [false, true]) {
+        const control = await post(
+          `${instance.url}/v1/chat/completions`,
+          chatBody("plain", stream),
+        );
+        expect(control.status).toBe(200);
+        expect(chatTurn(control.body, stream)).toEqual(turn);
+
+        const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+        expect(res.status).toBe(500);
+        const body = JSON.parse(res.body);
+        expect(body.error.code).toBe("aimock_unsupported_generated_file");
+        expect(body.error.message).toContain("OpenAI Chat Completions");
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "journals the rejected files fixture as a 500 with the error (stream: %s)",
+    async (stream) => {
+      const fixture: Fixture = {
+        match: { userMessage: "draw" },
+        response: { content: "Here.", files: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+      };
+      instance = await createServer([fixture]);
+      const res = await post(`${instance.url}/v1/chat/completions`, chatBody("draw", stream));
+      const wireError = JSON.parse(res.body).error as { message: string; code: string };
+      expect(wireError.code).toBe("aimock_unsupported_generated_file");
+      const entries = instance.journal.getAll();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].path).toBe("/v1/chat/completions");
+      expect(entries[0].response.status).toBe(500);
+      expect(entries[0].response.fixture).toBe(fixture);
+      // The journal keeps the message the client got, which names the error.
+      expect(entries[0].response.error).toBe(wireError.message);
+      expect(entries[0].response.error).toContain('fixture "files" (model-generated files)');
+    },
+  );
 });

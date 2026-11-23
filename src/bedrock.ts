@@ -18,6 +18,9 @@
  */
 
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -29,32 +32,45 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
   generateMessageId,
   generateToolUseId,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   flattenHeaders,
+  isJsonObject,
   getContext,
   getTestId,
   resolveResponse,
-  resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
   resolveReasoningForModel,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  validateChatMessages,
+  validateToolsField,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { writeEventStream } from "./aws-event-stream.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { encodeEventStreamMessage, eventStreamCodec } from "./aws-event-stream.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import { prepareClaudeMisbehavior } from "./messages.js";
 import { proxyAndRecord } from "./recorder.js";
+import { mapAnthropicFinish } from "./response/finish.js";
+import {
+  resolve as resolveAnthropicUsage,
+  render as renderAnthropicUsage,
+} from "./response/usage/codecs/anthropic.js";
 
 // ─── Bedrock Claude request types ────────────────────────────────────────────
 
@@ -98,38 +114,16 @@ function bedrockStopReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "end_turn";
-  if (overrideFinishReason === "tool_calls") return "tool_use";
-  if (overrideFinishReason === "length") return "max_tokens";
-  return overrideFinishReason;
-}
-
-/**
- * Build a Bedrock-style usage object from optional overrides.
- *
- * When no overrides are provided (the common case for mock fixtures),
- * returns all-zero token counts. This is intentional — aimock does not
- * attempt to estimate token usage from fixture content. Callers that
- * need realistic usage numbers should set `usage` in their fixture's
- * response overrides.
- */
-function bedrockUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
-  return {
-    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
-  };
+  return mapAnthropicFinish(overrideFinishReason);
 }
 
 // ─── Input conversion: Bedrock → ChatCompletionRequest ──────────────────────
 
-function extractTextContent(content: string | BedrockContentBlock[]): string {
+function extractTextContent(content: string | BedrockContentBlock[] | null | undefined): string {
+  if (content === null || content === undefined) return "";
   if (typeof content === "string") return content;
   return content
-    .filter((b) => b.type === "text")
+    .filter((b) => b !== null && b !== undefined && b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
 }
@@ -146,10 +140,12 @@ export function bedrockToCompletionRequest(
     const systemText =
       typeof req.system === "string"
         ? req.system
-        : req.system
-            .filter((b) => b.type === "text")
-            .map((b) => b.text ?? "")
-            .join("");
+        : Array.isArray(req.system)
+          ? req.system
+              .filter((b) => b !== null && b !== undefined && b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("")
+          : "";
     if (systemText) {
       messages.push({ role: "system", content: systemText });
     }
@@ -161,7 +157,7 @@ export function bedrockToCompletionRequest(
       if (typeof msg.content !== "string" && Array.isArray(msg.content)) {
         // Warn about non-text content blocks that will be dropped (image, document, etc.)
         const unsupportedBlocks = msg.content.filter(
-          (b) => b.type !== "text" && b.type !== "tool_result",
+          (b) => b === null || b === undefined || (b.type !== "text" && b.type !== "tool_result"),
         );
         if (unsupportedBlocks.length > 0 && logger) {
           const types = [...new Set(unsupportedBlocks.map((b) => b.type))].join(", ");
@@ -170,8 +166,12 @@ export function bedrockToCompletionRequest(
           );
         }
 
-        const toolResults = msg.content.filter((b) => b.type === "tool_result");
-        const textBlocks = msg.content.filter((b) => b.type === "text");
+        const toolResults = msg.content.filter(
+          (b) => b !== null && b !== undefined && b.type === "tool_result",
+        );
+        const textBlocks = msg.content.filter(
+          (b) => b !== null && b !== undefined && b.type === "text",
+        );
 
         if (toolResults.length > 0) {
           for (const tr of toolResults) {
@@ -180,7 +180,7 @@ export function bedrockToCompletionRequest(
                 ? tr.content
                 : Array.isArray(tr.content)
                   ? tr.content
-                      .filter((b) => b.type === "text")
+                      .filter((b) => b !== null && b !== undefined && b.type === "text")
                       .map((b) => b.text ?? "")
                       .join("")
                   : "";
@@ -207,7 +207,9 @@ export function bedrockToCompletionRequest(
       if (typeof msg.content === "string") {
         messages.push({ role: "assistant", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        const toolUseBlocks = msg.content.filter((b) => b.type === "tool_use");
+        const toolUseBlocks = msg.content.filter(
+          (b) => b !== null && b !== undefined && b.type === "tool_use",
+        );
         const textContent = extractTextContent(msg.content);
 
         if (toolUseBlocks.length > 0) {
@@ -290,7 +292,7 @@ function buildBedrockTextResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -307,20 +309,12 @@ function buildBedrockToolCallResponse(
     contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
   }
   for (const tc of toolCalls) {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
+    const args = servedToolArgs(tc, "object", logger);
     contentBlocks.push({
       type: "tool_use",
       id: tc.id || generateToolUseId(),
       name: tc.name,
-      input: argsObj,
+      input: args.value,
     });
   }
   return {
@@ -331,7 +325,7 @@ function buildBedrockToolCallResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -358,25 +352,18 @@ function buildBedrockBlocksResponse(
     contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
   }
 
-  const ordered = resolveFixtureBlocks(blocks);
+  const outcome = resolveFixtureBlockOutcome(blocks);
+  const ordered = outcome.ordered;
   for (const block of ordered) {
     if (block.type === "text") {
       contentBlocks.push({ type: "text", text: block.text });
     } else {
-      let argsObj: unknown;
-      try {
-        argsObj = JSON.parse(block.arguments || "{}");
-      } catch {
-        logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-        );
-        argsObj = {};
-      }
+      const args = servedToolArgs(block, "object", logger);
       contentBlocks.push({
         type: "tool_use",
         id: block.id || generateToolUseId(),
         name: block.name,
-        input: argsObj,
+        input: args.value,
       });
     }
   }
@@ -387,9 +374,12 @@ function buildBedrockBlocksResponse(
     role: "assistant",
     content: contentBlocks,
     model: overrides?.model ?? model,
-    stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
+    stop_reason: bedrockStopReason(
+      overrides?.finishReason,
+      outcome.hasToolCalls ? "tool_use" : "end_turn",
+    ),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -425,17 +415,18 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  if (!bedrockReq.messages || !Array.isArray(bedrockReq.messages)) {
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `bedrockReq.messages` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(bedrockReq)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -446,12 +437,40 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: messages array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject wrong-typed fields before the converter dereferences them. A
+  // missing/non-array `messages` keeps the historic message below.
+  const bedrockShapeError =
+    validateChatMessages(bedrockReq.messages, { checkToolCalls: false }) ??
+    validateToolsField(bedrockReq.tools) ??
+    (bedrockReq.system !== undefined &&
+    bedrockReq.system !== null &&
+    typeof bedrockReq.system !== "string" &&
+    !Array.isArray(bedrockReq.system)
+      ? "system must be a string or an array"
+      : null);
+  if (bedrockShapeError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -470,7 +489,7 @@ export async function handleBedrock(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-invoke" },
   );
 
   if (fixture) {
@@ -483,28 +502,29 @@ export async function handleBedrock(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -523,25 +543,16 @@ export async function handleBedrock(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -550,7 +561,12 @@ export async function handleBedrock(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -569,22 +585,121 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "bedrock-invoke",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: completionReq.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`[misbehavior] ${misbehavior.message}`);
+    }
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
+    return;
+  }
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  });
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: false,
+      chunkSize,
+      logger,
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: false,
+    });
+    if (prepared.stream) throw new TypeError("InvokeModel requires non-stream Claude output");
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    const preparedBody = prepared.body;
+    await deliverJson(
+      res,
+      entry,
+      fixture,
+      () => preparedBody,
+      jsonOpts(
+        misbehaviorPayloadLength(
+          misbehavior,
+          misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+        ),
+        !!misbehavior.duplicateId,
+      ),
+    );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-invoke",
+      stream: false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -593,21 +708,14 @@ export async function handleBedrock(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
@@ -615,56 +723,63 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    if (response.blocks && response.blocks.length > 0) {
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
+    const blocks = response.blocks;
+    if (blocks && blocks.length > 0) {
       // NEW PATH: honor the fixture's ordered `blocks` in the positionally
       // observable Anthropic-style content array (tool-first expressible).
-      const blocksBody = buildBedrockBlocksResponse(
-        response.blocks,
-        completionReq.model,
-        logger,
-        effReasoning,
-        overrides,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildBedrockBlocksResponse(blocks, completionReq.model, logger, effReasoning, overrides),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(blocksBody));
       return;
     }
-    const textBody = buildBedrockTextResponse(
-      response.content ?? "",
-      completionReq.model,
-      effReasoning,
-      overrides,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () => {
+        const textBody = buildBedrockTextResponse(
+          response.content ?? "",
+          completionReq.model,
+          effReasoning,
+          overrides,
+        );
+        const toolBody = buildBedrockToolCallResponse(
+          functionToolCalls,
+          completionReq.model,
+          logger,
+          // Reasoning is rendered by the text response in this merged path; pass
+          // undefined here to avoid emitting a duplicate thinking block.
+          undefined,
+          overrides,
+        );
+        // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
+        return {
+          ...(textBody as Record<string, unknown>),
+          content: [
+            ...((textBody as Record<string, unknown>).content as object[]),
+            ...((toolBody as Record<string, unknown>).content as object[]),
+          ],
+          stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
+        };
+      },
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    const toolBody = buildBedrockToolCallResponse(
-      response.toolCalls ?? [],
-      completionReq.model,
-      logger,
-      // Reasoning is rendered by the text response in this merged path; pass
-      // undefined here to avoid emitting a duplicate thinking block.
-      undefined,
-      overrides,
-    );
-    // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
-    const merged = {
-      ...(textBody as Record<string, unknown>),
-      content: [
-        ...((textBody as Record<string, unknown>).content as object[]),
-        ...((toolBody as Record<string, unknown>).content as object[]),
-      ],
-      stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
-    };
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(merged));
     return;
   }
 
@@ -677,24 +792,24 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockTextResponse(
-      response.content,
-      completionReq.model,
-      effReasoning,
-      overrides,
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () =>
+        buildBedrockTextResponse(response.content, completionReq.model, effReasoning, overrides),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
     return;
   }
 
@@ -707,30 +822,36 @@ export async function handleBedrock(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockToolCallResponse(
-      response.toolCalls,
-      completionReq.model,
-      logger,
-      effReasoning,
-      overrides,
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
+    await deliverJson(
+      res,
+      journalEntry,
+      fixture,
+      () =>
+        buildBedrockToolCallResponse(
+          functionToolCalls,
+          completionReq.model,
+          logger,
+          effReasoning,
+          overrides,
+        ),
+      jsonOpts(servedPayloadLength(response, effReasoning)),
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
     return;
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
@@ -740,18 +861,22 @@ export async function handleBedrock(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
 // ─── Streaming event builders ───────────────────────────────────────────────
 
 const BEDROCK_INVOKE_STREAM_EVENT_TYPE = "chunk";
+/** Serialize Claude events as InvokeModel PayloadPart, leaving generic AWS framing unchanged. */
+const bedrockInvokeCodec = eventStreamCodec<{ eventType: string; payload: object }>((event) =>
+  encodeEventStreamMessage(event.eventType, {
+    bytes: Buffer.from(JSON.stringify(event.payload), "utf8").toString("base64"),
+  }),
+);
 
 function buildBedrockInvokeMessageStart(
   model: string,
@@ -769,13 +894,16 @@ function buildBedrockInvokeMessageStart(
         model: overrides?.model ?? model,
         stop_reason: null,
         stop_sequence: null,
-        usage: bedrockUsage(overrides),
+        usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-start"),
       },
     },
   };
 }
 
-function buildBedrockInvokeMessageDelta(stopReason: string): {
+function buildBedrockInvokeMessageDelta(
+  stopReason: string,
+  overrides?: ResponseOverrides,
+): {
   eventType: string;
   payload: object;
 } {
@@ -784,7 +912,7 @@ function buildBedrockInvokeMessageDelta(stopReason: string): {
     payload: {
       type: "message_delta",
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: 0 },
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-delta"),
     },
   };
 }
@@ -797,15 +925,7 @@ function buildBedrockInvokeMessageStop(): { eventType: string; payload: object }
 }
 
 function parseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  try {
-    const parsed = JSON.parse(toolCall.arguments || "{}");
-    return JSON.stringify(parsed);
-  } catch {
-    logger.warn(
-      `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
-    );
-    return "{}";
-  }
+  return servedToolArgs(toolCall, "string", logger).text;
 }
 
 export function buildBedrockStreamTextEvents(
@@ -888,7 +1008,10 @@ export function buildBedrockStreamTextEvents(
   });
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "end_turn")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "end_turn"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -954,7 +1077,8 @@ export function buildBedrockStreamContentWithToolCallsEvents(
     // positional, so a `toolCall` block can take a lower `index` than a `text`
     // block (tool-first is wire-expressible). Indices continue from any leading
     // thinking block above.
-    const ordered = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const ordered = outcome.ordered;
     for (const block of ordered) {
       if (block.type === "text") {
         events.push({
@@ -1020,7 +1144,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
     }
 
     events.push(
-      buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+      buildBedrockInvokeMessageDelta(
+        bedrockStopReason(overrides?.finishReason, outcome.hasToolCalls ? "tool_use" : "end_turn"),
+        overrides,
+      ),
     );
     events.push(buildBedrockInvokeMessageStop());
     return events;
@@ -1094,7 +1221,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   }
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "tool_use"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -1192,7 +1322,10 @@ export function buildBedrockStreamToolCallEvents(
   }
 
   events.push(
-    buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+    buildBedrockInvokeMessageDelta(
+      bedrockStopReason(overrides?.finishReason, "tool_use"),
+      overrides,
+    ),
   );
   events.push(buildBedrockInvokeMessageStop());
 
@@ -1231,17 +1364,18 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  if (!bedrockReq.messages || !Array.isArray(bedrockReq.messages)) {
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `bedrockReq.messages` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(bedrockReq)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1252,12 +1386,40 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: messages array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject wrong-typed fields before the converter dereferences them. A
+  // missing/non-array `messages` keeps the historic message below.
+  const bedrockShapeError =
+    validateChatMessages(bedrockReq.messages, { checkToolCalls: false }) ??
+    validateToolsField(bedrockReq.tools) ??
+    (bedrockReq.system !== undefined &&
+    bedrockReq.system !== null &&
+    typeof bedrockReq.system !== "string" &&
+    !Array.isArray(bedrockReq.system)
+      ? "system must be a string or an array"
+      : null);
+  if (bedrockShapeError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1276,7 +1438,7 @@ export async function handleBedrockStream(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "bedrock-invoke" },
   );
 
   if (fixture) {
@@ -1289,28 +1451,29 @@ export async function handleBedrockStream(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1329,25 +1492,16 @@ export async function handleBedrockStream(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "bedrock",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "bedrock", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1356,7 +1510,12 @@ export async function handleBedrockStream(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1375,24 +1534,110 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
-  const latency = fixture.latency ?? defaults.latency;
+  const misbehavior = planMisbehavior({
+    wire: "bedrock-invoke",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: completionReq.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`[misbehavior] ${misbehavior.message}`);
+    }
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
+    return;
+  }
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const streamTiming = {
+    latency: fixture.latency ?? defaults.latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+  };
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: true,
+      chunkSize,
+      logger,
+      strict: resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      citations: false,
+    });
+    if (!prepared.stream) throw new TypeError("InvokeModel stream requires Claude events");
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    const events = prepared.events.map((event) => ({
+      eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+      payload: event,
+    }));
+    await deliverStream(res, entry, fixture, bedrockInvokeCodec, events, streamTiming);
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "bedrock-invoke",
+      stream: true,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "bedrock",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1401,21 +1646,14 @@ export async function handleBedrockStream(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
   }
 
   // Content + tool calls response — stream as Event Stream
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
@@ -1423,19 +1661,20 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     const events = buildBedrockStreamContentWithToolCallsEvents(
       response.content ?? "",
-      response.toolCalls ?? [],
+      functionToolCalls,
       completionReq.model,
       chunkSize,
       logger,
@@ -1443,22 +1682,7 @@ export async function handleBedrockStream(
       overrides,
       response.blocks,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      jitterSource: chaosJitterFor(req),
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
@@ -1471,10 +1695,10 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1488,22 +1712,7 @@ export async function handleBedrockStream(
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      jitterSource: chaosJitterFor(req),
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
@@ -1516,45 +1725,31 @@ export async function handleBedrockStream(
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
-      resolveStrictMode(defaults.strict, req.headers),
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     const events = buildBedrockStreamToolCallEvents(
-      response.toolCalls,
+      functionToolCalls,
       completionReq.model,
       chunkSize,
       logger,
       effReasoning,
       overrides,
     );
-    const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
-      latency,
-      streamingProfile: fixture.streamingProfile,
-      jitterSource: chaosJitterFor(req),
-      recordedTimings: fixture.recordedTimings,
-      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-      signal: interruption?.signal,
-      onChunkSent: interruption?.tick,
-    });
-    if (!completed) {
-      if (!res.writableEnded) res.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-    }
-    interruption?.cleanup();
+    await deliverStream(res, journalEntry, fixture, bedrockInvokeCodec, events, streamTiming);
     return;
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
@@ -1564,11 +1759,9 @@ export async function handleBedrockStream(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }

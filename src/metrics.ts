@@ -5,6 +5,64 @@
  * with Prometheus text exposition format serialization.
  */
 
+import {
+  AZURE_DEPLOYMENT_RE as AZURE_RE,
+  BATCHES_CANCEL_RE,
+  BATCHES_ID_RE,
+  BYTEPLUS_VIDEO_STATUS_RE,
+  BYTEPLUS_VIDEO_SUBMIT_RE,
+  ELEVENLABS_TTS_RE,
+  ELEVENLABS_VOICE_RE,
+  FAL_ROUTE_RE,
+  FILES_CONTENT_RE,
+  FILES_ID_RE,
+  FINE_TUNING_ID_RE,
+  GROK_VIDEO_STATUS_RE,
+  GROK_VIDEO_SUBMIT_PATH,
+  MODELS_DETAIL_RE,
+  GEMINI_MODEL_DETAIL_RE,
+  GEMINI_MODELS_PATH,
+  OPENAI_VIDEO_STATUS_RE,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+  VEO_OPERATION_RE,
+  VEO_PREDICT_LRO_RE,
+  VECTOR_STORES_BATCH_CANCEL_RE,
+  VECTOR_STORES_BATCH_FILES_RE,
+  VECTOR_STORES_BATCH_RE,
+  VECTOR_STORES_FILES_RE,
+  VECTOR_STORES_FILE_BATCHES_RE,
+  VECTOR_STORES_FILE_RE,
+  VECTOR_STORES_ID_RE,
+  VECTOR_STORES_SEARCH_RE,
+} from "./route-registry.js";
+
+// Re-exported so existing importers (route tests) keep resolving these
+// against the metrics module. The bindings ARE the registry's — there is
+// exactly one pattern object per route family.
+export {
+  BATCHES_CANCEL_RE,
+  BATCHES_ID_RE,
+  BYTEPLUS_VIDEO_STATUS_RE,
+  BYTEPLUS_VIDEO_SUBMIT_RE,
+  FAL_ROUTE_RE,
+  FILES_CONTENT_RE,
+  FILES_ID_RE,
+  GROK_VIDEO_STATUS_RE,
+  GROK_VIDEO_SUBMIT_PATH,
+  OPENAI_VIDEO_STATUS_RE,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+  VEO_OPERATION_RE,
+  VEO_PREDICT_LRO_RE,
+  VECTOR_STORES_BATCH_CANCEL_RE,
+  VECTOR_STORES_BATCH_FILES_RE,
+  VECTOR_STORES_BATCH_RE,
+  VECTOR_STORES_FILE_RE,
+  VECTOR_STORES_ID_RE,
+  VECTOR_STORES_SEARCH_RE,
+};
+
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
@@ -214,62 +272,276 @@ export function createMetricsRegistry(): MetricsRegistry {
 // Path normalization for metric labels
 // ---------------------------------------------------------------------------
 
-// Regex patterns for parametric API routes
+// Regex patterns for parametric API routes. The dispatch+labeling patterns
+// shared with server.ts dispatch and the machine-readable catalog are defined
+// in route-registry.ts (single source of truth) and imported above; only
+// labeling-specific patterns are declared here: the Bedrock union, the Looser
+// Vertex shape, the widened Gemini action bucket (+ its allowlists), and the
+// served-or-not namespace cascades below.
 const BEDROCK_RE =
   /^\/model\/([^/]+)\/(invoke|invoke-with-response-stream|converse|converse-stream)$/;
-const GEMINI_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
-const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
-const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
 const VERTEX_RE =
   /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
-// Exported: server.ts route dispatch matches the same OpenRouter and OpenAI
-// video paths.
-export const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
-export const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
-export const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
-// Exported: server.ts route dispatch matches the same Google Veo and xAI Grok
-// video paths. Veo submit (`:predictLongRunning`) is anchored so it never
-// collides with the bare Gemini `:predict` route; Veo operations live in a
-// fresh `/v1beta/operations/...` namespace. Grok submit is an exact literal
-// path; Grok status reuses the OpenAI `/v1/videos/{id}` shape (the dispatch
-// guards `id !== "generations"` and the job-map lookup disambiguates Sora).
-export const VEO_PREDICT_LRO_RE = /^\/v1beta\/models\/([^:]+):predictLongRunning$/;
-export const VEO_OPERATION_RE = /^\/v1beta\/(operations\/.+)$/;
-export const GROK_VIDEO_SUBMIT_PATH = "/v1/videos/generations";
-export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
+// Gemini `/v1beta/models/{model}:{action}`. The action segment is caller
+// controlled, so only the actions the server routes stay verbatim; anything
+// else collapses to `{action}`. `predictLongRunning` is listed so the Veo
+// submit label below stays byte-identical to what it was before this RE
+// widened past generate/streamGenerate — the two rules must agree.
+const GEMINI_RE = /^\/v1beta\/models\/([^:]+):([^/]+)$/;
+// Retain the historical label for unserved single-segment encoded action IDs.
+const GEMINI_MODEL_LABEL_RE = /^\/v1beta\/models\/([^:/]+)$/;
+const GEMINI_ACTIONS = new Set([
+  "generateContent",
+  "streamGenerateContent",
+  "embedContent",
+  "batchEmbedContents",
+  "countTokens",
+  "predict",
+  "predictLongRunning",
+]);
+// The Vertex `:action` segment is caller controlled exactly as Gemini's is;
+// server.ts routes only these two, so anything else collapses to `{action}`.
+const VERTEX_ACTIONS = new Set(["generateContent", "streamGenerateContent"]);
 
 /**
- * BytePlus Ark (Seedance) async video task routes. The `/api/v3` prefix is
- * ENUMERATED rather than wildcarded: Ark's data-plane base carries it, but a
- * client may point `baseURL` at a bare aimock root instead, so both forms must
- * route. A tolerant `(?:\/[^?]*)?` prefix would additionally claim
- * `/fal/contents/generations/tasks` — and these routes dispatch in the
- * pre-rewrite band, ~1,100 lines ahead of every fal branch, so it would take
- * that path away from the fal proxy. Enumerating the one real prefix also
- * blocks a doubled suffix from matching the status RE.
+ * Closed namespaces beyond fine-tuning. Each prefix below is entered by prefix
+ * and always returns, so no id-bearing or unknown-depth path under it can
+ * reach the verbatim return at the bottom of `normalizePathLabel`:
  *
- * Declared here (not in server.ts) because normalizePathLabel below consumes
- * them, matching the existing OpenRouter/Veo/Grok route-regex edge where
- * server.ts imports its route regexes from this module.
+ * - fal: `/fal/queue/requests/{id}[/status|/cancel|/stream]` (aimock's own
+ *   queue layout), `/fal/{model}/requests/{id}[/…]` (the `x-fal-target-host`
+ *   path-mirror of `queue.fal.run`), `/fal/queue/submit/{model}`,
+ *   `/fal/run/{model}`. Request ids are minted per submit and model ids are
+ *   caller-controlled multi-segment paths, so both collapse.
+ * - music: `/v1/music/{generation|variation|remix|extend|plan|detailed|stream}`
+ *   are the ElevenLabs routes (`plan`/`stream` take their own response shape
+ *   in elevenlabs-audio.ts); the server RE accepts any suffix, so an unknown
+ *   one collapses.
+ * - files / batches: the id and sub-resource rules above cover the routed
+ *   shapes; any other depth collapses to the namespace's `{other}`.
  */
-export const BYTEPLUS_VIDEO_SUBMIT_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks$/;
-export const BYTEPLUS_VIDEO_STATUS_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks\/([^/]+)$/;
+/**
+ * The fal.ai route shape (`FAL_ROUTE_RE`, imported from route-registry.ts so
+ * the label rule cannot drift from the route rule): a bare `/fal` is routed,
+ * so it is labelled here rather than falling through to `{unknown}`.
+ */
+const FAL_QUEUE_REQUEST_RE = /^\/fal\/queue\/requests\/[^/]+(?:\/([^/]+))?$/;
+const FAL_MIRROR_REQUEST_RE = /^\/fal\/.+\/requests\/[^/]+(?:\/([^/]+))?$/;
+const FAL_REQUEST_SUBRESOURCES = new Set(["status", "cancel", "stream"]);
+const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/.+$/;
+const FAL_RUN_RE = /^\/fal\/run\/.+$/;
+const FAL_OTHER_LABEL = "/fal/{other}";
+const MUSIC_PREFIX = "/v1/music/";
+const MUSIC_ACTIONS = new Set([
+  "generation",
+  "variation",
+  "remix",
+  "extend",
+  "plan",
+  "detailed",
+  "stream",
+]);
+const MUSIC_OTHER_LABEL = "/v1/music/{other}";
+const FILES_PREFIX = "/v1/files/";
+const FILES_OTHER_LABEL = "/v1/files/{other}";
+const BATCHES_PREFIX = "/v1/batches/";
+const BATCHES_OTHER_LABEL = "/v1/batches/{other}";
+const VECTOR_STORES_PREFIX = "/v1/vector_stores/";
+const VECTOR_STORES_OTHER_LABEL = "/v1/vector_stores/{other}";
+
+/**
+ * Label for a path no route claimed. Metrics are recorded for EVERY response,
+ * the generic 404 included, so an unrouted path is caller-controlled text and
+ * a fuzzer (or a typo'd SDK base URL) would mint one label per request.
+ *
+ * The collapse is decided by ROUTE SHAPE, never by status: a 404 is not the
+ * only way an unrouted path gets answered (a CORS preflight is 204 for any
+ * path, a torn-down response has no status at all), and a routed path can
+ * legitimately 404 (a fixture miss, a missing file) without becoming
+ * unknown. Every path that is not claimed by a placeholder rule above must
+ * therefore be listed here to keep its verbatim label.
+ */
+export const UNKNOWN_PATH_LABEL = "{unknown}";
+
+/**
+ * Static paths server.ts dispatches by exact match (after
+ * `normalizeCompatPath`, so the canonical `/v1/...` spelling). A path absent
+ * from this table that no placeholder rule claims is labelled `{unknown}`
+ * whatever its status — so a new static route needs an entry here or its
+ * traffic is counted but not named.
+ */
+const STATIC_ROUTE_PATHS = new Set([
+  "/health",
+  "/ready",
+  "/metrics",
+  "/search",
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/v1/realtime",
+  "/v1/messages",
+  "/v1/messages/count_tokens",
+  "/v1/embeddings",
+  "/v1/moderations",
+  "/v1/models",
+  "/v1/_requests",
+  "/v1/images/generations",
+  "/v1/images/edits",
+  "/v1/images/variations",
+  "/v1/audio/speech",
+  "/v1/audio/transcriptions",
+  "/v1/audio/translations",
+  "/v1/videos",
+  "/v1/batches",
+  "/v1/files",
+  "/v1/vector_stores",
+  "/v1/sound-generation",
+  "/v1/music",
+  "/v1/text-to-voice",
+  "/v1/text-to-voice/design",
+  "/v1beta/interactions",
+  "/v2/chat",
+  "/v2/embed",
+  "/v2/rerank",
+  "/api/chat",
+  "/api/generate",
+  "/api/embeddings",
+  "/api/embed",
+  "/api/tags",
+  "/api/v1/videos",
+  "/api/v1/videos/models",
+  "/api/v1/credits",
+  "/api/v1/key",
+  "/api/v1/models",
+  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+]);
+
+/**
+ * Control API (`/__aimock/...`): a closed set of sub-paths, matched exactly
+ * in `handleControlAPI`; anything else under the prefix collapses.
+ */
+const CONTROL_PREFIX = "/__aimock/";
+const CONTROL_PATHS = new Set([
+  "/__aimock/health",
+  "/__aimock/journal",
+  "/__aimock/fixtures",
+  "/__aimock/chaos",
+  "/__aimock/reset",
+  "/__aimock/reset/journal",
+  "/__aimock/reset/fixtures",
+  "/__aimock/error",
+  "/__aimock/openapi.json",
+  "/__aimock/routes",
+]);
+const CONTROL_OTHER_LABEL = "/__aimock/{other}";
+
+/**
+ * Sub-paths a mounted service (`createServer(..., mounts)`) answers below its
+ * mount root. The mount roots themselves are runtime configuration, so the
+ * caller passes them in; the JSON-RPC handlers (MCP, A2A, AG-UI, vector) take
+ * the root only, and A2A additionally serves its agent card.
+ */
+const MOUNT_SUBPATHS = new Set(["/.well-known/agent-card.json"]);
+
+/**
+ * Status label for a response that was destroyed before its body ended: no
+ * status line reached the client as a completed response, so no HTTP code
+ * describes the outcome truthfully. Distinct from every numeric status so
+ * `sum(aimock_requests_total)` equals requests served.
+ */
+export const DESTROYED_STATUS_LABEL = "destroyed";
+
+/**
+ * Fine-tuning routes. Both id families (`ftjob-…` per create, `ftckpt-…` per
+ * checkpoint) are minted per resource, so every id-bearing path has to collapse
+ * or each job and each checkpoint mints its own label pair.
+ *
+ * The label hazard is NOT limited to the routes this server implements: metrics
+ * are recorded on `res.on("finish")` for EVERY response, the generic 404
+ * included, and `openai@4.104.0` calls a good deal more of the namespace than
+ * aimock handles. Enumerated from that SDK:
+ *
+ *   - `resources/fine-tuning/jobs/jobs.js` — `/fine_tuning/jobs`,
+ *     `…/jobs/{id}`, `…/jobs/{id}/cancel`, `…/jobs/{id}/pause`,
+ *     `…/jobs/{id}/resume`
+ *   - `resources/fine-tuning/jobs/checkpoints.js` — `…/jobs/{id}/checkpoints`
+ *   - `resources/fine-tuning/checkpoints/permissions.js` —
+ *     `…/checkpoints/{ckpt}/permissions` (create/list) and
+ *     `…/checkpoints/{ckpt}/permissions/{id}` (delete)
+ *   - `resources/fine-tuning/alpha/graders.js` —
+ *     `/fine_tuning/alpha/graders/run`, `/fine_tuning/alpha/graders/validate`
+ *
+ * The grader routes carry no ids, so they need no placeholder — but they DO
+ * need naming here, because the namespace cascade below ends in a catch-all
+ * and a static route must not be swallowed by it.
+ *
+ * Every segment after `/v1/fine_tuning/` is caller-controlled, so the rule is:
+ * known action names are kept verbatim, ids collapse to `{id}`/`{ckpt}`, and
+ * anything else — an unknown action, an unknown depth — collapses to a single
+ * bucket. That is what actually keeps the fine-tuning label set finite no
+ * matter what is requested; an un-collapsed tail would leave the hole open to
+ * a typo or a fuzzer.
+ *
+ * Not exported: server.ts dispatches fine-tuning jobs from the same
+ * route-registry.ts bindings (`FINE_TUNING_JOBS_PATH`, `FINE_TUNING_ID_RE`,
+ * `FINE_TUNING_CANCEL_RE`, `FINE_TUNING_EVENTS_RE`).
+ */
+const FINE_TUNING_PREFIX = "/v1/fine_tuning/";
+const FINE_TUNING_STATIC_PATHS = new Set([
+  "/v1/fine_tuning/jobs",
+  "/v1/fine_tuning/alpha/graders/run",
+  "/v1/fine_tuning/alpha/graders/validate",
+]);
+const FINE_TUNING_SUBRESOURCE_RE = /^\/v1\/fine_tuning\/jobs\/[^/]+\/([^/]+)$/;
+const FINE_TUNING_SUBRESOURCES = new Set(["cancel", "events", "pause", "resume", "checkpoints"]);
+const FINE_TUNING_PERMISSION_ID_RE = /^\/v1\/fine_tuning\/checkpoints\/[^/]+\/permissions\/[^/]+$/;
+const FINE_TUNING_CHECKPOINT_SUBRESOURCE_RE = /^\/v1\/fine_tuning\/checkpoints\/[^/]+\/([^/]+)$/;
+const FINE_TUNING_CHECKPOINT_SUBRESOURCES = new Set(["permissions"]);
+const FINE_TUNING_CHECKPOINT_ID_RE = /^\/v1\/fine_tuning\/checkpoints\/([^/]+)$/;
+const FINE_TUNING_OTHER_LABEL = "/v1/fine_tuning/{other}";
 
 /**
  * Normalize parametric API paths to route patterns for use as metric labels.
  * Replaces dynamic segments (model IDs, deployment names, etc.) with placeholders.
+ * `mountPaths` are the roots of the mounted services, so their traffic keeps a
+ * bounded label instead of collapsing to `{unknown}`.
  */
-export function normalizePathLabel(pathname: string): string {
+export function normalizePathLabel(pathname: string, mountPaths: readonly string[] = []): string {
+  // Match server dispatch precedence: controls, mounts in registration order,
+  // then provider routes. A mount may overlap any provider namespace.
+  // Control API: exact sub-paths verbatim, anything else under the prefix
+  // collapses.
+  if (pathname.startsWith(CONTROL_PREFIX)) {
+    return CONTROL_PATHS.has(pathname) ? pathname : CONTROL_OTHER_LABEL;
+  }
+
+  // Mounted services: the root and the known sub-paths verbatim, anything
+  // deeper collapses under the mount.
+  for (const mountPath of mountPaths) {
+    if (pathname === mountPath) return pathname;
+    if (pathname.startsWith(mountPath + "/")) {
+      return MOUNT_SUBPATHS.has(pathname.slice(mountPath.length))
+        ? pathname
+        : `${mountPath}/{other}`;
+    }
+  }
+
+  if (MODELS_DETAIL_RE.test(pathname)) return "/v1/models/{id}";
+  if (pathname === GEMINI_MODELS_PATH) return GEMINI_MODELS_PATH;
+
   // Bedrock: /model/{modelId}/{operation}
   const bedrockMatch = pathname.match(BEDROCK_RE);
   if (bedrockMatch) {
     return `/model/{modelId}/${bedrockMatch[2]}`;
   }
 
-  // Gemini: /v1beta/models/{model}:{action}
+  // Gemini: /v1beta/models/{model}:{action}, plus the bare GET model lookup.
   const geminiMatch = pathname.match(GEMINI_RE);
   if (geminiMatch) {
-    return `/v1beta/models/{model}:${geminiMatch[2]}`;
+    const action = GEMINI_ACTIONS.has(geminiMatch[2]) ? geminiMatch[2] : "{action}";
+    return `/v1beta/models/{model}:${action}`;
+  }
+  if (GEMINI_MODEL_DETAIL_RE.test(pathname) || GEMINI_MODEL_LABEL_RE.test(pathname)) {
+    return "/v1beta/models/{model}";
   }
 
   // Azure: /openai/deployments/{id}/{operation}
@@ -281,12 +553,18 @@ export function normalizePathLabel(pathname: string): string {
   // Vertex AI: /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:{action}
   const vertexMatch = pathname.match(VERTEX_RE);
   if (vertexMatch) {
-    return `/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:${vertexMatch[4]}`;
+    const action = VERTEX_ACTIONS.has(vertexMatch[4]) ? vertexMatch[4] : "{action}";
+    return `/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:${action}`;
   }
 
   // ElevenLabs TTS: /v1/text-to-speech/{voice_id}
   if (ELEVENLABS_TTS_RE.test(pathname)) {
     return "/v1/text-to-speech/{voice_id}";
+  }
+
+  // ElevenLabs voices: /v1/voices/{voice_id}
+  if (ELEVENLABS_VOICE_RE.test(pathname)) {
+    return "/v1/voices/{voice_id}";
   }
 
   // OpenRouter video: /api/v1/videos/{jobId}[/content] — jobIds are random
@@ -334,6 +612,127 @@ export function normalizePathLabel(pathname: string): string {
     return "/contents/generations/tasks";
   }
 
-  // Static path — return as-is
-  return pathname;
+  if (BATCHES_CANCEL_RE.test(pathname)) {
+    return "/v1/batches/{id}/cancel";
+  }
+  if (pathname !== "/v1/batches" && BATCHES_ID_RE.test(pathname)) {
+    return "/v1/batches/{id}";
+  }
+  if (pathname.startsWith(BATCHES_PREFIX)) {
+    return BATCHES_OTHER_LABEL;
+  }
+
+  // Files API: /v1/files/{id} and /v1/files/{id}/content carry random
+  // `file-…` ids — raw paths would mint unbounded label cardinality.
+  // Content before id: the id RE would otherwise swallow the content suffix.
+  if (FILES_CONTENT_RE.test(pathname)) {
+    return "/v1/files/{id}/content";
+  }
+  if (pathname !== "/v1/files" && FILES_ID_RE.test(pathname)) {
+    return "/v1/files/{id}";
+  }
+  if (pathname.startsWith(FILES_PREFIX)) {
+    return FILES_OTHER_LABEL;
+  }
+
+  // Vector Stores: /v1/vector_stores/{id}[/files[/{fileId}]|/file_batches…|/search].
+  // Most-specific first so the id RE cannot swallow a sub-resource suffix.
+  if (VECTOR_STORES_SEARCH_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/search";
+  }
+  if (VECTOR_STORES_BATCH_FILES_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/file_batches/{batchId}/files";
+  }
+  if (VECTOR_STORES_BATCH_CANCEL_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/file_batches/{batchId}/cancel";
+  }
+  if (VECTOR_STORES_BATCH_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/file_batches/{batchId}";
+  }
+  if (VECTOR_STORES_FILE_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/files/{fileId}";
+  }
+  if (VECTOR_STORES_FILES_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/files";
+  }
+  if (VECTOR_STORES_FILE_BATCHES_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}/file_batches";
+  }
+  if (pathname !== "/v1/vector_stores" && VECTOR_STORES_ID_RE.test(pathname)) {
+    return "/v1/vector_stores/{id}";
+  }
+  if (pathname.startsWith(VECTOR_STORES_PREFIX)) {
+    return VECTOR_STORES_OTHER_LABEL;
+  }
+
+  // fal.ai: see the namespace note above. Queue-request rules read before the
+  // path-mirror rule because `/fal/queue/requests/…` also matches the mirror
+  // RE's `.+/requests/` shape; both would label correctly, but the specific
+  // rule reading first keeps the cascade legible.
+  if (FAL_ROUTE_RE.test(pathname)) {
+    const queueRequest = pathname.match(FAL_QUEUE_REQUEST_RE);
+    if (queueRequest) {
+      return `/fal/queue/requests/{id}${falRequestSuffix(queueRequest[1])}`;
+    }
+    if (FAL_QUEUE_SUBMIT_RE.test(pathname)) return "/fal/queue/submit/{model}";
+    if (FAL_RUN_RE.test(pathname)) return "/fal/run/{model}";
+    const mirrorRequest = pathname.match(FAL_MIRROR_REQUEST_RE);
+    if (mirrorRequest) {
+      return `/fal/{model}/requests/{id}${falRequestSuffix(mirrorRequest[1])}`;
+    }
+    return FAL_OTHER_LABEL;
+  }
+
+  // ElevenLabs Music: known actions verbatim, anything else collapses.
+  if (pathname.startsWith(MUSIC_PREFIX)) {
+    return MUSIC_ACTIONS.has(pathname.slice(MUSIC_PREFIX.length)) ? pathname : MUSIC_OTHER_LABEL;
+  }
+
+  // Fine-tuning. Handled as one closed namespace rather than a few loose REs:
+  // the cascade is entered by prefix and always returns, so no fine-tuning path
+  // can reach the verbatim return at the bottom of this function.
+  //
+  // Order matters twice. The id-bearing permission rule reads before the
+  // checkpoint sub-resource rule, because `…/permissions/{id}` would otherwise
+  // never be reached (its own second segment is the id). Within each family the
+  // sub-resource rule reads before the id rule; the id REs are anchored to a
+  // single trailing segment so the two cannot both match, but the more specific
+  // path reading first is what makes the cascade legible.
+  if (pathname.startsWith(FINE_TUNING_PREFIX)) {
+    if (FINE_TUNING_STATIC_PATHS.has(pathname)) return pathname;
+
+    const ftSubresource = pathname.match(FINE_TUNING_SUBRESOURCE_RE);
+    if (ftSubresource) {
+      const action = FINE_TUNING_SUBRESOURCES.has(ftSubresource[1]) ? ftSubresource[1] : "{action}";
+      return `/v1/fine_tuning/jobs/{id}/${action}`;
+    }
+    if (FINE_TUNING_ID_RE.test(pathname)) return "/v1/fine_tuning/jobs/{id}";
+
+    if (FINE_TUNING_PERMISSION_ID_RE.test(pathname)) {
+      return "/v1/fine_tuning/checkpoints/{ckpt}/permissions/{id}";
+    }
+    const ckptSubresource = pathname.match(FINE_TUNING_CHECKPOINT_SUBRESOURCE_RE);
+    if (ckptSubresource) {
+      const action = FINE_TUNING_CHECKPOINT_SUBRESOURCES.has(ckptSubresource[1])
+        ? ckptSubresource[1]
+        : "{action}";
+      return `/v1/fine_tuning/checkpoints/{ckpt}/${action}`;
+    }
+    if (FINE_TUNING_CHECKPOINT_ID_RE.test(pathname)) {
+      return "/v1/fine_tuning/checkpoints/{ckpt}";
+    }
+
+    return FINE_TUNING_OTHER_LABEL;
+  }
+
+  // Static path — verbatim only if server.ts routes it. Anything else is, as
+  // far as metrics can tell, caller-controlled text, whatever status it got
+  // (404, a 204 preflight, a destroyed response); every routed id path that
+  // can legitimately 404 has already returned its placeholder label above.
+  return STATIC_ROUTE_PATHS.has(pathname) ? pathname : UNKNOWN_PATH_LABEL;
+}
+
+function falRequestSuffix(sub: string | undefined): string {
+  if (sub === undefined) return "";
+  return FAL_REQUEST_SUBRESOURCES.has(sub) ? `/${sub}` : "/{other}";
 }

@@ -1,0 +1,24 @@
+{
+  "exchange": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "X-Total-Count, X-Request-Id",
+      "content-type": "application/json",
+      "x-request-id": "req-<#0>"
+    },
+    "body": "{\"data\":[{\"id\":\"openai/gpt-4o\",\"canonical_slug\":\"openai/gpt-4o\",\"hugging_face_id\":null,\"name\":\"openai/gpt-4o\",\"created\":0,\"description\":\"Mock OpenRouter model openai/gpt-4o served by aimock.\",\"context_length\":128000,\"architecture\":{\"modality\":\"text->text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"],\"tokenizer\":\"Other\",\"instruct_type\":null},\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"request\":\"0\",\"image\":\"0\",\"web_search\":\"0\",\"internal_reasoning\":\"0\",\"input_cache_read\":\"0\",\"input_cache_write\":\"0\"},\"top_provider\":{\"context_length\":128000,\"max_completion_tokens\":16384,\"is_moderated\":false},\"per_request_limits\":null,\"supported_parameters\":[\"tools\",\"tool_choice\",\"max_tokens\",\"temperature\",\"top_p\",\"stop\",\"reasoning\"],\"default_parameters\":null,\"supported_voices\":null,\"knowledge_cutoff\":null,\"expiration_date\":null,\"links\":{\"details\":\"/api/v1/models/openai/gpt-4o/endpoints\"},\"reasoning\":{\"mandatory\":false,\"default_enabled\":false}},{\"id\":\"anthropic/claude-3.5-sonnet\",\"canonical_slug\":\"anthropic/claude-3.5-sonnet\",\"hugging_face_id\":null,\"name\":\"anthropic/claude-3.5-sonnet\",\"created\":0,\"description\":\"Mock OpenRouter model anthropic/claude-3.5-sonnet served by aimock.\",\"context_length\":128000,\"architecture\":{\"modality\":\"text->text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"],\"tokenizer\":\"Other\",\"instruct_type\":null},\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"request\":\"0\",\"image\":\"0\",\"web_search\":\"0\",\"internal_reasoning\":\"0\",\"input_cache_read\":\"0\",\"input_cache_write\":\"0\"},\"top_provider\":{\"context_length\":128000,\"max_completion_tokens\":16384,\"is_moderated\":false},\"per_request_limits\":null,\"supported_parameters\":[\"tools\",\"tool_choice\",\"max_tokens\",\"temperature\",\"top_p\",\"stop\",\"reasoning\"],\"default_parameters\":null,\"supported_voices\":null,\"knowledge_cutoff\":null,\"expiration_date\":null,\"links\":{\"details\":\"/api/v1/models/anthropic/claude-3.5-sonnet/endpoints\"},\"reasoning\":{\"mandatory\":false,\"default_enabled\":false}},{\"id\":\"google/gemini-2.0-flash-001\",\"canonical_slug\":\"google/gemini-2.0-flash-001\",\"hugging_face_id\":null,\"name\":\"google/gemini-2.0-flash-001\",\"created\":0,\"description\":\"Mock OpenRouter model google/gemini-2.0-flash-001 served by aimock.\",\"context_length\":128000,\"architecture\":{\"modality\":\"text->text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"],\"tokenizer\":\"Other\",\"instruct_type\":null},\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"request\":\"0\",\"image\":\"0\",\"web_search\":\"0\",\"internal_reasoning\":\"0\",\"input_cache_read\":\"0\",\"input_cache_write\":\"0\"},\"top_provider\":{\"context_length\":128000,\"max_completion_tokens\":16384,\"is_moderated\":false},\"per_request_limits\":null,\"supported_parameters\":[\"tools\",\"tool_choice\",\"max_tokens\",\"temperature\",\"top_p\",\"stop\",\"reasoning\"],\"default_parameters\":null,\"supported_voices\":null,\"knowledge_cutoff\":null,\"expiration_date\":null,\"links\":{\"details\":\"/api/v1/models/google/gemini-2.0-flash-001/endpoints\"},\"reasoning\":{\"mandatory\":false,\"default_enabled\":false}}]}"
+  },
+  "journal": [
+    {
+      "method": "GET",
+      "path": "/api/v1/models",
+      "response": {
+        "status": 200,
+        "fixture": null
+      }
+    }
+  ]
+}

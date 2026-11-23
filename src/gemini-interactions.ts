@@ -6,6 +6,9 @@
  * into the Gemini Interactions format — either a single JSON response or
  * an SSE stream with event_type-based framing.
  */
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 import type * as http from "node:http";
 import type {
@@ -21,29 +24,43 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   extractOverrides,
   generateToolCallId,
   flattenHeaders,
+  isJsonObject,
   getTestId,
   getContext,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
-  resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
+  servedToolArgs,
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { writeErrorResponse, delay, calculateDelay, type JitterSource } from "./sse-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { writeErrorResponse, sseCodec } from "./sse-writer.js";
+import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import { misbehaviorPayloadLength, servedPayloadLength } from "./response/timing.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { render as renderInteractionsUsage } from "./response/usage/codecs/interactions.js";
+import {
+  planMisbehavior,
+  recordMisbehaviorOutcome,
+  type MisbehaviorPlan,
+  type MisbehaviorSkip,
+} from "./misbehavior.js";
 
 // ─── Interactions request types ────────────────────────────────────────────
 
@@ -116,6 +133,42 @@ interface InteractionsRequest {
   stream?: boolean;
   previous_interaction_id?: string;
   [key: string]: unknown;
+}
+
+// Check unsupported numeric input and containers consumed by the selected variant.
+// Other values retain their existing normalization, including omitted input.
+function validateInteractionsInput(input: unknown): string | null {
+  if (typeof input === "number") return "input must not be a number";
+  if (!Array.isArray(input)) return null;
+  const first = input[0];
+  if (isJsonObject(first) && "role" in first) {
+    for (const [index, turn] of input.entries()) {
+      if (!isJsonObject(turn)) continue;
+      const blocks = turn.content ?? turn.parts;
+      // Empty strings, falsy values and empty arrays bypass the converter's
+      // filters. Preserve that behavior and the content ?? parts selection.
+      if (typeof blocks === "string" && blocks.length > 0) {
+        const field = turn.content != null ? "content" : "parts";
+        return `input[${index}].${field} must be an array`;
+      }
+    }
+  } else if (
+    !(isJsonObject(first) && typeof first.type === "string" && STEP_TYPES.has(first.type))
+  ) {
+    const nullIndex = input.findIndex((part) => part === null);
+    if (nullIndex !== -1) return `input[${nullIndex}] must be an object`;
+  }
+  return null;
+}
+
+// Preserve tools that the converter ignores; reject only these unsafe reads.
+function validateInteractionsTools(tools: unknown): string | null {
+  if (typeof tools === "string" && tools.length > 0) return "tools must be an array";
+  if (Array.isArray(tools)) {
+    const nullIndex = tools.findIndex((tool) => tool === null);
+    if (nullIndex !== -1) return `tools[${nullIndex}] must be an object`;
+  }
+  return null;
 }
 
 // ─── Input conversion: Interactions → ChatCompletionRequest ───────────────
@@ -307,23 +360,7 @@ function interactionsUsage(overrides?: ResponseOverrides): {
   total_output_tokens: number;
   total_tokens: number;
 } {
-  if (!overrides?.usage) return { total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0 };
-  const input =
-    overrides.usage.input_tokens ??
-    overrides.usage.prompt_tokens ??
-    overrides.usage.promptTokenCount ??
-    0;
-  const output =
-    overrides.usage.output_tokens ??
-    overrides.usage.completion_tokens ??
-    overrides.usage.candidatesTokenCount ??
-    0;
-  const total = overrides.usage.total_tokens ?? overrides.usage.totalTokenCount ?? input + output;
-  return {
-    total_input_tokens: input,
-    total_output_tokens: output,
-    total_tokens: total,
-  };
+  return renderInteractionsUsage(overrides);
 }
 
 // ─── Response building: fixture → Interactions format ─────────────────────
@@ -346,20 +383,14 @@ export function buildInteractionsTextResponse(
 }
 
 // Build a single SDK 2.x function_call step from a fixture tool call,
-// reusing the existing malformed-arguments guard (logger.warn + {} fallback).
+// serving malformed arguments as `{}` (or rejecting them under strictToolArguments).
 function buildFunctionCallStep(tc: ToolCall, logger: Logger): object {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
+  const args = servedToolArgs(tc, "object", logger);
   return {
     type: "function_call",
     id: tc.id || generateToolCallId(),
     name: tc.name,
-    arguments: argsObj,
+    arguments: args.value,
   };
 }
 
@@ -394,13 +425,16 @@ export function buildInteractionsContentWithToolCallsResponse(
   // concatenated text steps regardless of where they appear in `steps`.
   let outputText = "";
 
+  let hasToolCalls = true;
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-stream `steps[]` array is index/step-addressed and
     // ordered, so emit one step per block in fixture ARRAY ORDER. A toolCall
     // block placed before a text block therefore yields a function_call step
     // ahead of the model_output step — tool-first, the opposite of the legacy
     // (text-step-always-first) shape below.
-    const ordered = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const ordered = outcome.ordered;
+    hasToolCalls = outcome.hasToolCalls;
     for (const block of ordered) {
       if (block.type === "text") {
         steps.push({ type: "model_output", content: [{ type: "text", text: block.text }] });
@@ -426,21 +460,12 @@ export function buildInteractionsContentWithToolCallsResponse(
 
   return {
     id: interactionId,
-    status: "requires_action",
+    status: hasToolCalls ? "requires_action" : "completed",
     model: overrides?.model ?? model,
     role: "model",
     output_text: outputText,
     steps,
     usage: interactionsUsage(overrides),
-  };
-}
-
-function buildInteractionsErrorResponse(message: string, code?: string): object {
-  return {
-    error: {
-      code: code ?? "INVALID_ARGUMENT",
-      message,
-    },
   };
 }
 
@@ -546,15 +571,7 @@ export function buildInteractionsToolCallSSEEvents(
   // carries an empty `arguments: {}` placeholder.
   for (let idx = 0; idx < toolCalls.length; idx++) {
     const tc = toolCalls[idx];
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
+    const args = servedToolArgs(tc, "string", logger);
 
     events.push({
       event_type: "step.start",
@@ -577,7 +594,7 @@ export function buildInteractionsToolCallSSEEvents(
       index: idx,
       delta: {
         type: "arguments_delta",
-        arguments: JSON.stringify(argsObj),
+        arguments: args.text,
       },
       event_id: nextEventId(),
     });
@@ -655,13 +672,7 @@ function pushFunctionCallStepEvents(
   tc: ToolCall,
   logger: Logger,
 ): void {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
+  const args = servedToolArgs(tc, "string", logger);
 
   events.push({
     event_type: "step.start",
@@ -680,7 +691,7 @@ function pushFunctionCallStepEvents(
     index,
     delta: {
       type: "arguments_delta",
-      arguments: JSON.stringify(argsObj),
+      arguments: args.text,
     },
     event_id: nextEventId(),
   });
@@ -710,12 +721,15 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
     event_id: nextEventId(),
   });
 
+  let hasToolCalls = true;
   if (blocks && blocks.length > 0) {
     // NEW PATH: stream one step per block in fixture ARRAY ORDER. The step
     // `index` increments with array position, so a toolCall block before a text
     // block yields a function_call step at a LOWER index than the model_output
     // step — tool-first, the opposite of the legacy (text-at-index-0) shape.
-    const ordered = resolveFixtureBlocks(blocks);
+    const outcome = resolveFixtureBlockOutcome(blocks);
+    const ordered = outcome.ordered;
+    hasToolCalls = outcome.hasToolCalls;
     let idx = 0;
     for (const block of ordered) {
       if (block.type === "text") {
@@ -724,7 +738,11 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
         pushFunctionCallStepEvents(
           events,
           idx,
-          { name: block.name, arguments: block.arguments, id: block.id },
+          {
+            name: block.name,
+            arguments: block.arguments,
+            id: block.id,
+          },
           logger,
         );
       }
@@ -744,7 +762,7 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
     event_type: "interaction.completed",
     interaction: {
       id: interactionId,
-      status: "requires_action",
+      status: hasToolCalls ? "requires_action" : "completed",
       usage: interactionsUsage(overrides),
     },
     event_id: nextEventId(),
@@ -755,10 +773,18 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
 
 // ─── SSE writer for Interactions streaming ────────────────────────────────
 
+// Data-only SSE (no event: prefix, no [DONE]). Only step deltas count for the
+// chunk index and truncateAfterChunks: framing events (interaction.created,
+// step.start, step.stop, interaction.completed) pay the delay at the current
+// index but do not consume chunk budget or trigger the chunk-sent callback.
+const interactionsCodec: FrameCodec<InteractionsSSEEvent> = {
+  ...sseCodec<InteractionsSSEEvent>({ done: false }),
+  counts: (event) => event.event_type === "step.delta",
+};
+
 interface InteractionsStreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
-  jitterSource?: JitterSource;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
   signal?: AbortSignal;
@@ -772,49 +798,65 @@ export async function writeGeminiInteractionsSSEStream(
 ): Promise<boolean> {
   const opts: InteractionsStreamOptions =
     typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
-  const latency = opts.latency ?? 0;
-  const profile = opts.streamingProfile;
-  const { recordedTimings, replaySpeed } = opts;
-  const signal = opts.signal;
-  const onChunkSent = opts.onChunkSent;
-
-  if (res.writableEnded) return true;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  let chunkIndex = 0;
-  for (const event of events) {
-    const chunkDelay = calculateDelay(
-      chunkIndex,
-      profile,
-      latency,
-      recordedTimings,
-      replaySpeed,
-      opts.jitterSource,
-    );
-    if (chunkDelay > 0) await delay(chunkDelay, signal);
-    if (signal?.aborted) return false;
-    if (res.writableEnded) return true;
-    // Data-only SSE (no event: prefix, no [DONE])
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-    // Only count step deltas for truncateAfterChunks — framing events
-    // (interaction.created, step.start, step.stop, interaction.completed)
-    // should not consume chunk budget or trigger the chunk-sent callback.
-    if (event.event_type === "step.delta") {
-      onChunkSent?.();
-      chunkIndex++;
-    }
-    if (signal?.aborted) return false;
-  }
-
-  if (!res.writableEnded) {
-    res.end();
-  }
-  return true;
+  // No lifecycle: a caller gets close-awareness only through its own `signal`.
+  // With no events an aborted signal does not stop the writer (it still ends
+  // the response and returns true), so the loop gets no signal then.
+  return runFrameLoop(
+    httpSink(res),
+    events,
+    interactionsCodec,
+    {
+      latency: opts.latency,
+      streamingProfile: opts.streamingProfile,
+      recordedTimings: opts.recordedTimings,
+      replaySpeed: opts.replaySpeed,
+    },
+    { signal: events.length > 0 ? opts.signal : undefined, onChunkSent: opts.onChunkSent },
+  );
 }
 
 // ─── Request handler ──────────────────────────────────────────────────────
+
+function prepareInteractionsMisbehavior(
+  plan: MisbehaviorPlan,
+  streaming: boolean,
+): MisbehaviorPlan {
+  if (!streaming && plan.summary.fault === "stop-length-mid-tool") {
+    // The object wire cannot represent the selected partial argument string.
+    // Earlier completed calls/text survive; omit the cut call before allocating
+    // IDs and preparing servedToolCalls/usage.
+    const response = plan.response;
+    const combined = isCombinedFixtureResponse(response);
+    const outcome =
+      combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+    const calls =
+      outcome?.toolCalls ??
+      (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+    const toolCalls = calls.filter((_, index) => index !== plan.target?.index);
+    let callIndex = 0;
+    const blocks = outcome?.ordered.filter(
+      (block) => block.type === "text" || callIndex++ !== plan.target?.index,
+    );
+    plan = { ...plan, response: { ...response, toolCalls, ...(blocks ? { blocks } : {}) } };
+  }
+  // Both modes always emit IDs. The shared preparation preserves effective
+  // block order and allocates each wire/journal identity exactly once.
+  return prepareOpenAIChatMisbehavior(plan);
+}
+
+function finalizeInteractionsMisbehavior(
+  events: InteractionsSSEEvent[],
+  plan: MisbehaviorPlan | MisbehaviorSkip,
+): InteractionsSSEEvent[] {
+  if (plan.kind !== "applied" || plan.summary.fault !== "stop-length-mid-tool") return events;
+  // Approved modeled K5 contract: keep the cut arguments and step.stop, then
+  // terminate incomplete. Native truncated-tool closure remains unverified.
+  return events.map((event) =>
+    event.event_type === "interaction.completed" && isJsonObject(event.interaction)
+      ? { ...event, interaction: { ...event.interaction, status: "incomplete" } }
+      : event,
+  );
+}
 
 export async function handleGeminiInteractions(
   req: http.IncomingMessage,
@@ -845,9 +887,54 @@ export async function handleGeminiInteractions(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify(
-        buildInteractionsErrorResponse(`Malformed JSON body: ${detail}`, "INVALID_ARGUMENT"),
-      ),
+      renderError("interactions", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        code: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject bodies that parsed but are not a JSON object (e.g. `null`) before
+  // touching fields — otherwise `interactionsReq.stream` throws a TypeError that
+  // surfaces as a 500 instead of a 400.
+  if (!isJsonObject(interactionsReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("interactions", "validation", {
+        message: "Request body must be a JSON object",
+        code: "INVALID_ARGUMENT",
+      }).body,
+    );
+    return;
+  }
+
+  const validationError =
+    validateInteractionsInput(interactionsReq.input) ??
+    validateInteractionsTools(interactionsReq.tools);
+  if (validationError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("interactions", "validation", {
+        message: validationError,
+        code: "INVALID_ARGUMENT",
+      }).body,
     );
     return;
   }
@@ -873,35 +960,37 @@ export async function handleGeminiInteractions(
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
     defaults.requestTransform,
+    { wire: "gemini-interactions" },
   );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    if (effectiveStrict) {
+    const decisions = resolveRequestDecisions(defaults.strict, req.headers);
+    if (decisions.fixtureMiss) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
@@ -919,20 +1008,25 @@ export async function handleGeminiInteractions(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify(buildInteractionsErrorResponse(strictMessage, "UNAVAILABLE")),
+        renderError("interactions", "strict-miss", {
+          message: strictMessage,
+          code: "UNAVAILABLE",
+        }).body,
       );
       return;
     }
-    if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "gemini-interactions",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+    if (decisions.upstream && defaults.record) {
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(
+          req,
+          res,
+          completionReq,
+          "gemini-interactions",
+          urlPath,
+          fixtures,
+          defaults,
+          raw,
+        ),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -945,6 +1039,7 @@ export async function handleGeminiInteractions(
             status: res.statusCode ?? 200,
             fixture: null,
             source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
           },
         });
         return;
@@ -964,47 +1059,140 @@ export async function handleGeminiInteractions(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify(buildInteractionsErrorResponse("No fixture matched", "NOT_FOUND")),
+      renderError("interactions", "fixture-miss", {
+        message: "No fixture matched",
+        code: "NOT_FOUND",
+      }).body,
     );
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  let response = await resolveResponse(fixture, completionReq);
+  let misbehavior = planMisbehavior({
+    wire: "gemini-interactions",
+    fixture,
+    response,
+    request: completionReq,
+    stream: streaming,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.some((evaluation) => evaluation.outcome === "error")) {
+      logger.error(`${req.method ?? "POST"} ${urlPath}: ${misbehavior.message}`);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("interactions", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
+    return;
+  }
+  if (misbehavior.kind === "applied") {
+    misbehavior = prepareInteractionsMisbehavior(misbehavior, streaming);
+    response = misbehavior.response;
+  }
+  const appliedUsage =
+    misbehavior.kind === "applied"
+      ? resolveOpenAIChatMisbehaviorUsage(misbehavior, completionReq)
+      : undefined;
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  // Non-streaming replies size their (opt-in) wait from the served payload.
+  // An applied plan is merged into `response`, so every JSON site below is a
+  // misbehavior path when one applied. Interactions serves no fixture
+  // reasoning, so there is no effective reasoning to count.
+  const applied = misbehavior.kind === "applied" ? misbehavior : undefined;
+  const jsonOpts = () => ({
+    surface: "other" as const,
+    payloadLength: applied
+      ? misbehaviorPayloadLength(applied, undefined)
+      : servedPayloadLength(response),
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId: !!applied?.duplicateId,
+    replaySpeed,
+  });
+  const markIncomplete = <T extends object>(body: T): T | (T & { status: "incomplete" }) =>
+    applied?.summary.fault === "stop-length-mid-tool" ? { ...body, status: "incomplete" } : body;
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  // `streaming` is the handler's own rule: a stream unless `stream` is false.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "gemini-interactions",
+      stream: streaming,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "interactions",
+    });
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     writeErrorResponse(
       res,
       status,
-      JSON.stringify(
-        buildInteractionsErrorResponse(response.error.message, response.error.type ?? "ERROR"),
-      ),
+      renderError("interactions", "fixture", {
+        message: response.error.message,
+        code: response.error.type ?? "ERROR",
+      }).body,
       { retryAfter: response.retryAfter },
     );
     return;
   }
 
-  const interactionId = nextInteractionId();
+  // The content+tool and tool-call branches draw their interaction id after
+  // requireEmittedFunctionToolCalls, so a fixture it rejects (a custom tool
+  // call or a malformed toolCalls entry) consumes no id. A rejection raised
+  // later, inside a builder, comes after the draw and does consume an id:
+  // invalid JSON arguments on the non-streaming path, or a malformed block
+  // from resolveFixtureBlockOutcome (the streaming path has also consumed
+  // event ids by then).
 
-  // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
-    if (response.webSearches?.length) {
-      logger.warn(
-        "webSearches in fixture response are not supported for Gemini Interactions API — ignoring",
-      );
-    }
-    const overrides = extractOverrides(response);
+  if (misbehavior.kind === "applied" && misbehavior.summary.fault === "reasoning-only") {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1012,44 +1200,141 @@ export async function handleGeminiInteractions(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    // Reasoning-only output carries no tool call, so it has no tool-call check
+    // to pass before drawing its id.
+    const interactionId = nextInteractionId();
+    const usage = renderInteractionsUsage({ usage: appliedUsage }, "applied-reasoning-only");
     if (!streaming) {
-      const body = buildInteractionsContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        model,
-        interactionId,
-        logger,
-        overrides,
-        response.blocks,
+      const overrides =
+        isTextResponse(response) ||
+        isToolCallResponse(response) ||
+        isCombinedFixtureResponse(response)
+          ? extractOverrides(response)
+          : undefined;
+      const reasoning = misbehavior.reasoning ?? "";
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => ({
+          id: interactionId,
+          model: overrides?.model ?? model,
+          status: "incomplete",
+          steps: [
+            {
+              type: "thought",
+              signature: "",
+              summary: [{ type: "text", text: reasoning }],
+            },
+          ],
+          usage,
+        }),
+        jsonOpts(),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      return;
+    }
+    const events: InteractionsSSEEvent[] = [
+      {
+        event_type: "interaction.created",
+        interaction: { id: interactionId, status: "in_progress" },
+        event_id: nextEventId(),
+      },
+      { event_type: "step.start", index: 0, step: { type: "thought" }, event_id: nextEventId() },
+      {
+        event_type: "step.delta",
+        index: 0,
+        delta: {
+          type: "thought_summary",
+          content: { type: "text", text: misbehavior.reasoning ?? "" },
+        },
+        event_id: nextEventId(),
+      },
+      { event_type: "step.stop", index: 0, event_id: nextEventId() },
+      {
+        event_type: "interaction.completed",
+        interaction: {
+          id: interactionId,
+          status: "incomplete",
+          usage,
+        },
+        event_id: nextEventId(),
+      },
+    ];
+    await deliverStream(res, journalEntry, fixture, interactionsCodec, events, streamTiming);
+    return;
+  }
+
+  // Content + tool calls response
+  if (isCombinedFixtureResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn(
+        "webSearches in fixture response are not supported for Gemini Interactions API — ignoring",
+      );
+    }
+    const overrides = {
+      ...extractOverrides(response),
+      ...(appliedUsage ? { usage: appliedUsage } : {}),
+    };
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
+    const interactionId = nextInteractionId();
+    if (!streaming) {
+      const content = response.content ?? "";
+      const blocks = response.blocks;
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(
+            buildInteractionsContentWithToolCallsResponse(
+              content,
+              functionToolCalls,
+              model,
+              interactionId,
+              logger,
+              overrides,
+              blocks,
+            ),
+          ),
+        jsonOpts(),
+      );
     } else {
       const events = buildInteractionsContentWithToolCallsSSEEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         interactionId,
         chunkSize,
         logger,
         overrides,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
+        finalizeInteractionsMisbehavior(events, misbehavior),
+        streamTiming,
+      );
     }
     return;
   }
@@ -1061,7 +1346,10 @@ export async function handleGeminiInteractions(
         "webSearches in fixture response are not supported for Gemini Interactions API — ignoring",
       );
     }
-    const overrides = extractOverrides(response);
+    const overrides = {
+      ...extractOverrides(response),
+      ...(appliedUsage ? { usage: appliedUsage } : {}),
+    };
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1069,10 +1357,23 @@ export async function handleGeminiInteractions(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const interactionId = nextInteractionId();
     if (!streaming) {
-      const body = buildInteractionsTextResponse(response.content, model, interactionId, overrides);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      const content = response.content;
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(buildInteractionsTextResponse(content, model, interactionId, overrides)),
+        jsonOpts(),
+      );
     } else {
       const events = buildInteractionsTextSSEEvents(
         response.content,
@@ -1080,22 +1381,14 @@ export async function handleGeminiInteractions(
         chunkSize,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
+        finalizeInteractionsMisbehavior(events, misbehavior),
+        streamTiming,
+      );
     }
     return;
   }
@@ -1107,7 +1400,10 @@ export async function handleGeminiInteractions(
         "webSearches in fixture response are not supported for Gemini Interactions API — ignoring",
       );
     }
-    const overrides = extractOverrides(response);
+    const overrides = {
+      ...extractOverrides(response),
+      ...(appliedUsage ? { usage: appliedUsage } : {}),
+    };
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1115,56 +1411,65 @@ export async function handleGeminiInteractions(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
+    const interactionId = nextInteractionId();
     if (!streaming) {
-      const body = buildInteractionsToolCallResponse(
-        response.toolCalls,
-        model,
-        interactionId,
-        logger,
-        overrides,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          markIncomplete(
+            buildInteractionsToolCallResponse(
+              functionToolCalls,
+              model,
+              interactionId,
+              logger,
+              overrides,
+            ),
+          ),
+        jsonOpts(),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const events = buildInteractionsToolCallSSEEvents(
-        response.toolCalls,
+        functionToolCalls,
         interactionId,
         logger,
         overrides,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeGeminiInteractionsSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(
+        res,
+        journalEntry,
+        fixture,
+        interactionsCodec,
+        finalizeInteractionsMisbehavior(events, misbehavior),
+        streamTiming,
+      );
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify(
-      buildInteractionsErrorResponse("Fixture response did not match any known type", "INTERNAL"),
-    ),
+    renderError("interactions", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      code: "INTERNAL",
+    }).body,
   );
 }

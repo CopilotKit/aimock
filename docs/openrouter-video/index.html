@@ -71,8 +71,9 @@
               <td>POST</td>
               <td><code>/api/v1/videos</code></td>
               <td>
-                <code>{ id, polling_url, status: "pending" }</code> job envelope; the matched
-                fixture's <code>video</code> drives the job's terminal state
+                <code>202</code> with <code>{ id, polling_url, status: "pending" }</code> (the
+                official SDK accepts only 202); the matched fixture's <code>video</code> drives the
+                job's terminal state
               </td>
             </tr>
             <tr>
@@ -237,6 +238,17 @@
           the upstream instead (journaled <code>source: "proxy"</code>, never recorded as a
           fixture), falling back to the synthesis if the upstream is unreachable. Strict mode
           disables the proxy &mdash; a strict request is always served the synthesized listing.
+        </p>
+
+        <h2>Removed Models</h2>
+        <p>
+          OpenRouter removed <code>openai/sora-2</code>. Following the
+          <a href="/deprecation-policy">deprecation policy</a>, aimock serves the rejection the real
+          API now returns: <code>POST /api/v1/videos</code> with that model gets
+          <code>400</code> and
+          <code>{"error":{"message":"Model openai/sora-2 does not exist","code":400}}</code>, even
+          when a fixture matches it, and the request never reaches a record-mode upstream. The model
+          is not in the default listing, and a fixture for it does not add it to the listing.
         </p>
 
         <h2>Chaos &amp; Metrics</h2>

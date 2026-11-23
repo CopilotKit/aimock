@@ -9,6 +9,7 @@ import {
   collapseGeminiInteractionsSSE,
 } from "../stream-collapse.js";
 import { encodeEventStreamMessage } from "../aws-event-stream.js";
+import { fnArgs } from "./helpers/tool-calls.js";
 
 // ===========================================================================
 // Robustness hardening for the per-provider stream collapsers.
@@ -189,7 +190,7 @@ describe("collapseOpenAISSE missing tool_call index", () => {
     const names = result.toolCalls!.map((tc) => tc.name).sort();
     expect(names).toEqual(["func_a", "func_b"]);
     // Arguments must not be cross-contaminated into one entry.
-    const byName = Object.fromEntries(result.toolCalls!.map((tc) => [tc.name, tc.arguments]));
+    const byName = Object.fromEntries(result.toolCalls!.map((tc) => [tc.name, fnArgs(tc)]));
     expect(byName.func_a).toBe('{"x":1}');
     expect(byName.func_b).toBe('{"y":2}');
   });
@@ -219,7 +220,7 @@ describe("collapseOpenAISSE missing tool_call index", () => {
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("fn");
-    expect(result.toolCalls![0].arguments).toBe('{"a":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"a":1}');
   });
 });
 
@@ -294,8 +295,8 @@ describe("collapseGeminiSSE functionCall with no args", () => {
 
     const result = collapseGeminiSSE(body);
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe("{}");
-    expect(typeof result.toolCalls![0].arguments).toBe("string");
+    expect(fnArgs(result.toolCalls![0])).toBe("{}");
+    expect(typeof fnArgs(result.toolCalls![0])).toBe("string");
   });
 });
 
@@ -535,7 +536,7 @@ describe("collapseAnthropicSSE missing content_block index", () => {
     const names = result.toolCalls!.map((tc) => tc.name).sort();
     expect(names).toEqual(["func_a", "func_b"]);
     // Arguments must land on the block they followed, not cross-contaminate.
-    const byName = Object.fromEntries(result.toolCalls!.map((tc) => [tc.name, tc.arguments]));
+    const byName = Object.fromEntries(result.toolCalls!.map((tc) => [tc.name, fnArgs(tc)]));
     expect(byName.func_a).toBe('{"x":1}');
     expect(byName.func_b).toBe('{"y":2}');
   });
@@ -581,7 +582,7 @@ describe("collapseCohereSSE mixed-key delta correlation", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("func_a");
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
   });
 
   it("counts an index-less delta with no prior start as a dropped chunk", () => {
@@ -749,7 +750,7 @@ describe("collapseAnthropicSSE uncorrelated input_json_delta", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("func_real");
-    expect(result.toolCalls![0].arguments).toBe('{"k":9}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"k":9}');
     expect(result.droppedChunks).toBeUndefined();
   });
 });

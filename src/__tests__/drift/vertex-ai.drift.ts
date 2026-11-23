@@ -1,24 +1,26 @@
 /**
- * Vertex AI / Gemini drift tests.
+ * Vertex AI OFFLINE SHAPE-CONFORMANCE tests.
  *
- * Verifies that aimock's Vertex AI routing produces response shapes
- * consistent with the Gemini generateContent endpoint.
+ * NOT drift tests. Nothing here reaches Google — a live Vertex leg needs a GCP
+ * service account and an OAuth2 token exchange, neither of which this repo
+ * does. Both cases drive the LOCAL aimock server's Vertex-style path and grade
+ * its output against a hand-written Gemini-shape fixture in this file. That
+ * catches an aimock routing/builder regression; it cannot catch Google changing
+ * the Vertex wire format.
  *
- * Requires: GOOGLE_APPLICATION_CREDENTIALS or (VERTEX_AI_PROJECT + VERTEX_AI_LOCATION)
+ * The `vertex-ai` surface is therefore declared `liveCoverage: "none"` in
+ * `surface-registry.ts` and listed under `unverifiedSurfaces` in every drift
+ * report, so a green report never reads as "Vertex was checked".
+ *
+ * They run UNCONDITIONALLY. They used to sit behind a
+ * `GOOGLE_APPLICATION_CREDENTIALS` / `VERTEX_AI_PROJECT` gate that no drift
+ * workflow sets, so neither case had ever executed in CI.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { ServerInstance } from "../../server.js";
 import { extractShape, triangulate, formatDriftReport } from "./schema.js";
 import { httpPost, startDriftServer, stopDriftServer } from "./helpers.js";
-
-// ---------------------------------------------------------------------------
-// Credentials check
-// ---------------------------------------------------------------------------
-
-const HAS_CREDENTIALS =
-  !!process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-  (!!process.env.VERTEX_AI_PROJECT && !!process.env.VERTEX_AI_LOCATION);
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -67,7 +69,7 @@ function geminiGenerateContentShape() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!HAS_CREDENTIALS)("Vertex AI drift", () => {
+describe("Vertex AI mock shape conformance (offline — no live Google leg)", () => {
   it("generateContent mock shape matches Gemini format", async () => {
     const sdkShape = geminiGenerateContentShape();
 

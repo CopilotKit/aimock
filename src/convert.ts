@@ -18,7 +18,7 @@ Formats:
   mockllm      Convert mock-llm YAML config to aimock JSON
 
 Examples:
-  aimock convert vidaimock ./templates/ ./fixtures/
+  aimock convert vidaimock ./templates/ ./fixtures/vidaimock.json
   aimock convert mockllm ./config.yaml ./fixtures/converted.json
 `.trim();
 

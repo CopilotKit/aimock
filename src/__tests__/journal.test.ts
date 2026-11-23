@@ -124,6 +124,23 @@ describe("Journal", () => {
       expect(journal.getAll()).toEqual([]);
       expect(journal.getAll({ limit: 5 })).toEqual([]);
     });
+
+    it("tolerates non-integer, non-finite, zero and negative limits without throwing", () => {
+      const journal = new Journal();
+      for (let i = 0; i < 5; i++) journal.add(makeEntry({ path: `/${i}` }));
+      const paths = (entries: JournalEntry[]) => entries.map((e) => e.path);
+
+      expect(paths(journal.getAll())).toEqual(["/0", "/1", "/2", "/3", "/4"]);
+      expect(paths(journal.getAll({ limit: 3 }))).toEqual(["/2", "/3", "/4"]);
+      // Fractional limits floor to the integer below.
+      expect(paths(journal.getAll({ limit: 2.5 }))).toEqual(["/3", "/4"]);
+      // Non-finite limits mean "no limit".
+      expect(paths(journal.getAll({ limit: NaN }))).toEqual(["/0", "/1", "/2", "/3", "/4"]);
+      expect(paths(journal.getAll({ limit: Infinity }))).toEqual(["/0", "/1", "/2", "/3", "/4"]);
+      // Zero and negative limits both ask for nothing.
+      expect(journal.getAll({ limit: 0 })).toEqual([]);
+      expect(journal.getAll({ limit: -1 })).toEqual([]);
+    });
   });
 
   describe("getLast", () => {
@@ -152,6 +169,30 @@ describe("Journal", () => {
   });
 
   describe("findByFixture", () => {
+    it("associates safe diagnostics before onAdd without exposing the original fixture", () => {
+      const fixture: Fixture = {
+        match: { userMessage: "private-marker" },
+        response: { content: "private-marker" },
+      };
+      let observed: JournalEntry | undefined;
+      const journal = new Journal({
+        maxEntries: 1,
+        onAdd(entry) {
+          observed = entry;
+          expect(journal.findByFixture(fixture)).toContain(entry);
+          expect(JSON.stringify(entry)).not.toContain("private-marker");
+        },
+      });
+      const safe = makeEntry();
+      const entry = journal.add(safe, fixture);
+      expect(observed).toBe(entry);
+      expect(journal.findByFixture(fixture)).toEqual([entry]);
+      const next = journal.add(safe, fixture);
+      expect(journal.findByFixture(fixture)).toEqual([next]);
+      journal.clear();
+      expect(journal.findByFixture(fixture)).toEqual([]);
+    });
+
     it("returns entries matching the given fixture reference", () => {
       const journal = new Journal();
       const fixtureA: Fixture = { match: { userMessage: "a" }, response: { content: "A" } };
@@ -551,5 +592,65 @@ describe("Journal", () => {
       const parsed = JSON.parse(serialized!) as unknown[];
       expect(parsed).toHaveLength(1000);
     });
+  });
+});
+
+describe("Journal — filters and bookkeeping report the truth (F4)", () => {
+  it("getAll({ limit: 0 }) returns [] (as GET /__aimock/journal?limit=0 does), never the whole journal", () => {
+    const journal = new Journal();
+    journal.add(makeEntry());
+    journal.add(makeEntry());
+    // `slice(-0)` === `slice(0)`, so limit 0 once returned BOTH entries; the
+    // HTTP route answered `[]` for the same ask. The library and the route
+    // now agree: zero entries is zero entries. Negative and fractional limits
+    // are tolerated (public library API), never thrown on.
+    expect(journal.getAll({ limit: 0 })).toEqual([]);
+    expect(journal.getAll({ limit: -1 })).toEqual([]);
+    expect(journal.getAll({ limit: 1.5 })).toHaveLength(1);
+    expect(journal.getAll({ limit: 1 })).toHaveLength(1);
+    expect(journal.getAll()).toHaveLength(2);
+  });
+
+  it("sequenced siblings differing only in toolResultContains do not share a count", () => {
+    const a: Fixture = {
+      match: { userMessage: "seq", toolResultContains: "alpha", sequenceIndex: 0 },
+      response: { content: "a" },
+    };
+    const b: Fixture = {
+      match: { userMessage: "seq", toolResultContains: "beta", sequenceIndex: 0 },
+      response: { content: "b" },
+    };
+    const journal = new Journal();
+    journal.incrementFixtureMatchCount(a, [a, b]);
+    expect(journal.getFixtureMatchCount(a)).toBe(1);
+    expect(journal.getFixtureMatchCount(b)).toBe(0);
+  });
+
+  it("sequenced siblings differing only in context do not share a count", () => {
+    const a: Fixture = {
+      match: { userMessage: "seq", context: "ctx-a", sequenceIndex: 0 },
+      response: { content: "a" },
+    };
+    const b: Fixture = {
+      match: { userMessage: "seq", context: "ctx-b", sequenceIndex: 0 },
+      response: { content: "b" },
+    };
+    const journal = new Journal();
+    journal.incrementFixtureMatchCount(a, [a, b]);
+    expect(journal.getFixtureMatchCount(b)).toBe(0);
+  });
+
+  it("true sequence siblings (same criteria, different sequenceIndex) still advance together", () => {
+    const a: Fixture = {
+      match: { userMessage: "seq", toolResultContains: "alpha", sequenceIndex: 0 },
+      response: { content: "a" },
+    };
+    const b: Fixture = {
+      match: { userMessage: "seq", toolResultContains: "alpha", sequenceIndex: 1 },
+      response: { content: "b" },
+    };
+    const journal = new Journal();
+    journal.incrementFixtureMatchCount(a, [a, b]);
+    expect(journal.getFixtureMatchCount(b)).toBe(1);
   });
 });

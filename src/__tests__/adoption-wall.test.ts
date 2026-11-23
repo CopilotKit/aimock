@@ -161,7 +161,7 @@ describe("resolveDisplay", () => {
       "cacheplane/angular-agent-framework",
       "cortexkit/magic-context",
       "openstory-so/openstory",
-      "selfagency/opilot",
+      "voxslopuli/opilot",
       "SkillNerds/xskill",
       "ysansan98/ant-chat",
     ]) {
@@ -389,7 +389,7 @@ describe("deliberate removals are not disappearances", () => {
 
   it("partitions today's tiles into explained and unexplained drops", () => {
     const current = [tile("stays/put"), tile("fading/repo"), tile("gone/away")];
-    const next = [{ repo: "stays/put" } as WallEntry];
+    const next = [{ repo: "stays/put", mapped: true } as WallEntry];
     const m = metaMap({ "stays/put": meta(OK_STARS, 1), "fading/repo": meta(1, 2) });
     const { explained, unexplained } = partitionDrops(current, next, m);
     expect(explained).toHaveLength(1);
@@ -782,7 +782,7 @@ describe("classify", () => {
   // disjoint walls lives in its own block at the end of this file.
   const wall = (n: number) => Array.from({ length: n }, (_, i) => `org${i}/r`);
   const bigCurrent = wall(MIN_WALL_SIZE).map(tile);
-  const bigNext = wall(MIN_WALL_SIZE).map((repo) => ({ repo }) as WallEntry);
+  const bigNext = wall(MIN_WALL_SIZE).map((repo) => ({ repo, mapped: true }) as WallEntry);
   const allOk = wall(MIN_WALL_SIZE).map((repo) => ok(repo));
 
   it("is CLEAN when logos are healthy and nothing changed", () => {
@@ -796,7 +796,7 @@ describe("classify", () => {
   it("is SAFE when a new adopter is added and none are evicted", () => {
     const r = classify({
       current: bigCurrent,
-      next: [...bigNext, { repo: "brand/new" } as WallEntry],
+      next: [...bigNext, { repo: "brand/new", mapped: true } as WallEntry],
       changed: true,
       checks: [...allOk, ok("brand/new")],
     });
@@ -814,6 +814,38 @@ describe("classify", () => {
     expect(r.status).toBe("NEEDS-REVIEW");
     expect(r.reasons).toEqual(["b/two is on the wall today but absent from the new list."]);
     expect(exitCodeFor(r.status)).toBe(EXIT_NEEDS_REVIEW);
+  });
+
+  // An unmapped tile is a raw GitHub org login on the public homepage. The
+  // weekly routine auto-pushes a SAFE wall straight to the default branch, so
+  // without this gate a newly-discovered adopter ships uncurated and unattended
+  // — which is exactly how `main` went red on the round-trip test that asserts
+  // the shipped wall is fully curated. NEEDS-REVIEW sends it to a review PR.
+  it("refuses to auto-land an adopter with no curated display name", () => {
+    const r = classify({
+      current: bigCurrent,
+      next: [...bigNext, { repo: "brand/new", name: "brand", mapped: false } as WallEntry],
+      changed: true,
+      checks: [...allOk, ok("brand/new")],
+    });
+    expect(r.status).toBe("NEEDS-REVIEW");
+    expect(exitCodeFor(r.status)).toBe(EXIT_NEEDS_REVIEW);
+    // The repo is NAMED: the workflow scrapes these lines into Slack, and a
+    // reason a human cannot act on is not a reason.
+    expect(r.reasons.join(" ")).toContain("brand/new");
+  });
+
+  // Every tile on the page today has a curated pair, so the ordinary weekly
+  // refresh must still auto-land. A gate that fires on the healthy case would
+  // be reverted within a month.
+  it("still auto-lands when every new tile is curated", () => {
+    const r = classify({
+      current: bigCurrent,
+      next: [...bigNext, { repo: "brand/new", name: "Brand", mapped: true } as WallEntry],
+      changed: true,
+      checks: [...allOk, ok("brand/new")],
+    });
+    expect(r.status).toBe("SAFE");
   });
 
   // The workflow scrapes only the FIRST THREE `!` lines into Slack. An aggregate
@@ -848,7 +880,7 @@ describe("classify", () => {
     });
     const r = classify({
       current: [...bigCurrent, tile("acme/old")],
-      next: [...kept, { repo: "acme/new" } as WallEntry],
+      next: [...kept, { repo: "acme/new", mapped: true } as WallEntry],
       changed: true,
       checks: allOk,
       minWallSize: 0,
@@ -864,7 +896,7 @@ describe("classify", () => {
   it("does not call a tile missing because the new list respelled it", () => {
     const r = classify({
       current: [...bigCurrent, tile("Acme/Widget")],
-      next: [...bigNext, { repo: "acme/widget" } as WallEntry],
+      next: [...bigNext, { repo: "acme/widget", mapped: true } as WallEntry],
       changed: true,
       checks: allOk,
     });
@@ -875,7 +907,7 @@ describe("classify", () => {
   it("does not call the flagship excluded because the new list respelled it", () => {
     const r = classify({
       current: bigCurrent,
-      next: [...bigNext, { repo: "acme/widget" } as WallEntry],
+      next: [...bigNext, { repo: "acme/widget", mapped: true } as WallEntry],
       changed: true,
       checks: allOk,
       topCandidate: { repo: "Acme/Widget", stars: 5000 },
@@ -900,7 +932,7 @@ describe("classify", () => {
     const small = wall(MIN_WALL_SIZE - 1);
     const r = classify({
       current: [],
-      next: small.map((repo) => ({ repo }) as WallEntry),
+      next: small.map((repo) => ({ repo, mapped: true }) as WallEntry),
       changed: true,
       checks: small.map((repo) => ok(repo)),
     });
@@ -938,7 +970,7 @@ describe("classify", () => {
     const small = wall(MIN_WALL_SIZE - 1);
     const sizeOnly = classify({
       current: [],
-      next: small.map((repo) => ({ repo }) as WallEntry),
+      next: small.map((repo) => ({ repo, mapped: true }) as WallEntry),
       changed: true,
       checks: small.map((repo) => ok(repo)),
       topCandidate: { repo: small[0], stars: 10 },
@@ -1403,7 +1435,11 @@ describe("an API-confirmed fork cannot wedge the flagship guard", () => {
   });
 
   it("does not wedge: the run classifies SAFE with the fork sitting on top", () => {
-    const next = selectAdopters(adopters, m);
+    // `mapped` is forced on: curation is not this block's subject, and
+    // `real/adopter` is an invented repo so it has no ADOPTER_DISPLAY entry.
+    // Left false, classify's curation gate — not the fork wedge — would be what
+    // this case measured.
+    const next = selectAdopters(adopters, m).map((e) => ({ ...e, mapped: true }));
     const { status, reasons } = classify({
       current: [],
       next,
@@ -1449,7 +1485,10 @@ describe("a slot changing hands inside one org", () => {
 
   it("is explained, not an unexplained disappearance", () => {
     const current = [tile("acme/old"), tile("other/repo")];
-    const next = [{ repo: "acme/new" } as WallEntry, { repo: "other/repo" } as WallEntry];
+    const next = [
+      { repo: "acme/new", mapped: true } as WallEntry,
+      { repo: "other/repo", mapped: true } as WallEntry,
+    ];
     const m = metaMap({ "acme/old": meta(OK_STARS, 1), "acme/new": meta(OK_STARS * 2, 1) });
     const { explained, unexplained } = partitionDrops(current, next, m);
     expect(unexplained).toEqual([]);
@@ -1459,7 +1498,7 @@ describe("a slot changing hands inside one org", () => {
 
   it("keeps the run SAFE instead of raising a false alarm", () => {
     const current = [tile("acme/old")];
-    const next = [{ repo: "acme/new", stars: 1 } as WallEntry];
+    const next = [{ repo: "acme/new", stars: 1, mapped: true } as WallEntry];
     const m = metaMap({ "acme/old": meta(OK_STARS, 1), "acme/new": meta(OK_STARS * 2, 1) });
     const { status } = classify({
       current,
@@ -1474,7 +1513,7 @@ describe("a slot changing hands inside one org", () => {
 
   it("still alarms when nobody from that org took the slot", () => {
     const current = [tile("acme/old")];
-    const next = [{ repo: "other/repo" } as WallEntry];
+    const next = [{ repo: "other/repo", mapped: true } as WallEntry];
     const m = metaMap({ "acme/old": meta(OK_STARS, 1) });
     expect(partitionDrops(current, next, m).unexplained).toEqual(["acme/old"]);
   });
@@ -1486,7 +1525,7 @@ describe("a slot changing hands inside one org", () => {
   // reported SAFE and the workflow pushed the shrunken wall to main.
   it("is NOT a handover when the departing repo no longer exists", () => {
     const current = [tile("acme/old")];
-    const next = [{ repo: "acme/new" } as WallEntry];
+    const next = [{ repo: "acme/new", mapped: true } as WallEntry];
     const m = metaMap({ "acme/new": meta(OK_STARS * 2, 1) });
     const { explained, unexplained } = partitionDrops(current, next, m);
     expect(explained).toEqual([]);
@@ -1502,7 +1541,7 @@ describe("a repo respelled between two scans is the same repo", () => {
 
   it("a survivor the new list recased has not left the wall", () => {
     const current = [tile("Acme/Widget")];
-    const next = [{ repo: "acme/widget" } as WallEntry];
+    const next = [{ repo: "acme/widget", mapped: true } as WallEntry];
     const m = metaMap({ "acme/widget": meta(OK_STARS, 1) });
     expect(partitionDrops(current, next, m)).toEqual({ explained: [], unexplained: [] });
   });
@@ -2189,7 +2228,7 @@ describe("GraphQL metadata is keyed by the name we ASKED about", () => {
 
 describe("the minimum wall size is a real floor, not a default nobody overrides", () => {
   const entries = (n: number) =>
-    Array.from({ length: n }, (_, i) => ({ repo: `o${i}/r` }) as WallEntry);
+    Array.from({ length: n }, (_, i) => ({ repo: `o${i}/r`, mapped: true }) as WallEntry);
 
   it("uses MIN_WALL_SIZE when the caller supplies no floor", () => {
     const r = classify({
@@ -2786,7 +2825,7 @@ describe("classify sees a wholesale replacement for what it is", () => {
     const arriving = tiles("new");
     const r = classify({
       current: gone.map((repo) => ({ repo, name: repo, url: "u", logo: "l" })),
-      next: arriving.map((repo) => ({ repo }) as WallEntry),
+      next: arriving.map((repo) => ({ repo, mapped: true }) as WallEntry),
       changed: true,
       checks: arriving.map((repo) => ok(repo)),
     });
@@ -3096,7 +3135,27 @@ interface MainRun {
   dir: string;
 }
 
-const awRepos = (n: number) => Array.from({ length: n }, (_, i) => `sbx${i}/r`);
+/**
+ * The sandbox wall is drawn from REAL `ADOPTER_DISPLAY` keys, one per org.
+ *
+ * It has to be: `classify` refuses to auto-land a tile that has no curated
+ * display name, because such a tile ships a raw GitHub org login to the public
+ * homepage. A sandbox wall of invented, uncurated repos would make every case
+ * below NEEDS-REVIEW and every exit code 20. One repo per org because the wall
+ * dedupes by org, so two keys sharing one (cacheplane has two) would silently
+ * render a shorter wall than the case asked for.
+ */
+const AW_POOL = [
+  ...new Map(
+    Object.keys(ADOPTER_DISPLAY).map((repo) => [orgOf(repo).toLowerCase(), repo]),
+  ).values(),
+];
+const awRepos = (n: number) => {
+  if (n > AW_POOL.length) {
+    throw new Error(`Sandbox needs ${n} curated repos but ADOPTER_DISPLAY has ${AW_POOL.length}.`);
+  }
+  return AW_POOL.slice(0, n);
+};
 const awAdopters = (repos: string[]): AdopterState[] =>
   repos.map((r) => ({ repo: r, missedRuns: 0 }));
 /**
@@ -3118,6 +3177,19 @@ const awMeta = (repos: string[]): Record<string, RepoMeta> => ({
     repos.map((r, i) => [r, { stars: OK_STARS - i, ownerId: 100 + i, isFork: false }]),
   ),
 });
+/**
+ * A tile on the page that the incoming scan does not mention at all.
+ *
+ * Deliberately NOT an `ADOPTER_DISPLAY` key, unlike the rest of the sandbox
+ * wall: the generator seeds every curated repo back into its own scan (see
+ * `withKnownAdopters`), so a curated repo can never go missing from the
+ * candidate list and a case about an adopter vanishing would quietly assert
+ * nothing. It is also absent from the incoming `meta`, which is what keeps the
+ * drop UNEXPLAINED — a repo sitting at zero stars would leave through the star
+ * floor, which `partitionDrops` explains and classify does not alarm on.
+ */
+const AW_VANISHING = "vanished/tile";
+
 const awWall = (repos: string[]) => selectAdopters(awAdopters(repos), metaMap(awMeta(repos)));
 
 interface MainOpts {
@@ -3303,16 +3375,15 @@ describe("main() end to end: the exit code and log the workflow reads", () => {
     expect(scrapedReasons(run.log)).toEqual([]);
     // The workflow pushes what is ON DISK, so the page itself must carry the
     // new tile — an exit code with no write would commit nothing.
-    expect(run.docs).toContain(`data-repo="sbx${MIN_WALL_SIZE}/r"`);
+    expect(run.docs).toContain(`data-repo="${awRepos(MIN_WALL_SIZE + 1)[MIN_WALL_SIZE]}"`);
     expect(run.summary).toContain("**Status:** SAFE");
   }, 60_000);
 
   it("exits 20 and emits a scrapeable reason per problem when a tile disappears", async () => {
-    const before = awRepos(MIN_WALL_SIZE + 1);
     const after = awRepos(MIN_WALL_SIZE);
-    const gone = `sbx${MIN_WALL_SIZE}/r`;
+    const gone = AW_VANISHING;
     const run = await runMain({
-      page: awWall(before),
+      page: awWall([...after, gone]),
       adopters: awAdopters(after),
       meta: awMeta(after),
     });
@@ -3368,7 +3439,7 @@ describe("main() end to end: the exit code and log the workflow reads", () => {
     expect(run.log).toContain("ADOPTION_WALL_STATUS=SAFE");
     expect(run.log).toContain("[DRY RUN] Would update docs/index.html.");
     expect(run.log).not.toContain("Updated docs/index.html.");
-    expect(run.docs).not.toContain(`data-repo="sbx${MIN_WALL_SIZE}/r"`);
+    expect(run.docs).not.toContain(`data-repo="${awRepos(MIN_WALL_SIZE + 1)[MIN_WALL_SIZE]}"`);
   }, 60_000);
 
   it("does not call a page that merely needs reformatting an adopter change", async () => {
@@ -3408,7 +3479,7 @@ describe("main() end to end: the exit code and log the workflow reads", () => {
     // purpose rather than a healthy week.
     expect(run.summary).toContain("does not exist");
     expect(run.summary).toContain("_No adopter data was read; `docs/` was not modified._");
-    expect(run.docs).toContain(`data-repo="sbx0/r"`);
+    expect(run.docs).toContain(`data-repo="${awRepos(1)[0]}"`);
   }, 60_000);
 });
 
@@ -3672,10 +3743,9 @@ describe("main() is the producer: the weekly run refreshes the state it read", (
   // dead adopter found something out; freezing lastScan on it would add an
   // invented staleness reason ahead of the real one three weeks later.
   it("still refreshes state on a NEEDS-REVIEW run whose scan was conclusive", async () => {
-    const before = awRepos(MIN_WALL_SIZE + 1);
     const after = awRepos(MIN_WALL_SIZE);
     const run = await runMain({
-      page: awWall(before),
+      page: awWall([...after, AW_VANISHING]),
       adopters: awAdopters(after),
       meta: awMeta(after),
       lastScan: awDaysAgo(7),

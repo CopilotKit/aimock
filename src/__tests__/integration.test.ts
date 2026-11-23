@@ -4,11 +4,29 @@ import { resolve } from "node:path";
 import { createServer, type ServerInstance } from "../server.js";
 import { loadFixturesFromDir } from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
-import type { Fixture, SSEChunk, ChatCompletionRequest } from "../types.js";
+import type { Fixture, SSEChunk, ChatCompletionRequest, JournalEntry } from "../types.js";
+import { isChatCompletionBody } from "../journal.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The chat request a journal entry recorded.
+ *
+ * `JournalEntry.body` is a union — not every service journals a chat request —
+ * so reading `messages` off one needs a narrowing step. Throwing here names the
+ * problem ("this entry is not a chat request") at the point it exists, instead
+ * of letting a non-chat entry surface as an undefined property inside an
+ * expectation.
+ */
+function chatBodyOf(entry: JournalEntry | null | undefined): ChatCompletionRequest {
+  const body = entry?.body;
+  if (!isChatCompletionBody(body)) {
+    throw new Error(`journal entry has no chat-completion body: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
 
 function parseSSEResponse(body: string): SSEChunk[] {
   return body
@@ -357,14 +375,14 @@ describe("integration: journal verification", () => {
     // First entry
     expect(entries[0].method).toBe("POST");
     expect(entries[0].path).toBe("/v1/chat/completions");
-    expect(entries[0].body!.messages[0].content).toBe("first message");
+    expect(chatBodyOf(entries[0]).messages[0].content).toBe("first message");
     expect(entries[0].response.status).toBe(200);
     expect(entries[0].response.fixture).not.toBeNull();
     expect(entries[0].id).toBeTruthy();
     expect(entries[0].timestamp).toBeGreaterThan(0);
 
     // Second entry
-    expect(entries[1].body!.messages[0].content).toBe("second message");
+    expect(chatBodyOf(entries[1]).messages[0].content).toBe("second message");
     expect(entries[1].response.status).toBe(200);
 
     // Journal also records unmatched requests

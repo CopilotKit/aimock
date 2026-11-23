@@ -490,4 +490,74 @@ describe("/__aimock control API", () => {
       expect(res.status).toBe(404);
     });
   });
+
+  describe("POST /__aimock/error one-shot is consumed when SERVED, not when evaluated", () => {
+    it("is not consumed by an incompatible (image) request", async () => {
+      instance = await createServer([
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ]);
+      const queued = await httpRequest(`${instance.url}/__aimock/error`, "POST", {
+        status: 503,
+        body: { message: "Overloaded" },
+      });
+      expect(queued.status).toBe(200);
+
+      // An image request cannot carry the error envelope; it must leave the
+      // one-shot pending rather than burning it.
+      const img = await httpRequest(`${instance.url}/v1/images/generations`, "POST", {
+        model: "dall-e-3",
+        prompt: "draw a cat",
+      });
+      expect(img.status).not.toBe(503);
+
+      const chat = await httpRequest(
+        `${instance.url}/v1/chat/completions`,
+        "POST",
+        chatRequest("hello"),
+      );
+      expect(chat.status).toBe(503);
+      expect(JSON.parse(chat.body).error.message).toBe("Overloaded");
+
+      const after = await httpRequest(
+        `${instance.url}/v1/chat/completions`,
+        "POST",
+        chatRequest("hello"),
+      );
+      expect(after.status).toBe(200);
+    });
+
+    it("survives a request that a behind-the-count turnIndex fixture wins, then fires", async () => {
+      instance = await createServer([
+        { match: { userMessage: "hello", turnIndex: 0 }, response: { content: "Scripted turn" } },
+      ]);
+      await httpRequest(`${instance.url}/__aimock/error`, "POST", { status: 503 });
+
+      const behind = await httpRequest(`${instance.url}/v1/chat/completions`, "POST", {
+        model: "gpt-4",
+        stream: false,
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "Scripted turn" },
+          { role: "user", content: "hello" },
+        ],
+      });
+      expect(behind.status).toBe(200);
+      expect(JSON.parse(behind.body).choices[0].message.content).toBe("Scripted turn");
+
+      const next = await httpRequest(
+        `${instance.url}/v1/chat/completions`,
+        "POST",
+        chatRequest("hello"),
+      );
+      expect(next.status).toBe(503);
+      expect(JSON.parse(next.body).error.message).toBe("Injected error");
+
+      const after = await httpRequest(
+        `${instance.url}/v1/chat/completions`,
+        "POST",
+        chatRequest("hello"),
+      );
+      expect(after.status).toBe(200);
+    });
+  });
 });

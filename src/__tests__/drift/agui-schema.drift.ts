@@ -3,10 +3,16 @@
  *
  * Compares aimock's AGUIEventType union and event interfaces against the
  * canonical Zod schemas in @ag-ui/core (read from disk via static analysis).
- * No runtime dependency on @ag-ui/core — purely regex-based parsing.
+ * No runtime dependency on @ag-ui/core: generated validators use TypeScript AST
+ * parsing; the legacy layout retains its inheritance-aware source parser.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
+import {
+  discoverAgUiSources,
+  resolveAgUiRepo,
+  parseGeneratedAgUi,
+} from "../../../scripts/drift-agui-canonical.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -14,17 +20,8 @@ import path from "node:path";
 // Paths
 // ---------------------------------------------------------------------------
 
-const CANONICAL_EVENTS_PATH = path.resolve(
-  import.meta.dirname,
-  "../../../../ag-ui/sdks/typescript/packages/core/src/events.ts",
-);
-// Sibling modules of events.ts. A canonical field may be declared through a
-// named schema alias imported from one of them (e.g. `metadata:
-// OptionalMetadataSchema` from ./metadata), so optionality cannot be read off
-// events.ts alone.
-const CANONICAL_CORE_SRC_DIR = path.resolve(
-  import.meta.dirname,
-  "../../../../ag-ui/sdks/typescript/packages/core/src",
+const canonical = discoverAgUiSources(
+  resolveAgUiRepo(path.resolve(import.meta.dirname, "../../../../ag-ui")),
 );
 const AIMOCK_TYPES_PATH = path.resolve(import.meta.dirname, "../../agui-types.ts");
 
@@ -363,10 +360,17 @@ interface DriftItem {
 // Tests
 // ---------------------------------------------------------------------------
 
-const canonicalExists = fs.existsSync(CANONICAL_EVENTS_PATH);
+const canonicalExists = canonical !== null;
 const aimockExists = fs.existsSync(AIMOCK_TYPES_PATH);
 
-describe.skipIf(!canonicalExists || !aimockExists)("AG-UI schema drift", () => {
+describe("AG-UI schema drift", () => {
+  beforeAll(() => {
+    if (!canonical || !aimockExists)
+      throw new Error(
+        "AG-UI canonical comparison unavailable: expected a complete generated or legacy source layout and aimock types",
+      );
+  });
+  let parsingError: unknown;
   let canonicalSource: string;
   let aimockSource: string;
   let canonicalTypes: string[];
@@ -374,20 +378,36 @@ describe.skipIf(!canonicalExists || !aimockExists)("AG-UI schema drift", () => {
   let canonicalSchemas: Map<string, SchemaInfo>;
   let aimockInterfaces: Map<string, SchemaInfo>;
 
-  // Parse sources once
-  if (canonicalExists && aimockExists) {
-    canonicalSource = fs.readFileSync(CANONICAL_EVENTS_PATH, "utf-8");
-    aimockSource = fs.readFileSync(AIMOCK_TYPES_PATH, "utf-8");
-    canonicalTypes = parseCanonicalEventTypes(canonicalSource);
-    aimockTypes = parseAimockEventTypes(aimockSource);
-    canonicalSchemas = parseCanonicalSchemas(
-      canonicalSource,
-      buildSchemaAliases(CANONICAL_CORE_SRC_DIR),
-    );
-    aimockInterfaces = parseAimockInterfaces(aimockSource);
-  }
+  // Parse after test registration so unsupported upstream schemas fail assertions
+  // and remain visible to the collector instead of aborting suite collection.
+  beforeAll(() => {
+    if (!canonical || !aimockExists) return;
+    try {
+      canonicalSource = fs.readFileSync(canonical.types, "utf-8");
+      aimockSource = fs.readFileSync(AIMOCK_TYPES_PATH, "utf-8");
+      aimockTypes = parseAimockEventTypes(aimockSource);
+      if (canonical.layout === "generated") {
+        const parsed = parseGeneratedAgUi(
+          canonicalSource,
+          fs.readFileSync(canonical.schemas, "utf-8"),
+        );
+        canonicalTypes = parsed.types;
+        canonicalSchemas = parsed.schemas;
+      } else {
+        canonicalTypes = parseCanonicalEventTypes(canonicalSource);
+        canonicalSchemas = parseCanonicalSchemas(
+          canonicalSource,
+          buildSchemaAliases(canonical.directory),
+        );
+      }
+      aimockInterfaces = parseAimockInterfaces(aimockSource);
+    } catch (error) {
+      parsingError = error;
+    }
+  });
 
-  it("should have canonical events.ts available", () => {
+  it("should have complete canonical sources available", () => {
+    expect(parsingError).toBeUndefined();
     expect(canonicalExists).toBe(true);
     expect(aimockExists).toBe(true);
   });

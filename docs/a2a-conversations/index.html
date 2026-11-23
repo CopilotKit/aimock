@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A2A Conversations | aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>A2A Conversations</h1>
+        <p>See <a href="../a2a-mock/">A2AMock</a> for agent registration and server setup.</p>
+        <h2 id="conversations">Task-bound Conversations</h2>
+        <p>
+          Register an ordered conversation with <code>onConversation(agentName, turns)</code>. Each
+          turn has a string or RegExp <code>pattern</code> and a <code>response</code> with
+          <code>state</code>, optional <code>parts</code>, and optional <code>artifacts</code>.
+          Omitted output arrays are empty. The exported <code>A2AConversationTurn</code> type is
+          available from both the package root and the A2A subpath.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Conversation <span class="lang-tag">typescript</span></div>
+          <pre><code>a2a.onConversation("assistant", [
+  {
+    pattern: "book a trip",
+    response: {
+      state: "TASK_STATE_INPUT_REQUIRED",
+      parts: [{ text: "Where would you like to go?" }],
+    },
+  },
+  {
+    pattern: "Paris",
+    response: {
+      state: "TASK_STATE_COMPLETED",
+      parts: [{ text: "Your destination is Paris." }],
+      artifacts: [{ name: "destination", parts: [{ data: { city: "Paris" } }] }],
+    },
+  },
+]);</code></pre>
+        </div>
+        <p>
+          Conversations must be nonempty, with input-required intermediate turns and a completed or
+          failed final turn. Each part has exactly one of <code>text</code>, <code>data</code>, or
+          <code>url</code>, and <code>data</code> is not null. Invalid definitions throw without
+          being registered. Sends that match a conversation with malformed parts are rejected. A
+          send without <code>message.taskId</code> selects a first turn in the existing registration
+          order. <code>SendMessage</code> considers every fixture kind, so an earlier message or
+          task fixture that matches the same text is used instead.
+          <code>SendStreamingMessage</code> considers only streaming tasks and conversations.
+          Subsequent sends include that task ID and must match its next turn. A supplied
+          <code>message.contextId</code> must agree with the task. An omitted, null, or empty
+          context is taken from the task on continuation, or generated for a new task. New sends
+          without a task ID create independent tasks even in a shared context. A null or empty task
+          ID or message ID counts as omitted, and an omitted message ID is generated.
+        </p>
+        <p>
+          Continue with either <code>SendMessage</code> or <code>SendStreamingMessage</code>; the
+          task ID selects the conversation. A conversation stream sends one event that contains the
+          accumulated <code>result.task</code> snapshot. A rejected streaming send returns a plain
+          JSON-RPC error body, not an event stream. Each accepted turn records the user message and
+          agent reply in order, preserving user message IDs, stamping both messages with the task
+          and context IDs, and appending artifacts. While the task awaits input,
+          <code>status.message</code> holds the agent reply. Rejected sends leave task state
+          unchanged. <code>GetTask</code> and <code>ListTasks</code> expose current state.
+          <code>GetTask</code> and <code>CancelTask</code> return the task itself as
+          <code>result</code>, as in
+          <code>{ "result": { "id": "task-...", "status": {...}, "history": [...] } }</code>, which
+          A2A SDK clients decode directly. <code>CancelTask</code> preserves accepted output but
+          prevents continuation. <code>reset()</code> removes all registrations and tasks.
+        </p>
+        <p>
+          In JSON configuration, add <code>conversations: [{ turns: [...] }]</code> to an agent.
+          Configured patterns are strings, and conversations are registered after that agent's
+          messages, tasks, and streaming tasks. Existing one-shot fixtures remain supported.
+        </p>
+        <h2 id="retries">Recovering accepted responses</h2>
+        <p>
+          Pass <code>{ replayLimit: 2 }</code> as the third argument to
+          <code>onConversation</code> to retain two accepted message IDs per task. Configuration
+          conversations accept the same <code>replayLimit</code> alongside <code>turns</code>. The
+          limit must be a nonnegative safe integer. Its default, zero, disables retention.
+        </p>
+        <p>
+          Retry with the task ID, the original nonempty message ID, and structurally equal JSON
+          parts to recover the original task snapshot. Object key order does not matter. Either send
+          method can replay a response, including after completion or cancellation, without changing
+          the current task. A conflicting context or different parts is an error. A request without
+          a task ID always starts a fresh task.
+        </p>
+        <p>
+          New keyed acceptances evict the oldest retained ID when the limit is exceeded. Replays do
+          not refresh retention order. Errors and sends with omitted, null, or empty IDs do not
+          consume retention. An evicted ID is subject to normal continuation rules. When retention
+          is enabled, concurrent identical keyed retries accept just one turn. Reset clears retained
+          responses.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

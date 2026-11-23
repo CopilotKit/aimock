@@ -22,10 +22,18 @@ import { join, resolve } from "node:path";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
 
-// Every observation runs a real retry loop with real sleeps. That is far
-// slower than a substring test, and a guard whose RED cannot be told apart
-// from a timeout proves nothing, so the budget is stated rather than inherited.
+// Every observation runs the real retry loop, but on a VIRTUAL clock: `date`
+// and `sleep` are stubbed on PATH alongside `npm`, so the loop's own timing is
+// driven by the test rather than by the runner. Nothing here waits on wall
+// clock, and nothing here asserts on it. The budget is still stated rather
+// than inherited, because a guard whose RED cannot be told apart from a
+// timeout proves nothing.
 vi.setConfig({ testTimeout: 60_000 });
+
+/** The shipped defaults of the step, which the observations below exercise. */
+const DEFAULT_DEADLINE = 300;
+const DEFAULT_INITIAL_DELAY = 5;
+const DEFAULT_MAX_DELAY = 30;
 
 const WORKFLOW_PATH = resolve(__dirname, "../../.github/workflows/publish-release.yml");
 const wf = readFileSync(WORKFLOW_PATH, "utf-8");
@@ -89,8 +97,29 @@ interface Observation {
   exit: number;
   /** How many times the body actually asked npm for the pinned version. */
   attempts: number;
-  elapsedMs: number;
+  /**
+   * Every `sleep <n>` the body issued, in order. This is the backoff schedule
+   * as the loop actually performed it — the observable that the old
+   * `elapsedMs` assertions were a lossy, load-dependent proxy for.
+   */
+  sleeps: number[];
+  /**
+   * Seconds the body's own clock advanced: purely the sum of `sleeps`, since
+   * the stubbed `date` only moves when the stubbed `sleep` moves it. A slow or
+   * fast runner cannot change this number.
+   */
+  virtualElapsedSeconds: number;
 }
+
+/** Where the loop's virtual clock starts. Any fixed integer will do. */
+const CLOCK_EPOCH = 1_700_000_000;
+
+/**
+ * Attempts after which the npm stub jumps the virtual clock past any plausible
+ * deadline. A body that lost its `sleep` would otherwise spin forever against a
+ * clock that never advances; this converts that hang into a legible RED.
+ */
+const RUNAWAY_ATTEMPTS = 40;
 
 /**
  * Write a fixture repo holding `version` in _version.py, put a stub `npm` (and
@@ -121,6 +150,38 @@ function observe(
   const counter = join(dir, "attempts");
   writeFileSync(counter, "0\n");
 
+  // The virtual clock. `date +%s` reads it; `sleep N` advances it by N and
+  // records N. The body is unmodified — it still calls `date` and `sleep` — but
+  // its notion of elapsed time is now the test's to decide, so the deadline
+  // arithmetic is exercised exactly and no observation depends on wall clock.
+  const clock = join(dir, "clock");
+  writeFileSync(clock, `${CLOCK_EPOCH}\n`);
+  const sleepLog = join(dir, "sleeps");
+  writeFileSync(sleepLog, "");
+
+  writeFileSync(
+    join(bin, "date"),
+    [
+      "#!/usr/bin/env bash",
+      `if [ "$1" = "+%s" ]; then cat ${JSON.stringify(clock)}; exit 0; fi`,
+      'exec /bin/date "$@"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(bin, "date"), 0o755);
+
+  writeFileSync(
+    join(bin, "sleep"),
+    [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$1" >> ${JSON.stringify(sleepLog)}`,
+      `now=$(cat ${JSON.stringify(clock)})`,
+      `printf '%s\\n' "$((now + $1))" > ${JSON.stringify(clock)}`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(bin, "sleep"), 0o755);
+
   // GitHub's setup-python provides `python`; developer machines and the ubuntu
   // runner provide `python3`. The body genuinely executes runpy either way.
   writeFileSync(join(bin, "python"), '#!/usr/bin/env bash\nexec python3 "$@"\n');
@@ -142,6 +203,12 @@ function observe(
       `n=$(cat ${JSON.stringify(counter)})`,
       "n=$((n + 1))",
       `echo "$n" > ${JSON.stringify(counter)}`,
+      // Runaway fuse: a body that stopped sleeping would never move the
+      // virtual clock and would loop forever. Jump the clock so it exits and
+      // the attempt-count assertions go RED instead of the suite hanging.
+      `if [ "$n" -gt ${RUNAWAY_ATTEMPTS} ]; then`,
+      `  printf '%s\\n' "$(( $(cat ${JSON.stringify(clock)}) + 1000000 ))" > ${JSON.stringify(clock)}`,
+      "fi",
       r.eventually ? `if [ "$n" -gt ${r.notFoundTimes} ]; then echo "${version}"; exit 0; fi` : "",
       'echo "npm error code E404" >&2',
       `echo "npm error 404 No match found for version ${version}" >&2`,
@@ -151,27 +218,29 @@ function observe(
   );
   chmodSync(join(bin, "npm"), 0o755);
 
-  const started = Date.now();
   const proc = spawnSync("bash", ["-e", "-c", runBody().body], {
     cwd: dir,
     encoding: "utf-8",
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH ?? ""}`,
-      // Shrink the real 300s window so the suite finishes. The DEFAULT is
-      // asserted separately below, so shrinking it here cannot hide a body
-      // that lost its retry.
-      NPM_VIEW_INITIAL_DELAY_SECONDS: "1",
-      NPM_VIEW_MAX_DELAY_SECONDS: "1",
-      NPM_VIEW_DEADLINE_SECONDS: "1",
+      // No window shrinking. The observations below run the SHIPPED 300s/5s/30s
+      // defaults, because on a virtual clock a five-minute window costs
+      // nothing, and a body tested at its real settings cannot pass here while
+      // behaving differently in CI.
       ...env,
     },
   });
+  const sleeps = readFileSync(sleepLog, "utf-8")
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .map(Number);
   return {
     stdout: (proc.stdout ?? "") + (proc.stderr ?? ""),
     exit: proc.status ?? -1,
     attempts: Number(readFileSync(counter, "utf-8").trim()),
-    elapsedMs: Date.now() - started,
+    sleeps,
+    virtualElapsedSeconds: Number(readFileSync(clock, "utf-8").trim()) - CLOCK_EPOCH,
   };
 }
 
@@ -195,28 +264,37 @@ describe("publish-release.yml — the run body under test is the committed one",
   it("ships a 300s default window, not whatever the tests happen to set", () => {
     // A five-minute ceiling: ~16x the 18s lag that broke the v1.41.0 release,
     // past npm's replication tail, still small beside the job's own setup.
-    expect(runBody().body).toContain("NPM_VIEW_DEADLINE_SECONDS:-300}");
+    // The observations below run AT these defaults, so the exact attempt
+    // counts and backoff schedules they assert are the shipped ones.
+    expect(runBody().body).toContain(`NPM_VIEW_DEADLINE_SECONDS:-${DEFAULT_DEADLINE}}`);
+    expect(runBody().body).toContain(`NPM_VIEW_INITIAL_DELAY_SECONDS:-${DEFAULT_INITIAL_DELAY}}`);
+    expect(runBody().body).toContain(`NPM_VIEW_MAX_DELAY_SECONDS:-${DEFAULT_MAX_DELAY}}`);
   });
 });
 
 describe("publish-release.yml — the race it used to lose", () => {
   it("EXECUTED: a version that 404s twice and then appears is accepted", () => {
-    const o = observe("1.41.0", { notFoundTimes: 1 }, { NPM_VIEW_DEADLINE_SECONDS: "20" });
+    const o = observe("1.41.0", { notFoundTimes: 1 });
     expect(o.exit).toBe(0);
     expect(o.attempts).toBe(2);
+    // It backed off once, by the shipped initial delay, before asking again.
+    expect(o.sleeps).toEqual([DEFAULT_INITIAL_DELAY]);
     expect(o.stdout).toContain(`${PKG}@1.41.0 is published`);
   });
 
   it("EXECUTED: a per-version 404 is overruled by the package's own version list", () => {
     // The registry has already proven the version exists; nothing is gained by
-    // sitting out the rest of the window.
+    // sitting out the rest of the window, so it must not sleep at all.
     const o = observe("1.41.0", { eventually: false, listHasVersion: true });
     expect(o.exit).toBe(0);
+    expect(o.attempts).toBe(1);
+    expect(o.sleeps).toEqual([]);
     expect(o.stdout).toContain("IS in the registry version list");
   });
 
   it("EXECUTED: every attempt is logged, so a future failure is diagnosable", () => {
-    const o = observe("1.41.0", { notFoundTimes: 2 }, { NPM_VIEW_DEADLINE_SECONDS: "20" });
+    const o = observe("1.41.0", { notFoundTimes: 2 });
+    expect(o.attempts).toBe(3);
     expect(o.stdout).toContain("attempt 1 (t+");
     expect(o.stdout).toContain("attempt 2 (t+");
     expect(o.stdout).toContain("attempt 3");
@@ -226,53 +304,82 @@ describe("publish-release.yml — the race it used to lose", () => {
 });
 
 describe("publish-release.yml — NEGATIVE CONTROLS: the guard still bites", () => {
+  /**
+   * The schedule the shipped defaults produce, worked out by hand from
+   * 5s doubling to a 30s ceiling until the loop's own clock reaches 300s:
+   *
+   *   attempt  1   2   3   4   5   6    7    8    9   10   11   12   13
+   *   at t+    0   5  15  35  65  95  125  155  185  215  245  275  305
+   *   slept     5  10  20  30  30  30   30   30   30   30   30   30
+   *
+   * Attempt 13 sees t+305 >= 300 and fails. These are exact because the loop
+   * runs on the test's clock; there is no runner-dependent quantity left in
+   * any of them.
+   */
+  const DEFAULT_SLEEPS = [5, 10, 20, 30, 30, 30, 30, 30, 30, 30, 30, 30];
+  const DEFAULT_TOTAL = 305;
+
   it("EXECUTED: a version that never appears FAILS, after waiting out the window", () => {
-    // 5s, not 1s: `date +%s` is whole-second, so under a loaded full-suite run
-    // a single loop pass can itself cross a 1s deadline and the body exits
-    // after ONE attempt -- which is the assertion below, flaking on machine
-    // load rather than on behaviour.
-    const o = observe("99.99.99", { eventually: false }, { NPM_VIEW_DEADLINE_SECONDS: "5" });
+    const o = observe("99.99.99", { eventually: false });
     expect(o.exit).toBe(1);
     // It must have actually waited — a body that failed on the first attempt
     // would be the original bug wearing a retry loop's clothes.
-    expect(o.attempts).toBeGreaterThan(1);
-    // `date +%s` truncates, so a 5s deadline can be crossed a little under 5s
-    // of wall clock; the point of the bound is that it slept at all.
-    expect(o.elapsedMs).toBeGreaterThanOrEqual(4000);
+    expect(o.attempts).toBe(DEFAULT_SLEEPS.length + 1);
+    expect(o.sleeps).toEqual(DEFAULT_SLEEPS);
+    expect(o.virtualElapsedSeconds).toBe(DEFAULT_TOTAL);
     expect(o.stdout).toContain("::error::");
+    expect(o.stdout).toContain(`over ${DEFAULT_TOTAL}s (deadline ${DEFAULT_DEADLINE}s)`);
     expect(o.stdout).toContain("still not published after");
     expect(o.stdout).toContain("refusing to publish a pin to a version npm does not have");
   });
 
   it("EXECUTED: the retry window is honoured, not multiplied by a longer deadline", () => {
-    const o = observe("99.99.99", { eventually: false }, { NPM_VIEW_DEADLINE_SECONDS: "3" });
-    expect(o.exit).toBe(1);
-    expect(o.elapsedMs).toBeGreaterThanOrEqual(2800);
-    expect(o.attempts).toBeGreaterThan(2);
+    // A SHORTER deadline must stop the loop sooner, and the overshoot past any
+    // deadline is bounded by one backoff step — the loop may not notice it is
+    // out of time only after another full round. Both are properties of the
+    // body's arithmetic, not of how fast this machine happens to be.
+    const shortDeadline = 100;
+    const short = observe(
+      "99.99.99",
+      { eventually: false },
+      {
+        NPM_VIEW_DEADLINE_SECONDS: String(shortDeadline),
+      },
+    );
+    expect(short.exit).toBe(1);
+    expect(short.sleeps).toEqual([5, 10, 20, 30, 30, 30]);
+    expect(short.attempts).toBe(7);
+    expect(short.virtualElapsedSeconds).toBe(125);
+
+    for (const [o, deadline] of [
+      [short, shortDeadline],
+      [observe("99.99.99", { eventually: false }), DEFAULT_DEADLINE],
+    ] as const) {
+      expect(o.virtualElapsedSeconds).toBeGreaterThanOrEqual(deadline);
+      expect(o.virtualElapsedSeconds).toBeLessThan(deadline + DEFAULT_MAX_DELAY);
+    }
+
+    // And the longer deadline really did buy more attempts, so the window is
+    // the thing steering the loop.
+    expect(short.attempts).toBeLessThan(DEFAULT_SLEEPS.length + 1);
   });
 
   it("EXECUTED: a pin to a package that does not exist FAILS FAST, without waiting", () => {
-    const o = observe(
-      "1.41.0",
-      { eventually: false, packageExists: false },
-      {
-        NPM_VIEW_DEADLINE_SECONDS: "600",
-      },
-    );
+    const o = observe("1.41.0", { eventually: false, packageExists: false });
     expect(o.exit).toBe(1);
     expect(o.attempts).toBe(1);
-    expect(o.elapsedMs).toBeLessThan(10_000);
+    expect(o.sleeps).toEqual([]);
+    expect(o.virtualElapsedSeconds).toBe(0);
     expect(o.stdout).toContain(`npm has no package named ${PKG} at all`);
   });
 
   it("EXECUTED: an unreachable registry is transient, NOT a missing-package verdict", () => {
-    const o = observe(
-      "1.41.0",
-      { eventually: false, registryUnreachable: true },
-      { NPM_VIEW_DEADLINE_SECONDS: "5" },
-    );
+    const o = observe("1.41.0", { eventually: false, registryUnreachable: true });
     expect(o.exit).toBe(1);
-    expect(o.attempts).toBeGreaterThan(1);
+    // Transient means it keeps the full window, exactly as a lagging publish
+    // would — not the one-attempt verdict a missing package earns.
+    expect(o.attempts).toBe(DEFAULT_SLEEPS.length + 1);
+    expect(o.sleeps).toEqual(DEFAULT_SLEEPS);
     expect(o.stdout).toContain("registry unreachable, treating as transient");
     expect(o.stdout).not.toContain("has no package named");
   });

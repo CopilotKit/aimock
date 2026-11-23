@@ -53,6 +53,17 @@
           The Responses API uses <code>event:</code> + <code>data:</code> SSE format over HTTP, and
           is also available over WebSocket. aimock supports both transports with the same fixtures.
         </p>
+        <p>
+          To send events or fields aimock does not model yet, use a
+          <a href="/raw-passthrough">raw passthrough fixture</a> with
+          <code>wire: "openai-responses"</code>.
+        </p>
+        <p>
+          Fixture <code>citations</code> serve <code>url_citation</code> and
+          <code>file_citation</code> annotations, and fixture <code>files</code> serve
+          <code>image_generation_call</code> output items. See
+          <a href="/fixtures#citations-and-files">Citations and generated files</a>.
+        </p>
 
         <h2>Endpoints</h2>
         <table class="endpoint-table">
@@ -76,6 +87,16 @@
             </tr>
           </tbody>
         </table>
+
+        <p>
+          If the client hangs up before the reply is complete, aimock stops delivery and journals
+          the request with <code>interruptReason: "client aborted"</code> (see
+          <a href="/error-injection#client-disconnects">Client Disconnects</a>). The WebSocket
+          transport records the turn the same way. To delay HTTP <code>stream: false</code> replies,
+          set <code>nonStreamingTimingAllProviders: true</code> with a
+          <code>streamingProfile</code> or <code>recordedTimings</code> (see
+          <a href="/streaming-physics#non-streaming-all-providers">All Providers</a>).
+        </p>
 
         <h2>Unit Test: HTTP SSE Text Response</h2>
 
@@ -118,7 +139,7 @@
   {
     <span class="prop">match</span>: { <span class="prop">userMessage</span>: <span class="str">"weather"</span> },
     <span class="prop">response</span>: {
-      <span class="prop">toolCalls</span>: [{ <span class="prop">name</span>: <span class="str">"get_weather"</span>, <span class="prop">arguments</span>: { <span class="prop">city</span>: <span class="str">"NYC"</span> } }]
+      <span class="prop">toolCalls</span>: [{ <span class="prop">name</span>: <span class="str">"get_weather"</span>, <span class="prop">arguments</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({ <span class="prop">city</span>: <span class="str">"NYC"</span> }) }]
     }
   }
 ]);
@@ -126,6 +147,7 @@
 <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">post</span>(<span class="str">`${instance.url}/v1/responses`</span>, {
   <span class="prop">model</span>: <span class="str">"gpt-4o"</span>,
   <span class="prop">input</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"what is the weather?"</span> }],
+  <span class="prop">stream</span>: <span class="kw">true</span>,
 });
 
 <span class="kw">const</span> <span class="op">events</span> = <span class="fn">parseTypedSSE</span>(<span class="op">res</span>.<span class="prop">body</span>);
@@ -149,9 +171,12 @@
         </ol>
 
         <p>
-          Tool call responses follow the same pattern but use
+          Function call responses follow the same pattern but use
           <code>response.function_call_arguments.delta</code> and
-          <code>response.function_call_arguments.done</code> events.
+          <code>response.function_call_arguments.done</code> events. Custom tool calls use
+          <code>response.custom_tool_call_input.delta</code> and
+          <code>response.custom_tool_call_input.done</code> &mdash; see
+          <a href="#namespaced-and-custom-tool-calls">Namespaced and custom tool calls</a>.
         </p>
 
         <div class="info-box">
@@ -166,10 +191,328 @@
           A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
           <code>blocks</code> array to control stream order &mdash; see
           <a href="/fixtures#ordered-blocks">Ordered blocks</a>. The Responses API has
-          <strong>full</strong> support: <code>output</code> items (message vs
-          <code>function_call</code>) are assigned <code>output_index</code> in array order, so a
-          tool call can precede the message and SDKs honor the ordering.
+          <strong>full</strong> support: <code>output</code> items (message,
+          <code>function_call</code> or <code>custom_tool_call</code>) are assigned
+          <code>output_index</code> in array order, so a tool call can precede the message and SDKs
+          honor the ordering.
         </p>
+
+        <h2 id="namespaced-and-custom-tool-calls">Namespaced and custom tool calls</h2>
+        <p>
+          The Responses API has two more tool-call shapes. aimock emits both over HTTP (streaming
+          and non-streaming) and over WebSocket:
+        </p>
+        <ul>
+          <li>
+            A <code>function_call</code> with <code>namespace</code>. A tool offered inside a
+            <code>{"type": "namespace", "name": "...", "tools": [...]}</code> tool is called with
+            its namespace next to its name. Codex puts each MCP server's tools in one namespace and
+            sub-agent tools in the <code>collaboration</code> namespace.
+          </li>
+          <li>
+            A <code>custom_tool_call</code>. A custom (freeform) tool (<code
+              >{"type": "custom", ...}</code
+            >, with an optional Lark or regex grammar) is called with free-text <code>input</code>,
+            not JSON arguments. Codex's <code>apply_patch</code> is a custom tool.
+          </li>
+        </ul>
+
+        <h3 id="responses-tools-option">The <code>responsesTools</code> option</h3>
+        <p>
+          By default (<code>responsesTools: "legacy"</code>) aimock matches, counts, journals and
+          records Responses requests exactly as releases up to 1.44.0 did. Turn on the new behavior
+          once per server with <code>responsesTools: "extended"</code> (programmatic) or
+          <code>--responses-tools extended</code> (the <code>llmock</code> and
+          <code>aimock</code> bins), or <code>llm.responsesTools: "extended"</code> in an
+          <code>aimock --config</code> file. Any other option or config value is ignored with a
+          warning and the server runs in <code>legacy</code> mode, as 1.44.0 ignored it; an invalid
+          <code>--responses-tools</code> flag value exits 1. The mode is fixed when the server
+          starts: changing <code>responsesTools</code> on the options object after
+          <code>createServer</code> or <code>LLMock.start()</code> is unsupported. With it:
+        </p>
+        <ul>
+          <li>
+            <code>toolName</code> and predicates see the tools inside <code>namespace</code> tools,
+            <code>custom</code> tools, and the tools of <code>additional_tools</code> and
+            <code>tool_search_output</code> input items;
+          </li>
+          <li>
+            <code>custom_tool_call</code> / <code>custom_tool_call_output</code> history counts as a
+            tool round for <code>hasToolResult</code>, <code>toolCallId</code>,
+            <code>toolResultContains</code> and <code>turnIndex</code>;
+          </li>
+          <li>
+            the <code>namespace</code> of a <code>toolCalls</code> entry or a
+            <code>toolCall</code> block is emitted;
+          </li>
+          <li>record mode keeps namespaces and custom tool calls;</li>
+          <li>
+            the keys <code>match.toolNamespace</code>, <code>customToolCalls</code> and
+            <code>responsesBlocks</code> apply. By default they are ignored, as in earlier releases.
+          </li>
+        </ul>
+        <p>
+          Codex CLI needs the option: its <code>apply_patch</code> is a custom tool and its MCP
+          tools are namespaced.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/codex.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: {
+        <span class="prop">"userMessage"</span>: <span class="str">"Look up aimock"</span>,
+        <span class="prop">"toolName"</span>: <span class="str">"search"</span>,
+        <span class="prop">"toolNamespace"</span>: <span class="str">"mcp__docs"</span>,
+        <span class="prop">"hasToolResult"</span>: <span class="kw">false</span>
+      },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          { <span class="prop">"name"</span>: <span class="str">"search"</span>, <span class="prop">"namespace"</span>: <span class="str">"mcp__docs"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"q"</span>: <span class="str">"aimock"</span> } }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"add hello.txt"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">false</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [],
+        <span class="prop">"customToolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"apply_patch"</span>,
+            <span class="prop">"input"</span>: <span class="str">"*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n"</span>
+          }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"hasToolResult"</span>: <span class="kw">true</span> },
+      <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"done"</span> }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <p>
+          <code>mcp__docs</code> is the namespace Codex gives an MCP server named <code>docs</code>.
+          Each tool-call fixture is gated with <code>hasToolResult: false</code> and the last
+          fixture answers every follow-up, so each call is made once and the agent stops. See the
+          <a href="#codex-recipe">Codex recipe</a> below.
+        </p>
+        <p>
+          A <code>toolCalls</code> entry is always a function call. It may carry
+          <code>namespace</code> (emitted only with <code>responsesTools: "extended"</code>); any
+          <code>type</code> or <code>input</code> on it is ignored, as in earlier releases. Custom
+          tool calls go in <code>customToolCalls</code>: each entry takes <code>name</code>,
+          free-text <code>input</code> (never parsed or stringified), and an optional
+          <code>id</code> and <code>namespace</code>. They are emitted after the function calls of
+          <code>toolCalls</code>; a turn with only custom calls sets <code>"toolCalls": []</code>.
+          To place custom calls anywhere among text and function calls, use
+          <code>responsesBlocks</code>: the same blocks as
+          <a href="/fixtures#ordered-blocks"><code>blocks</code></a> plus a
+          <code>customToolCall</code> block (<code>name</code>, <code>input</code>, optional
+          <code>id</code> and <code>namespace</code>). A fixture may not set both
+          <code>blocks</code> and <code>responsesBlocks</code>.
+        </p>
+
+        <h3>Event sequences</h3>
+        <p>
+          A namespaced function call streams exactly like any function call. The only change is
+          <code>namespace</code> on the <code>function_call</code> item in
+          <code>response.output_item.added</code>, <code>response.output_item.done</code> and
+          <code>response.completed</code>. A call without a namespace has no
+          <code>namespace</code> key, so existing fixtures produce the same output as before.
+        </p>
+        <p>A custom tool call at <code>output_index</code> <em>k</em> streams as:</p>
+        <ol>
+          <li>
+            <code>response.output_item.added</code>: a <code>custom_tool_call</code> item with
+            <code>id</code> <code>ctc_…</code>, <code>call_id</code>, <code>name</code>, optional
+            <code>namespace</code>, <code>input: ""</code> and <code>status: "in_progress"</code>
+          </li>
+          <li>
+            <code>response.custom_tool_call_input.delta</code>, one per chunk (none when
+            <code>input</code> is empty)
+          </li>
+          <li>
+            <code>response.custom_tool_call_input.done</code> with the full <code>input</code>
+          </li>
+          <li>
+            <code>response.output_item.done</code>: the same item with the full
+            <code>input</code> and <code>status: "completed"</code>
+          </li>
+        </ol>
+        <p>
+          A non-streaming response has the completed item in <code>output</code>. The
+          <code>call_id</code> is the fixture's <code>id</code> when set.
+        </p>
+
+        <h3>Errors</h3>
+        <p>
+          Only the Responses API can serve a custom tool call. Every other provider endpoint (Chat
+          Completions, Anthropic Messages, Gemini, Gemini Interactions, Bedrock, Ollama, Cohere,
+          Realtime, Gemini Live) rejects a fixture with a non-empty <code>customToolCalls</code>, or
+          with a <code>customToolCall</code> block in <code>responsesBlocks</code>, before any
+          content, with the code <code>aimock_unsupported_tool_call</code> (Ollama
+          <code>/api/generate</code> keeps its HTTP 400 for every tool-call fixture). The message
+          names the tool and the API, for example
+          <code
+            >aimock: fixture tool call "apply_patch" is a custom tool call, which only the OpenAI
+            Responses API supports; this request arrived on OpenAI Chat Completions</code
+          >. A <code>responsesBlocks</code> without custom calls is served as
+          <code>blocks</code> there. Those endpoints ignore <code>namespace</code> and send the bare
+          tool name.
+        </p>
+        <p>
+          Fixture validation (<code>aimock validate</code>, <code>--validate-on-load</code>,
+          <code>addFixturesFromJSON()</code>, <code>POST /__aimock/fixtures</code>) checks
+          <code>customToolCalls</code> and <code>responsesBlocks</code>. A fixture that is not
+          load-validated (a programmatic or factory fixture, or a file loaded without validation) is
+          checked per request instead: a malformed custom call fails the Responses request before
+          any content with the code <code>aimock_invalid_fixture_tool_call</code> and a message such
+          as
+          <code
+            >Invalid fixture tool call: "input" must be a string for a custom tool call
+            (customToolCalls[0])</code
+          >, recorded in the journal entry. Fixtures that releases up to 1.44.0 accepted get no new
+          validation finding and no new error.
+        </p>
+        <p>Both codes are carried in the provider's error shape:</p>
+        <ul>
+          <li>
+            OpenAI Responses, OpenAI Chat Completions, Azure OpenAI and Cohere: HTTP 500 with
+            <code>error.code</code> in an OpenAI-style envelope.
+          </li>
+          <li>
+            OpenRouter Chat Completions: HTTP 500 with the code in
+            <code>error.metadata.reason</code>.
+          </li>
+          <li>
+            Anthropic Messages: HTTP 500 in Anthropic's error envelope (<code>error.type</code>
+            <code>api_error</code>), with the code in <code>error.code</code>.
+          </li>
+          <li>Gemini Interactions: HTTP 500 with the code in <code>error.code</code>.</li>
+          <li>
+            Gemini and Vertex AI: HTTP 500 with a <code>google.rpc.ErrorInfo</code> entry in
+            <code>error.details</code>.
+          </li>
+          <li>
+            Bedrock: HTTP 500 with the code in <code>reason</code>, next to <code>__type</code>.
+          </li>
+          <li>
+            Ollama <code>/api/chat</code>: HTTP 500 with a <code>code</code> member next to the
+            string <code>error</code>.
+          </li>
+          <li>
+            OpenAI Responses over WebSocket: an <code>error</code> event with the code in
+            <code>error.code</code>.
+          </li>
+          <li>
+            Realtime: <code>response.created</code> and then <code>response.done</code> with
+            <code>status: "failed"</code> and the code in
+            <code>response.status_details.error.code</code>.
+          </li>
+          <li>
+            Gemini Live: an error frame with <code>code</code> 13 and the same
+            <code>google.rpc.ErrorInfo</code> detail as Gemini.
+          </li>
+        </ul>
+
+        <h3>Matching</h3>
+        <p>
+          With <code>responsesTools: "extended"</code>, aimock flattens the request's tools before
+          matching: tools inside a <code>namespace</code> tool, <code>custom</code> tools (in
+          <code>req.customTools</code>), and the tools of <code>additional_tools</code> (which
+          Codex's responses-lite models send in place of <code>tools</code>) and
+          <code>tool_search_output</code> input items are all visible. By default only top-level
+          <code>function</code> tools are, as before. In either mode a malformed nested tool item (a
+          <code>namespace</code> tool without a non-empty string <code>name</code> or with
+          <code>tools</code> that is not an array, a <code>null</code> entry, or an input item whose
+          <code>tools</code> is not an array) is dropped, as earlier releases ignored those items; a
+          top-level <code>tools</code> that is not an array or holds <code>null</code> is still an
+          HTTP 400.
+        </p>
+        <ul>
+          <li>
+            <code>toolName</code> matches an offered tool by name. Other tool types
+            (<code>web_search</code>, <code>file_search</code>, <code>mcp</code>, and so on) are not
+            visible to matching.
+          </li>
+          <li>
+            <code>toolNamespace</code> matches an offered tool's namespace exactly, with
+            <code>responsesTools: "extended"</code> (by default the key is ignored). Alone, it
+            matches when any tool sits in that namespace. With <code>toolName</code>, one tool must
+            carry both. There is no default namespace: a top-level tool has none. Chat Completions
+            passes request tools through unchanged, so a top-level <code>namespace</code> field that
+            a client sends there also matches.
+          </li>
+          <li>
+            With <code>responsesTools: "extended"</code>, a <code>predicate</code> sees
+            <code>namespace</code> on each tool in <code>req.tools</code>, custom tools in
+            <code>req.customTools</code>, history function calls with their <code>namespace</code>,
+            and custom tool calls in <code>message.custom_tool_calls</code>.
+          </li>
+        </ul>
+
+        <h3 id="codex-recipe">Codex recipe</h3>
+        <p>
+          Start aimock with <code>--responses-tools extended</code>. Gate the turn-0 fixture with
+          <code>hasToolResult: false</code> and the follow-up with <code>hasToolResult: true</code>.
+          Codex sends the same user prompt and the same tools on the follow-up, so without the
+          turn-0 gate the turn-0 fixture matches again and the agent loops. A fixture that matches
+          only on <code>toolName</code> or <code>toolNamespace</code> has the same problem: the tool
+          is offered on every request, so that fixture matches every request before any later
+          fixture gets a chance.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/apply-patch.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"Create hello.txt"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">false</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [],
+        <span class="prop">"customToolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"apply_patch"</span>,
+            <span class="prop">"input"</span>: <span class="str">"*** Begin Patch\n*** Add File: hello.txt\n+hello from aimock\n*** End Patch\n"</span>
+          }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"Create hello.txt"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">true</span> },
+      <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"done"</span> }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>Codex configuration notes:</p>
+        <ul>
+          <li>
+            Point a custom provider at aimock (<code>base_url = "http://127.0.0.1:4010/v1"</code>,
+            <code>wire_api = "responses"</code>) and use model <code>gpt-5.5</code>. Codex's other
+            bundled models send their tools in <code>additional_tools</code> and run in code mode,
+            and an unknown model slug gets no <code>apply_patch</code> tool.
+          </li>
+          <li>
+            Codex defers MCP tools behind <code>tool_search</code>, which aimock does not mock. Set
+            <code>omit_tools_from = ["deferred"]</code> on the MCP server so its tools are offered
+            directly, in a namespace named <code>mcp__&lt;server&gt;</code> (for example
+            <code>mcp__docs</code> for <code>[mcp_servers.docs]</code>, with no trailing
+            <code>__</code>). <code>toolNamespace</code> is an exact match, so if a match fails,
+            read the exact values from the aimock journal: with
+            <code>responsesTools: "extended"</code> each entry's <code>body.tools[]</code> carries
+            <code>namespace</code> and <code>function.name</code>. With
+            <code>codex exec</code> (approval policy <code>never</code>), also set
+            <code>default_tools_approval_mode = "approve"</code> on that server, or Codex refuses
+            the MCP call.
+          </li>
+        </ul>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

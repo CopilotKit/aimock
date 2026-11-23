@@ -1,0 +1,7 @@
+{
+  "status": 503,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"error\":{\"code\":\"UNAVAILABLE\",\"message\":\"Strict mode: no fixture matched\"}}"
+}

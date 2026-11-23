@@ -1,0 +1,1946 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hello g\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"olden w\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"orld, t\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"his is \"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"a chara\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"cteriza\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"tion ru\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 148,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"n.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"end_turn\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 191,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{\"toolUse\":{\"toolUseId\":\"call_g1\",\"name\":\"get_weather\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"toolUse\":{\"input\":\"{\\\"city\\\"\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"toolUse\":{\"input\":\":\\\"NYC\\\"}\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"tool_use\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Checkin\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 152,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"g now.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 191,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"start\":{\"toolUse\":{\"toolUseId\":\"call_g2\",\"name\":\"get_weather\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\"{\\\"city\\\"\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 167,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\":\\\"SF\\\"}\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"tool_use\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Lead te\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 149,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"xt.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 188,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"start\":{\"toolUse\":{\"toolUseId\":\"call_g3\",\"name\":\"get_time\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 161,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\"{}\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":2,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":2,\"delta\":{\"text\":\"Tail te\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 149,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":2,\"delta\":{\"text\":\"xt.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":2}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"tool_use\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 191,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{\"toolUse\":{\"toolUseId\":\"call_m1\",\"name\":\"get_weather\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"toolUse\":{\"input\":\"{\\\"city\\\"\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 188,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"start\":{\"toolUse\":{\"toolUseId\":\"call_m2\",\"name\":\"get_time\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\"{\\\"zone\\\"\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\":\\\"UTC\\\"}\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"tool_use\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 182,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":3,\"outputTokens\":10,\"totalTokens\":13},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hello g\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"olden w\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"orld, t\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"his is \"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"a chara\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"cteriza\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"tion ru\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 148,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"n.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 47
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"end_turn\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 53
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Checkin\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 152,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"g now.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 191,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"start\":{\"toolUse\":{\"toolUseId\":\"call_g2\",\"name\":\"get_weather\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 168,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\"{\\\"city\\\"\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 167,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\":\\\"SF\\\"}\"}}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 37
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":1}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 41
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"tool_use\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 43
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "setHeader",
+        "name": "Content-Type",
+        "value": "application/vnd.amazon.eventstream"
+      },
+      {
+        "op": "setHeader",
+        "name": "Transfer-Encoding",
+        "value": "chunked"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 118,
+            "headersLength": 82,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"role\":\"assistant\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 137,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStart",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"start\":{}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hello g\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"olden w\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"orld, t\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"his is \"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"a chara\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"cteriza\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 18.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 153,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"tion ru\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 20.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 148,
+            "headersLength": 87,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockDelta",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0,\"delta\":{\"text\":\"n.\"}}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 21.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 125,
+            "headersLength": 86,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "contentBlockStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"contentBlockIndex\":0}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 23.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 122,
+            "headersLength": 81,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "messageStop",
+              ":message-type": "event"
+            },
+            "payload": "{\"stopReason\":\"end_turn\"}"
+          }
+        ]
+      },
+      {
+        "op": "timer",
+        "ms": 26.5
+      },
+      {
+        "op": "write",
+        "frames": [
+          {
+            "total": 180,
+            "headersLength": 78,
+            "preludeOk": true,
+            "messageOk": true,
+            "headers": {
+              ":content-type": "application/json",
+              ":event-type": "metadata",
+              ":message-type": "event"
+            },
+            "payload": "{\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0},\"metrics\":{\"latencyMs\":0}}"
+          }
+        ]
+      },
+      {
+        "op": "end"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

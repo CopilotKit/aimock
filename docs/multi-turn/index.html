@@ -123,8 +123,8 @@
             <em>string</em> forms of <code>userMessage</code>, <code>systemMessage</code>, and
             <code>inputText</code>. Regex and array-of-substrings forms are unaffected, and
             <code>toolResultContains</code> stays a substring match. Fields like
-            <code>toolName</code> and <code>toolCallId</code> are always exact. This trips people up
-            &mdash; see <a href="#gotchas">Gotchas</a> below.
+            <code>toolName</code>, <code>toolNamespace</code> and <code>toolCallId</code> are always
+            exact. This trips people up &mdash; see <a href="#gotchas">Gotchas</a> below.
           </p>
         </div>
 
@@ -456,9 +456,9 @@
             silently stop matching. Only the <em>string</em> forms of <code>userMessage</code>,
             <code>systemMessage</code>, and <code>inputText</code> flip; regex and
             array-of-substrings forms are unaffected, and <code>toolResultContains</code> remains a
-            substring match even under a transform. Fields like <code>toolName</code> and
-            <code>toolCallId</code> are always exact. Pin exact strings in your fixtures when you
-            use a transform.
+            substring match even under a transform. Fields like <code>toolName</code>,
+            <code>toolNamespace</code> and <code>toolCallId</code> are always exact. Pin exact
+            strings in your fixtures when you use a transform.
           </li>
           <li>
             <strong>Duplicate <code>userMessage</code> warnings.</strong>
@@ -466,12 +466,12 @@
             <code>userMessage</code> with identical values for <em>every</em> match discriminator
             the router gates on &mdash; <code>userMessage</code>, <code>systemMessage</code>,
             <code>inputText</code>, <code>toolCallId</code>, <code>toolResultContains</code>,
-            <code>toolName</code>, <code>model</code>, <code>responseFormat</code>,
-            <code>endpoint</code>, <code>context</code>, <code>sequenceIndex</code>,
-            <code>turnIndex</code>, and <code>hasToolResult</code>. Fixtures that differ on any one
-            of these discriminators do not trigger the warning. A <code>predicate</code> cannot be
-            compared for equivalence, so any fixture carrying one is keyed by its own identity and
-            is never reported as a duplicate. Treat it as advisory.
+            <code>toolName</code>, <code>toolNamespace</code>, <code>model</code>,
+            <code>responseFormat</code>, <code>endpoint</code>, <code>context</code>,
+            <code>sequenceIndex</code>, <code>turnIndex</code>, and <code>hasToolResult</code>.
+            Fixtures that differ on any one of these discriminators do not trigger the warning. A
+            <code>predicate</code> cannot be compared for equivalence, so any fixture carrying one
+            is keyed by its own identity and is never reported as a duplicate. Treat it as advisory.
           </li>
           <li>
             <strong>First-wins ordering.</strong> Fixtures are evaluated in registration order (and,

@@ -10,10 +10,11 @@
  * - Streaming uses NDJSON, not SSE
  * - Tool call arguments are objects, not JSON strings
  * - Tool calls have no id field
- * - Embeddings return a single `embedding` array, not an array of objects
+ * - Legacy embeddings return `embedding`; /api/embed returns `embeddings`
  */
 
 import type * as http from "node:http";
+import { setEmbeddingRequest } from "./embedding-request.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -24,32 +25,52 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
+  isRawResponse,
   isEmbeddingResponse,
+  isJSONResponse,
+  validateChatMessages,
+  validateToolsField,
+  normalizeEmbeddingInput,
+  validateEmbeddingDimensions,
+  MAX_EMBEDDING_DIMENSIONS,
   resolveFixtureBlocks,
-  serializeErrorResponse,
+  resolveFixtureBlockOutcome,
   generateDeterministicEmbedding,
   flattenHeaders,
+  isJsonObject,
   getTestId,
   resolveResponse,
-  resolveStrictMode,
   resolveReasoningForModel,
-  strictOverrideField,
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  toolArgsForWire,
+  InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { writeNDJSONStream } from "./ndjson-writer.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { ndjsonCodec } from "./ndjson-writer.js";
+import { deliverJson, deliverStream } from "./response/deliver.js";
+import { proxyInterruption, withHangUpDetection } from "./response/proxy.js";
+import {
+  misbehaviorPayloadLength,
+  nonStreamingTimingEnabled,
+  servedPayloadLength,
+} from "./response/timing.js";
 import type { Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
-import { prepareChaos, chaosIdentity, chaosJitterFor } from "./chaos.js";
+import { applyChaosAsync } from "./chaos.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
+import { render as renderUsage } from "./response/usage/codecs/ollama.js";
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
+import { renderError } from "./response/errors.js";
+import { serveRawResponse } from "./response/raw.js";
 
 // ─── Ollama request types ────────────────────────────────────────────────────
 
@@ -92,9 +113,9 @@ const DURATION_FIELDS = {
   done_reason: "stop" as const,
   total_duration: 0,
   load_duration: 0,
-  prompt_eval_count: 0,
+  ...renderUsage({ kind: "ordinary-zero" }, "prompt"),
   prompt_eval_duration: 0,
-  eval_count: 0,
+  ...renderUsage({ kind: "ordinary-zero" }, "completion"),
   eval_duration: 0,
 };
 
@@ -233,26 +254,9 @@ function buildOllamaChatToolCallChunks(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
-  logger: Logger,
   reasoning?: string,
 ): object[] {
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   // Tool calls are sent in a single chunk (no streaming of individual args)
   const chunks: object[] = [];
@@ -297,26 +301,9 @@ function buildOllamaChatToolCallChunks(
 function buildOllamaChatToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
-  logger: Logger,
   reasoning?: string,
 ): object {
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   return {
     model,
@@ -335,18 +322,10 @@ function buildOllamaChatToolCallResponse(
 // ─── Response builders: /api/chat — content + tool calls ────────────────────
 
 // Map a fixture tool call into Ollama's wire shape (object arguments, no id).
-function toOllamaToolCall(
-  tc: ToolCall,
-  logger: Logger,
-): { function: { name: string; arguments: unknown } } {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
-  return { function: { name: tc.name, arguments: argsObj } };
+function toOllamaToolCall(tc: Pick<ToolCall, "name" | "arguments">): {
+  function: { name: string; arguments: unknown };
+} {
+  return { function: { name: tc.name, arguments: servedToolArgs(tc, "object").value } };
 }
 
 function buildOllamaChatContentWithToolCallsChunks(
@@ -354,7 +333,6 @@ function buildOllamaChatContentWithToolCallsChunks(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
-  logger: Logger,
   reasoning?: string,
   blocks?: FixtureBlock[],
 ): object[] {
@@ -405,7 +383,7 @@ function buildOllamaChatContentWithToolCallsChunks(
           message: {
             role: "assistant",
             content: "",
-            tool_calls: [toOllamaToolCall(block, logger)],
+            tool_calls: [toOllamaToolCall(block)],
           },
           done: false,
         });
@@ -450,23 +428,7 @@ function buildOllamaChatContentWithToolCallsChunks(
   }
 
   // Tool calls in a single chunk (same as tool-call-only path)
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   chunks.push({
     model,
@@ -505,7 +467,6 @@ function buildOllamaChatContentWithToolCallsResponse(
   content: string,
   toolCalls: ToolCall[],
   model: string,
-  logger: Logger,
   reasoning?: string,
   blocks?: FixtureBlock[],
 ): object {
@@ -528,23 +489,7 @@ function buildOllamaChatContentWithToolCallsResponse(
       .map((b) => ({ name: b.name, arguments: b.arguments }));
   }
 
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   return {
     model,
@@ -558,6 +503,150 @@ function buildOllamaChatContentWithToolCallsResponse(
     done: true,
     ...DURATION_FIELDS,
   };
+}
+
+/** Prepare fault output and its observations together before sending any bytes. */
+function prepareOllamaMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  stream: boolean,
+  chunkSize: number,
+  effectiveStrict: boolean,
+  logger: HandlerDefaults["logger"],
+) {
+  const response = plan.response;
+  const combined = isCombinedFixtureResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  // The planner skips a custom-call fixture on this wire, so this narrowing
+  // never throws; the normal path's guard rejects it instead.
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  const model = request.model;
+
+  if (plan.summary.fault === "tool-args-invalid-json") {
+    const target = calls[plan.target?.index ?? 0];
+    if (!target || toolArgsForWire(target).kind !== "verbatim") {
+      throw new Error("Ollama invalid-JSON fault requires an invalid prepared target");
+    }
+    const diagnostic = new InvalidToolArgumentsError(target).parseDiagnostic;
+    const error = `error parsing tool call: raw='${target.arguments}', err=${diagnostic}`;
+    let priorContent = content;
+    if (outcome) {
+      priorContent = "";
+      let index = 0;
+      for (const block of outcome.ordered) {
+        if (block.type === "text") priorContent += block.text;
+        else if (index++ === plan.target?.index) break;
+      }
+    }
+    // A configured parser failure is a modeled error line, not an ordinary
+    // malformed fixture. Suppress all tool objects and any success terminal.
+    const chunks = stream
+      ? [...buildOllamaChatTextChunks(priorContent, model, chunkSize).slice(0, -1), { error }]
+      : [{ error }];
+    return {
+      build: () => chunks,
+      reasoning: undefined,
+      status: stream ? 200 : 500,
+      summary: { ...plan.summary, servedToolCalls: [] },
+    };
+  }
+
+  // Object wires record the canonical values that their builders emit, with
+  // no fabricated tool IDs. The stored fixture and original plan stay intact.
+  const servedToolCalls = calls.map((call) => {
+    const parsed = toolArgsForWire(call);
+    if (parsed.kind === "verbatim") throw new InvalidToolArgumentsError(call);
+    return { name: call.name, arguments: parsed.text };
+  });
+  const reasoning =
+    plan.summary.fault === "reasoning-only"
+      ? (plan.reasoning ?? "")
+      : (resolveReasoningForModel(
+          "reasoning" in response ? response.reasoning : undefined,
+          model,
+          effectiveStrict,
+          logger,
+        ) ?? "");
+  const completion =
+    content + reasoning + servedToolCalls.map((call) => call.name + call.arguments).join("");
+  // Built on demand, so a timed non-streaming reply is built after its wait
+  // and its `created_at` is the write time.
+  const build = (): object[] => {
+    let chunks: object[];
+    if (plan.summary.fault === "reasoning-only") {
+      const createdAt = new Date().toISOString();
+      const base = { model, created_at: createdAt };
+      if (stream) {
+        chunks = [];
+        for (let i = 0; i < reasoning.length; i += chunkSize) {
+          chunks.push({
+            ...base,
+            message: {
+              role: "assistant",
+              content: "",
+              thinking: reasoning.slice(i, i + chunkSize),
+            },
+            done: false,
+          });
+        }
+        chunks.push({
+          ...base,
+          message: { role: "assistant", content: "" },
+          done: true,
+          ...DURATION_FIELDS,
+          done_reason: "length",
+        });
+      } else {
+        chunks = [
+          {
+            ...base,
+            message: { role: "assistant", content: "", thinking: reasoning },
+            done: true,
+            ...DURATION_FIELDS,
+            done_reason: "length",
+          },
+        ];
+      }
+    } else if (combined) {
+      chunks = stream
+        ? buildOllamaChatContentWithToolCallsChunks(
+            content,
+            calls,
+            model,
+            chunkSize,
+            reasoning,
+            response.blocks,
+          )
+        : [
+            buildOllamaChatContentWithToolCallsResponse(
+              content,
+              calls,
+              model,
+              reasoning,
+              response.blocks,
+            ),
+          ];
+    } else if (isToolCallResponse(response)) {
+      chunks = stream
+        ? buildOllamaChatToolCallChunks(calls, model, chunkSize, reasoning)
+        : [buildOllamaChatToolCallResponse(calls, model, reasoning)];
+    } else {
+      chunks = stream
+        ? buildOllamaChatTextChunks(content, model, chunkSize, reasoning)
+        : [buildOllamaChatTextResponse(content, model, reasoning)];
+    }
+    const terminal = chunks.length - 1;
+    chunks[terminal] = {
+      ...chunks[terminal],
+      ...renderUsage({ kind: "applied-chat-estimate", messages: request.messages, completion }),
+    };
+    return chunks;
+  };
+  return { build, reasoning, status: 200, summary: { ...plan.summary, servedToolCalls } };
 }
 
 // ─── Response builders: /api/generate ────────────────────────────────────────
@@ -655,17 +744,18 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  if (!ollamaReq.messages || !Array.isArray(ollamaReq.messages)) {
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `ollamaReq.messages` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(ollamaReq)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -676,12 +766,41 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: messages array is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject wrong-typed message/tool fields before the converter dereferences
+  // them. A missing/non-array `messages` keeps the historic message below.
+  let chatShapeError =
+    validateChatMessages(ollamaReq.messages) ?? validateToolsField(ollamaReq.tools);
+  if (!chatShapeError && Array.isArray(ollamaReq.tools)) {
+    const missingFunctionIndex = ollamaReq.tools.findIndex(
+      (tool) => tool.function === null || tool.function === undefined,
+    );
+    if (missingFunctionIndex !== -1) {
+      chatShapeError = `tools[${missingFunctionIndex}].function must be an object`;
+    }
+  }
+  if (chatShapeError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("ollama", "validation", {
+        message: `Invalid request: ${chatShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -700,7 +819,7 @@ export async function handleOllama(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "ollama" },
   );
 
   if (fixture) {
@@ -710,28 +829,29 @@ export async function handleOllama(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -750,25 +870,16 @@ export async function handleOllama(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("ollama", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "ollama",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "ollama", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -777,7 +888,12 @@ export async function handleOllama(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -796,41 +912,156 @@ export async function handleOllama(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "ollama",
+    fixture,
+    response,
+    request: completionReq,
+    stream: ollamaReq.stream !== false,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    const message = `${misbehavior.code}: ${misbehavior.message}`;
+    if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("ollama", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "ollama",
+      stream: ollamaReq.stream !== false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "ollama",
+    });
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   // Ollama defaults to streaming when stream is absent or true
   const streaming = ollamaReq.stream !== false;
 
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareOllamaMisbehavior(
+      misbehavior,
+      completionReq,
+      streaming,
+      chunkSize,
+      resolveRequestDecisions(defaults.strict, req.headers).reasoningSuppression,
+      logger,
+    );
+    // A timed non-streaming reply is built after the wait (inside deliverJson,
+    // still before writeHead), so `created_at` is the write time. Every other
+    // reply is built here, before journaling, as before.
+    const timedBody =
+      !streaming && prepared.status === 200 && nonStreamingTimingEnabled(fixture, "other");
+    const chunks = timedBody ? undefined : prepared.build();
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: prepared.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry: journalEntry, summary: prepared.summary, defaults, testId });
+    if (!streaming && prepared.status !== 200) {
+      // A modeled error reply (plan n1): written as before, never delayed.
+      res.writeHead(prepared.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify((chunks ?? prepared.build())[0]));
+    } else if (!streaming) {
+      await deliverJson(res, journalEntry, fixture, () => (chunks ?? prepared.build())[0], {
+        ...jsonOpts(
+          misbehaviorPayloadLength(
+            misbehavior,
+            misbehavior.reasoning === undefined ? prepared.reasoning : undefined,
+          ),
+          !!misbehavior.duplicateId,
+        ),
+        status: prepared.status,
+      });
+    } else {
+      const frames = chunks ?? prepared.build();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), frames, streamTiming);
+    }
+    return;
+  }
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Ollama API -- ignoring");
     }
@@ -841,8 +1072,18 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -850,42 +1091,30 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatContentWithToolCallsResponse(
-        response.content ?? "",
-        response.toolCalls ?? [],
-        completionReq.model,
-        logger,
-        effReasoning,
-        response.blocks,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () =>
+          buildOllamaChatContentWithToolCallsResponse(
+            response.content ?? "",
+            functionToolCalls,
+            completionReq.model,
+            effReasoning,
+            response.blocks,
+          ),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatContentWithToolCallsChunks(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         chunkSize,
-        logger,
         effReasoning,
         response.blocks,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
@@ -902,8 +1131,17 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -911,9 +1149,13 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatTextResponse(response.content, completionReq.model, effReasoning);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaChatTextResponse(response.content, completionReq.model, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
+      );
     } else {
       const chunks = buildOllamaChatTextChunks(
         response.content,
@@ -921,22 +1163,7 @@ export async function handleOllama(
         chunkSize,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
@@ -953,8 +1180,18 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -962,59 +1199,41 @@ export async function handleOllama(
       logger,
     );
     if (!streaming) {
-      const body = buildOllamaChatToolCallResponse(
-        response.toolCalls,
-        completionReq.model,
-        logger,
-        effReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaChatToolCallResponse(functionToolCalls, completionReq.model, effReasoning),
+        jsonOpts(servedPayloadLength(response, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatToolCallChunks(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         chunkSize,
-        logger,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("ollama", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1048,12 +1267,32 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `generateReq.prompt` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(generateReq)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError("ollama", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1069,12 +1308,10 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: prompt field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Invalid request: prompt field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1093,7 +1330,7 @@ export async function handleOllamaGenerate(
     // Record mode proxies on a miss to capture a fresh turn (see record gate
     // below), so keep turnIndex strict to prevent an earlier-turn fixture from
     // shadowing a longer request and skipping the new turn's recording.
-    recordMatchOptions(!!defaults.record, defaults.logger),
+    { ...recordMatchOptions(!!defaults.record, defaults.logger), wire: "ollama-generate" },
   );
 
   if (fixture) {
@@ -1103,28 +1340,29 @@ export async function handleOllamaGenerate(
     defaults.logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (!fixture) {
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
     if (effectiveStrict) {
       const strictStatus = 503;
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -1145,25 +1383,16 @@ export async function handleOllamaGenerate(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("ollama", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
-        req,
-        res,
-        completionReq,
-        "ollama",
-        urlPath,
-        fixtures,
-        defaults,
-        raw,
+      const { outcome, clientHungUp } = await withHangUpDetection(req, res, () =>
+        proxyAndRecord(req, res, completionReq, "ollama", urlPath, fixtures, defaults, raw),
       );
       if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
@@ -1172,7 +1401,12 @@ export async function handleOllamaGenerate(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+          response: {
+            status: res.statusCode ?? 200,
+            fixture: null,
+            source: "proxy",
+            ...proxyInterruption(res, clientHungUp),
+          },
         });
         return;
       }
@@ -1191,19 +1425,84 @@ export async function handleOllamaGenerate(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "ollama",
+    faultRenderingAvailable: false,
+    fixture,
+    response,
+    request: completionReq,
+    stream: generateReq.stream !== false,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    const message = `${misbehavior.code}: ${misbehavior.message}`;
+    if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      renderError("ollama", "misbehavior", {
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }).body,
+    );
+    return;
+  }
+
+  // Raw passthrough (#549): the authored events or JSON, framed for this wire.
+  if (isRawResponse(response)) {
+    await serveRawResponse({
+      wire: "ollama-generate",
+      stream: generateReq.stream !== false,
+      req,
+      res,
+      fixture,
+      response,
+      body: completionReq,
+      journal,
+      defaults,
+      testId,
+      misbehaviorSummary: misbehavior.summary,
+      errorWire: "ollama",
+    });
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const streamTiming = {
+    latency,
+    streamingProfile: fixture.streamingProfile,
+    recordedTimings: fixture.recordedTimings,
+    replaySpeed,
+  };
+  const jsonOpts = (payloadLength: number, duplicateId = false) => ({
+    surface: "other" as const,
+    payloadLength,
+    chunkSize,
+    recordedTimings: fixture.recordedTimings,
+    duplicateId,
+    replaySpeed,
+  });
 
   // Ollama defaults to streaming when stream is absent or true
   const streaming = generateReq.stream !== false;
@@ -1211,14 +1510,20 @@ export async function handleOllamaGenerate(
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response), {
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
+    writeErrorResponse(res, status, renderError("openai", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1233,8 +1538,17 @@ export async function handleOllamaGenerate(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     // Gate reasoning emission on the requested model's capability (aimock#254).
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effectiveStrict = resolveRequestDecisions(
+      defaults.strict,
+      req.headers,
+    ).reasoningSuppression;
     const effReasoning = resolveReasoningForModel(
       response.reasoning,
       completionReq.model,
@@ -1242,13 +1556,15 @@ export async function handleOllamaGenerate(
       defaults.logger,
     );
     if (!streaming) {
-      const body = buildOllamaGenerateTextResponse(
-        response.content,
-        completionReq.model,
-        effReasoning,
+      await deliverJson(
+        res,
+        journalEntry,
+        fixture,
+        () => buildOllamaGenerateTextResponse(response.content, completionReq.model, effReasoning),
+        // /api/generate serves only the text content and never reads blocks,
+        // so the wait is sized from that text, not from the fixture's blocks.
+        jsonOpts(servedPayloadLength({ content: response.content }, effReasoning)),
       );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaGenerateTextChunks(
         response.content,
@@ -1256,65 +1572,53 @@ export async function handleOllamaGenerate(
         chunkSize,
         effReasoning,
       );
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeNDJSONStream(res, chunks, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        jitterSource: chaosJitterFor(req),
-        recordedTimings: fixture.recordedTimings,
-        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-      }
-      interruption?.cleanup();
+      await deliverStream(res, journalEntry, fixture, ndjsonCodec(), chunks, streamTiming);
     }
     return;
   }
 
   // Tool call fixtures matched but not supported on /api/generate
-  if (isToolCallResponse(response) || isContentWithToolCallsResponse(response)) {
-    journal.add({
+  if (isToolCallResponse(response) || isCombinedFixtureResponse(response)) {
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 400, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Tool call fixtures are not supported on /api/generate — use /api/chat instead",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("ollama", "validation", {
+        message: "Tool call fixtures are not supported on /api/generate — use /api/chat instead",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("ollama", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1324,6 +1628,7 @@ interface OllamaEmbeddingsRequest {
   model: string;
   prompt?: string;
   input?: string | string[];
+  dimensions?: number;
 }
 
 // ─── Request handler: /api/embeddings ───────────────────────────────────────
@@ -1341,6 +1646,9 @@ export async function handleOllamaEmbeddings(
   setCorsHeaders(res);
 
   const urlPath = req.url ?? "/api/embeddings";
+  const currentEndpoint = urlPath.split("?")[0] === "/api/embed";
+
+  const errorWire = currentEndpoint ? "ollama-embed" : "ollama";
 
   let embReq: OllamaEmbeddingsRequest;
   try {
@@ -1357,23 +1665,18 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: `Malformed JSON body: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
 
-  // Ollama accepts either "prompt" or "input" for the text to embed
-  const inputText =
-    embReq.prompt ??
-    (typeof embReq.input === "string" ? embReq.input : undefined) ??
-    (Array.isArray(embReq.input) ? embReq.input.join(" ") : undefined);
-
-  if (!embReq.model) {
+  // Reject non-object bodies (e.g. `null`) before touching fields —
+  // otherwise `embReq.prompt` throws a TypeError that surfaces as a 500
+  // instead of a 400.
+  if (!isJsonObject(embReq)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1384,12 +1687,71 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: model field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Reject wrong-typed prompt/input before `.slice()` / `.join()` below read
+  // them — a number passes the presence checks and then throws a TypeError.
+  // `null` means "absent" on both fields, matching the `??` fall-through below.
+  // Keep the accepted token-array extension on both endpoints.
+  const promptShapeError =
+    embReq.prompt !== undefined && embReq.prompt !== null && typeof embReq.prompt !== "string"
+      ? "prompt field must be a string"
+      : embReq.input !== undefined &&
+          embReq.input !== null &&
+          normalizeEmbeddingInput(embReq.input) === null
+        ? "input field must be a string or an array of strings"
+        : null;
+  if (promptShapeError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError(errorWire, "validation", {
+        message: `Invalid request: ${promptShapeError}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
+  // Prefer input on the current endpoint, with the existing prompt fallback.
+  // The legacy endpoint keeps prompt precedence.
+  const inputs = normalizeEmbeddingInput(
+    currentEndpoint ? (embReq.input ?? embReq.prompt) : (embReq.prompt ?? embReq.input),
+  );
+  const inputText = currentEndpoint
+    ? inputs?.join(" ")
+    : (embReq.prompt ??
+      (typeof embReq.input === "string" ? embReq.input : undefined) ??
+      (Array.isArray(embReq.input) ? embReq.input.join(" ") : undefined));
+
+  if (!embReq.model || (currentEndpoint && typeof embReq.model !== "string")) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError(errorWire, "validation", {
+        message: "Invalid request: model field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1405,12 +1767,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Invalid request: prompt or input field is required",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "validation", {
+        message: "Invalid request: prompt or input field is required",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1423,6 +1783,13 @@ export async function handleOllamaEmbeddings(
     _endpointType: "embedding",
     _context: getContext(req),
   };
+  setEmbeddingRequest(syntheticReq, {
+    operation: currentEndpoint ? "/api/embed" : "/api/embeddings",
+    input: currentEndpoint
+      ? (embReq.input ?? embReq.prompt ?? "")
+      : (embReq.prompt ?? embReq.input ?? ""),
+    ...(embReq.dimensions !== undefined && { dimensions: embReq.dimensions }),
+  });
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
@@ -1443,25 +1810,26 @@ export async function handleOllamaEmbeddings(
     logger.debug(`No fixture matched for request`);
   }
 
-  const chaos = prepareChaos(
-    res,
-    fixture,
-    defaults.chaos,
-    req.headers,
-    journal,
-    {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: syntheticReq,
-    },
-    fixture ? "fixture" : "proxy",
-    defaults.registry,
-    defaults.logger,
-    defaults.chaosRandom,
-    chaosIdentity(req, raw),
-  );
-  if (chaos.handled) return;
+  if (
+    await applyChaosAsync(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      req.url,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   if (fixture) {
     const response = await resolveResponse(fixture, syntheticReq);
@@ -1476,9 +1844,29 @@ export async function handleOllamaEmbeddings(
         body: syntheticReq,
         response: { status, fixture },
       });
-      writeErrorResponse(res, status, serializeErrorResponse(response), {
-        retryAfter: response.retryAfter,
+      writeErrorResponse(
+        res,
+        status,
+        renderError(currentEndpoint ? "ollama-embed" : "openai", "fixture", response.error).body,
+        {
+          retryAfter: response.retryAfter,
+        },
+      );
+      return;
+    }
+
+    // Recorded current-endpoint batches retain every vector and provider metadata.
+    if (currentEndpoint && isJSONResponse(response)) {
+      const status = response.status ?? 200;
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status, fixture },
       });
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(response.json));
       return;
     }
 
@@ -1491,10 +1879,9 @@ export async function handleOllamaEmbeddings(
         body: syntheticReq,
         response: { status: 200, fixture },
       });
-      const body = {
-        model: embReq.model,
-        embedding: [...response.embedding],
-      };
+      const body = currentEndpoint
+        ? { model: embReq.model, embeddings: (inputs ?? []).map(() => [...response.embedding]) }
+        : { model: embReq.model, embedding: [...response.embedding] };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
       return;
@@ -1511,19 +1898,17 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       500,
-      JSON.stringify({
-        error: {
-          message:
-            "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
-        },
-      }),
+      renderError(errorWire, "unknown-response", {
+        message:
+          "Fixture response did not match any known embedding type (must have embedding or error)",
+        type: "server_error",
+      }).body,
     );
     return;
   }
 
   // No fixture match — check strict mode first, then try proxy
-  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  const effectiveStrict = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;
   if (effectiveStrict) {
     const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
@@ -1541,12 +1926,10 @@ export async function handleOllamaEmbeddings(
     writeErrorResponse(
       res,
       503,
-      JSON.stringify({
-        error: {
-          message: strictMessage,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError(errorWire, "strict-miss", {
+        message: strictMessage,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1575,11 +1958,30 @@ export async function handleOllamaEmbeddings(
     }
   }
 
+  const dimensions = currentEndpoint ? validateEmbeddingDimensions(embReq.dimensions) : 1536;
+  if (dimensions === null) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      renderError(errorWire, "validation", {
+        message: `Invalid request: dimensions must be an integer between 1 and ${MAX_EMBEDDING_DIMENSIONS}`,
+        type: "invalid_request_error",
+      }).body,
+    );
+    return;
+  }
+
   // No fixture match — generate deterministic embedding from input text
   logger.warn(
     `No embedding fixture matched for "${inputText.slice(0, 80)}" — returning deterministic fallback`,
   );
-  const embedding = generateDeterministicEmbedding(inputText);
 
   journal.add({
     method: req.method ?? "POST",
@@ -1589,10 +1991,14 @@ export async function handleOllamaEmbeddings(
     response: { status: 200, fixture: null },
   });
 
-  const body = {
-    model: embReq.model,
-    embedding,
-  };
+  const body = currentEndpoint
+    ? {
+        model: embReq.model,
+        embeddings: (inputs ?? []).map((input) =>
+          generateDeterministicEmbedding(input, dimensions),
+        ),
+      }
+    : { model: embReq.model, embedding: generateDeterministicEmbedding(inputText) };
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }

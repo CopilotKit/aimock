@@ -59,7 +59,7 @@ aimock.add_fixture(match={...}, response={"blocks": [
     {"type": "toolCall", "name": "get_weather", "arguments": {"city": "SF"}},
     {"type": "text", "text": "Here is the weather."},
 ]})
-aimock.load_fixtures("path/to/fixtures.json")
+aimock.load_fixtures("path/to/fixtures.json")  # also loads the file's mcpFakes
 
 # Inspect
 aimock.get_journal()       # list of all recorded requests
@@ -76,11 +76,26 @@ aimock.reset_journal()     # clear only the request journal (fixtures preserved)
 aimock.reset_fixtures()    # alias for reset() — a full reset, despite the name
 ```
 
+## MCP fakes
+
+`load_fixtures` posts a file's `mcpFakes` key (see [MCP scenario fakes](https://aimock.copilotkit.dev/mcp-mock#scenario-fakes)) next to its `fixtures`. A file may hold only `mcpFakes`. `reset()`, `reset_fixtures()` and `clear_fixtures()` also unload the fakes.
+
+When the server rejects a file with HTTP 400, `load_fixtures` raises `requests.HTTPError` with the message `aimock rejected fixtures from <path>: <error>`, followed by one line for each item of `details`. When the file has `mcpFakes` and the aimock server is a release without MCP fakes, `load_fixtures` raises `RuntimeError` (`aimock server too old for mcpFakes: ...`) and adds nothing from the file.
+
+### Per-test fake reports
+
+These need aimock 1.45.0 or later.
+
+- `aimock.fakes_for(test_id=None, context=None, mount="/mcp")` returns a `FakesTarget` with `test_id`, `mcp_url` (the mount URL with `?testId=`, and `&context=` when given) and `headers` (`X-Test-Id`, and `X-AIMock-Context` when given). Give the URL or the headers to your MCP client.
+- `aimock.fakes_report(test_id=None, context=None)` returns the [fakes report](https://aimock.copilotkit.dev/mcp-mock#fakes-report) from `GET /__aimock/mcp/fakes/report`: `ok`, `served`, `unconsumed`, `failures`, `unfaked`, `sharedUnconsumed` and `evicted`.
+- `aimock.assert_fakes_report(report=None, *, test_id=None, context=None, fail_on_unfaked=False)` raises `AssertionError` when the report is not ok: a fake error (such as `MCP_FAKE_MISMATCH`), an unused entry, or evicted state. With `fail_on_unfaked=True`, a call that no fake answered also fails. With no `report`, it reads the report first. The message has the same lines as the JavaScript `assertFakesReport`.
+- With the function-scoped `aimock` fixture, a `None` test id is the current test's `request.node.nodeid`, for example `tests/test_weather.py::test_seattle`. Scope your `mcpFakes` block to that id. The default is used only by these three methods; LLM and control requests are not tagged. With `aimock_session` there is no current test, so these methods raise `ValueError` unless you pass `test_id`.
+
 ## CLI Options
 
 ```
 --aimock-node PATH       Path to node binary
---aimock-version VER     aimock npm version (default: 1.41.0)
+--aimock-version VER     aimock npm version (default: 1.48.1)
 --aimock-api-key KEY     Inbound API key for the aimock child process
 ```
 
@@ -105,22 +120,46 @@ Pass `pytest --aimock-api-key test-key` to protect the aimock child. The helper 
 
 ### Running tests locally
 
-Build the npm package first, then point `AIMOCK_CLI_PATH` at the local build:
+Run these commands from the repository root with Python 3.10 or later and
+Node.js 20.15.0 or later. The example uses Python 3.12.
+
+Build the local CLI and install the Python test dependencies in a virtual environment:
 
 ```bash
-pnpm install && pnpm run build
-AIMOCK_CLI_PATH=../../dist/cli.js pytest tests/ -v
+pnpm install --frozen-lockfile
+pnpm run build
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r .github/requirements/hatchling.txt
+python -m pip install --no-build-isolation -e "./packages/aimock-pytest[test]"
+export AIMOCK_CLI_PATH="$PWD/dist/cli.js"
+python -m pytest packages/aimock-pytest/tests/ -v
 ```
 
-If you install the test dependencies and run from the `packages/aimock-pytest/`
-directory, `conftest.py` will auto-detect the local build so you can omit the
-env var:
+The `test` extra installs pytest and the OpenAI and Anthropic Python SDKs.
+`AIMOCK_CLI_PATH` selects the local build and bypasses the npm package download.
+Keep the complete `dist/` directory from that build, because the CLI imports other
+build files. Rebuild after changes to the TypeScript source.
+
+The test `conftest.py` also detects the repository's `dist/cli.js` when
+`AIMOCK_CLI_PATH` is unset. An explicit absolute path selects the intended candidate
+even when another build exists. To use a different checkout, set this variable to
+that checkout's built `dist/cli.js` before running pytest.
+
+To run only the model-misbehavior SDK and control tests:
 
 ```bash
-pip install ./packages/aimock-pytest[test]
-cd packages/aimock-pytest
-pytest tests/ -v
+python -m pytest \
+  packages/aimock-pytest/tests/test_misbehavior_openai.py \
+  packages/aimock-pytest/tests/test_misbehavior_anthropic.py \
+  packages/aimock-pytest/tests/test_misbehavior_controls.py -v
 ```
+
+These tests send real SDK requests to the local aimock server. They use local test
+API keys and disable SDK retries. No live provider credentials are required.
+The tests check SDK parsing, streamed events, and control behavior against the
+selected CLI build. A test failure can expose a provider implementation gap in
+that candidate.
 
 ### How CI works
 

@@ -151,6 +151,46 @@
           </p>
         </div>
 
+        <h2 id="mcp-tool-sequences">MCP tool sequences</h2>
+        <p>
+          MCP tool answers can be sequenced too. In a fixture file&rsquo;s
+          <code>mcpFakes</code> block, each tool has an ordered <code>calls</code> list. Entries
+          with the same arguments are used in the order you declare them, once each. In this file,
+          the first <code>create_ticket</code> call gets a tool error the model can see and retry,
+          and the second call gets <code>TICKET-42</code>:
+        </p>
+        <div class="code-block" data-sample="tickets/retry.json">
+          <div class="code-block-header">tickets/retry.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"open a refund ticket"</span>, <span class="key">"hasToolResult"</span>: <span class="kw">false</span> },
+      <span class="key">"response"</span>: {
+        <span class="key">"toolCalls"</span>: [{ <span class="key">"name"</span>: <span class="str">"create_ticket"</span>, <span class="key">"arguments"</span>: { <span class="key">"title"</span>: <span class="str">"Refund"</span> } }]
+      }
+    }
+  ],
+  <span class="key">"mcpFakes"</span>: {
+    <span class="key">"scope"</span>: { <span class="key">"testId"</span>: <span class="str">"tickets › retry on timeout"</span> },
+    <span class="key">"tools"</span>: [
+      {
+        <span class="key">"name"</span>: <span class="str">"create_ticket"</span>,
+        <span class="key">"calls"</span>: [
+          { <span class="key">"id"</span>: <span class="str">"first-try"</span>, <span class="key">"args"</span>: { <span class="key">"title"</span>: <span class="str">"Refund"</span> }, <span class="key">"error"</span>: <span class="str">"upstream timeout"</span> },
+          { <span class="key">"id"</span>: <span class="str">"retry"</span>, <span class="key">"args"</span>: { <span class="key">"title"</span>: <span class="str">"Refund"</span> }, <span class="key">"result"</span>: <span class="str">"TICKET-42"</span> }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          A third call with the same arguments fails with <code>MCP_FAKE_EXHAUSTED</code>. The
+          position is kept per test id (here <code>tickets › retry on timeout</code>) and rewinds on
+          <code>mock.resetMatchCounts()</code>. See
+          <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+        </p>
+
         <div class="info-box">
           <p>
             <strong>Need stateless matching?</strong> <code>sequenceIndex</code> uses a server-side

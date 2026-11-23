@@ -16,6 +16,10 @@ export interface WSCloseInfo {
 export interface WSTestClient {
   send(data: string): void;
   close(): void;
+  sendRawFrame(frame: Buffer): void;
+  pauseReads(): void;
+  resumeReads(): void;
+  destroy(): void;
   waitForMessages(count: number, timeoutMs?: number): Promise<string[]>;
   /**
    * Returns a snapshot of every text message received so far. Unlike
@@ -83,6 +87,18 @@ export function connectWebSocket(
           buffer = buffer.subarray(headerEnd + 4);
 
           resolve({
+            sendRawFrame: (frame) => {
+              socket.write(frame);
+            },
+            pauseReads: () => {
+              socket.pause();
+            },
+            resumeReads: () => {
+              socket.resume();
+            },
+            destroy: () => {
+              socket.destroy();
+            },
             send(data: string) {
               // Send a masked text frame
               const payload = Buffer.from(data, "utf-8");
@@ -96,11 +112,16 @@ export function connectWebSocket(
                 header = Buffer.alloc(2);
                 header[0] = 0x81; // FIN + TEXT
                 header[1] = 0x80 | payload.length;
-              } else {
+              } else if (payload.length < 65536) {
                 header = Buffer.alloc(4);
                 header[0] = 0x81;
                 header[1] = 0x80 | 126;
                 header.writeUInt16BE(payload.length, 2);
+              } else {
+                header = Buffer.alloc(10);
+                header[0] = 0x81;
+                header[1] = 0xff;
+                header.writeBigUInt64BE(BigInt(payload.length), 2);
               }
               socket.write(Buffer.concat([header, maskKey, masked]));
             },
@@ -208,6 +229,10 @@ export function connectWebSocket(
             if (buffer.length < 4) return;
             payloadLength = buffer.readUInt16BE(2);
             offset = 4;
+          } else if (payloadLength === 127) {
+            if (buffer.length < 10) return;
+            payloadLength = Number(buffer.readBigUInt64BE(2));
+            offset = 10;
           }
 
           // Server frames are NOT masked

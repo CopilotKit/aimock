@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture, SSEChunk, ChatCompletionRequest, RecordedTimings } from "../types.js";
-import * as sseWriter from "../sse-writer.js";
+import * as deliver from "../response/deliver.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +61,7 @@ function chatRequest(
 let instance: ServerInstance | null = null;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (instance) {
     await new Promise<void>((resolve) => instance!.server.close(() => resolve()));
     instance = null;
@@ -125,14 +126,17 @@ describe("timing-aware replay through handleCompletions", () => {
       chunkSize: 5,
     });
 
-    const writeSSEStream = vi.spyOn(sseWriter, "writeSSEStream");
+    const deliverStream = vi.spyOn(deliver, "deliverStream");
     const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("speed-test"));
 
     expect(res.status).toBe(200);
     const chunks = parseSSEResponse(res.body);
     expect(chunks.length).toBeGreaterThan(1);
 
-    expect(writeSSEStream).toHaveBeenCalledWith(
+    expect(deliverStream).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
       expect.anything(),
       expect.anything(),
       expect.objectContaining({ recordedTimings: timings, replaySpeed: 2 }),

@@ -1,0 +1,111 @@
+{
+  "mcpFakes": {
+    "scope": {
+      "testId": "mcp › bad fa-list"
+    },
+    "mount": "/mcp",
+    "list": [
+      {
+        "name": "echo",
+        "description": "Echoes back the input",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": ["message"]
+        }
+      },
+      {
+        "name": "trigger-long-running-operation",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "type": "number"
+            },
+            "steps": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      {
+        "name": "echo"
+      }
+    ],
+    "recorded": {
+      "upstream": "http://127.0.0.1:3901",
+      "protocolVersion": "2025-11-25",
+      "serverInfo": {
+        "name": "mcp-servers/everything",
+        "version": "2.0.0"
+      },
+      "aimockVersion": "1.44.0",
+      "at": "2026-10-08T00:00:00.000Z"
+    },
+    "tools": [
+      {
+        "name": "echo",
+        "calls": [
+          {
+            "args": {
+              "message": "hi"
+            },
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Echo: hi"
+                }
+              ]
+            },
+            "durationMs": 12
+          }
+        ]
+      },
+      {
+        "name": "trigger-long-running-operation",
+        "calls": [
+          {
+            "args": {
+              "duration": 2,
+              "steps": 2
+            },
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Long running operation completed. Duration: 2 seconds, Steps: 2."
+                }
+              ]
+            },
+            "notifications": [
+              {
+                "atMs": 1000,
+                "method": "notifications/progress",
+                "params": {
+                  "progressToken": "rec-1",
+                  "progress": 1,
+                  "total": 2
+                }
+              },
+              {
+                "atMs": 2000,
+                "method": "notifications/progress",
+                "params": {
+                  "progressToken": "rec-1",
+                  "progress": 2,
+                  "total": 2
+                }
+              }
+            ],
+            "durationMs": 2010
+          }
+        ]
+      }
+    ]
+  }
+}

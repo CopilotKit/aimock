@@ -1,0 +1,382 @@
+{
+  "text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Hello g\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"olden w\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"orld, t\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"his is \"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"a chara\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"cteriza\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"tion ru\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"n.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "tool": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"toolCall\":{\"functionCalls\":[{\"name\":\"get_weather\",\"args\":{\"city\":\"NYC\"},\"id\":\"call_g1\"}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "combined": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Checkin\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"g now.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"toolCall\":{\"functionCalls\":[{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"},\"id\":\"call_g2\"}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "blocks": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Lead te\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"xt.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"toolCall\":{\"functionCalls\":[{\"name\":\"get_time\",\"args\":{},\"id\":\"call_g3\"}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Tail te\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"xt.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "misbehavior": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true,\"turnCompleteReason\":\"MALFORMED_FUNCTION_CALL\"}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "truncate2": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Hello g\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"olden w\"}]}}}"
+      },
+      {
+        "op": "destroy"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": true,
+      "interruptReason": "truncateAfterChunks"
+    }
+  },
+  "delay-text": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Hello g\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"olden w\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"orld, t\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 17
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"his is \"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 19
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"a chara\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 23
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"cteriza\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 29
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"tion ru\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 31
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"n.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-combined": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "timer",
+        "ms": 7
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Checkin\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 11
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"g now.\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 13
+      },
+      {
+        "op": "send",
+        "data": "{\"toolCall\":{\"functionCalls\":[{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"},\"id\":\"call_g2\"}]}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  },
+  "delay-replay2": {
+    "log": [
+      {
+        "op": "send",
+        "data": "{\"setupComplete\":{}}"
+      },
+      {
+        "op": "timer",
+        "ms": 3.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"Hello g\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 5.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"olden w\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 6.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"orld, t\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 8.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"his is \"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 9.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"a chara\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 11.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"cteriza\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 14.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"tion ru\"}]}}}"
+      },
+      {
+        "op": "timer",
+        "ms": 15.5
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"n.\"}]}}}"
+      },
+      {
+        "op": "send",
+        "data": "{\"serverContent\":{\"turnComplete\":true}}"
+      }
+    ],
+    "journal": {
+      "status": 200,
+      "interrupted": null,
+      "interruptReason": null
+    }
+  }
+}

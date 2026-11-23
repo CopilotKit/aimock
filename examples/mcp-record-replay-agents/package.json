@@ -1,0 +1,20 @@
+{
+  "name": "aimock-mcp-record-replay-agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@copilotkit/aimock": "link:../.."
+  },
+  "devDependencies": {
+    "@mastra/core": "1.75.0",
+    "@mastra/mcp": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/server-everything": "2026.8.31",
+    "vitest": "3.2.4",
+    "zod": "4.6.5"
+  }
+}

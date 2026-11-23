@@ -1,10 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { execFile, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAimockCli, type AimockCliDeps } from "../aimock-cli.js";
-import type { AimockConfig } from "../config-loader.js";
+import type { AimockConfig, AimockRecordConfig } from "../config-loader.js";
+import { connectV1 } from "./mcp-fakes-harness.js";
+import { startUpstream, type UpstreamHandle } from "./mcp-upstream-harness.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/aimock-cli.js");
 const CLI_AVAILABLE = existsSync(CLI_PATH);
@@ -241,6 +252,166 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: server lifecycle", () => {
   });
 });
 
+describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to warn", () => {
+  let tmpDir: string;
+  // Fixtures in a subdirectory, so the loader does not read aimock.json as a fixture file.
+  let fx: string;
+  let up: UpstreamHandle;
+
+  beforeAll(async () => {
+    up = await startUpstream();
+  }, 60_000);
+
+  afterAll(async () => {
+    await up?.stop();
+  });
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fx = join(tmpDir, "fixtures");
+    mkdirSync(fx);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /**
+   * The `llm` block as written to the config file. `llm.record` here is MCP-only, as in the
+   * documented sample: `AimockRecordConfig` requires `providers`, but the loader accepts a
+   * record block without it (no LLM recording). `providers: {}` is not the same at runtime:
+   * any LLM `record` object passes the server's `defaults.record` gates (record-mode
+   * matching, the fixture-miss record branch).
+   */
+  type McpRecordOnlyLlm = Omit<NonNullable<AimockConfig["llm"]>, "record"> & {
+    record?: Pick<AimockRecordConfig, "mcp">;
+  };
+
+  /** Start `aimock --config`, send MCP calls with no testId, and return all output. */
+  async function outputAfterUnscopedCalls(llm: McpRecordOnlyLlm): Promise<string> {
+    const child = spawnCli(["--config", writeConfig(tmpDir, { llm })]);
+    try {
+      await child.waitForOutput(/listening on/i, 10_000);
+      const url = child.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+      expect(url).toBeTruthy();
+      const client = await connectV1(`${url}/mcp`);
+      await client.listTools();
+      await client.callTool({ name: "echo", arguments: { message: "hi" } });
+      await client.close();
+      if (llm?.enableMcpRecording && llm.record?.mcp && llm.logLevel === undefined) {
+        await child.waitForOutput(/MCP-RECORD:/, 5000);
+      } else {
+        // Give a warning the same time to appear before asserting it did not.
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return child.stdout() + child.stderr();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.cp.exitCode !== null) return resolve();
+        child.cp.on("close", () => resolve());
+      });
+    }
+  }
+
+  it("prints the MCP-RECORD warning at the default log level", async () => {
+    const out = await outputAfterUnscopedCalls({
+      fixtures: fx,
+      enableMcpRecording: true,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).toContain("MCP-RECORD: forwarded, not recorded");
+  });
+
+  it("an explicit logLevel silent wins: only the listening line", async () => {
+    const out = await outputAfterUnscopedCalls({
+      fixtures: fx,
+      enableMcpRecording: true,
+      logLevel: "silent",
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).not.toContain("MCP-RECORD");
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  /** Start `aimock --config`, call a deprecated route that warns, and return all output. */
+  async function outputAfterDeprecatedRoute(llm: McpRecordOnlyLlm): Promise<string> {
+    const child = spawnCli(["--config", writeConfig(tmpDir, { llm })]);
+    try {
+      await child.waitForOutput(/listening on/i, 10_000);
+      const url = child.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+      expect(url).toBeTruthy();
+      // This deprecated route logs a warning, which "warn" would print.
+      const res = await fetch(`${url}/__aimock/reset/fixtures`, { method: "POST" });
+      expect(res.ok).toBe(true);
+      await new Promise((r) => setTimeout(r, 500));
+      return child.stdout() + child.stderr();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.cp.exitCode !== null) return resolve();
+        child.cp.on("close", () => resolve());
+      });
+    }
+  }
+
+  it("a config without llm.record.mcp still starts silent", async () => {
+    const out = await outputAfterDeprecatedRoute({ fixtures: fx });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  it("R2 (C3): an empty llm.record.mcp {} records nothing and still starts silent", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: true,
+      record: { mcp: {} },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  it("positive control: llm.record.mcp with a mount prints the deprecated-route warning", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: true,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).toContain("deprecated");
+  });
+
+  // 1.44.0 ignored llm.record.mcp: without the opt-in, only the one warning is new.
+  const IGNORED =
+    "[aimock] Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.";
+
+  it("without llm.enableMcpRecording, a mount is ignored: one warning, logLevel unchanged", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("without llm.enableMcpRecording, an invalid llm.record.mcp still starts", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: "not an object" as unknown as AimockRecordConfig["mcp"] },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("a non-boolean llm.enableMcpRecording is ignored with a warning", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: "true" as unknown as boolean,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([
+      expect.stringMatching(/listening on/),
+      '[aimock] Ignoring llm.enableMcpRecording because it must be true or false, got "true".',
+      IGNORED,
+    ]);
+  });
+});
+
 describe.skipIf(!CLI_AVAILABLE)("aimock CLI: npx/bunx symlink invocation (#160)", () => {
   let tmpDir: string;
   let symlinkPath: string;
@@ -455,7 +626,11 @@ describe("runAimockCli: successful server start", () => {
     expect(startFromConfigFn).toHaveBeenCalledWith({}, { port: 8080, host: "0.0.0.0" });
   });
 
-  it("passes short flags correctly (-c, -p, -h)", async () => {
+  // `-h` is NOT in this list any more: on the `aimock` bin it means `--help`,
+  // matching `aimock convert -h` and `aimock validate -h`. The host override
+  // is long-form only, and is covered by the short-flag tests at the end of
+  // this file.
+  it("passes short flags correctly (-c, -p) with a long --host", async () => {
     const startFromConfigFn = vi.fn().mockResolvedValue({
       llmock: { stop: vi.fn().mockResolvedValue(undefined) },
       url: "http://localhost:5555",
@@ -464,7 +639,7 @@ describe("runAimockCli: successful server start", () => {
     const logs: string[] = [];
 
     runAimockCli({
-      argv: ["-c", "/c.json", "-p", "5555", "-h", "localhost"],
+      argv: ["-c", "/c.json", "-p", "5555", "--host", "localhost"],
       log: (msg) => logs.push(msg),
       logError: () => {},
       exit: () => {},
@@ -734,5 +909,245 @@ describe("runAimockCli: port parsing edge case", () => {
     });
 
     expect(startFromConfigFn).toHaveBeenCalledWith({}, { port: 4242, host: undefined });
+  });
+});
+
+describe("aimock top-level help — validate synopsis", () => {
+  /** Capture the HELP text the top-level `--help` prints. */
+  function topLevelHelp(): string {
+    const lines: string[] = [];
+    runAimockCli({
+      argv: ["--help"],
+      log: (m) => lines.push(m),
+      logError: (m) => lines.push(m),
+      exit: () => {},
+    });
+    return lines.join("\n");
+  }
+
+  it("shows the `--` terminator, so the first help a user hits is not missing the only escape hatch for a path starting with `-`", () => {
+    const synopsis = topLevelHelp()
+      .split("\n")
+      .find((l) => l.trim().startsWith("aimock validate"));
+    expect(synopsis).toBeDefined();
+    expect(synopsis!.trim()).toBe(
+      "aimock validate [--strict] [--json] [--] <path> [more paths ...]",
+    );
+  });
+
+  it("matches the synopsis README documents verbatim", () => {
+    const readme = readFileSync(resolve(__dirname, "../../README.md"), "utf8");
+    const documented = "aimock validate [--strict] [--json] [--] <path> [more paths ...]";
+    // Guard against the README line being reworded out from under this test.
+    expect(readme).toContain("`" + documented + "`");
+    expect(topLevelHelp()).toContain(documented);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI surface consistency on the `aimock` bin.
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect everything one `runAimockCli` call writes, without letting it reach a
+ * server: `loadConfigFn` is never needed on the paths tested here, and any that
+ * does reach it gets a config that starts nothing.
+ */
+function surface(argv: string[]): {
+  logs: string[];
+  errors: string[];
+  code: number | null;
+  started: ReturnType<typeof vi.fn>;
+} {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  let code: number | null = null;
+  const started = vi.fn().mockResolvedValue({
+    llmock: { stop: vi.fn().mockResolvedValue(undefined) },
+    url: "http://127.0.0.1:0",
+  });
+  runAimockCli({
+    argv,
+    log: (m) => logs.push(m),
+    logError: (m) => errors.push(m),
+    exit: (c) => {
+      code = c;
+    },
+    loadConfigFn: vi.fn().mockReturnValue({} as AimockConfig),
+    startFromConfigFn: started,
+    // Any path that does reach a "server" tears it straight back down, so the
+    // SIGINT/SIGTERM listeners it registers do not accumulate across tests.
+    onReady: (ctx) => ctx.shutdown(),
+  });
+  return { logs, errors, code, started };
+}
+
+describe("aimock short-flag rule: -h is --help on every surface", () => {
+  // The rule: within the `aimock` bin a short flag means the same thing at the
+  // top level and in every subcommand. `-h` was bound to `--host` at the top
+  // level while `convert` and `validate` both read it as `--help`, so `aimock
+  // -h` failed with "Option '-h, --host <value>' argument missing" while
+  // `aimock validate -h` printed help. (`llmock`, src/cli.ts, is a separate
+  // bin with its own documented set and keeps `-h` = `--host`.)
+  it("prints the top-level help for -h, exactly as for --help", () => {
+    const short = surface(["-h"]);
+    const long = surface(["--help"]);
+    expect(short.code).toBe(0);
+    expect(short.errors).toEqual([]);
+    expect(short.logs.join("\n")).toContain("Usage: aimock [options]");
+    expect(short.logs).toEqual(long.logs);
+    expect(short.started).not.toHaveBeenCalled();
+  });
+
+  it("reads -h the same way in the top level, convert and validate", () => {
+    const top = surface(["-h"]);
+    const convert = surface(["convert", "-h"]);
+    const validate = surface(["validate", "-h"]);
+    for (const r of [top, convert, validate]) {
+      expect(r.code).toBe(0);
+      expect(r.logs.join("\n")).toContain("Usage: aimock");
+    }
+    // Each prints ITS OWN help, which is the point of agreeing on the flag.
+    expect(convert.logs.join("\n")).toContain("aimock convert");
+    expect(validate.logs.join("\n")).toContain("aimock validate");
+  });
+
+  it("documents --host without a short alias and -h as help", () => {
+    const help = surface(["--help"]).logs.join("\n");
+    expect(help).toContain("      --host <string>");
+    expect(help).toContain("  -h, --help");
+    expect(help).not.toContain("-h, --host");
+  });
+
+  it("no longer takes a host value after -h, instead of binding it silently", () => {
+    // Someone carrying `-h 0.0.0.0` over from the llmock bin gets a usage
+    // error, not a server quietly bound to every interface.
+    const r = surface(["--config", "/c.json", "-h", "0.0.0.0"]);
+    expect(r.code).toBe(1);
+    expect(r.started).not.toHaveBeenCalled();
+  });
+
+  it("still accepts the long --host", () => {
+    const r = surface(["--config", "/c.json", "--host", "0.0.0.0"]);
+    expect(r.code).toBe(null);
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("aimock: an option GIVEN an empty value is a usage error", () => {
+  // Truthiness testing made `--port ""` and `--host ""` indistinguishable from
+  // "not given": the port was dropped (the server took its default) and the
+  // empty host reached the bind as "", which listens on EVERY interface rather
+  // than the documented 127.0.0.1.
+  const emptyValueCases: { name: string; argv: string[] }[] = [
+    { name: "port", argv: ["--config", "/c.json", "--port", ""] },
+    { name: "host", argv: ["--config", "/c.json", "--host", ""] },
+    { name: "config", argv: ["--config", ""] },
+  ];
+  for (const { name, argv } of emptyValueCases) {
+    it(`rejects --${name} with an empty value, naming the option`, () => {
+      const r = surface(argv);
+      expect(r.code).toBe(1);
+      expect(r.errors.join("\n")).toContain(`Error: --${name} requires a non-empty value.`);
+      expect(r.started).not.toHaveBeenCalled();
+    });
+  }
+
+  it("rejects a whitespace-only value too", () => {
+    const r = surface(["--config", "/c.json", "--port", "  "]);
+    expect(r.code).toBe(1);
+    expect(r.errors.join("\n")).toContain("Error: --port requires a non-empty value.");
+    expect(r.started).not.toHaveBeenCalled();
+  });
+
+  it("still treats an ABSENT option as absent", () => {
+    const r = surface(["--config", "/c.json"]);
+    expect(r.errors).toEqual([]);
+    expect(r.code).toBe(null);
+  });
+});
+
+const CJS_CLI_PATH = resolve(__dirname, "../../dist/aimock-cli.cjs");
+
+describe.skipIf(!existsSync(CJS_CLI_PATH))("aimock: the compiled CJS entry runs itself", () => {
+  // tsdown builds src/aimock-cli.ts in both "esm" and "cjs" format, so the
+  // package ships dist/aimock-cli.js AND dist/aimock-cli.cjs, both with a
+  // shebang and the exec bit. The entry guard listed only the .js, so running
+  // the .cjs loaded the module, matched nothing, and exited 0 in silence.
+  it("prints help from dist/aimock-cli.cjs, as dist/aimock-cli.js does", async () => {
+    const cjs = await new Promise<{ stdout: string; code: number | null }>((res) => {
+      const cp = execFile("node", [CJS_CLI_PATH, "--help"], { timeout: 10_000 }, (_e, stdout) => {
+        res({ stdout, code: cp.exitCode });
+      });
+    });
+    expect(cjs.code).toBe(0);
+    expect(cjs.stdout).toContain("Usage: aimock [options]");
+
+    const esm = await runCli(["--help"]);
+    expect(esm.stdout).toBe(cjs.stdout);
+  });
+});
+
+describe("runAimockCli: opt-in flags", () => {
+  let cleanupFn: (() => void) | null = null;
+  afterEach(() => {
+    cleanupFn?.();
+    cleanupFn = null;
+  });
+
+  async function overridesFor(flags: string[]): Promise<unknown> {
+    const startFromConfigFn = vi.fn().mockResolvedValue({
+      llmock: { stop: vi.fn().mockResolvedValue(undefined) },
+      url: "http://127.0.0.1:1",
+    });
+    runAimockCli({
+      argv: ["--config", "/c.json", ...flags],
+      log: () => {},
+      logError: () => {},
+      exit: () => {},
+      loadConfigFn: vi.fn().mockReturnValue({} as AimockConfig),
+      startFromConfigFn,
+      onReady: (ctx) => {
+        cleanupFn = ctx.shutdown;
+      },
+    });
+    await vi.waitFor(() => expect(startFromConfigFn).toHaveBeenCalled());
+    return startFromConfigFn.mock.calls[0][1];
+  }
+
+  it("passes no opt-in overrides without the flags", async () => {
+    expect(await overridesFor([])).toEqual({ port: undefined, host: undefined });
+  });
+
+  it("passes --misbehavior, --strict-tool-arguments and --responses-tools as overrides", async () => {
+    expect(
+      await overridesFor([
+        "--misbehavior",
+        "--strict-tool-arguments",
+        "--responses-tools",
+        "extended",
+      ]),
+    ).toEqual({
+      port: undefined,
+      host: undefined,
+      enableMisbehavior: true,
+      strictToolArguments: true,
+      responsesTools: "extended",
+    });
+  });
+
+  it("rejects an invalid --responses-tools value", () => {
+    const { errors, exitCode } = callCli(["--config", "/c.json", "--responses-tools", "wide"], {
+      loadConfigFn: () => ({}) as AimockConfig,
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain('invalid --responses-tools "wide"');
+  });
+
+  it("lists the opt-in flags in --help", () => {
+    const help = callCli(["--help"]).logs.join("\n");
+    expect(help).toContain("--misbehavior");
+    expect(help).toContain("--strict-tool-arguments");
+    expect(help).toContain("--responses-tools");
   });
 });

@@ -9,6 +9,7 @@ import type {
   Fixture,
   FixtureMatch,
   FixtureResponse,
+  ResponsesToolsMode,
   RecordConfig,
   RecordedTimings,
   RecordProviderKey,
@@ -18,13 +19,29 @@ import type {
 import { getLastMessageByRole, getTextContent, currentTurnHasToolResult } from "./router.js";
 import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
-import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
+import {
+  collapseStreamingResponseWithResponsesTools,
+  capturedRedactedData,
+  collapseResponsesJSON,
+  withoutResponsesToolFields,
+  type CollapseResult,
+} from "./stream-collapse.js";
+import { CitationRecording, hasNativeCitations } from "./citation-recording.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
 import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
-import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
+import {
+  getTestId,
+  slugifyTestId,
+  slugifyContext,
+  hasMintedRequestId,
+  isPlainObject,
+} from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import { captureUsage } from "./response/usage/recording.js";
+import { renderError } from "./response/errors.js";
+import { getEmbeddingRequest } from "./embedding-request.js";
 
 /** True when an SSE frame completes an OpenAI stream. */
 function isTerminalSSEFrame(frame: string): boolean {
@@ -130,13 +147,23 @@ const STRIP_HEADERS = new Set([
   // prefix in buildForwardHeaders below.
   "x-test-id",
   "x-aimock-strict",
+  "x-aimock-policy",
   "x-aimock-context",
 ]);
 
 /**
+ * Headers stripped on egress ONLY when aimock minted the value. A
+ * caller-supplied `x-request-id` is the caller's own trace key and forwards
+ * verbatim; the id aimock invents for its access log and journal is
+ * meaningless on a real provider's wire and must not be transmitted.
+ */
+const MINTED_ONLY_STRIP_HEADERS = new Set(["x-request-id"]);
+
+/**
  * Build the header set forwarded to an upstream provider from an incoming
  * request: everything except hop-by-hop, client-set, and mock-internal
- * headers (STRIP_HEADERS, plus the x-aimock-chaos-* prefix family). Shared
+ * headers (STRIP_HEADERS, plus the x-aimock-chaos-* prefix family, plus
+ * MINTED_ONLY_STRIP_HEADERS when aimock minted the value). Shared
  * by the generic recorder proxy and the OpenRouter-video live lifecycle
  * proxy.
  */
@@ -147,6 +174,7 @@ export function buildForwardHeaders(req: http.IncomingMessage): Record<string, s
     if (
       val === undefined ||
       STRIP_HEADERS.has(lower) ||
+      (MINTED_ONLY_STRIP_HEADERS.has(lower) && hasMintedRequestId(req)) ||
       lower.startsWith("x-aimock-chaos-") ||
       (isAuthenticatedRequest(req) && isRecognizedApiKeyHeader(lower))
     ) {
@@ -163,6 +191,26 @@ export function removeForwardHeader(headers: Record<string, string>, name: strin
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === lowerName) delete headers[key];
   }
+}
+
+/**
+ * Set a header on an egress map ONLY if the inbound request did not already
+ * supply it (in any casing). Used for content-negotiation defaults the mock
+ * wants when the caller was not explicit. Never overwrites: a caller-sent
+ * header may be covered by a request signature (AWS SigV4 and friends sign a
+ * named subset of headers), so replacing one silently invalidates the request
+ * upstream.
+ */
+export function setForwardHeaderDefault(
+  headers: Record<string, string>,
+  name: string,
+  value: string,
+): void {
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) return;
+  }
+  headers[name] = value;
 }
 
 /**
@@ -295,12 +343,15 @@ export function persistFixture(opts: {
   record: RecordConfig;
   providerKey: RecordProviderKey;
   testId: string;
+  /** Separate Live captures from HTTP OpenAI snapshots. */
+  filePrefix?: "openai-live";
   fixture: Fixture;
   fixtures: Fixture[];
   warnings?: string[];
   logger: Logger;
 }): PersistFixtureResult {
   const { record, providerKey, testId, fixture, fixtures, warnings = [], logger } = opts;
+  const fileKey = opts.filePrefix ?? providerKey;
 
   // Match criteria with no userMessage / inputText / endpoint will not match
   // any future request — warn, then save to disk for inspection but skip the
@@ -335,15 +386,15 @@ export function persistFixture(opts: {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       filepath = path.join(
         fixturePath,
-        `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
+        `${fileKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
       );
     } else {
-      filepath = path.join(fixturePath, slug, `${providerKey}.json`);
+      filepath = path.join(fixturePath, slug, `${fileKey}.json`);
       mergeExisting = true;
     }
   } else {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const timestampFile = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
+    const timestampFile = `${fileKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
     // The context becomes a directory segment, but it originates from the
     // attacker-controllable `X-AIMock-Context` header — slugify it (mirroring
     // testId above) so `../`, separators, and absolute prefixes can't escape
@@ -361,6 +412,7 @@ export function persistFixture(opts: {
     ...warnings,
   ];
 
+  let tmpPath: string | undefined;
   try {
     fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
@@ -374,7 +426,12 @@ export function persistFixture(opts: {
     // "captured A; then B") would be fragmented into two bogus entries if the
     // joined string were split back apart on merge. Carrying the array forward
     // avoids that round-trip fragmentation entirely.
-    let fileContent: { fixtures: unknown[]; _warning?: string; _warnings?: string[] };
+    let fileContent: {
+      [key: string]: unknown;
+      fixtures: unknown[];
+      _warning?: string;
+      _warnings?: string[];
+    };
     if (mergeExisting && fs.existsSync(filepath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
@@ -389,7 +446,18 @@ export function persistFixture(opts: {
             `Existing fixture file ${filepath} has a non-array "fixtures" — discarding it and starting fresh`,
           );
         }
-        fileContent = { fixtures: [...(existingFixtures ?? []), fixture] };
+        // Keep every top-level key the recorder does not own (e.g. a
+        // hand-added `mcpFakes` block). The recorder owns `fixtures`,
+        // `_warnings` and `_warning`; those are rebuilt below, so a stale
+        // copy is never carried over verbatim.
+        const keptKeys: Record<string, unknown> = {};
+        if (existing !== null && typeof existing === "object" && !Array.isArray(existing)) {
+          for (const [key, value] of Object.entries(existing as Record<string, unknown>)) {
+            if (key === "fixtures" || key === "_warnings" || key === "_warning") continue;
+            keptKeys[key] = value;
+          }
+        }
+        fileContent = { ...keptKeys, fixtures: [...(existingFixtures ?? []), fixture] };
         // Carry existing warnings forward — a later clean capture merging into
         // the same snapshot file must not erase an earlier capture's warning
         // (e.g. an over-cap b64 omission). Prefer the new `_warnings` array;
@@ -424,9 +492,14 @@ export function persistFixture(opts: {
     // races. Keep synchronous — for streamed responses the HTTP reply is
     // already on the wire, so async writes would race with callers checking
     // the filesystem before the fixture has landed.
-    const tmpPath = filepath + ".tmp." + process.pid;
-    fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), "utf-8");
+    tmpPath = filepath + ".tmp." + crypto.randomUUID();
+    fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), {
+      encoding: "utf-8",
+      flag: "wx",
+      mode: 0o600,
+    });
     fs.renameSync(tmpPath, filepath);
+    tmpPath = undefined;
 
     if (!isEmptyMatch) {
       fixtures.push(fixture);
@@ -437,6 +510,14 @@ export function persistFixture(opts: {
     const msg = err instanceof Error ? err.message : "Unknown filesystem error";
     logger.error(`Failed to save fixture to disk: ${msg}`);
     return { kind: "failed", error: msg };
+  } finally {
+    if (tmpPath) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* Preserve the original persistence error. */
+      }
+    }
   }
 }
 
@@ -456,8 +537,9 @@ export async function proxyAndRecord(
     record?: RecordConfig;
     logger: Logger;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+    responsesTools?: ResponsesToolsMode;
   },
-  rawBody?: string,
+  rawBody?: string | Buffer,
   options?: ProxyOptions,
 ): Promise<ProxyOutcome> {
   const record = defaults.record;
@@ -485,9 +567,10 @@ export async function proxyAndRecord(
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: `Invalid upstream URL: ${upstreamUrl}`, type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: `Invalid upstream URL: ${upstreamUrl}`,
+        type: "proxy_error",
+      }).body,
     );
     return "relayed";
   }
@@ -505,9 +588,10 @@ export async function proxyAndRecord(
     writeErrorResponse(
       res,
       502,
-      JSON.stringify({
-        error: { message: "No configured provider credential", type: "proxy_error" },
-      }),
+      renderError("openai", "transport-failure", {
+        message: "No configured provider credential",
+        type: "proxy_error",
+      }).body,
     );
     return "relayed";
   }
@@ -564,9 +648,10 @@ export async function proxyAndRecord(
     if (!res.headersSent) {
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-        }),
+        renderError("openai", "transport-failure", {
+          message: `Proxy to upstream failed: ${msg}`,
+          type: "proxy_error",
+        }).body,
       );
     } else {
       // Streaming headers (200) are already on the wire, so we cannot change the
@@ -624,12 +709,10 @@ export async function proxyAndRecord(
       );
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            message: `Upstream response exceeds ${ceilingMiB}MiB proxy ceiling`,
-            type: "proxy_error",
-          },
-        }),
+        renderError("openai", "transport-failure", {
+          message: `Upstream response exceeds ${ceilingMiB}MiB proxy ceiling`,
+          type: "proxy_error",
+        }).body,
       );
       return "relayed";
     }
@@ -660,12 +743,19 @@ export async function proxyAndRecord(
   const contentType = upstreamHeaders["content-type"];
   const ctString = pickContentType(contentType);
   const isBinaryStream = ctString.toLowerCase().includes("application/vnd.amazon.eventstream");
-  const collapsed = collapseStreamingResponse(
+  // OpenAI Responses namespaces and custom tool calls are recorded only with
+  // responsesTools "extended"; otherwise the recording is what earlier
+  // releases wrote (namespaces dropped, custom calls not recorded).
+  const collapsedRaw = collapseStreamingResponseWithResponsesTools(
     ctString,
     providerKey,
     isBinaryStream ? rawBuffer : upstreamBody,
     defaults.logger,
   );
+  const collapsed =
+    collapsedRaw && defaults.responsesTools !== "extended"
+      ? withoutResponsesToolFields(collapsedRaw)
+      : collapsedRaw;
 
   let fixtureResponse: FixtureResponse;
 
@@ -697,19 +787,11 @@ export async function proxyAndRecord(
   } else if (collapsed) {
     // Streaming response — use collapsed result
     defaults.logger.warn(`Streaming response detected (${ctString}) — collapsing to fixture`);
-    if (collapsed.truncated) {
-      defaults.logger.warn("Bedrock EventStream: CRC mismatch — response may be truncated");
-    }
-    if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
-      defaults.logger.warn(
-        `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
-      );
-    }
-    if (collapsed.harmonyUnparsed) {
-      defaults.logger.warn(
-        `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
-      );
-    }
+    logCollapseWarnings(
+      defaults.logger,
+      collapsed,
+      "Bedrock EventStream: CRC mismatch — response may be truncated",
+    );
     // Provider-reported usage captured from the stream's final usage frame
     // (#368). Persisted on the text / toolCall fixture shapes so replay serves
     // the REAL token counts instead of the `ceil(len/4)` estimate, and so
@@ -722,7 +804,14 @@ export async function proxyAndRecord(
     // collapse never yields both `audioB64` and a stream usage frame), but a
     // future collapser that set both would drop the usage on the audio path
     // with no compiler signal.
-    const collapsedUsage = sanitizeRecordedUsage(collapsed.usage);
+    const collapsedUsage = captureUsage({
+      provider: providerKey,
+      contentType: ctString,
+      operation: request._endpointType,
+      family: "final",
+      stage: "final",
+      observation: collapsed.usage,
+    });
     const usageSpread = collapsedUsage ? { usage: collapsedUsage } : {};
     // Audio from streamed inlineData (e.g. Gemini SSE with audio parts).
     // A single Gemini turn can interleave audio with a functionCall and/or
@@ -754,9 +843,13 @@ export async function proxyAndRecord(
       };
     } else if (
       collapsed.content === "" &&
-      (!collapsed.toolCalls || collapsed.toolCalls.length === 0)
+      (!collapsed.toolCalls || collapsed.toolCalls.length === 0) &&
+      !collapsed.customToolCalls?.length
     ) {
-      defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      // A cited empty-text turn is complete: its citations ride on `blocks`.
+      if (!collapsed.blocks?.some(hasNativeCitations)) {
+        defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+      }
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       // Carry the real Anthropic thinking-block signature only when reasoning is
       // also present (a bare signature has nothing to attach to on replay), so a
@@ -810,12 +903,36 @@ export async function proxyAndRecord(
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
-      if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
-        const sanitizedToolCalls = collapsed.toolCalls.map((tc) => ({
+      if (collapsed.customToolCalls?.length) {
+        // responsesTools "extended" only: a turn with OpenAI Responses custom
+        // tool calls. `toolCalls` (possibly empty) keeps the function calls,
+        // so earlier releases replay the recording exactly as they replay
+        // their own (they ignore the new keys). `responsesBlocks` replaces
+        // `blocks` when the collapser needed it to keep the order.
+        const toolCalls = (collapsed.toolCalls ?? []).map(sanitizeRecordedToolCall);
+        const customToolCalls = collapsed.customToolCalls.map((tc) => ({
           ...tc,
           name: tc.name ?? "",
-          arguments: tc.arguments ?? "{}",
+          input: tc.input ?? "",
         }));
+        const orderSpread = collapsed.responsesBlocks?.length
+          ? { responsesBlocks: collapsed.responsesBlocks }
+          : collapsed.blocks?.length
+            ? { blocks: collapsed.blocks }
+            : {};
+        fixtureResponse = {
+          ...(collapsed.content ? { content: collapsed.content } : {}),
+          toolCalls,
+          customToolCalls,
+          ...orderSpread,
+          ...reasoningSpread,
+          ...reasoningSignatureSpread,
+          ...redactedThinkingSpread,
+          ...webSearchesSpread,
+          ...usageSpread,
+        };
+      } else if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
+        const sanitizedToolCalls = collapsed.toolCalls.map(sanitizeRecordedToolCall);
         if (collapsed.content) {
           // Both content and toolCalls present — save as ContentWithToolCallsResponse.
           //
@@ -859,6 +976,16 @@ export async function proxyAndRecord(
         };
       }
     }
+    // A cited turn is the shape above plus its citations, which ride on the
+    // ordered `blocks` (or on `responsesBlocks`, which the custom-tool branch
+    // above already took). Uncited turns never enter here.
+    if (
+      collapsed.blocks?.some(hasNativeCitations) &&
+      !("responsesBlocks" in fixtureResponse) &&
+      ("content" in fixtureResponse || "toolCalls" in fixtureResponse)
+    ) {
+      fixtureResponse = { ...fixtureResponse, blocks: collapsed.blocks };
+    }
   } else {
     // Non-streaming — try to parse as JSON
     let parsedResponse: unknown = null;
@@ -866,14 +993,26 @@ export async function proxyAndRecord(
       parsedResponse = JSON.parse(upstreamBody);
     } catch (parseErr) {
       const msg = parseErr instanceof Error ? parseErr.message : "unknown";
-      defaults.logger.warn(
-        `Upstream response is not valid JSON (${msg}) — saving as error fixture`,
-      );
+      defaults.logger.warn(`Upstream response is not valid JSON (${msg})`);
     }
-    // fal.ai returns arbitrary, model-specific JSON shapes (images, video URLs,
-    // audio file objects, etc.). Round-trip the payload verbatim instead of
-    // letting buildFixtureResponse mis-classify it as ImageResponse / VideoResponse.
-    if (request._endpointType === "fal" && parsedResponse !== null) {
+    // Modern Ollama embeddings retain distinct batch vectors and usage metadata.
+    // fal.ai and ElevenLabs Voice Design/create/get/delete return arbitrary JSON shapes
+    // (previews with embedded base64 audio, voice objects). Round-trip the
+    // payload verbatim instead of letting buildFixtureResponse mis-classify
+    // them as ImageResponse / VideoResponse / TranscriptionResponse.
+    if (
+      ((providerKey === "ollama" &&
+        new URL(pathname, "http://localhost").pathname === "/api/embed") ||
+        request._endpointType === "fal" ||
+        request._endpointType === "elevenlabs-voice-design" ||
+        request._endpointType === "elevenlabs-voice" ||
+        request._endpointType === "elevenlabs-voice-get" ||
+        request._endpointType === "elevenlabs-voice-delete" ||
+        request._endpointType === "elevenlabs-stt" ||
+        request._endpointType === "elevenlabs-audio-isolation" ||
+        request._endpointType === "byteplus-tts") &&
+      parsedResponse !== null
+    ) {
       const obj = parsedResponse as Record<string, unknown>;
       const isErrorShape =
         typeof obj.error === "object" &&
@@ -901,6 +1040,8 @@ export async function proxyAndRecord(
         upstreamStatus,
         defaults.logger,
         request,
+        { provider: providerKey, contentType: ctString, operation: request._endpointType },
+        defaults.responsesTools,
       );
     }
   }
@@ -940,8 +1081,15 @@ export async function proxyAndRecord(
 
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
   const metadata = buildFixtureMetadata(request);
+  const embeddingRequest = getEmbeddingRequest(request);
   const fixture: Fixture = {
-    match: buildFixtureMatch(matchRequest, defaults.record),
+    match: {
+      ...buildFixtureMatch(matchRequest, defaults.record),
+      ...(embeddingRequest && {
+        embeddingRequest: structuredClone(embeddingRequest),
+        ...(matchRequest.model !== undefined && { model: matchRequest.model }),
+      }),
+    },
     response: fixtureResponse,
     ...(recordedTimings && { recordedTimings }),
     ...(metadata && { metadata }),
@@ -1083,7 +1231,7 @@ export function clampMaxBufferFrames(value: number | undefined): number {
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
-  body: string,
+  body: string | Buffer,
   clientRes?: http.ServerResponse,
   method: string = "POST",
   logger?: Logger,
@@ -1519,6 +1667,39 @@ function logDroppedReasoningSignature(
 }
 
 /**
+ * Warn about what a collapse could not keep: a truncated input (with
+ * `truncatedWarning`), dropped chunks, unparseable harmony tokens and native
+ * citation metadata that was not recorded.
+ */
+function logCollapseWarnings(
+  logger: Logger | undefined,
+  collapsed: CollapseResult,
+  truncatedWarning: string,
+): void {
+  if (collapsed.truncated) {
+    logger?.warn(truncatedWarning);
+  }
+  if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
+    logger?.warn(
+      `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
+    );
+  }
+  if (collapsed.harmonyUnparsed) {
+    logger?.warn(
+      `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
+    );
+  }
+  if (collapsed.citationNote) {
+    logger?.warn(`Native citation metadata not recorded — ${collapsed.citationNote}`);
+  }
+}
+
+/** Sanitize a collapsed function call before it is persisted: string `name` and `arguments`. */
+function sanitizeRecordedToolCall(tc: ToolCall): ToolCall {
+  return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
+}
+
+/**
  * Coerce a tool call's `arguments` field into the string the fixture contract
  * requires (types.ts `ToolCall.arguments: string`). When the upstream omits the
  * arguments field entirely, `JSON.stringify(undefined)` yields the JS value
@@ -1531,22 +1712,6 @@ function toToolCallArguments(raw: unknown): string {
   if (raw === undefined || raw === null) return "{}";
   return JSON.stringify(raw);
 }
-
-/**
- * `usage` sub-objects that carry numeric breakdowns rather than a scalar. The
- * inner fields are NOT allowlisted here on purpose: the recorder keeps every
- * finite-numeric inner field (documented or forward-compat), matching the
- * load-time validator in fixture-loader.ts, whose index-signature escape hatch
- * accepts undocumented numeric inner keys too. A `Set` (own-key membership via
- * `.has()`, no prototype-chain walk) mirrors that validator's
- * `new Set(Object.keys(...))` classification so anything this recorder writes
- * loads cleanly.
- */
-const USAGE_OBJECT_FIELDS: ReadonlySet<string> = new Set([
-  "cost_details",
-  "prompt_tokens_details",
-  "completion_tokens_details",
-]);
 
 /**
  * Sanitize a provider-reported `usage` object into the fixture
@@ -1571,29 +1736,7 @@ const USAGE_OBJECT_FIELDS: ReadonlySet<string> = new Set([
  * entirely and keeps pre-#368 fixtures byte-identical.
  */
 export function sanitizeRecordedUsage(raw: unknown): ResponseOverrides["usage"] | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (val === undefined || val === null) continue;
-    if (USAGE_OBJECT_FIELDS.has(key)) {
-      if (typeof val !== "object" || val === null || Array.isArray(val)) continue;
-      const inner: Record<string, unknown> = {};
-      for (const [innerKey, innerVal] of Object.entries(val as Record<string, unknown>)) {
-        // Documented inner fields must be numeric (validator-enforced); undocumented
-        // ones are unvalidated, so pass them through only when numeric too — keeping
-        // the recorded object uniformly safe to re-load.
-        if (typeof innerVal === "number" && Number.isFinite(innerVal)) inner[innerKey] = innerVal;
-      }
-      if (Object.keys(inner).length > 0) out[key] = inner;
-      continue;
-    }
-    if (key === "is_byok") {
-      if (typeof val === "boolean") out[key] = val;
-      continue;
-    }
-    if (typeof val === "number" && Number.isFinite(val)) out[key] = val;
-  }
-  return Object.keys(out).length > 0 ? (out as ResponseOverrides["usage"]) : undefined;
+  return captureUsage({ family: "final", stage: "final", observation: raw });
 }
 
 /**
@@ -1605,6 +1748,8 @@ function buildFixtureResponse(
   status: number,
   logger?: Logger,
   request?: ChatCompletionRequest,
+  captureContext: { provider?: RecordProviderKey; contentType?: string; operation?: string } = {},
+  responsesTools?: ResponsesToolsMode,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -1651,7 +1796,7 @@ function buildFixtureResponse(
         // return a valid-looking zero-dimension embedding — log it and fall
         // through to the generic error fixture so the loss is diagnosable.
         logger?.warn(
-          `Could not decode base64 embedding (byteLength=${buf.byteLength} is not a positive multiple of 4) — saving as error fixture`,
+          `Could not decode base64 embedding (byteLength=${buf.byteLength} is not a positive multiple of 4)`,
         );
       } else {
         // Uint8Array constructor copies Buffer data to a fresh ArrayBuffer at offset 0,
@@ -1723,6 +1868,13 @@ function buildFixtureResponse(
     !("message" in obj) &&
     !("outputs" in obj);
   if (looksLikeTranscription) {
+    const transcriptionUsage = captureUsage({
+      ...captureContext,
+      family: "transcription",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const transcriptionUsageSpread = transcriptionUsage ? { usage: transcriptionUsage } : {};
     return {
       transcription: {
         text: obj.text as string,
@@ -1740,9 +1892,7 @@ function buildFixtureResponse(
             }
           : {}),
         ...(obj.duration !== undefined ? { duration: Number(obj.duration) } : {}),
-        ...(obj.usage && typeof obj.usage === "object"
-          ? { usage: obj.usage as Record<string, unknown> }
-          : {}),
+        ...transcriptionUsageSpread,
         ...(Array.isArray(obj.words) ? { words: obj.words } : {}),
         ...(Array.isArray(obj.segments) ? { segments: obj.segments } : {}),
       },
@@ -1757,6 +1907,13 @@ function buildFixtureResponse(
     !("content" in obj) &&
     !("candidates" in obj)
   ) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "interactions",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const outputs = obj.outputs as Array<Record<string, unknown>>;
     const fnCallOutputs = outputs.filter((o) => o.type === "function_call");
     const textOutputs = outputs.filter((o) => o.type === "text" && typeof o.text === "string");
@@ -1771,15 +1928,15 @@ function buildFixtureResponse(
         ...(o.id ? { id: String(o.id) } : {}),
       }));
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasContent) {
-      return { content: joinedText };
+      return { ...usageSpread, content: joinedText };
     }
     // Recognized Gemini Interactions shape but empty content
-    return { content: "" };
+    return { ...usageSpread, content: "" };
   }
 
   // OpenAI video generation: { id, status, ... }
@@ -1825,6 +1982,21 @@ function buildFixtureResponse(
     return { embedding: obj.embedding as number[] };
   }
 
+  // gemini
+  const geminiEmbedding = obj.embedding as Record<string, unknown> | null | undefined;
+  if (typeof geminiEmbedding === "object" && Array.isArray(geminiEmbedding?.values)) {
+    return { embedding: geminiEmbedding.values as number[] };
+  }
+
+  // cohere
+  if (typeof obj.embeddings === "object" && obj.embeddings !== null) {
+    const byType = obj.embeddings as Record<string, unknown>;
+    const vector = [byType.float, ...Object.values(byType)]
+      .map((vectors) => (Array.isArray(vectors) ? vectors[0] : undefined))
+      .find(Array.isArray);
+    if (vector) return { embedding: vector as number[] };
+  }
+
   // OpenAI chat completion: { choices: [{ message: { content, tool_calls } }] }
   if (Array.isArray(obj.choices) && obj.choices.length > 0) {
     const choice = obj.choices[0] as Record<string, unknown>;
@@ -1850,7 +2022,12 @@ function buildFixtureResponse(
       // `CollapseResult.usage`): replay then serves the real token counts rather
       // than the `ceil(len/4)` estimate, and OpenRouter's `usage.cost` survives
       // recording. Omitted when upstream sent no usage.
-      const openaiUsage = sanitizeRecordedUsage(obj.usage);
+      const openaiUsage = captureUsage({
+        ...captureContext,
+        family: "openai",
+        stage: "nonstream",
+        observation: obj,
+      });
       const usageSpread = openaiUsage ? { usage: openaiUsage } : {};
 
       if (hasToolCalls) {
@@ -1895,23 +2072,59 @@ function buildFixtureResponse(
     }
   }
 
+  // responses
+  if (Array.isArray(obj.output)) {
+    const collapsed = collapseResponsesJSON(obj);
+    logCollapseWarnings(
+      logger,
+      collapsed,
+      "Responses JSON body exceeded the collapse limit — response may be truncated",
+    );
+    const shaped =
+      responsesTools === "extended" ? collapsed : withoutResponsesToolFields(collapsed);
+    const hasTools = !!shaped.toolCalls?.length || !!shaped.customToolCalls?.length;
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (
+      !shaped.content &&
+      !hasTools &&
+      ![...(shaped.blocks ?? []), ...(shaped.responsesBlocks ?? [])].some(hasNativeCitations)
+    ) {
+      logger?.warn("Responses JSON collapse produced empty content — fixture may be incomplete");
+    }
+    return {
+      ...(shaped.content || !hasTools ? { content: shaped.content ?? "" } : {}),
+      ...(hasTools ? { toolCalls: (shaped.toolCalls ?? []).map(sanitizeRecordedToolCall) } : {}),
+      ...(shaped.customToolCalls?.length ? { customToolCalls: shaped.customToolCalls } : {}),
+      ...(shaped.responsesBlocks
+        ? { responsesBlocks: shaped.responsesBlocks }
+        : shaped.blocks
+          ? { blocks: shaped.blocks }
+          : {}),
+      ...(shaped.reasoning ? { reasoning: shaped.reasoning } : {}),
+      ...(shaped.webSearches?.length ? { webSearches: shaped.webSearches } : {}),
+      ...(shaped.usage ? { usage: shaped.usage } : {}),
+    };
+  }
+
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
-  if (Array.isArray(obj.content) && obj.content.length > 0) {
+  if (Array.isArray(obj.content) && (obj.content.length > 0 || obj.type === "message")) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "anthropic",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const blocks = obj.content as Array<Record<string, unknown>>;
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
-    // Raw `redacted_thinking` block presence drives reasoning-bearing
-    // classification below (mirrors how `thinkingBlocks` keys on PRESENCE, not
-    // surviving payload). A turn whose redacted blocks all carry empty `data`
-    // is constructible upstream and must NOT fall through to the error fallback.
-    const redactedBlocks = blocks.filter((b) => b.type === "redacted_thinking");
     // A `redacted_thinking` block carries its encrypted reasoning in an opaque
     // `data` string; collect the SURVIVING (non-empty) payloads in content-array
     // order for the persisted fixture so the recorded turn round-trips its
     // redacted blocks (mirrors the streaming collapse path; see
     // capturedRedactedData for the non-empty rule — empty-data blocks are dropped
-    // from the payload, but still count toward classification via redactedBlocks).
+    // from the payload).
     const redactedThinking = blocks
       .map((b) => capturedRedactedData(b))
       .filter((data): data is string => data !== undefined);
@@ -1946,140 +2159,167 @@ function buildFixtureResponse(
         : {};
     logDroppedReasoningSignature(logger, anthropicReasoning, anthropicReasoningSignature);
     const redactedThinkingSpread = redactedThinking.length > 0 ? { redactedThinking } : {};
+    const toToolCall = (b: Record<string, unknown>): ToolCall => ({
+      name: String(b.name),
+      arguments: toToolCallArguments(b.input),
+      ...(b.id ? { id: String(b.id) } : {}),
+    });
+    // A cited turn adds `blocks`: the text and tool calls below, in that
+    // order, with each text block's citations.
+    const citations = new CitationRecording("anthropic");
+    citations.anthropicJSON(blocks);
+    const cited = citations.attach({
+      content: joinedText,
+      ...(hasToolCalls ? { toolCalls: toolUseBlocks.map(toToolCall) } : {}),
+    });
+    if (cited.citationNote) {
+      logger?.warn(`Native citation metadata not recorded — ${cited.citationNote}`);
+    }
+    const citedSpread = cited.blocks?.some(hasNativeCitations) ? { blocks: cited.blocks } : {};
 
     if (hasToolCalls) {
-      const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
-        name: String(b.name),
-        arguments: toToolCallArguments(b.input),
-        ...(b.id ? { id: String(b.id) } : {}),
-      }));
+      const toolCalls: ToolCall[] = toolUseBlocks.map(toToolCall);
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
           toolCalls,
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
           ...reasoningSignatureSpread,
           ...redactedThinkingSpread,
+          ...citedSpread,
         };
       }
       return {
+        ...usageSpread,
         toolCalls,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
     if (hasContent) {
       return {
+        ...usageSpread,
         content: joinedText,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
         ...redactedThinkingSpread,
+        ...citedSpread,
       };
     }
-    // Thinking-only / redacted-only response (no text, no tool calls). A turn can
-    // carry only thinking blocks (even ones whose plaintext is empty but which
-    // bear a real signature) or only redacted_thinking blocks (even ones whose
-    // `data` is empty and thus dropped from the persisted payload), so key on the
-    // PRESENCE of those RAW blocks — not the truthiness of the joined thinking text
-    // nor the post-filter `redactedThinking` array — and produce a normal
-    // empty-content fixture rather than falling through to the error fallback
-    // below. This matches the streaming path, which classifies on content
-    // emptiness for the same logical turn. (Per the persistence contract, a bare
-    // signature with empty reasoning is still dropped via
-    // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
-    // redactedThinking field.)
-    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0) {
-      return {
-        content: "",
-        ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
-        ...reasoningSignatureSpread,
-        ...redactedThinkingSpread,
-      };
+    // A cited empty-text turn is complete: its citations ride on the blocks.
+    if (!citedSpread.blocks) {
+      logger?.warn("Anthropic JSON collapse produced empty content — fixture may be incomplete");
     }
+    return {
+      ...usageSpread,
+      content: "",
+      ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+      ...reasoningSignatureSpread,
+      ...redactedThinkingSpread,
+      ...citedSpread,
+    };
   }
 
   // Gemini: { candidates: [{ content: { parts: [{ text: "..." }] } }] }
-  if (Array.isArray(obj.candidates) && obj.candidates.length > 0) {
-    const candidate = obj.candidates[0] as Record<string, unknown>;
-    const content = candidate.content as Record<string, unknown> | undefined;
-    if (content && Array.isArray(content.parts)) {
-      const parts = content.parts as Array<Record<string, unknown>>;
+  if (Array.isArray(obj.candidates) || isPlainObject(obj.promptFeedback)) {
+    const candidate = (obj.candidates as unknown[] | undefined)?.[0];
+    const content = isPlainObject(candidate) ? candidate.content : undefined;
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "gemini",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
+    const parts: Array<Record<string, unknown>> =
+      isPlainObject(content) && Array.isArray(content.parts) ? content.parts : [];
 
-      // Audio inlineData parts take priority over text. Key on the PRESENCE of
-      // `inlineData.data` rather than solely on the mimeType: an audio part can
-      // arrive with a missing or unexpected mimeType, and filtering strictly on
-      // an `audio/` prefix would then drop a part that genuinely carries audio
-      // bytes, producing an empty b64Json. A NON-audio mimeType (e.g. `image/`)
-      // still routes elsewhere, so image inlineData is not misclassified — only
-      // an explicit `audio/` prefix OR a missing/blank mimeType counts as audio.
-      const audioParts = parts.filter((p: Record<string, unknown>) => {
-        const inline = p.inlineData as Record<string, unknown> | undefined;
-        if (
-          inline === undefined ||
-          inline === null ||
-          typeof inline.data !== "string" ||
-          inline.data.length === 0
-        ) {
-          return false;
-        }
-        const mt = inline.mimeType;
-        if (typeof mt === "string" && mt.length > 0) {
-          return mt.startsWith("audio/");
-        }
-        // Missing/blank mimeType but data present → treat as audio.
-        return true;
-      });
-      if (audioParts.length > 0) {
-        const inlineData = audioParts[0].inlineData as Record<string, unknown>;
+    // Audio inlineData parts take priority over text. Key on the PRESENCE of
+    // `inlineData.data` rather than solely on the mimeType: an audio part can
+    // arrive with a missing or unexpected mimeType, and filtering strictly on
+    // an `audio/` prefix would then drop a part that genuinely carries audio
+    // bytes, producing an empty b64Json. A NON-audio mimeType (e.g. `image/`)
+    // still routes elsewhere, so image inlineData is not misclassified — only
+    // an explicit `audio/` prefix OR a missing/blank mimeType counts as audio.
+    const audioParts = parts.filter((p: Record<string, unknown>) => {
+      const inline = p.inlineData as Record<string, unknown> | undefined;
+      if (
+        inline === undefined ||
+        inline === null ||
+        typeof inline.data !== "string" ||
+        inline.data.length === 0
+      ) {
+        return false;
+      }
+      const mt = inline.mimeType;
+      if (typeof mt === "string" && mt.length > 0) {
+        return mt.startsWith("audio/");
+      }
+      // Missing/blank mimeType but data present → treat as audio.
+      return true;
+    });
+    if (audioParts.length > 0) {
+      const inlineData = audioParts[0].inlineData as Record<string, unknown>;
+      return {
+        ...usageSpread,
+        audio: {
+          b64Json: String(inlineData.data ?? ""),
+          contentType:
+            typeof inlineData.mimeType === "string" && inlineData.mimeType.length > 0
+              ? inlineData.mimeType
+              : "audio/mpeg",
+        },
+      };
+    }
+
+    const fnCallParts = parts.filter((p) => p.functionCall);
+    const textParts = parts.filter((p) => typeof p.text === "string" && !p.thought);
+    const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
+    const hasToolCalls = fnCallParts.length > 0;
+    const joinedText = textParts.map((p) => String(p.text ?? "")).join("");
+    const hasContent = joinedText.length > 0;
+    const geminiReasoning =
+      thoughtParts.length > 0 ? thoughtParts.map((p) => String(p.text ?? "")).join("") : undefined;
+
+    if (hasToolCalls) {
+      const toolCalls: ToolCall[] = fnCallParts.map((p) => {
+        const fc = p.functionCall as Record<string, unknown>;
         return {
-          audio: {
-            b64Json: String(inlineData.data ?? ""),
-            contentType:
-              typeof inlineData.mimeType === "string" && inlineData.mimeType.length > 0
-                ? inlineData.mimeType
-                : "audio/mpeg",
-          },
+          name: String(fc.name),
+          arguments: toToolCallArguments(fc.args),
         };
-      }
-
-      const fnCallParts = parts.filter((p) => p.functionCall);
-      const textParts = parts.filter((p) => typeof p.text === "string" && !p.thought);
-      const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
-      const hasToolCalls = fnCallParts.length > 0;
-      const joinedText = textParts.map((p) => String(p.text ?? "")).join("");
-      const hasContent = joinedText.length > 0;
-      const geminiReasoning =
-        thoughtParts.length > 0
-          ? thoughtParts.map((p) => String(p.text ?? "")).join("")
-          : undefined;
-
-      if (hasToolCalls) {
-        const toolCalls: ToolCall[] = fnCallParts.map((p) => {
-          const fc = p.functionCall as Record<string, unknown>;
-          return {
-            name: String(fc.name),
-            arguments: toToolCallArguments(fc.args),
-          };
-        });
-        if (hasContent) {
-          return {
-            content: joinedText,
-            toolCalls,
-            ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
-          };
-        }
-        return { toolCalls, ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
-      }
+      });
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
+          toolCalls,
           ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
         };
       }
-      // Recognized Gemini shape but empty content
-      return { content: "", ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
+      return {
+        ...usageSpread,
+        toolCalls,
+        ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+      };
     }
+    if (hasContent) {
+      return {
+        ...usageSpread,
+        content: joinedText,
+        ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+      };
+    }
+    // Recognized Gemini shape but empty content
+    logger?.warn("Gemini JSON collapse produced empty content — fixture may be incomplete");
+    return {
+      ...usageSpread,
+      content: "",
+      ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+    };
   }
 
   // Bedrock Converse: { output: { message: { role, content: [{ text }, { toolUse }] } } }
@@ -2087,6 +2327,13 @@ function buildFixtureResponse(
     const output = obj.output as Record<string, unknown>;
     const msg = output.message as Record<string, unknown> | undefined;
     if (msg && Array.isArray(msg.content)) {
+      const capturedUsage = captureUsage({
+        ...captureContext,
+        family: "bedrock-converse",
+        stage: "nonstream",
+        observation: obj,
+      });
+      const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
       const blocks = msg.content as Array<Record<string, unknown>>;
       const toolUseBlocks = blocks.filter((b) => b.toolUse);
       const textBlocks = blocks.filter((b) => typeof b.text === "string");
@@ -2116,21 +2363,31 @@ function buildFixtureResponse(
         });
         if (hasContent) {
           return {
+            ...usageSpread,
             content: joinedText,
             toolCalls,
             ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
           };
         }
-        return { toolCalls, ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
+        return {
+          ...usageSpread,
+          toolCalls,
+          ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+        };
       }
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
           ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
         };
       }
       // Recognized Bedrock Converse shape but empty content
-      return { content: "", ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
+      return {
+        ...usageSpread,
+        content: "",
+        ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+      };
     }
   }
 
@@ -2143,6 +2400,13 @@ function buildFixtureResponse(
     typeof obj.message === "object" &&
     Array.isArray((obj.message as Record<string, unknown>).content)
   ) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "cohere",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const msg = obj.message as Record<string, unknown>;
     const contentBlocks = msg.content as Array<Record<string, unknown>>;
     // Join ALL text blocks, not just the first — a multi-block Cohere response
@@ -2173,9 +2437,9 @@ function buildFixtureResponse(
         ...(b.id ? { id: String(b.id) } : {}),
       }));
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (msgToolCalls.length > 0) {
       const toolCalls: ToolCall[] = msgToolCalls.map((tc) => {
@@ -2194,22 +2458,29 @@ function buildFixtureResponse(
         };
       });
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasContent) {
-      return { content: joinedText };
+      return { ...usageSpread, content: joinedText };
     }
     // Recognized Cohere v2 shape (finish_reason + message.content array) with
     // no text and no tool calls. Own the empty turn here and return an
     // empty-content fixture rather than falling through to the Ollama branch
     // below, which would re-handle `message.content` and mis-route it.
-    return { content: "" };
+    return { ...usageSpread, content: "" };
   }
 
   // Ollama: { message: { content: "...", tool_calls: [...] } }
   if (obj.message && typeof obj.message === "object") {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "ollama",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const msg = obj.message as Record<string, unknown>;
     const hasOllamaToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
     const hasOllamaContent = typeof msg.content === "string" && msg.content.length > 0;
@@ -2225,18 +2496,22 @@ function buildFixtureResponse(
           };
         });
       if (hasOllamaContent) {
-        return { content: msg.content as string, toolCalls };
+        return { ...usageSpread, content: msg.content as string, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasOllamaContent) {
-      return { content: msg.content as string };
+      return { ...usageSpread, content: msg.content as string };
+    }
+    if (msg.content === "" && typeof obj.done === "boolean") {
+      logger?.warn("Ollama JSON collapse produced empty content — fixture may be incomplete");
+      return { ...usageSpread, content: "" };
     }
     // Ollama message with content array (like Cohere)
     if (Array.isArray(msg.content) && msg.content.length > 0) {
       const first = msg.content[0] as Record<string, unknown>;
       if (typeof first.text === "string") {
-        return { content: first.text };
+        return { ...usageSpread, content: first.text };
       }
     }
   }
@@ -2246,14 +2521,18 @@ function buildFixtureResponse(
   // here, and gating merely on `"done" in obj` would capture unrelated payloads
   // that happen to carry a `response` string and some other `done`-keyed value.
   if (typeof obj.response === "string" && typeof obj.done === "boolean") {
-    return { content: obj.response };
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "ollama",
+      stage: "nonstream",
+      observation: obj,
+    });
+    return { ...(capturedUsage ? { usage: capturedUsage } : {}), content: obj.response };
   }
 
-  // Fallback: unknown format — save as error. Log the observed top-level shape
-  // so an unrecognized/new provider response is diagnosable instead of silently
-  // becoming an opaque error fixture.
+  // unrecognized
   logger?.warn(
-    `Could not detect response format from upstream (status=${status}) — saving as error fixture; top-level keys: [${Object.keys(
+    `Could not detect response format from upstream (status=${status}); top-level keys: [${Object.keys(
       obj,
     ).join(", ")}]`,
   );
@@ -2377,4 +2656,82 @@ function buildFixtureMetadata(
   }
 
   return Object.keys(meta).length > 0 ? meta : undefined;
+}
+
+// ─── Service fakes persistence (MCP recorder, MR11) ─────────────────────────
+
+/**
+ * Outcome of `persistServiceFakes`. `failed.stage` says where it failed:
+ * `read` (the existing file is not JSON or not an object), `validate` (the
+ * merged file is invalid; `error` is the validator's text) or `write` (a
+ * filesystem error).
+ */
+export type PersistServiceFakesResult =
+  | { kind: "written"; filepath: string; sha256: string; content: Record<string, unknown> }
+  | { kind: "failed"; stage: "read" | "validate" | "write"; error: string };
+
+/**
+ * MR11: read-merge-validate-write one service fakes file atomically (temp +
+ * rename, 0o600). Synchronous, so writes to one path never interleave in this
+ * process. Keeps unknown top-level keys (fakes:F9). `validate` returns a
+ * problem text, or null when the whole merged file is valid. Logs RL4 on a
+ * write; a failure is returned, never logged here (the caller logs RL1 with
+ * its own context).
+ */
+export function persistServiceFakes(opts: {
+  filepath: string;
+  merge: (existing: Record<string, unknown> | null) => Record<string, unknown>;
+  validate: (content: Record<string, unknown>) => string | null;
+  logger: Logger;
+}): PersistServiceFakesResult {
+  const { filepath, merge, validate, logger } = opts;
+  let existing: Record<string, unknown> | null = null;
+  let text: string | null = null;
+  try {
+    text = fs.readFileSync(filepath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+      return { kind: "failed", stage: "write", error: msg };
+    }
+  }
+  if (text !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { kind: "failed", stage: "read", error: `${filepath} is not valid JSON` };
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { kind: "failed", stage: "read", error: `${filepath} is not a JSON object` };
+    }
+    existing = parsed as Record<string, unknown>;
+  }
+  const content = merge(existing);
+  const problem = validate(content);
+  if (problem !== null) return { kind: "failed", stage: "validate", error: problem };
+
+  let tmpPath: string | undefined;
+  try {
+    fs.mkdirSync(path.dirname(filepath), { recursive: true });
+    const bytes = Buffer.from(JSON.stringify(content, null, 2), "utf-8");
+    tmpPath = filepath + ".tmp." + crypto.randomUUID();
+    fs.writeFileSync(tmpPath, bytes, { flag: "wx", mode: 0o600 });
+    fs.renameSync(tmpPath, filepath);
+    tmpPath = undefined;
+    logger.warn(`Response recorded → ${filepath}`);
+    const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    return { kind: "written", filepath, sha256, content };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+    return { kind: "failed", stage: "write", error: msg };
+  } finally {
+    if (tmpPath) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* Preserve the original persistence error. */
+      }
+    }
+  }
 }

@@ -8,9 +8,17 @@
  */
 
 import { crc32 } from "node:zlib";
-import type { FixtureBlock, RecordProviderKey, ToolCall } from "./types.js";
+import { captureUsage } from "./response/usage/recording.js";
+import type {
+  CustomToolCall,
+  FixtureBlock,
+  RecordProviderKey,
+  ResponsesFixtureBlock,
+  ToolCall,
+} from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
+import { CitationRecording, isResponsesMessage } from "./citation-recording.js";
 
 // ---------------------------------------------------------------------------
 // Accumulated-string cap (RangeError: Invalid string length guard)
@@ -123,22 +131,29 @@ export interface CollapseResult {
   redactedThinking?: string[];
   webSearches?: string[];
   /**
-   * The provider-reported `usage` object from the stream's final usage frame,
-   * captured VERBATIM (#368). OpenAI-compatible streams (including OpenRouter)
-   * close with a `chat.completion.chunk` whose `choices` is empty and whose
-   * `usage` carries the real token counts — plus, on OpenRouter,
-   * `cost` / `cost_details` / `native_tokens_*`. Collapsing dropped that frame,
-   * so a recorded fixture could only ever replay estimated (`ceil(len/4)`) token
-   * counts and never a provider-reported cost. Last-usage-wins: a stream that
-   * emits several usage frames keeps the final one. Absent when the upstream
-   * stream carried no usage (e.g. `stream_options.include_usage` unset).
+   * Provider-reported usage captured with each wire's merge rule. OpenAI and
+   * OpenRouter preserve the last nonempty usage object, including cost fields.
+   * Anthropic Messages and Bedrock Claude invoke merge message_start usage
+   * with numeric message_delta updates; null keeps the earlier count. Cache
+   * TTL objects come from message_start. Other wire families omit usage.
+   * Absent when no usage was captured from the upstream stream.
    *
    * Kept as a loose record because the field set is provider-specific and
    * forward-extending; the recorder sanitizes it into the fixture
    * `response.usage` override shape before persisting.
    */
   usage?: Record<string, unknown>;
+  /**
+   * Function calls. An OpenAI Responses `function_call` item's `namespace` is
+   * kept on its entry (internal {@link collapseOpenAISSEWithResponsesTools} only).
+   */
   toolCalls?: ToolCall[];
+  /**
+   * OpenAI Responses custom tool calls (`custom_tool_call` items), in output
+   * order (internal {@link collapseOpenAISSEWithResponsesTools} only). They are never part of `toolCalls`
+   * or `blocks`.
+   */
+  customToolCalls?: CustomToolCall[];
   droppedChunks?: number;
   firstDroppedSample?: string;
   truncated?: boolean;
@@ -156,6 +171,14 @@ export interface CollapseResult {
   /** Short human-readable note accompanying {@link harmonyUnparsed}. */
   harmonyNote?: string;
   /**
+   * Set when native citation metadata could not be kept: an entry that is not
+   * an object; an annotation whose offsets fall outside its text; one that
+   * spans text the stream split into several blocks; or, in a harmony-parsed
+   * turn, one whose offsets fall outside the parsed text or whose parsed text
+   * was not found in the streamed text. The recorder logs it as a warning.
+   */
+  citationNote?: string;
+  /**
    * Ordered cross-channel block list, in STREAM order, populated ONLY when the
    * stream is "interleaved" — i.e. a tool-call delta appeared STRICTLY BEFORE
    * the first content delta, OR a content delta appeared AFTER any tool-call
@@ -164,13 +187,27 @@ export interface CollapseResult {
    * positional instrumentation the recorder consults to decide whether to
    * persist the ordered shape. Absent (undefined) for text-first, text-only,
    * and tool-only streams — i.e. anything NOT interleaved — so the recorder
-   * keeps the legacy `{ content, toolCalls }` shape byte-identical.
+   * keeps the legacy `{ content, toolCalls }` shape byte-identical. A cited
+   * OpenAI Responses or Anthropic turn always has `blocks`, in the order of
+   * the uncited collapse, with its text split where one text part ends and
+   * the next begins, so its text blocks can carry `annotations` / `citations`.
    *
    * Each text block coalesces all contiguous content deltas between tool
-   * atoms; each toolCall block carries the fully-assembled name/arguments/id
-   * for one tool call in the position its FIRST delta arrived.
+   * atoms. Each tool block sits in the position where its FIRST delta arrived:
+   * a function call becomes a `toolCall` block with the fully-assembled
+   * name/arguments/id, and an OpenAI Responses custom call becomes a
+   * `customToolCall` block with name/input/id, where `input` is kept verbatim.
+   * Custom calls are left out of `blocks` (which, like `toolCalls`, describes
+   * function calls and text only); see {@link CollapseResult.responsesBlocks}.
    */
   blocks?: FixtureBlock[];
+  /**
+   * OpenAI Responses only: the full ordered output (text, function calls and
+   * custom calls) when the stream carried a custom call whose position the
+   * `content` + `toolCalls` + `customToolCalls` shape cannot express (it is
+   * interleaved with text, or comes before a function call).
+   */
+  responsesBlocks?: ResponsesFixtureBlock[];
 }
 
 // ---------------------------------------------------------------------------
@@ -180,15 +217,45 @@ export interface CollapseResult {
 /**
  * Atom recorded during a collapse pass, in stream arrival order. A `text` atom
  * carries one content delta's text (contiguous text atoms are coalesced when
- * building blocks); a `toolCall` atom is a stable reference to a tool-call
- * accumulator whose name/arguments/id are filled in across later deltas. The
- * `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
+ * building blocks). A `toolCall` atom is a stable reference to a function-call
+ * accumulator whose name/arguments/id are filled in across later deltas. A
+ * `customToolCall` atom is a stable reference to a custom-call accumulator
+ * whose name/input/id are filled in the same way. The `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
  * to a flat `toolCalls` array), so block identity is reconciled with the flat
  * representation at finalize time — see {@link buildOrderedBlocks}.
  */
 type OrderAtom =
   | { kind: "text"; text: string }
-  | { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } };
+  | { kind: "toolCall"; ref: FunctionCallAcc }
+  | { kind: "customToolCall"; ref: CustomCallAcc };
+
+/** Accumulator for a function call. `namespace` is set only by the Responses API. */
+interface FunctionCallAcc {
+  name: string;
+  arguments: string;
+  id?: string;
+  namespace?: string;
+}
+
+/** Accumulator for an OpenAI Responses `custom_tool_call` (free-text `input`). */
+interface CustomCallAcc {
+  name: string;
+  input: string;
+  id?: string;
+  namespace?: string;
+}
+
+/**
+ * A tool-call accumulator in {@link collapseOpenAISSEWithResponsesTools}'s `toolCallMap`. The
+ * Responses API puts function and custom calls in one `output_index` space, so
+ * the map holds both kinds.
+ */
+type ToolCallAcc = ({ kind: "function" } & FunctionCallAcc) | ({ kind: "custom" } & CustomCallAcc);
+
+/** A Responses `namespace` field when it is a non-empty string, else undefined. */
+function responsesNamespace(item: Record<string, unknown>): string | undefined {
+  return typeof item.namespace === "string" && item.namespace !== "" ? item.namespace : undefined;
+}
 
 /**
  * Normalize a tool call's accumulated `arguments` into valid JSON exactly like
@@ -207,12 +274,48 @@ function normalizeToolArguments(args: string | undefined): string {
  * normalizing `arguments` so the block agrees byte-for-byte with the flat
  * `toolCalls` entry built from the SAME accumulator object.
  */
-function toToolCallBlock(ref: { name: string; arguments: string; id?: string }): FixtureBlock {
+function toToolCallBlock(ref: FunctionCallAcc): FixtureBlock & { type: "toolCall" } {
   return {
     type: "toolCall",
     name: ref.name,
     arguments: normalizeToolArguments(ref.arguments),
     ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/**
+ * Build a `customToolCall` block from a custom-call accumulator. The `input` is
+ * free text: it is kept as is, never normalized to `"{}"`.
+ */
+function toCustomToolCallBlock(ref: CustomCallAcc): ResponsesFixtureBlock {
+  return {
+    type: "customToolCall",
+    name: ref.name,
+    input: ref.input,
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/** Project a function-call accumulator to a flat fixture tool call. */
+function toFunctionToolCall(ref: FunctionCallAcc): ToolCall {
+  return {
+    name: ref.name,
+    arguments: normalizeToolArguments(ref.arguments),
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/** Project a custom-call accumulator to a flat fixture custom tool call. */
+function toCustomToolCall(ref: CustomCallAcc): CustomToolCall {
+  return {
+    type: "custom",
+    name: ref.name,
+    input: ref.input,
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
   };
 }
 
@@ -223,19 +326,34 @@ function toToolCallBlock(ref: { name: string; arguments: string; id?: string }):
  * `CollapseResult.blocks` unset and the recorder keeps the legacy shape.
  *
  * Interleaved ⇔ (a tool atom appears strictly before the first text atom) OR
- * (a text atom appears after any tool atom). A stream with no tool atoms, or
+ * (a text atom appears after any tool atom). Tool atoms are `toolCall` and
+ * `customToolCall` atoms. A stream with no tool atoms, or
  * with no text atoms, is never interleaved. Text-first-then-tools is the common
  * legacy case and is explicitly NOT interleaved.
  *
- * CONSISTENCY (#274): each toolCall block is derived from the SAME accumulator
- * object referenced by its atom and normalized identically to the flat
- * `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}).
- * Because the atom `ref` is the very object the flat list is built from, the
- * block and its flat counterpart describe the same call by identity — even when
- * upstream tool-call indices do not match stream-arrival order. Empty/missing
- * arguments normalize to `"{}"` in BOTH representations, never `""`.
+ * CONSISTENCY (#274): each tool block is derived from the SAME accumulator
+ * object referenced by its atom. Because the atom `ref` is the very object the
+ * flat list is built from, the block and its flat counterpart describe the same
+ * call by identity — even when upstream tool-call indices do not match
+ * stream-arrival order. A `toolCall` block is normalized identically to the
+ * flat `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}):
+ * empty/missing arguments become `"{}"` in BOTH representations, never `""`. A
+ * `customToolCall` block ({@link toCustomToolCallBlock}) keeps `input` verbatim,
+ * the same as the flat custom tool call ({@link toCustomToolCall}); it is never
+ * normalized to `"{}"`.
  */
 function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
+  return orderedBlocksFrom(atoms.filter((a) => a.kind !== "customToolCall"))?.filter(
+    (block): block is FixtureBlock => block.type !== "customToolCall",
+  );
+}
+
+/**
+ * {@link buildOrderedBlocks} over every atom, custom calls included, for
+ * `CollapseResult.responsesBlocks`. With `force`, the blocks are built even
+ * when text and tools are not interleaved.
+ */
+function orderedBlocksFrom(atoms: OrderAtom[], force = false): ResponsesFixtureBlock[] | undefined {
   let firstTextIndex = -1;
   let firstToolIndex = -1;
   let textAfterTool = false;
@@ -253,13 +371,16 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
     }
   }
   // No cross-channel ordering to express unless BOTH channels appear.
-  if (!sawTool || !sawText) return undefined;
-  const toolBeforeText = firstToolIndex < firstTextIndex;
-  if (!toolBeforeText && !textAfterTool) return undefined;
+  if (!force) {
+    if (!sawTool || !sawText) return undefined;
+    const toolBeforeText = firstToolIndex < firstTextIndex;
+    if (!toolBeforeText && !textAfterTool) return undefined;
+  }
 
-  // Coalesce contiguous text atoms into one text block; emit each tool atom as
-  // a toolCall block reflecting its fully-assembled, normalized accumulator.
-  const blocks: FixtureBlock[] = [];
+  // Coalesce contiguous text atoms into one text block; emit each function-call
+  // atom as a normalized toolCall block and each custom-call atom as a
+  // customToolCall block with its input kept verbatim.
+  const blocks: ResponsesFixtureBlock[] = [];
   let pendingText = "";
   let hasPendingText = false;
   const flushText = () => {
@@ -275,7 +396,9 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
       hasPendingText = true;
     } else {
       flushText();
-      blocks.push(toToolCallBlock(a.ref));
+      blocks.push(
+        a.kind === "customToolCall" ? toCustomToolCallBlock(a.ref) : toToolCallBlock(a.ref),
+      );
     }
   }
   flushText();
@@ -376,10 +499,65 @@ function extractSSEData(lines: string[]): string | undefined {
  * Format:
  *   data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}\n\n
  *   data: [DONE]\n\n
+ *
+ * Public. An OpenAI Responses `namespace` and custom tool calls are dropped,
+ * so for uncited input the result is unchanged from 1.44.0. For a cited
+ * Responses turn the result also has ordered `blocks` whose text blocks carry
+ * `annotations` (and `continuesMessage`). The recorder uses
+ * {@link collapseOpenAISSEWithResponsesTools}.
  */
 export function collapseOpenAISSE(rawBody: string): CollapseResult {
-  const inputTruncated = isCollapseInputTruncated(rawBody);
-  const body = guardCollapseBody(rawBody);
+  return withoutResponsesToolFields(collapseOpenAISSEWithResponsesTools(rawBody));
+}
+
+/**
+ * A collapse result as 1.44.0 returned and recorded it: no `namespace` on a
+ * function call or `toolCall` block, and no custom tool calls.
+ */
+export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseResult {
+  if (
+    collapsed.customToolCalls === undefined &&
+    collapsed.responsesBlocks === undefined &&
+    !collapsed.toolCalls?.some((tc) => tc.namespace !== undefined) &&
+    !collapsed.blocks?.some((block) => block.type !== "text" && block.namespace !== undefined)
+  ) {
+    return collapsed;
+  }
+  const result: CollapseResult = { ...collapsed };
+  delete result.customToolCalls;
+  delete result.responsesBlocks;
+  if (result.toolCalls) {
+    result.toolCalls = result.toolCalls.map((tc) => {
+      if (tc.namespace === undefined) return tc;
+      const copy = { ...tc };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  if (result.blocks) {
+    result.blocks = result.blocks.map((block) => {
+      if (block.type === "text" || block.namespace === undefined) return block;
+      const copy = { ...block };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  return result;
+}
+
+/**
+ * @internal {@link collapseOpenAISSE} keeping an OpenAI Responses `namespace`
+ * and custom tool calls, for the recorder with `responsesTools: "extended"`.
+ * `inputTruncated` says whether the source of `rawBody` is larger than the
+ * collapse limit (by default, `rawBody` itself); only then is the stream cut
+ * to the limit and the result marked `truncated`.
+ */
+export function collapseOpenAISSEWithResponsesTools(
+  rawBody: string,
+  inputTruncated = isCollapseInputTruncated(rawBody),
+): CollapseResult {
+  const body = inputTruncated ? guardCollapseBody(rawBody) : rawBody;
+  const citations = new CitationRecording("responses");
   const lines = splitSSEEvents(body);
   let content = "";
   let transcript = "";
@@ -394,7 +572,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   let firstDroppedSample: string | undefined;
   let harmonyUnparsed = false;
   let harmonyNote: string | undefined;
-  const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+  const toolCallMap = new Map<number, ToolCallAcc>();
   // Fallback keying for deltas that OMIT `index`. Without this, every
   // index-less delta collapses under one `undefined`/NaN key, merging distinct
   // tool calls and corrupting arguments. Index-less fragments that share an
@@ -436,6 +614,8 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       continue;
     }
 
+    citations.responsesEvent(parsed);
+
     // Responses API reasoning events
     if (parsed.type === "transcript.text.delta" && typeof parsed.delta === "string") {
       transcript += parsed.delta;
@@ -458,14 +638,15 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       // Only capture a real usage OBJECT. `typeof === "object"` alone admits an
       // array (a type lie once cast to Record) and an empty `{}` (meaningless);
       // guard against both, exactly like any chat usage capture would.
-      if (
-        parsed.usage &&
-        typeof parsed.usage === "object" &&
-        !Array.isArray(parsed.usage) &&
-        Object.keys(parsed.usage).length > 0
-      ) {
-        transcriptUsage = parsed.usage as Record<string, unknown>;
-      }
+      transcriptUsage = captureUsage({
+        provider: "openai",
+        contentType: "text/event-stream",
+        operation: "transcription",
+        family: "transcription",
+        stage: "stream",
+        previous: transcriptUsage,
+        observation: parsed,
+      });
       continue;
     }
     if (
@@ -487,25 +668,53 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         }
       }
       if (item?.type === "function_call" && typeof parsed.output_index === "number") {
-        // Finalize the accumulated tool call. Fill id/name when the opening
-        // `.added` event was absent, and adopt the full `arguments` ONLY when
-        // the delta stream produced none — never re-append, since the deltas
-        // already carry the complete string.
+        // Finalize the accumulated tool call. Fill id/name/namespace when the
+        // opening `.added` event lacked them, and adopt the full `arguments`
+        // ONLY when the delta stream produced none — never re-append, since the
+        // deltas already carry the complete string.
         const entry = toolCallMap.get(parsed.output_index);
         if (entry) {
-          if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
-          if (!entry.name && typeof item.name === "string") entry.name = item.name;
-          if (entry.arguments === "" && typeof item.arguments === "string") {
-            entry.arguments = item.arguments;
+          if (entry.kind === "function") {
+            if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
+            if (!entry.name && typeof item.name === "string") entry.name = item.name;
+            if (!entry.namespace) entry.namespace = responsesNamespace(item);
+            if (entry.arguments === "" && typeof item.arguments === "string") {
+              entry.arguments = item.arguments;
+            }
           }
         } else {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             id: typeof item.call_id === "string" ? item.call_id : "",
             name: typeof item.name === "string" ? item.name : "",
             arguments: typeof item.arguments === "string" ? item.arguments : "",
+            namespace: responsesNamespace(item),
           };
           toolCallMap.set(parsed.output_index, created);
           orderAtoms.push({ kind: "toolCall", ref: created });
+        }
+        continue;
+      }
+      if (item?.type === "custom_tool_call" && typeof parsed.output_index === "number") {
+        // Same rules as a function call, for the free-text `input`.
+        const entry = toolCallMap.get(parsed.output_index);
+        if (entry) {
+          if (entry.kind === "custom") {
+            if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
+            if (!entry.name && typeof item.name === "string") entry.name = item.name;
+            if (!entry.namespace) entry.namespace = responsesNamespace(item);
+            if (entry.input === "" && typeof item.input === "string") entry.input = item.input;
+          }
+        } else {
+          const created: ToolCallAcc = {
+            kind: "custom",
+            id: typeof item.call_id === "string" ? item.call_id : "",
+            name: typeof item.name === "string" ? item.name : "",
+            input: typeof item.input === "string" ? item.input : "",
+            namespace: responsesNamespace(item),
+          };
+          toolCallMap.set(parsed.output_index, created);
+          orderAtoms.push({ kind: "customToolCall", ref: created });
         }
         continue;
       }
@@ -524,19 +733,71 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       const item = parsed.item as Record<string, unknown> | undefined;
       if (item?.type === "function_call" && typeof parsed.output_index === "number") {
         if (!toolCallMap.has(parsed.output_index)) {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             // The Responses API `call_id` is what a tool result references, so
             // capture THAT (not the internal `fc_…` item id) as the tool-call
             // id — matching what the replay path treats as `toolCall.id`.
             id: typeof item.call_id === "string" ? item.call_id : "",
             name: typeof item.name === "string" ? item.name : "",
             arguments: "",
+            namespace: responsesNamespace(item),
           };
           toolCallMap.set(parsed.output_index, created);
           orderAtoms.push({ kind: "toolCall", ref: created });
         }
         continue;
       }
+      // A custom (freeform) tool call: `output_item.added` (custom_tool_call)
+      // → `custom_tool_call_input.delta`* → `custom_tool_call_input.done` →
+      // `output_item.done`. It shares the function calls' `output_index` space.
+      if (item?.type === "custom_tool_call" && typeof parsed.output_index === "number") {
+        if (!toolCallMap.has(parsed.output_index)) {
+          const created: ToolCallAcc = {
+            kind: "custom",
+            id: typeof item.call_id === "string" ? item.call_id : "",
+            name: typeof item.name === "string" ? item.name : "",
+            input: "",
+            namespace: responsesNamespace(item),
+          };
+          toolCallMap.set(parsed.output_index, created);
+          orderAtoms.push({ kind: "customToolCall", ref: created });
+        }
+        continue;
+      }
+    }
+    if (
+      parsed.type === "response.custom_tool_call_input.delta" &&
+      typeof parsed.delta === "string" &&
+      typeof parsed.output_index === "number"
+    ) {
+      let entry = toolCallMap.get(parsed.output_index);
+      if (!entry) {
+        entry = { kind: "custom", id: "", name: "", input: "" };
+        toolCallMap.set(parsed.output_index, entry);
+        orderAtoms.push({ kind: "customToolCall", ref: entry });
+      }
+      if (entry.kind === "custom") {
+        entry.input += parsed.delta;
+      }
+      continue;
+    }
+    if (
+      parsed.type === "response.custom_tool_call_input.done" &&
+      typeof parsed.output_index === "number"
+    ) {
+      // Adopt the full `input` only when the deltas produced none.
+      const entry = toolCallMap.get(parsed.output_index);
+      if (entry) {
+        if (entry.kind === "custom" && entry.input === "" && typeof parsed.input === "string") {
+          entry.input = parsed.input;
+        }
+      } else if (typeof parsed.input === "string") {
+        const created: ToolCallAcc = { kind: "custom", id: "", name: "", input: parsed.input };
+        toolCallMap.set(parsed.output_index, created);
+        orderAtoms.push({ kind: "customToolCall", ref: created });
+      }
+      continue;
     }
     if (
       parsed.type === "response.function_call_arguments.delta" &&
@@ -545,11 +806,11 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     ) {
       let entry = toolCallMap.get(parsed.output_index);
       if (!entry) {
-        entry = { id: "", name: "", arguments: "" };
+        entry = { kind: "function", id: "", name: "", arguments: "" };
         toolCallMap.set(parsed.output_index, entry);
         orderAtoms.push({ kind: "toolCall", ref: entry });
       }
-      entry.arguments += parsed.delta;
+      if (entry.kind === "function") entry.arguments += parsed.delta;
       continue;
     }
     if (
@@ -561,11 +822,20 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       // double-append.
       const entry = toolCallMap.get(parsed.output_index);
       if (entry) {
-        if (entry.arguments === "" && typeof parsed.arguments === "string") {
+        if (
+          entry.kind === "function" &&
+          entry.arguments === "" &&
+          typeof parsed.arguments === "string"
+        ) {
           entry.arguments = parsed.arguments;
         }
       } else if (typeof parsed.arguments === "string") {
-        const created = { id: "", name: "", arguments: parsed.arguments };
+        const created: ToolCallAcc = {
+          kind: "function",
+          id: "",
+          name: "",
+          arguments: parsed.arguments,
+        };
         toolCallMap.set(parsed.output_index, created);
         orderAtoms.push({ kind: "toolCall", ref: created });
       }
@@ -575,6 +845,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // Responses API text content events
     if (parsed.type === "response.output_text.delta" && typeof parsed.delta === "string") {
       content += parsed.delta;
+      citations.text(citations.responsesKey(parsed), parsed.delta.length);
       if (parsed.delta.length > 0) {
         orderAtoms.push({ kind: "text", text: parsed.delta });
       }
@@ -594,14 +865,15 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // entirely. Some providers also attach `usage` to the finish chunk (non-empty
     // choices), so this runs for every chat chunk, last-NON-EMPTY-usage-wins:
     // a trailing bare `usage: {}` frame must not clobber a good capture (#369).
-    if (
-      parsed.usage &&
-      typeof parsed.usage === "object" &&
-      !Array.isArray(parsed.usage) &&
-      Object.keys(parsed.usage).length > 0
-    ) {
-      usage = parsed.usage as Record<string, unknown>;
-    }
+    usage = captureUsage({
+      provider: "openai",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "openai",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
     if (!choices || choices.length === 0) continue;
@@ -617,6 +889,9 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // Text content
     if (typeof delta.content === "string") {
       content += delta.content;
+      // Chat Completions text carries no native citations; it is keyed only so
+      // the citation recording sees all of `content`.
+      citations.text("chat", delta.content.length);
       if (delta.content.length > 0) {
         orderAtoms.push({ kind: "text", text: delta.content });
       }
@@ -656,7 +931,8 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         lastToolCallKey = index;
 
         if (!toolCallMap.has(index)) {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             id: rawId ?? "",
             name: (fn?.name as string) ?? "",
             arguments: "",
@@ -674,7 +950,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         if (tc.id && typeof tc.id === "string" && !entry.id) {
           entry.id = tc.id;
         }
-        if (fn?.arguments && typeof fn.arguments === "string") {
+        if (entry.kind === "function" && fn?.arguments && typeof fn.arguments === "string") {
           entry.arguments += fn.arguments;
         }
       }
@@ -691,12 +967,19 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
   // signal (NOT droppedChunks/truncated — the bytes are not lost).
   const harmonyToolCalls: ToolCall[] = [];
-  if (toolCallMap.size === 0 && isHarmonyContent(content)) {
+  // The streamed text, kept for the citation recording when harmony parsing
+  // replaces `content`.
+  let harmonyRaw: string | undefined;
+  // Custom tool calls do not count as structured calls here, as before they
+  // were collapsed at all.
+  const hasFunctionCalls = Array.from(toolCallMap.values()).some((tc) => tc.kind === "function");
+  if (!hasFunctionCalls && isHarmonyContent(content)) {
     const parsed = parseHarmonyContent(content);
     if (parsed.failed) {
       harmonyUnparsed = true;
       harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
     } else {
+      harmonyRaw = content;
       content = parsed.content;
       if (parsed.reasoning) {
         reasoning += parsed.reasoning;
@@ -705,7 +988,30 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     }
   }
 
-  if (toolCallMap.size > 0 || harmonyToolCalls.length > 0) {
+  // OpenAI Responses custom tool calls ride in their own fields, so
+  // `toolCalls` and `blocks` describe exactly what earlier releases recorded
+  // (function calls and text). `responsesBlocks` keeps the full order when the
+  // flat fields cannot: a custom call interleaved with text, or placed before
+  // a function call.
+  const sortedEntries = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
+  const customEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "custom" ? [tc] : []));
+  const functionEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "function" ? [tc] : []));
+  let customFields: Pick<CollapseResult, "customToolCalls" | "responsesBlocks"> = {};
+  if (customEntries.length > 0) {
+    const firstCustomAtom = orderAtoms.findIndex((a) => a.kind === "customToolCall");
+    const customBeforeFunction = orderAtoms.some(
+      (a, i) => a.kind === "toolCall" && i > firstCustomAtom,
+    );
+    const responsesBlocks = orderedBlocksFrom(orderAtoms, customBeforeFunction);
+    customFields = {
+      customToolCalls: responsesBlocks
+        ? orderAtoms.flatMap((a) => (a.kind === "customToolCall" ? [toCustomToolCall(a.ref)] : []))
+        : customEntries.map(toCustomToolCall),
+      ...(responsesBlocks ? { responsesBlocks } : {}),
+    };
+  }
+
+  if (functionEntries.length > 0 || harmonyToolCalls.length > 0) {
     const blocks = buildOrderedBlocks(orderAtoms);
     // When the stream is interleaved we persist ordered `blocks`; the flat
     // `toolCalls` MUST then describe the same calls in the same order so the two
@@ -713,24 +1019,48 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // same accumulator objects as `toolCallMap`, so derive the flat list from
     // those atoms (stream-arrival order, matching blocks) when blocks exist;
     // otherwise keep the legacy index-sorted order for byte-identical fixtures.
-    const orderedToolCalls = orderAtoms
-      .filter(
-        (a): a is { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } } =>
-          a.kind === "toolCall",
-      )
-      .map((a) => ({
-        name: a.ref.name,
-        arguments: normalizeToolArguments(a.ref.arguments),
-        ...(a.ref.id ? { id: a.ref.id } : {}),
-      }));
-    const indexSortedToolCalls = Array.from(toolCallMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, tc]) => ({
-        name: tc.name,
-        arguments: normalizeToolArguments(tc.arguments),
-        ...(tc.id ? { id: tc.id } : {}),
-      }));
-    return {
+    // `namespace` is kept on a Responses function call.
+    const orderedToolCalls = orderAtoms.flatMap((a) =>
+      a.kind === "toolCall" ? [toFunctionToolCall(a.ref)] : [],
+    );
+    const indexSortedToolCalls = functionEntries.map(toFunctionToolCall);
+    return citations.attach(
+      {
+        ...(transcriptSeen
+          ? {
+              transcription: {
+                text: transcript,
+                ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
+                ...(transcriptUsage ? { usage: transcriptUsage } : {}),
+              },
+            }
+          : {}),
+        ...(blocks ? { blocks } : {}),
+        ...(content ? { content } : {}),
+        // Fallback-only: harmonyToolCalls are populated ONLY in the
+        // no-structured-calls branch, so this is never a merge of both sources.
+        toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+        ...customFields,
+        // Reasoning is preserved alongside tool calls for ALL structured streams
+        // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
+        // parity with every other collapser and the non-streaming path.
+        ...(reasoning ? { reasoning } : {}),
+        // webSearches parity with the text-only return branch.
+        ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
+        // Provider-reported usage parity with the text-only return branch (#368).
+        ...(usage ? { usage } : {}),
+        ...(droppedChunks > 0 ? { droppedChunks } : {}),
+        ...(firstDroppedSample ? { firstDroppedSample } : {}),
+        ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+        ...(harmonyNote ? { harmonyNote } : {}),
+        ...(inputTruncated ? { truncated: true } : {}),
+      },
+      harmonyRaw,
+    );
+  }
+
+  return citations.attach(
+    {
       ...(transcriptSeen
         ? {
             transcription: {
@@ -740,47 +1070,71 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
             },
           }
         : {}),
-      ...(blocks ? { blocks } : {}),
-      ...(content ? { content } : {}),
-      // Fallback-only: harmonyToolCalls are populated ONLY in the
-      // no-structured-calls branch, so this is never a merge of both sources.
-      toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
-      // Reasoning is preserved alongside tool calls for ALL structured streams
-      // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
-      // parity with every other collapser and the non-streaming path.
+      content,
+      ...customFields,
       ...(reasoning ? { reasoning } : {}),
-      // webSearches parity with the text-only return branch.
       ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-      // Provider-reported usage parity with the text-only return branch (#368).
       ...(usage ? { usage } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-    };
-  }
+    },
+    harmonyRaw,
+  );
+}
 
-  return {
-    ...(transcriptSeen
-      ? {
-          transcription: {
-            text: transcript,
-            ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
-            ...(transcriptUsage ? { usage: transcriptUsage } : {}),
-          },
+/**
+ * @internal An OpenAI Responses JSON body collapsed as the stream of the same
+ * turn: each `output` item becomes the events that stream it (message text
+ * parts with their annotations, reasoning summaries, function, custom and web
+ * search calls), read by {@link collapseOpenAISSEWithResponsesTools}, plus the
+ * body's sanitized `usage`. The
+ * recorder uses it for a cited Responses JSON turn, so the JSON and the stream
+ * recording of one turn are made by one collapse. The collapse limit applies
+ * to the body itself, not to the events made from it, so a complete body
+ * under the limit is never marked `truncated`.
+ */
+export function collapseResponsesJSON(body: Record<string, unknown>): CollapseResult {
+  const events: Record<string, unknown>[] = [];
+  const output = Array.isArray(body.output) ? body.output : [];
+  output.forEach((raw, output_index) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return;
+    const item = raw as Record<string, unknown>;
+    if (isResponsesMessage(item)) {
+      events.push({ type: "response.output_item.added", output_index, item: { type: "message" } });
+      const parts = Array.isArray(item.content) ? item.content : [];
+      parts.forEach((part, content_index) => {
+        const value = part as Record<string, unknown> | null;
+        if (value?.type !== "output_text" || typeof value.text !== "string") return;
+        // The part's text is streamed once, by its delta; its done event
+        // carries only its annotations.
+        const { text, ...done } = value;
+        events.push(
+          { type: "response.output_text.delta", output_index, content_index, delta: text },
+          { type: "response.content_part.done", output_index, content_index, part: done },
+        );
+      });
+    } else if (item.type === "reasoning") {
+      const summary = Array.isArray(item.summary) ? item.summary : [];
+      for (const part of summary as (Record<string, unknown> | null)[]) {
+        if (part?.type === "summary_text" && typeof part.text === "string") {
+          events.push({ type: "response.reasoning_summary_text.delta", delta: part.text });
         }
-      : {}),
-    content,
-    ...(reasoning ? { reasoning } : {}),
-    ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
-    ...(usage ? { usage } : {}),
-    ...(droppedChunks > 0 ? { droppedChunks } : {}),
-    ...(firstDroppedSample ? { firstDroppedSample } : {}),
-    ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
-    ...(harmonyNote ? { harmonyNote } : {}),
-    ...(inputTruncated ? { truncated: true } : {}),
-  };
+      }
+      events.push({ type: "response.output_item.done", output_index, item });
+    } else {
+      events.push({ type: "response.output_item.done", output_index, item });
+    }
+  });
+  const collapsed = collapseOpenAISSEWithResponsesTools(
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+    JSON.stringify(body).length > effectiveCollapseStringLimit(),
+  );
+  // The body's own usage, sanitized as a final usage.
+  const usage = captureUsage({ family: "final", stage: "final", observation: body.usage });
+  return usage ? { ...collapsed, usage } : collapsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -789,15 +1143,23 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
 
 /**
  * Collapse Anthropic Claude Messages SSE stream into a single response.
+ * Captures start usage and numeric delta updates; null keeps the start value.
+ * Cache TTL objects are captured from message_start, alongside flat counts.
  *
  * Format:
  *   event: message_start\ndata: {...}\n\n
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
+ *
+ * For uncited input the result is unchanged from 1.44.0. For a cited turn it
+ * also has `blocks`, in the uncited result's order, whose text blocks carry
+ * `citations`.
  */
 export function collapseAnthropicSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
+  const citations = new CitationRecording("anthropic");
   const blocks = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   // Real cryptographic signature captured from a `signature_delta`; stays
@@ -849,6 +1211,23 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       continue;
     }
 
+    usage = captureUsage({
+      provider: "anthropic",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "anthropic",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
+    // The citation recording reads the same event types as the code below
+    // (only a frame with an `event:` line), and keys the text this collapse
+    // appends to `content` to its content block.
+    const citationKey =
+      parsed !== null && typeof parsed === "object"
+        ? citations.anthropicEvent(eventType, parsed)
+        : undefined;
+
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
       // A `redacted_thinking` block carries its encrypted reasoning in an opaque
@@ -887,6 +1266,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
 
       if (delta.type === "text_delta" && typeof delta.text === "string") {
         content += delta.text;
+        if (citationKey !== undefined) citations.text(citationKey, delta.text.length);
         if (delta.text.length > 0) {
           orderAtoms.push({ kind: "text", text: delta.text });
         }
@@ -954,7 +1334,8 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
         arguments: normalizeToolArguments(tc.arguments),
         ...(tc.id ? { id: tc.id } : {}),
       }));
-    return {
+    return citations.attach({
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
@@ -964,10 +1345,11 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(inputTruncated ? { truncated: true } : {}),
-    };
+    });
   }
 
-  return {
+  return citations.attach({
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(reasoningSignature ? { reasoningSignature } : {}),
@@ -975,7 +1357,7 @@ export function collapseAnthropicSSE(rawBody: string): CollapseResult {
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(inputTruncated ? { truncated: true } : {}),
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -992,6 +1374,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -1019,6 +1402,16 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "gemini",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "gemini",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const candidates = parsed.candidates as Array<Record<string, unknown>> | undefined;
     if (!candidates || candidates.length === 0) continue;
@@ -1090,6 +1483,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
     // a field this result shape can't carry. Block ordering is built only on the
     // content+toolCalls path below, which can actually carry it.
     return {
+      ...(usage ? { usage } : {}),
       audioB64,
       audioMimeType,
       ...(content ? { content } : {}),
@@ -1104,6 +1498,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   if (toolCalls.length > 0) {
     const blocks = buildOrderedBlocks(orderAtoms);
     return {
+      ...(usage ? { usage } : {}),
       ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: normalizedToolCalls,
@@ -1115,6 +1510,7 @@ export function collapseGeminiSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1145,6 +1541,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = body.split("\n").filter((l) => l.trim().length > 0);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -1167,6 +1564,16 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "ollama",
+      contentType: "application/x-ndjson",
+      operation: "chat",
+      family: "ollama",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     // /api/chat format
     const message = parsed.message as Record<string, unknown> | undefined;
@@ -1239,6 +1646,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
       arguments: normalizeToolArguments(tc.arguments),
     }));
     return {
+      ...(usage ? { usage } : {}),
       ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: normalizedToolCalls,
@@ -1252,6 +1660,7 @@ export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1276,6 +1685,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const blocks = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   // Reasoning text assembled from `thinking` content-delta blocks. Cohere's
   // reasoning models stream a `content.type === "thinking"` block carrying a
@@ -1321,6 +1731,16 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "cohere",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "cohere",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     if (eventType === "content-delta") {
       const delta = parsed.delta as Record<string, unknown> | undefined;
@@ -1424,6 +1844,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       ...(content ? { content } : {}),
       toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
@@ -1435,6 +1856,7 @@ export function collapseCohereSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -1553,6 +1975,8 @@ function decodeEventStreamFrames(buf: Buffer): {
 
 /**
  * Collapse Bedrock binary Event Stream into a single response.
+ * Claude invoke events preserve usage with the Anthropic start/delta rules;
+ * Converse usage remains omitted.
  *
  * Each frame contains a JSON payload with event types like:
  *   contentBlockDelta, contentBlockStart, etc.
@@ -1569,6 +1993,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
   const body = inputTruncated ? rawBody.subarray(0, limit) : rawBody;
   const { frames, truncated: frameTruncated } = decodeEventStreamFrames(body);
   const truncated = frameTruncated || inputTruncated;
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   // Reasoning text assembled from Converse `reasoningContent.text` deltas. The
   // Bedrock Converse stream interleaves a `delta.reasoningContent` block carrying
@@ -1598,6 +2023,37 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(frameStr) as Record<string, unknown>;
+      if (
+        frame.headers[":event-type"] === "chunk" &&
+        parsed !== null &&
+        typeof parsed === "object" &&
+        Object.hasOwn(parsed, "bytes")
+      ) {
+        try {
+          const bytes = parsed.bytes;
+          if (
+            typeof bytes !== "string" ||
+            bytes.length === 0 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(bytes)
+          ) {
+            throw new TypeError("bytes must be a nonempty base64 string");
+          }
+          const event: unknown = JSON.parse(Buffer.from(bytes, "base64").toString("utf8"));
+          if (
+            event === null ||
+            typeof event !== "object" ||
+            Array.isArray(event) ||
+            !("type" in event) ||
+            typeof event.type !== "string"
+          ) {
+            throw new TypeError("decoded bytes must contain a Claude event object");
+          }
+          parsed = event;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "unknown";
+          throw new TypeError(`Invalid Invoke PayloadPart: ${message}`);
+        }
+      }
     } catch (err) {
       droppedChunks++;
       if (droppedChunks === 1) {
@@ -1607,7 +2063,17 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
       continue;
     }
 
-    // Anthropic Messages format (invoke-with-response-stream): flat payload with "type" field
+    usage = captureUsage({
+      provider: "bedrock",
+      contentType: "application/vnd.amazon.eventstream",
+      operation: "chat",
+      family: typeof parsed.type === "string" ? "bedrock-invoke" : "bedrock-converse",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
+
+    // InvokeModel Claude event: decoded PayloadPart or legacy flat payload with "type" field
     if (parsed.type === "content_block_delta") {
       const delta = parsed.delta as Record<string, unknown> | undefined;
       if (delta?.type === "text_delta" && typeof delta.text === "string") {
@@ -1794,6 +2260,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(usage ? { usage } : {}),
       ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
       // A tool-bearing turn that ALSO streamed text previously DROPPED `content`
       // here. Spread it when present so the interleaved blocks are persistable
@@ -1811,6 +2278,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(reasoningSignature ? { reasoningSignature } : {}),
@@ -1843,6 +2311,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
+  let usage: Record<string, unknown> | undefined;
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -1877,6 +2346,16 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
       }
       continue;
     }
+
+    usage = captureUsage({
+      provider: "gemini-interactions",
+      contentType: "text/event-stream",
+      operation: "chat",
+      family: "interactions",
+      stage: "stream",
+      previous: usage,
+      observation: parsed,
+    });
 
     const eventType = parsed.event_type as string | undefined;
     if (!eventType) continue;
@@ -1996,6 +2475,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
 
   if (toolCalls.length > 0) {
     return {
+      ...(usage ? { usage } : {}),
       ...(content ? { content } : {}),
       toolCalls,
       ...(reasoning ? { reasoning } : {}),
@@ -2006,6 +2486,7 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(usage ? { usage } : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
@@ -2022,6 +2503,11 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
  * Collapse a streaming response body into a non-streaming fixture response.
  * Returns null if the content type is not a known streaming format.
  * Falls back to OpenAI SSE parsing for unrecognized provider keys with text/event-stream.
+ *
+ * Public. For uncited input the result is unchanged from 1.44.0; a cited
+ * OpenAI Responses or Anthropic turn also gains the citation fields (see
+ * {@link collapseOpenAISSE} and {@link collapseAnthropicSSE}). The recorder
+ * uses {@link collapseStreamingResponseWithResponsesTools}.
  */
 export function collapseStreamingResponse(
   contentType: string,
@@ -2029,16 +2515,45 @@ export function collapseStreamingResponse(
   body: string | Buffer,
   logger?: Logger,
 ): CollapseResult | null {
+  const collapsed = collapseStreamingResponseWithResponsesTools(
+    contentType,
+    providerKey,
+    body,
+    logger,
+  );
+  return collapsed && withoutResponsesToolFields(collapsed);
+}
+
+/**
+ * @internal {@link collapseStreamingResponse} keeping an OpenAI Responses
+ * `namespace` and custom tool calls.
+ */
+export function collapseStreamingResponseWithResponsesTools(
+  contentType: string,
+  providerKey: RecordProviderKey,
+  body: string | Buffer,
+  logger?: Logger,
+): CollapseResult | null {
   const ct = contentType.toLowerCase();
+  const complete = (result: CollapseResult): CollapseResult => {
+    const usage = captureUsage({
+      provider: providerKey,
+      contentType,
+      family: "stream-dispatch",
+      stage: "collapsed",
+      observation: result,
+    });
+    return usage ? { ...result, usage } : result;
+  };
 
   if (ct.includes("application/vnd.amazon.eventstream")) {
     const buf = typeof body === "string" ? Buffer.from(body, "binary") : body;
-    return collapseBedrockEventStream(buf);
+    return complete(collapseBedrockEventStream(buf));
   }
 
   if (ct.includes("application/x-ndjson")) {
     const str = typeof body === "string" ? body : body.toString("utf8");
-    return collapseOllamaNDJSON(str);
+    return complete(collapseOllamaNDJSON(str));
   }
 
   if (ct.includes("text/event-stream")) {
@@ -2060,23 +2575,23 @@ export function collapseStreamingResponse(
       case "azure":
       case "openrouter":
       case "byteplus":
-        return collapseOpenAISSE(str);
+        return complete(collapseOpenAISSEWithResponsesTools(str));
       case "anthropic":
-        return collapseAnthropicSSE(str);
+        return complete(collapseAnthropicSSE(str));
       case "gemini":
       case "vertexai":
-        return collapseGeminiSSE(str);
+        return complete(collapseGeminiSSE(str));
       case "gemini-interactions":
-        return collapseGeminiInteractionsSSE(str);
+        return complete(collapseGeminiInteractionsSSE(str));
       case "cohere":
-        return collapseCohereSSE(str);
+        return complete(collapseCohereSSE(str));
       case "bedrock":
-        return collapseAnthropicSSE(str);
+        return complete(collapseAnthropicSSE(str));
       default:
         logger?.warn(
           `[stream-collapse] unknown SSE provider "${providerKey}", falling back to OpenAI SSE format`,
         );
-        return collapseOpenAISSE(str);
+        return complete(collapseOpenAISSEWithResponsesTools(str));
     }
   }
 

@@ -5,6 +5,7 @@
  * and responds with setupComplete, serverContent, toolCall, and error
  * messages in the Gemini Live streaming format.
  */
+import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
 
 import type {
   Fixture,
@@ -12,25 +13,39 @@ import type {
   ChatCompletionRequest,
   ToolDefinition,
   AudioResponse,
+  ToolCall,
+  FixtureFileBlock,
+  JournalEntry,
+  HandlerDefaults,
 } from "./types.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
+  fixtureToolCallErrorCode,
+  googleFixtureToolCallErrorDetails,
+  isFixtureToolCallError,
+  journalFixtureToolCallError,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
+  toolArgsForWire,
+  runWithToolArgumentsScope,
+  servedToolArgs,
+  strictToolArgumentsEnabled,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isAudioResponse,
   flattenHeaders,
   formatToMime,
   generateToolCallId,
   resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
   resolveResponse,
-  resolveStrictMode,
-  strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
-import { createInterruptionSignal } from "./interruption.js";
+import { markWsTurnStopped, watchWsClose, wsLifecycle } from "./response/lifecycle.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
@@ -55,6 +70,7 @@ interface GeminiLiveFunctionDeclaration {
   name: string;
   description?: string;
   parameters?: object;
+  parametersJsonSchema?: object;
 }
 
 interface GeminiLiveToolDef {
@@ -216,9 +232,96 @@ function convertTools(geminiTools?: GeminiLiveToolDef[]): ToolDefinition[] {
     function: {
       name: d.name,
       description: d.description,
-      parameters: d.parameters,
+      parameters: d.parameters ?? d.parametersJsonSchema,
     },
   }));
+}
+
+function liveToolArguments(tc: Pick<ToolCall, "name" | "arguments">) {
+  return servedToolArgs(tc, "object").value;
+}
+
+const GEMINI_LIVE_WIRE = "Gemini Live";
+
+/** Prepare native object arguments and IDs once for both output and the journal. */
+function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
+  if (plan.summary.fault === "tool-args-invalid-json" || plan.summary.fault === "empty-response") {
+    return { ...plan, summary: { ...plan.summary, servedToolCalls: [] } };
+  }
+  const response = plan.response;
+  const combined = isCombinedFixtureResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const duplicate = plan.duplicateId;
+  const toolCalls = calls.map((call, index) => {
+    const args = toolArgsForWire(call);
+    // Preserve authored-invalid arguments for the existing journaled preflight error.
+    return {
+      ...call,
+      arguments: args.kind === "parsed" ? args.text : args.raw,
+      ...(index === duplicate?.destinationIndex ? {} : { id: call.id ?? generateToolCallId() }),
+    };
+  });
+  if (duplicate) toolCalls[duplicate.destinationIndex].id = toolCalls[duplicate.sourceIndex].id;
+  let preparedResponse = { ...response };
+  if ("usage" in preparedResponse) delete preparedResponse.usage;
+  if (outcome) {
+    let index = 0;
+    const blocks = outcome.ordered.map((block) =>
+      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
+    );
+    preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
+  } else if (combined || isToolCallResponse(response)) {
+    preparedResponse = { ...preparedResponse, toolCalls };
+  }
+  return {
+    ...plan,
+    response: preparedResponse,
+    summary: {
+      ...plan.summary,
+      servedToolCalls: toolCalls.map(({ name, arguments: args, id }) => ({
+        name,
+        arguments: args,
+        id,
+      })),
+    },
+  };
+}
+
+/**
+ * Validate the whole selected response before audio, text, or any tool is
+ * sent: every entry is validated, custom tool calls are rejected, and every
+ * argument string must parse. Returns the calls narrowed to function calls. On
+ * failure the journal entry becomes a 500, and the outer message handler sends
+ * code 13 with `google.rpc.ErrorInfo` details carrying the aimock code, drops
+ * this turn from the history, and leaves the socket open.
+ */
+function preflightToolArguments(
+  response: { toolCalls?: ToolCall[] },
+  journalEntry: JournalEntry,
+): ToolCall[] {
+  return journalFixtureToolCallError(journalEntry, () => {
+    const functionCalls = requireServedFunctionToolCalls(response, GEMINI_LIVE_WIRE);
+    if (strictToolArgumentsEnabled()) for (const tc of functionCalls) liveToolArguments(tc);
+    return functionCalls;
+  });
+}
+
+/** Resolve ordered blocks (rejecting custom tool calls) and preflight their arguments. */
+function preflightBlocks(
+  response: { blocks?: FixtureFileBlock[]; customToolCalls?: unknown },
+  journalEntry: JournalEntry,
+) {
+  return journalFixtureToolCallError(journalEntry, () => {
+    rejectResponsesOnlyToolCalls(response, GEMINI_LIVE_WIRE);
+    const resolved = resolveFixtureBlocks(response.blocks ?? []);
+    if (strictToolArgumentsEnabled())
+      for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
+    return resolved;
+  });
 }
 
 // ─── Main handler ───────────────────────────────────────────────────────────
@@ -234,12 +337,19 @@ export function handleWebSocketGeminiLive(
     model: string;
     logger: Logger;
     strict?: boolean;
+    strictToolArguments?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
 ): void {
   const { logger } = defaults;
+  watchWsClose(ws);
   const session: SessionState = {
     setupDone: false,
     model: defaults.model,
@@ -249,14 +359,36 @@ export function handleWebSocketGeminiLive(
 
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
-    pending = pending.then(() =>
-      processMessage(raw, ws, fixtures, journal, defaults, session).catch((err: unknown) => {
+    pending = pending.then(async () => {
+      // Messages are processed one at a time, so this marks where this
+      // message's turn begins in the history.
+      const historyMark = session.conversationHistory.length;
+      try {
+        defaults.beforeProcessMessage?.();
+        await runWithToolArgumentsScope(
+          { strict: defaults.strictToolArguments === true, logger },
+          () => processMessage(raw, ws, fixtures, journal, defaults, session),
+        );
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket Gemini Live error: ${msg}`);
+        const fixtureToolCallError = isFixtureToolCallError(err);
+        // A fixture rejected by a tool-call check serves nothing, so its turn
+        // must not stay in the history as a user turn with no reply. Only
+        // fixture tool-call errors roll back: any other error (for example a
+        // malformed text block) leaves the user turn in the history.
+        if (fixtureToolCallError) session.conversationHistory.length = historyMark;
         try {
           ws.send(
             JSON.stringify({
-              error: { code: 13, message: msg, status: "INTERNAL" },
+              error: {
+                code: 13,
+                message: msg,
+                status: "INTERNAL",
+                ...(fixtureToolCallError
+                  ? { details: googleFixtureToolCallErrorDetails(fixtureToolCallErrorCode(err)) }
+                  : {}),
+              },
             }),
           );
         } catch (sendErr) {
@@ -264,8 +396,8 @@ export function handleWebSocketGeminiLive(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
           );
         }
-      }),
-    );
+      }
+    });
   });
 }
 
@@ -284,6 +416,9 @@ async function processMessage(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
   },
   session: SessionState,
 ): Promise<void> {
@@ -399,7 +534,7 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+    if (resolveRequestDecisions(defaults.strict, defaults.upgradeHeaders).fixtureMiss) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(strictNoMatchLogLine("WS", path, skippedBySequenceOrTurn));
       journal.add({
@@ -438,20 +573,118 @@ async function processMessage(
   // Commit messages to conversation history only after successful fixture match
   session.conversationHistory.push(...newMessages);
 
-  const response = await resolveResponse(fixture, completionReq);
-  const latency = fixture.latency ?? defaults.latency;
-  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
-
-  // Error response
-  if (isErrorResponse(response)) {
-    const status = response.status ?? 500;
-    journal.add({
+  let response = await resolveResponse(fixture, completionReq);
+  const plannerDefaults = { ...defaults, replaySpeed: defaults.replaySpeed ?? 1 };
+  let misbehavior = planMisbehavior({
+    wire: "gemini-live",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: true,
+    defaults: plannerDefaults,
+    rawHeaders: defaults.upgradeHeaders ?? {},
+    // The server resolves both header and query-string session scopes.
+    url: `${path}?testId=${encodeURIComponent(testId)}`,
+  });
+  if (misbehavior.kind === "applied") {
+    misbehavior = prepareLiveMisbehavior(misbehavior);
+    response = misbehavior.response;
+  }
+  const addResponseEntry = (status: number) => {
+    const entry = journal.add({
       method: "WS",
       path,
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry,
+      summary: misbehavior.summary,
+      defaults: plannerDefaults,
+      testId,
+    });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    addResponseEntry(misbehavior.status);
+    if (!misbehavior.summary?.evaluations.length) {
+      defaults.logger.error(`[misbehavior] ${misbehavior.message} (testId=${testId})`);
+    }
+    ws.send(
+      JSON.stringify({
+        error: {
+          code: httpToGrpc(misbehavior.status),
+          message: misbehavior.message,
+          status: misbehavior.status === 400 ? "INVALID_ARGUMENT" : "UNIMPLEMENTED",
+        },
+      }),
+    );
+    return;
+  }
+  const latency = fixture.latency ?? defaults.latency;
+  if (
+    misbehavior.kind === "applied" &&
+    (misbehavior.summary.fault === "tool-args-invalid-json" ||
+      misbehavior.summary.fault === "empty-response")
+  ) {
+    const journalEntry = addResponseEntry(200);
+    const lifecycle = wsLifecycle(ws, fixture);
+    const interruptTurn = () => {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      ws.destroy();
+    };
+    try {
+      if (ws.isClosed) {
+        interruptTurn();
+        return;
+      }
+      const chunkDelay = calculateDelay(
+        0,
+        undefined,
+        latency,
+        fixture.recordedTimings,
+        fixture.replaySpeed ?? defaults.replaySpeed,
+      );
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted || ws.isClosed) {
+        interruptTurn();
+        return;
+      }
+      const malformed = misbehavior.summary.fault === "tool-args-invalid-json";
+      ws.send(
+        JSON.stringify({
+          serverContent: malformed
+            ? { turnComplete: true, turnCompleteReason: "MALFORMED_FUNCTION_CALL" }
+            : { modelTurn: { parts: [{ text: "" }] } },
+        }),
+      );
+      lifecycle.tick();
+      if (lifecycle.signal.aborted || ws.isClosed) {
+        interruptTurn();
+        return;
+      }
+      // Like ordinary text streaming, completion follows the counted content chunk.
+      if (!malformed) {
+        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+        if (ws.isClosed) {
+          interruptTurn();
+          return;
+        }
+        session.conversationHistory.push({ role: "assistant", content: "" });
+      }
+    } finally {
+      lifecycle.dispose();
+    }
+    return;
+  }
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  // Error response
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    addResponseEntry(status);
     ws.send(
       JSON.stringify({
         error: {
@@ -492,15 +725,10 @@ async function processMessage(
   // reasoning from the audio branch alone would invent a Live-wide capability
   // out of one fixture field. That gap is real but separate.
   if (isAudioResponse(response)) {
-    journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const audioResp = response as AudioResponse;
+    const audioToolCalls = preflightToolArguments(audioResp, journalEntry);
     let mimeType: string;
     let data: string;
 
@@ -521,11 +749,19 @@ async function processMessage(
 
     // Stable IDs resolved once, so the wire message and conversation history
     // agree (same contract as the tool-call branches below).
-    const resolvedToolCalls = (audioResp.toolCalls ?? []).map((tc) => ({
+    const resolvedToolCalls = audioToolCalls.map((tc) => ({
       ...tc,
       resolvedId: tc.id ?? generateToolCallId(),
     }));
 
+    // This branch never waits, so it holds no lifecycle. A closed socket is
+    // journaled by the shared WS rule, and the turn stops there.
+    const stoppedByClose = (): boolean => {
+      if (!ws.isClosed) return false;
+      markWsTurnStopped(journalEntry, ws);
+      return true;
+    };
+    if (stoppedByClose()) return;
     if (resolvedToolCalls.length === 0) {
       ws.send(
         JSON.stringify({
@@ -534,27 +770,16 @@ async function processMessage(
       );
     } else {
       ws.send(JSON.stringify({ serverContent: { modelTurn: { parts } } }));
-
-      if (!ws.isClosed) {
-        const functionCalls = resolvedToolCalls.map((tc) => {
-          let argsObj: Record<string, unknown>;
-          try {
-            argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-          } catch {
-            defaults.logger.warn(
-              `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-            );
-            argsObj = {};
-          }
-          return { name: tc.name, args: argsObj, id: tc.resolvedId };
-        });
-        ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-      }
-
-      if (!ws.isClosed) {
-        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
-      }
+      if (stoppedByClose()) return;
+      const functionCalls = resolvedToolCalls.map((tc) => {
+        const argsObj = liveToolArguments(tc);
+        return { name: tc.name, args: argsObj, id: tc.resolvedId };
+      });
+      ws.send(JSON.stringify({ toolCall: { functionCalls } }));
+      if (stoppedByClose()) return;
+      ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
     }
+    if (stoppedByClose()) return;
 
     session.conversationHistory.push({
       role: "assistant",
@@ -573,14 +798,8 @@ async function processMessage(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+  if (isCombinedFixtureResponse(response)) {
+    const journalEntry = addResponseEntry(200);
 
     // BLOCKS path (#274): when the fixture carries an ordered `blocks` array,
     // honor it instead of the legacy `content ?? ""` / `toolCalls ?? []` path.
@@ -592,8 +811,8 @@ async function processMessage(
     // blocks-only fixture (post-F0 it matches this guard) would stream an EMPTY
     // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
     if (response.blocks && response.blocks.length > 0) {
-      const resolvedBlocks = resolveFixtureBlocks(response.blocks);
-      const interruption = createInterruptionSignal(fixture);
+      const resolvedBlocks = preflightBlocks(response, journalEntry);
+      const lifecycle = wsLifecycle(ws, fixture);
       const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
       const { recordedTimings } = fixture;
       let chunkIndex = 0;
@@ -618,23 +837,15 @@ async function processMessage(
             recordedTimings,
             replaySpeed,
           );
-          if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-          if (interruption?.signal.aborted) {
+          if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+          if (lifecycle.signal.aborted) {
             interrupted = true;
             break;
           }
           if (ws.isClosed) break;
 
           const resolvedId = block.id ?? generateToolCallId();
-          let argsObj: Record<string, unknown>;
-          try {
-            argsObj = JSON.parse(block.arguments || "{}") as Record<string, unknown>;
-          } catch {
-            defaults.logger.warn(
-              `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-            );
-            argsObj = {};
-          }
+          const argsObj = liveToolArguments(block);
 
           try {
             ws.send(
@@ -655,8 +866,8 @@ async function processMessage(
             type: "function" as const,
             function: { name: block.name, arguments: block.arguments },
           });
-          interruption?.tick();
-          if (interruption?.signal.aborted) {
+          lifecycle.tick();
+          if (lifecycle.signal.aborted) {
             interrupted = true;
             break;
           }
@@ -682,8 +893,8 @@ async function processMessage(
               recordedTimings,
               replaySpeed,
             );
-            if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-            if (interruption?.signal.aborted) {
+            if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+            if (lifecycle.signal.aborted) {
               interrupted = true;
               break outer;
             }
@@ -702,8 +913,8 @@ async function processMessage(
               break outer;
             }
             chunkIndex++;
-            interruption?.tick();
-            if (interruption?.signal.aborted) {
+            lifecycle.tick();
+            if (lifecycle.signal.aborted) {
               interrupted = true;
               break outer;
             }
@@ -711,19 +922,19 @@ async function processMessage(
         }
       }
 
-      if (interrupted) {
+      if (interrupted || ws.isClosed) {
         ws.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-        interruption?.cleanup();
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        lifecycle.dispose();
         return;
       }
 
-      interruption?.cleanup();
+      lifecycle.dispose();
 
-      // Send turnComplete
-      if (!ws.isClosed) {
-        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+      ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        return;
       }
 
       session.conversationHistory.push({
@@ -734,13 +945,14 @@ async function processMessage(
       return;
     }
 
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
     const content = response.content ?? "";
     const chunkList: string[] = [];
     for (let i = 0; i < content.length; i += chunkSize) {
       chunkList.push(content.slice(i, i + chunkSize));
     }
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
@@ -760,8 +972,8 @@ async function processMessage(
       for (let i = 0; i < chunkList.length; i++) {
         if (ws.isClosed) break;
         const chunkDelay = calculateDelay(i, undefined, latency, recordedTimings, replaySpeed);
-        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-        if (interruption?.signal.aborted) {
+        if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
@@ -779,24 +991,23 @@ async function processMessage(
           defaults.logger.debug("[gemini-live] send failed during text streaming, closing", err);
           break;
         }
-        interruption?.tick();
-        if (interruption?.signal.aborted) {
+        lifecycle.tick();
+        if (lifecycle.signal.aborted) {
           interrupted = true;
           break;
         }
       }
     }
 
-    if (interrupted) {
+    if (interrupted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
     // Pre-compute tool calls with stable IDs so wire message and history match
-    const resolvedToolCalls = (response.toolCalls ?? []).map((tc) => ({
+    const resolvedToolCalls = functionToolCalls.map((tc) => ({
       ...tc,
       resolvedId: tc.id ?? generateToolCallId(),
     }));
@@ -810,25 +1021,16 @@ async function processMessage(
         recordedTimings,
         replaySpeed,
       );
-      if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted || ws.isClosed) {
         ws.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
-        interruption?.cleanup();
+        markWsTurnStopped(journalEntry, ws, lifecycle);
+        lifecycle.dispose();
         return;
       }
 
       const functionCalls = resolvedToolCalls.map((tc) => {
-        let argsObj: Record<string, unknown>;
-        try {
-          argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-        } catch {
-          defaults.logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-          );
-          argsObj = {};
-        }
+        const argsObj = liveToolArguments(tc);
         return {
           name: tc.name,
           args: argsObj,
@@ -837,26 +1039,27 @@ async function processMessage(
       });
 
       ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-      interruption?.tick();
+      lifecycle.tick();
     }
 
-    if (interruption?.signal.aborted) {
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send turnComplete
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add to conversation history using the same resolved IDs from the wire message
@@ -877,18 +1080,17 @@ async function processMessage(
 
   // Text response — stream chunks with serverContent
   if (isTextResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const content = response.content;
 
     if (content.length === 0) {
-      if (ws.isClosed) return;
+      // No wait and no lifecycle here: as in the audio branch, a closed
+      // socket is journaled by the shared WS rule, and the turn stops there.
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws);
+        return;
+      }
       // Empty content: send empty modelTurn, then separate turnComplete
       ws.send(
         JSON.stringify({
@@ -897,11 +1099,16 @@ async function processMessage(
           },
         }),
       );
+      if (ws.isClosed) {
+        markWsTurnStopped(journalEntry, ws);
+        return;
+      }
       ws.send(
         JSON.stringify({
           serverContent: { turnComplete: true },
         }),
       );
+      if (ws.isClosed) markWsTurnStopped(journalEntry, ws);
       return;
     }
 
@@ -911,7 +1118,7 @@ async function processMessage(
       chunks.push(content.slice(i, i + chunkSize));
     }
 
-    const interruption = createInterruptionSignal(fixture);
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let interrupted = false;
@@ -920,8 +1127,8 @@ async function processMessage(
     for (let i = 0; i < chunks.length; i++) {
       if (ws.isClosed) break;
       const chunkDelay = calculateDelay(i, undefined, latency, recordedTimings, replaySpeed);
-      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
-      if (interruption?.signal.aborted) {
+      if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
@@ -939,30 +1146,31 @@ async function processMessage(
         defaults.logger.debug("[gemini-live] send failed during text streaming, closing", err);
         break;
       }
-      interruption?.tick();
-      if (interruption?.signal.aborted) {
+      lifecycle.tick();
+      if (lifecycle.signal.aborted) {
         interrupted = true;
         break;
       }
     }
 
-    if (interrupted) {
+    if (interrupted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send separate turnComplete message
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add assistant response to conversation history
@@ -972,52 +1180,36 @@ async function processMessage(
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
-    const interruption = createInterruptionSignal(fixture);
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
+
+    const lifecycle = wsLifecycle(ws, fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
 
     if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
     const tcDelay = calculateDelay(0, undefined, latency, recordedTimings, replaySpeed);
-    if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
-    if (interruption?.signal.aborted) {
+    if (tcDelay > 0) await delay(tcDelay, lifecycle.signal);
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
-      return;
-    }
-    if (ws.isClosed) {
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
     // Pre-compute tool calls with stable IDs so wire message and history match
-    const resolvedToolCalls = (response.toolCalls ?? []).map((tc) => ({
+    const resolvedToolCalls = functionToolCalls.map((tc) => ({
       ...tc,
       resolvedId: tc.id ?? generateToolCallId(),
     }));
 
     const functionCalls = resolvedToolCalls.map((tc) => {
-      let argsObj: Record<string, unknown>;
-      try {
-        argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-      } catch {
-        defaults.logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-        );
-        argsObj = {};
-      }
+      const argsObj = liveToolArguments(tc);
       return {
         name: tc.name,
         args: argsObj,
@@ -1026,25 +1218,26 @@ async function processMessage(
     });
 
     ws.send(JSON.stringify({ toolCall: { functionCalls } }));
-    interruption?.tick();
+    lifecycle.tick();
 
-    if (interruption?.signal.aborted) {
+    if (lifecycle.signal.aborted || ws.isClosed) {
       ws.destroy();
-      journalEntry.response.interrupted = true;
-      journalEntry.response.interruptReason = interruption?.reason();
-      interruption?.cleanup();
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      lifecycle.dispose();
       return;
     }
 
-    interruption?.cleanup();
+    lifecycle.dispose();
 
     // Send turnComplete after tool call
-    if (!ws.isClosed) {
-      ws.send(
-        JSON.stringify({
-          serverContent: { turnComplete: true },
-        }),
-      );
+    ws.send(
+      JSON.stringify({
+        serverContent: { turnComplete: true },
+      }),
+    );
+    if (ws.isClosed) {
+      markWsTurnStopped(journalEntry, ws, lifecycle);
+      return;
     }
 
     // Add assistant tool_calls to conversation history using the same resolved IDs
@@ -1064,13 +1257,7 @@ async function processMessage(
   }
 
   // Unknown response type
-  journal.add({
-    method: "WS",
-    path,
-    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-    body: completionReq,
-    response: { status: 500, fixture },
-  });
+  addResponseEntry(500);
   ws.send(
     JSON.stringify({
       error: {

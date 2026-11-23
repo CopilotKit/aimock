@@ -66,12 +66,15 @@
           <div class="tab-docker">
             <div class="code-block">
               <div class="code-block-header">Run aimock <span class="lang-tag">shell</span></div>
-              <pre><code><span class="cm"># --config is an aimock-CLI feature, not available in the published image.</span>
-<span class="cm"># Run aimock on your host via npx (or install @copilotkit/aimock in your</span>
-<span class="cm"># own container image) to use the config-driven CLI:</span>
-$ npx @copilotkit/aimock --config aimock.json --port 4010 --host 0.0.0.0
+              <pre><code><span class="cm"># The image's default ENTRYPOINT is the flag-driven llmock bin; override it</span>
+<span class="cm"># to run the config-driven aimock CLI that ships in the same image:</span>
+$ docker run -d -p 4010:4010 \
+  -v ./aimock.json:/app/aimock.json:ro \
+  -v ./fixtures:/app/fixtures:ro \
+  --entrypoint node ghcr.io/copilotkit/aimock \
+  dist/aimock-cli.js --config /app/aimock.json --port 4010 --host 0.0.0.0
 
-<span class="cm"># If you only need flag-driven fixture serving, the published image works:</span>
+<span class="cm"># If you only need flag-driven fixture serving, the default entrypoint works:</span>
 $ docker run -d -p 4010:4010 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
@@ -82,10 +85,12 @@ $ docker run -d -p 4010:4010 \
 
         <p style="color: var(--text-dim); font-size: 0.9em">
           <strong>Note:</strong> The published Docker image (<code>ghcr.io/copilotkit/aimock</code>)
-          runs the flag-driven <code>llmock</code> CLI (ENTRYPOINT <code>node dist/cli.js</code>),
-          which does not support <code>--config</code> or the <code>convert</code> subcommand. For
-          config-driven mode, run aimock on your host via <code>npx</code> or install
-          <code>@copilotkit/aimock</code> inside your own image.
+          starts the flag-driven <code>llmock</code> CLI (ENTRYPOINT <code>node dist/cli.js</code>),
+          which does not accept <code>--config</code> or the <code>convert</code> and
+          <code>validate</code> subcommands. The <code>aimock</code> bin is in the image as
+          <code>dist/aimock-cli.js</code>: pass <code>--entrypoint node</code> and put
+          <code>dist/aimock-cli.js</code> first in the command to run config-driven mode. Paths in
+          the mounted config resolve against the container working directory <code>/app</code>.
         </p>
 
         <h2>Config File Format</h2>
@@ -98,26 +103,39 @@ $ docker run -d -p 4010:4010 \
         <div class="code-block">
           <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
           <pre><code>{
+  <span class="prop">"port"</span>: <span class="num">4010</span>,
+  <span class="prop">"host"</span>: <span class="str">"127.0.0.1"</span>,
+  <span class="prop">"auth"</span>: { <span class="prop">"apiKeys"</span>: [<span class="str">"test-key"</span>] },
   <span class="prop">"llm"</span>: {
     <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
     <span class="prop">"latency"</span>: <span class="num">0</span>,
     <span class="prop">"chunkSize"</span>: <span class="num">20</span>,
     <span class="prop">"replaySpeed"</span>: <span class="num">1</span>,
-    <span class="prop">"logLevel"</span>: <span class="str">"info"</span>,
-    <span class="prop">"validateOnLoad"</span>: <span class="kw">true</span>,
-    <span class="prop">"metrics"</span>: <span class="kw">true</span>,
-    <span class="prop">"strict"</span>: <span class="kw">false</span>
+    <span class="prop">"logLevel"</span>: <span class="str">"info"</span>
   },
-  <span class="prop">"services"</span>: {
-    <span class="prop">"/mcp"</span>: {
-      <span class="prop">"type"</span>: <span class="str">"mcp"</span>,
-      <span class="prop">"tools"</span>: <span class="str">"./mcp-tools.json"</span>
-    },
-    <span class="prop">"/a2a"</span>: {
-      <span class="prop">"type"</span>: <span class="str">"a2a"</span>,
-      <span class="prop">"agents"</span>: <span class="str">"./a2a-agents.json"</span>
-    }
-  }
+  <span class="prop">"mcp"</span>: {
+    <span class="prop">"path"</span>: <span class="str">"/mcp"</span>,
+    <span class="prop">"tools"</span>: [
+      { <span class="prop">"name"</span>: <span class="str">"echo"</span>, <span class="prop">"description"</span>: <span class="str">"Echo the input"</span>, <span class="prop">"result"</span>: <span class="str">"echoed"</span> }
+    ]
+  },
+  <span class="prop">"a2a"</span>: {
+    <span class="prop">"agents"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"helper"</span>,
+        <span class="prop">"messages"</span>: [{ <span class="prop">"pattern"</span>: <span class="str">"hello"</span>, <span class="prop">"parts"</span>: [{ <span class="prop">"text"</span>: <span class="str">"Hi!"</span> }] }]
+      }
+    ]
+  },
+  <span class="prop">"agui"</span>: {
+    <span class="prop">"fixtures"</span>: [{ <span class="prop">"match"</span>: { <span class="prop">"message"</span>: <span class="str">"hello"</span> }, <span class="prop">"text"</span>: <span class="str">"Hello from AG-UI"</span> }]
+  },
+  <span class="prop">"vector"</span>: {
+    <span class="prop">"collections"</span>: [{ <span class="prop">"name"</span>: <span class="str">"docs"</span>, <span class="prop">"dimension"</span>: <span class="num">3</span> }]
+  },
+  <span class="prop">"services"</span>: { <span class="prop">"search"</span>: <span class="kw">true</span>, <span class="prop">"rerank"</span>: <span class="kw">false</span>, <span class="prop">"moderate"</span>: <span class="kw">true</span> },
+  <span class="prop">"metrics"</span>: <span class="kw">true</span>,
+  <span class="prop">"strict"</span>: <span class="kw">false</span>
 }</code></pre>
         </div>
 
@@ -132,25 +150,213 @@ $ docker run -d -p 4010:4010 \
           </thead>
           <tbody>
             <tr>
+              <td><code>port</code></td>
+              <td>number</td>
+              <td>
+                Port to listen on. <code>--port</code> overrides it; when neither is given the
+                server takes an ephemeral port (<code>0</code>).
+              </td>
+            </tr>
+            <tr>
+              <td><code>host</code></td>
+              <td>string</td>
+              <td>
+                Bind address. <code>--host</code> overrides it; when neither is given the server
+                binds <code>127.0.0.1</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>auth</code></td>
+              <td>object</td>
+              <td>
+                Inbound API-key auth: <code>{ "apiKeys": ["..."] }</code>, a non-empty array of
+                distinct non-blank strings. When set, every request except <code>GET /health</code>,
+                <code>GET /ready</code> and <code>GET /metrics</code> must carry one of the keys. If
+                the <code>AIMOCK_API_KEYS</code> environment variable is present (comma-separated),
+                it replaces this section entirely, and the file's <code>auth</code> is not parsed.
+              </td>
+            </tr>
+            <tr>
               <td><code>llm</code></td>
               <td>object</td>
               <td>
                 LLMock configuration. Accepts <code>fixtures</code>, <code>latency</code>,
                 <code>chunkSize</code>, <code>replaySpeed</code>, <code>logLevel</code>,
-                <code>validateOnLoad</code>, <code>metrics</code>, <code>strict</code>,
-                <code>chaos</code>, <code>streamingProfile</code>, <code>record</code>.
+                <code>chaos</code>, <code>record</code>, <code>strictToolArguments</code>,
+                <code>responsesTools</code> (<code>"legacy"</code> or <code>"extended"</code>),
+                <code>enableMisbehavior</code>, <code>misbehavior</code> and
+                <code>enableMcpRecording</code>, and <code>policy</code> (see
+                <a href="#required-header-policy">Required Header Policy</a>).
+                <code>llm.misbehavior</code> is read only when <code>llm.enableMisbehavior</code> is
+                <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
+                with a warning, as 1.44.0 ignored it. In the same way,
+                <code>llm.record.mcp</code> is read only when <code>llm.enableMcpRecording</code> is
+                <code>true</code>. An <code>llm.responsesTools</code> other than
+                <code>"legacy"</code> or <code>"extended"</code> is also ignored with a warning, and
+                the server runs in <code>legacy</code> mode, or in the mode that
+                <code>--responses-tools</code> sets (the warning names it). A non-boolean
+                <code>llm.strictToolArguments</code>, <code>llm.enableMisbehavior</code> or
+                <code>llm.enableMcpRecording</code> is ignored with a warning and the option stays
+                off, unless <code>--strict-tool-arguments</code> or <code>--misbehavior</code> turns
+                it on. Per-fixture knobs such as <code>streamingProfile</code> live on the fixture
+                entries.
+              </td>
+            </tr>
+            <tr>
+              <td><code>mcp</code></td>
+              <td>object</td>
+              <td>
+                Mounts an MCP mock. <code>path</code> (default <code>/mcp</code>),
+                <code>serverInfo</code>, and inline <code>tools</code>, <code>resources</code>,
+                <code>prompts</code> arrays. A tool's optional <code>result</code> string is
+                returned by every call to it.
+              </td>
+            </tr>
+            <tr>
+              <td><code>a2a</code></td>
+              <td>object</td>
+              <td>
+                Mounts an A2A mock. <code>path</code> (default <code>/a2a</code>) and an inline
+                <code>agents</code> array; each agent carries its card fields plus optional
+                <code>messages</code>, <code>tasks</code>, <code>streamingTasks</code> pattern
+                lists.
+              </td>
+            </tr>
+            <tr>
+              <td><code>agui</code></td>
+              <td>object</td>
+              <td>
+                Mounts an AG-UI mock. <code>path</code> (default <code>/agui</code>) and an inline
+                <code>fixtures</code> array of <code>{ match, text | events, delayMs }</code>. A
+                fixture with neither <code>text</code> nor <code>events</code> is skipped with a
+                warning.
+              </td>
+            </tr>
+            <tr>
+              <td><code>vector</code></td>
+              <td>object</td>
+              <td>
+                Mounts a vector-database mock. <code>path</code> (default <code>/vector</code>) and
+                an inline <code>collections</code> array of
+                <code>{ name, dimension, vectors?, queryResults? }</code>.
               </td>
             </tr>
             <tr>
               <td><code>services</code></td>
               <td>object</td>
               <td>
-                Map of mount paths to service configs. Each key is a URL path prefix (e.g.
-                <code>/mcp</code>), each value describes the service type and its options.
+                Booleans <code>search</code>, <code>rerank</code>, <code>moderate</code>. Each
+                <code>true</code> installs a catch-all default response on the root-mounted service
+                endpoint (empty results for search and rerank, unflagged for moderation).
               </td>
+            </tr>
+            <tr>
+              <td><code>metrics</code></td>
+              <td>boolean</td>
+              <td>Serve Prometheus metrics at <code>GET /metrics</code> (404 when off).</td>
+            </tr>
+            <tr>
+              <td><code>strict</code></td>
+              <td>boolean</td>
+              <td>Return 503 instead of 404 when no fixture matches.</td>
             </tr>
           </tbody>
         </table>
+
+        <h3 id="required-header-policy">Required Header Policy</h3>
+        <p>
+          Header enforcement is off by default. Set <code>llm.policy.requiredHeaders</code> to
+          <code>"enforce"</code> to require <code>anthropic-version</code> on Anthropic HTTP routes.
+          This policy is independent of <code>strict</code>. Strict mode alone does not require the
+          version header.
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-config">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+    "port": 4010,
+    "llm": {
+        "fixtures": "./fixtures",
+        "policy": { "requiredHeaders": "enforce" }
+    }
+}</code></pre>
+        </div>
+        <p>
+          Both CLI entry points accept repeated <code>--policy key=value</code> flags. CLI values
+          override the config per key. For duplicate flags, the last value wins. The commands below
+          both enable enforcement:
+        </p>
+        <div class="code-block" data-sample="inline:required-policy-cli">
+          <div class="code-block-header">CLI overrides <span class="lang-tag">shell</span></div>
+          <pre><code>npx @copilotkit/aimock --config aimock.json --port 4010 --policy requiredHeaders=off --policy requiredHeaders=enforce
+
+npx --package @copilotkit/aimock llmock -f ./fixtures --port 4010 --policy requiredHeaders=off --policy requiredHeaders=enforce</code></pre>
+        </div>
+        <p>
+          The request header <code>X-AIMock-Policy</code> overrides the effective server policy.
+          Precedence is built-in <code>off</code>, config, programmatic config overrides or CLI,
+          then the request header. The public <code>startFromConfig</code> override accepts
+          <code>policy: { requiredHeaders: "enforce" }</code>.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Input</th>
+              <th>Invalid entries</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Programmatic options and config</td>
+              <td>Warn and ignore the invalid entry; retain other valid policy values.</td>
+            </tr>
+            <tr>
+              <td><code>X-AIMock-Policy</code></td>
+              <td>Warn and ignore the invalid entry; retain other valid entries.</td>
+            </tr>
+            <tr>
+              <td><code>--policy</code></td>
+              <td>Print usage and exit 1. Every CLI entry must be valid.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The key <code>requiredHeaders</code> has exact case. Values accept <code>off</code> and
+          <code>enforce</code>, without case sensitivity. Text entries use <code>key=value</code>;
+          surrounding whitespace is trimmed. The request header accepts comma-separated entries. A
+          later valid duplicate wins; an invalid entry does not erase a valid one.
+        </p>
+        <p>
+          See <a href="/claude-messages#required-header-policy">Claude Messages</a> for the affected
+          routes, the shared model-path caveat, and the rejection body.
+        </p>
+
+        <h3 id="auth-error-policy">Auth Error Body Policy</h3>
+        <p>
+          The policy key <code>authErrors</code> selects the 401 body for rejected inbound API keys.
+          The default, <code>legacy</code>, returns the 1.45 body on every route:
+          <code
+            >{"error":{"message":"Invalid API
+            key","type":"authentication_error","code":"invalid_api_key"}}</code
+          >. Set <code>native</code> (for example <code>--policy authErrors=native</code>) to return
+          provider-native bodies on Anthropic Messages/count_tokens and Gemini/Vertex Google HTTP
+          paths. See <a href="/claude-messages#authentication-errors">Claude Messages</a> and
+          <a href="/gemini#authentication-errors">Gemini</a> for these bodies. Shared
+          <code>/v1/models</code>, other HTTP paths, and WebSocket rejections always return the
+          default body. The same input sources, precedence, and invalid-entry rules apply.
+        </p>
+
+        <h3 id="model-catalog-policy">Model Catalog Policy</h3>
+        <p>
+          The policy key <code>modelCatalog</code> selects the body format of the shared
+          <code>GET /v1/models</code> list path. The default, <code>legacy</code>, returns the 1.45
+          OpenAI-format list for every request. Set <code>native</code> (for example
+          <code>--policy modelCatalog=native</code>) to return the Anthropic catalog to requests
+          that send <code>anthropic-version</code>, or <code>x-api-key</code> without
+          <code>Authorization</code>. Anthropic SDK tests that list models need this opt-in.
+          <code>GET /v1/models/{id}</code> selects its format from the request headers and does not
+          use this key. See <a href="/claude-messages#model-catalog">Claude Messages</a> for the
+          catalog format. The same input sources, precedence, and invalid-entry rules apply.
+        </p>
 
         <h3>Recording Config (<code>llm.record</code>)</h3>
         <p>
@@ -174,8 +380,22 @@ $ docker run -d -p 4010:4010 \
               <td>object</td>
               <td>&mdash;</td>
               <td>
-                Map of provider names to upstream URLs or API keys (e.g.
-                <code>{ "openai": "sk-..." }</code>)
+                Map of provider names to upstream base URLs (e.g.
+                <code>{ "openai": "https://api.openai.com" }</code>). Values are URLs, never API
+                keys.
+              </td>
+            </tr>
+            <tr>
+              <td><code>providerKeys</code></td>
+              <td>object</td>
+              <td>&mdash;</td>
+              <td>
+                Map of provider names to aimock's own upstream API keys, injected on a fixture-miss
+                passthrough when the caller sent no credential or a dummy placeholder; a real caller
+                key always wins. Under <code>aimock --config</code> this map is read from the JSON
+                file as written; the <code>AIMOCK_PROVIDER_*_KEY</code> environment variables are
+                read only by the flag-driven <code>llmock</code> bin, not by
+                <code>aimock --config</code>.
               </td>
             </tr>
             <tr>
@@ -222,6 +442,107 @@ $ docker run -d -p 4010:4010 \
 }</code></pre>
         </div>
 
+        <h3 id="mcp-record-config">Recording MCP servers (<code>llm.record.mcp</code>)</h3>
+        <p>
+          <code>llm.record.mcp</code> maps an MCP mount path to an upstream MCP server URL, or to an
+          object with more options. Each mount records that server into <code>mcpFakes</code> files;
+          see <a href="/record-replay#mcp-recording">Recording MCP servers</a>. A mount path that
+          the config already serves with an MCP mock (<code>mcp.path</code>) records through that
+          mount. A free path gets a new MCP mock. A path held by another kind of mock fails at
+          start. MCP recording is opt-in: <code>llm.record.mcp</code> is read only when
+          <code>llm.enableMcpRecording</code> is <code>true</code>. Without it, the key is ignored
+          with a warning, as 1.44.0 ignored it: nothing is mounted or validated, and the log level
+          does not change. <code>llm.record.mcp</code> alone does not turn on LLM recording: that
+          needs <code>llm.record.providers</code>. When <code>llm.record.mcp</code> is enabled and
+          <code>llm.logLevel</code> is not, the log level is <code>"warn"</code>, so that the
+          <code>MCP-RECORD:</code> warnings for skipped or failed recordings are visible; an
+          explicit <code>llm.logLevel</code>, including <code>"silent"</code>, wins.
+        </p>
+        <div class="code-block" data-sample="inline:mcp-record-config">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"llm"</span>: {
+    <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="prop">"enableMcpRecording"</span>: <span class="kw">true</span>,
+    <span class="prop">"record"</span>: {
+      <span class="prop">"mcp"</span>: {
+        <span class="prop">"/mcp"</span>: <span class="str">"http://localhost:3001/mcp"</span>,
+        <span class="prop">"/search"</span>: { <span class="prop">"upstream"</span>: <span class="str">"http://localhost:3002/mcp"</span>, <span class="prop">"proxyOnly"</span>: <span class="kw">true</span> }
+      }
+    }
+  }
+}</code></pre>
+        </div>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Option</th>
+              <th>Type</th>
+              <th>Default</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>upstream</code></td>
+              <td>string</td>
+              <td>&mdash; (required)</td>
+              <td>
+                The upstream MCP endpoint URL. A string value is the same as
+                <code>{ "upstream": url }</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>fixturePath</code></td>
+              <td>string</td>
+              <td>
+                <code>llm.record.fixturePath</code>, else <code>&lt;llm.fixtures&gt;/recorded</code>
+              </td>
+              <td>
+                Where recordings are written. One of the three is required unless
+                <code>proxyOnly</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>proxyOnly</code></td>
+              <td>boolean</td>
+              <td><code>false</code></td>
+              <td>Forward without writing anything</td>
+            </tr>
+            <tr>
+              <td><code>upstreamAuth</code></td>
+              <td>string</td>
+              <td><code>AIMOCK_MCP_UPSTREAM_AUTH</code></td>
+              <td>A <code>"Name: value"</code> header set on every forwarded request</td>
+            </tr>
+            <tr>
+              <td><code>secretValues</code></td>
+              <td>string[]</td>
+              <td><code>AIMOCK_RECORD_SECRET_VALUES</code></td>
+              <td>Values to redact from recordings, each at least 8 characters</td>
+            </tr>
+            <tr>
+              <td><code>strict</code></td>
+              <td>boolean</td>
+              <td>the config&rsquo;s <code>strict</code></td>
+              <td>A fake miss gets the replay error instead of being forwarded</td>
+            </tr>
+            <tr>
+              <td><code>maxRecordBufferBytes</code></td>
+              <td>number</td>
+              <td>64 MiB (at most 256 MiB)</td>
+              <td>The largest response that is recorded; a larger one is forwarded only</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A value on the mount wins over the shared value, and the shared value over the
+          environment. The environment variables are the same on both bins:
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> (newline-separated) and
+          <code>AIMOCK_MCP_UPSTREAM_AUTH</code> (<code>Name: value</code>). A bad value of either
+          fails at start.
+        </p>
+
         <h2>CLI Flags</h2>
         <table class="endpoint-table">
           <thead>
@@ -233,27 +554,104 @@ $ docker run -d -p 4010:4010 \
           </thead>
           <tbody>
             <tr>
-              <td><code>--config</code></td>
-              <td><code>aimock.json</code></td>
-              <td>Path to JSON config file</td>
+              <td><code>-c</code>, <code>--config</code></td>
+              <td>&mdash; (required)</td>
+              <td>
+                Path to JSON config file. There is no default: without it the run exits 1 with
+                <code>Error: --config is required.</code>
+              </td>
             </tr>
             <tr>
-              <td><code>--port</code></td>
-              <td><code>4010</code></td>
-              <td>Port to listen on (overrides config)</td>
+              <td><code>-p</code>, <code>--port</code></td>
+              <td>config <code>port</code>, else <code>0</code></td>
+              <td>Port to listen on (overrides config); <code>0</code> takes an ephemeral port</td>
             </tr>
             <tr>
               <td><code>--host</code></td>
-              <td><code>127.0.0.1</code></td>
-              <td>Host to bind to (overrides config)</td>
+              <td>config <code>host</code>, else <code>127.0.0.1</code></td>
+              <td>
+                Host to bind to (overrides config). Long form only on this bin, where
+                <code>-h</code> is help; the <code>llmock</code> bin keeps its own
+                <code>-h, --host</code>
+              </td>
             </tr>
             <tr>
-              <td><code>--help</code></td>
+              <td><code>--misbehavior</code></td>
+              <td>config <code>llm.enableMisbehavior</code>, else off</td>
+              <td>
+                Enable model misbehavior, so <code>llm.misbehavior</code> and fixture keys apply
+              </td>
+            </tr>
+            <tr>
+              <td><code>--strict-tool-arguments</code></td>
+              <td>config <code>llm.strictToolArguments</code>, else off</td>
+              <td>
+                Reject fixture tool calls with invalid JSON arguments instead of serving
+                <code>{}</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>--responses-tools &lt;mode&gt;</code></td>
+              <td>config <code>llm.responsesTools</code>, else <code>legacy</code></td>
+              <td>
+                OpenAI Responses tool handling: <code>legacy</code> or <code>extended</code> (any
+                other value exits 1)
+              </td>
+            </tr>
+            <tr>
+              <td><code>--policy &lt;key=value&gt;</code></td>
+              <td>
+                config <code>llm.policy</code>, else <code>requiredHeaders=off</code>,
+                <code>authErrors=legacy</code>, and <code>modelCatalog=legacy</code>
+              </td>
+              <td>
+                Repeatable policy override. See
+                <a href="#required-header-policy">Required Header Policy</a> and
+                <a href="#auth-error-policy">Auth Error Body Policy</a>, and
+                <a href="#model-catalog-policy">Model Catalog Policy</a>. Invalid entries exit 1.
+              </td>
+            </tr>
+            <tr>
+              <td><code>-h</code>, <code>--help</code></td>
               <td>&mdash;</td>
               <td>Show help</td>
             </tr>
+            <tr>
+              <td><code>convert &lt;format&gt; &lt;input&gt; [output]</code></td>
+              <td>&mdash;</td>
+              <td>
+                Subcommand: convert third-party mock configs to aimock format (see Fixture
+                Converters below)
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>validate [--strict] [--json] [--] &lt;path&gt; [more paths ...]</code>
+              </td>
+              <td>&mdash;</td>
+              <td>
+                Subcommand: validate fixture files or directories offline (see Fixture Validation
+                below)
+              </td>
+            </tr>
           </tbody>
         </table>
+        <p>
+          An option given an empty value is a usage error naming the option (<code
+            >Error: --port requires a non-empty value.</code
+          >), not a silently absent one.
+        </p>
+        <p>
+          These are all the flags of the <code>aimock</code> bin. Recording flags, including
+          <code>--record</code>, <code>--mcp-record &lt;mount&gt;=&lt;url&gt;</code> and
+          <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code>, are on the flag-driven
+          <code>llmock</code> bin (<code>npx -p @copilotkit/aimock llmock</code>), which is also the
+          Docker image&rsquo;s entry point. See
+          <a href="/record-replay#mcp-recording">Recording MCP servers</a>. With
+          <code>aimock --config</code>, record through
+          <a href="#mcp-record-config"><code>llm.record.mcp</code></a
+          >, with <code>llm.enableMcpRecording: true</code>.
+        </p>
 
         <h2>Single-Port Routing</h2>
         <p>
@@ -290,8 +688,20 @@ $ docker run -d -p 4010:4010 \
               <td>A2A mock service</td>
             </tr>
             <tr>
+              <td><code>/agui/*</code></td>
+              <td>AG-UI mock service</td>
+            </tr>
+            <tr>
+              <td><code>/vector/*</code></td>
+              <td>Vector-database mock service</td>
+            </tr>
+            <tr>
               <td><code>/health</code></td>
               <td>Unified health check (all services)</td>
+            </tr>
+            <tr>
+              <td><code>/ready</code></td>
+              <td>Readiness probe: <code>200 { "status": "ready" }</code></td>
             </tr>
             <tr>
               <td><code>/metrics</code></td>
@@ -319,11 +729,15 @@ $ docker run -d -p 4010:4010 \
           <div class="tab-docker">
             <div class="code-block">
               <div class="code-block-header">
-                Run with config (local / npx) <span class="lang-tag">shell</span>
+                Run with config (docker) <span class="lang-tag">shell</span>
               </div>
-              <pre><code><span class="cm"># --config isn't available in the published Docker image's llmock entrypoint.</span>
-<span class="cm"># Run aimock locally with npx to load config.json:</span>
-$ npx @copilotkit/aimock --config aimock.json --host 0.0.0.0</code></pre>
+              <pre><code><span class="cm"># The image's ENTRYPOINT is the flag-driven llmock bin (node dist/cli.js).</span>
+<span class="cm"># dist/aimock-cli.js ships in the same image: override the entrypoint to use --config.</span>
+$ docker run -d -p 4010:4010 \
+  -v ./aimock.json:/app/aimock.json:ro \
+  -v ./fixtures:/app/fixtures:ro \
+  --entrypoint node ghcr.io/copilotkit/aimock \
+  dist/aimock-cli.js --config /app/aimock.json --port 4010 --host 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
@@ -381,16 +795,404 @@ $ npx @copilotkit/aimock convert mockllm ./config.yaml ./fixtures/converted.json
 $ npx @copilotkit/aimock convert vidaimock ./templates/</code></pre>
         </div>
 
+        <h2>Fixture Validation</h2>
+        <p>
+          Lint fixture files offline, without starting a server. Each argument is a fixture file or
+          a directory of them (walked recursively for <code>*.json</code>, like
+          <code>--fixtures &lt;dir&gt;</code>).
+        </p>
+        <p>
+          Files are checked one at a time and then again as one combined set in load order, so the
+          rules that span files &mdash; a <code>userMessage</code> duplicated across two files, an
+          empty catch-all <code>match</code> that is last in its own file but not last overall
+          &mdash; fire here as they do on the server. Cross-file findings are prefixed
+          <code>cross-file:</code>, attributed to the file owning the fixture, and name the other
+          file. One that restates a finding the per-file pass already made against the same fixture
+          never prints a second line: naming the same fixtures it is dropped, and naming others
+          &mdash; a shadow that reaches into another load &mdash; it replaces the per-file wording
+          in place, at the same position.
+        </p>
+        <p>
+          Against the server's <code>--validate-on-load</code> this is stricter in one direction and
+          weaker in another. <strong>Stricter:</strong> there an unreadable, unparseable, or
+          wrong-shape file only warns on stderr and contributes zero fixtures, and startup continues
+          as long as something loaded, whereas here every such file fails the run, so a broken
+          fixture cannot slip into CI unnoticed. The one exception, which matches the loader: a
+          <code>*.json</code> file found by <strong>walking</strong> a directory and having no
+          top-level <code>"fixtures"</code> key at all is not a fixture file (an aimock config,
+          say), so it is passed over with a <code>skipped (...)</code> line instead of failing the
+          run &mdash; a file you name on the command line is still validated, and still fails on the
+          wrong shape. Two walk hazards the server does not survive are refused outright rather than
+          mirrored: a <code>*.json</code> path that is not a regular file (a FIFO, a socket, a
+          device) is a per-file error here, where the server's <code>readFileSync</code> blocks on
+          it forever; and a directory symlink pointing back at a directory already being walked is
+          reported once as a cycle, where the server recurses through it until the kernel returns
+          <code>ELOOP</code> and loads those levels' fixtures over and over.
+          <strong>Equal:</strong> the fixture rules themselves, and the zero-fixture rule &mdash; a
+          run whose inputs yield no fixtures at all is an error, matching the server's startup
+          abort, while a single <code>{"fixtures": []}</code> file alongside files that do load
+          fixtures is fine in both. Equal too in what the inputs expand to: a path named twice, and
+          a directory reached both directly and through an acyclic symlink to it, are validated once
+          per mention, exactly as the server loads one <code>--fixtures</code> source per mention,
+          and each fixture-and-rule pair is reported once &mdash; the count the server logs.
+          <strong>Weaker:</strong> this is a static lint that starts no server and reads local paths
+          only, so it says nothing about binding, remote
+          <code>--fixtures &lt;url&gt;</code> sources, <code>--watch</code> reloads, or any runtime
+          behaviour. An <code>http://</code> or <code>https://</code> path is refused by name
+          &mdash;
+          <code
+            >Remote fixture source: this lint reads local paths only (the server's --fixtures
+            accepts a URL; validate does not) &mdash; download the file and validate the local
+            copy</code
+          >
+          &mdash; rather than reported as a missing file. "The server" in that message is the
+          <code>llmock</code> bin (<code>dist/cli.js</code>, the Docker entrypoint): its
+          <code>-f, --fixtures</code> takes a filesystem path or an <code>https://</code> /
+          <code>http://</code> URL to a <code>.json</code> fixture file. The <code>aimock</code> bin
+          has no <code>--fixtures</code> flag at all; it loads fixtures through
+          <code>--config</code>, whose <code>llm.fixtures</code> is resolved as a filesystem path
+          only.
+        </p>
+        <p>
+          Anything the filesystem or a fixture entry can throw is contained in the report instead of
+          crashing the run: a malformed entry, an unreadable file or directory, a stat failure, or a
+          symlink cycle each becomes a per-file <code>[error]</code> line and exits 1. One stat
+          failure is deliberately silent: a directory entry that vanishes between the
+          <code>readdir</code> and the <code>stat</code> (<code>ENOENT</code> &mdash; a dangling
+          symlink, or a file deleted mid-walk) is skipped without a finding, exactly as the server's
+          loader skips it; every other stat failure is surfaced. A directory argument that walks
+          cleanly but holds no <code>*.json</code> files is likewise a per-path
+          <code>[error]</code> and exits 1. A crash inside the validator itself is contained too: a
+          per-file one becomes a file-level <code>[error]</code> naming no entry, and one in the
+          combined pass becomes a run-level <code>[error]</code> printed after the per-file output.
+        </p>
+        <p>
+          Errors go to stderr while <code>OK</code> and summary lines go to stdout; warnings follow
+          the exit they produce &mdash; stdout by default, stderr under <code>--strict</code>. Every
+          file gets exactly one stdout line &mdash; including a file that failed fatally, and a file
+          the walk skipped (<code>&lt;file&gt;: skipped (...)</code>) &mdash; so a reader tallying
+          stdout never loses a file. <code>OK</code> is withheld in one case: on a run that failed
+          because it loaded no fixtures at all, the file that loaded none reads
+          <code>&lt;file&gt;: 0 fixture(s), loaded nothing &mdash; see the run-level error</code>.
+          With <code>--json</code>, stdout carries the report alone; stderr carries one line,
+          <code
+            >Error: fixture validation failed &mdash; &lt;first finding&gt; [&lt;counts&gt;].</code
+          >, when the run failed on its inputs. A usage error (no paths, an unknown option) writes
+          <code>Error: &lt;reason&gt;</code>, a blank line, and the full subcommand help to stderr
+          &mdash; in both output modes, not a one-line reason. A path given twice is validated
+          twice, because the server loads one set of fixtures per <code>--fixtures</code> it is
+          given; the duplicate fixtures that produces are reported as the server reports them, one
+          finding per fixture and rule. Such a path is printed as
+          <code>&lt;path&gt;[&lt;n&gt;]</code>, numbering its mentions from 1, so each load &mdash;
+          and every cross-file reference to its fixtures &mdash; names one of them:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            A path validated twice <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>$ npx @copilotkit/aimock validate dup.json dup.json
+dup.json[1]: OK (2 fixture(s))
+dup.json[2]: [warning] #0 cross-file: duplicate userMessage 'hi' &mdash; shadows fixture dup.json[1] #0
+dup.json[2]: [warning] #1 cross-file: duplicate userMessage 'bye' &mdash; shadows fixture dup.json[1] #1
+dup.json[2]: 2 fixture(s), 0 error(s), 2 warning(s)</code></pre>
+        </div>
+
+        <h3 id="validate-mcp-fakes">MCP fakes</h3>
+        <p>
+          A fixture file may hold an
+          <a href="/mcp-mock#scenario-fakes"><code>mcpFakes</code></a> key.
+          <code>validate</code> checks its blocks by the rules the server uses at load: each bad
+          block is an error that names its rule (for example
+          <code>[mcp-fakes/bad-block:a] block has no scope</code>), and an <code>args</code> entry
+          after an <code>anyArgs</code> entry is a warning. Entry ids are also checked across all
+          files of the run. Mount conflicts are not checked, because they depend on the running
+          server. A file that holds only <code>mcpFakes</code> is a fixture file: a directory walk
+          checks it instead of skipping it, and a run whose files hold only fakes does not fail the
+          zero-fixture rule. The <code>OK</code> line of a file with fakes counts its blocks, for
+          example <code>account/read-only.json: OK (0 fixture(s), 1 mcpFakes block(s))</code>.
+        </p>
+        <p>
+          A <a href="/mcp-mock#recorded-fakes">recorded file</a> is checked with the same rules,
+          plus the checks of its recorded keys (an error names its
+          <code>record-replay/fa-*</code> rule in the message). Each entry of its top-level
+          <code>_warnings</code> (a redacted secret, or a string that looks like a token) is printed
+          as a warning.
+        </p>
+
+        <h3>The <code>--json</code> Report</h3>
+        <p>
+          <code>--json</code> writes one document to stdout and nothing else &mdash; a usage error
+          included. stderr still gets the failure: one
+          <code>Error: fixture validation failed &mdash; ...</code> line for a run that failed on
+          its inputs, or <code>Error: &lt;reason&gt;</code> plus the full help for a usage error.
+          Validating a directory holding a file with invalid JSON and a file with one bad entry and
+          a duplicate <code>userMessage</code> (exit 1):
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">validate --json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  "strict": false,
+  "failed": true,
+  "files": [
+    {
+      "file": "fixtures/badjson.json",
+      "mention": 1,
+      "fixtures": 0,
+      "errors": [
+        {
+          "message": "Invalid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+        }
+      ],
+      "warnings": [],
+      "fatal": "Invalid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+    },
+    {
+      "file": "fixtures/mixed.json",
+      "mention": 1,
+      "fixtures": 2,
+      "errors": [
+        {
+          "index": 0,
+          "message": "Invalid fixture entry #0: missing or non-object \"match\" and \"response\" — every entry needs { \"match\": { ... }, \"response\": { ... } }"
+        }
+      ],
+      "warnings": [
+        {
+          "index": 2,
+          "message": "duplicate userMessage 'hi' — shadows fixture 1"
+        }
+      ]
+    }
+  ],
+  "run": {
+    "fixtures": 2,
+    "mcpFakeBlocks": 0,
+    "errors": []
+  }
+}</code></pre>
+        </div>
+        <p>
+          A usage error carries the reason in <code>run.errors</code> (<code
+            >aimock validate --json</code
+          >, exit 1):
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            validate --json, usage error <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  "strict": false,
+  "failed": true,
+  "files": [],
+  "run": {
+    "fixtures": 0,
+    "mcpFakeBlocks": 0,
+    "errors": [
+      "no fixture paths given."
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          A <code>*.json</code> file the walk passed over carries <code>skipped</code> and no
+          findings (<code>aimock validate --json wk/</code>, exit 0):
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            validate --json, a skipped file <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  "strict": false,
+  "failed": false,
+  "files": [
+    {
+      "file": "wk/aimock.json",
+      "mention": 1,
+      "fixtures": 0,
+      "errors": [],
+      "warnings": [],
+      "skipped": "not a fixture file — an aimock config file (llm, services), which \"aimock --config\" serves and \"--fixtures\" does not load"
+    },
+    {
+      "file": "wk/dup.json",
+      "mention": 1,
+      "fixtures": 2,
+      "errors": [],
+      "warnings": []
+    }
+  ],
+  "run": {
+    "fixtures": 2,
+    "mcpFakeBlocks": 0,
+    "errors": []
+  }
+}</code></pre>
+        </div>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>failed</code></td>
+              <td>The boolean the exit code follows</td>
+            </tr>
+            <tr>
+              <td><code>strict</code></td>
+              <td>Echoes the <code>--strict</code> flag <code>failed</code> was computed under</td>
+            </tr>
+            <tr>
+              <td><code>files[]</code></td>
+              <td>
+                One entry per path the run touched, in argv / walk order: <code>file</code>,
+                <code>mention</code> (which load of that path this is, 1-based, always present
+                &mdash; human output prints it as <code>&lt;path&gt;[&lt;n&gt;]</code> only when the
+                path repeats), <code>fixtures</code> (how many entries converted),
+                <code>errors</code>, <code>warnings</code>, <code>skipped</code> &mdash; present
+                only when the walk passed the file over &mdash; and <code>fatal</code> &mdash;
+                present only when the file produced no report at all. The <code>fatal</code> reason
+                also appears in <code>errors</code>, so a tally of <code>files[].errors</code>
+                matches the error count on the file's stdout line. A file with an
+                <code>mcpFakes</code> key also has <code>mcpFakeBlocks</code>, the number of blocks
+                it adds (<code>0</code> when a block is bad)
+              </td>
+            </tr>
+            <tr>
+              <td><code>files[].errors[]</code>, <code>files[].warnings[]</code></td>
+              <td>
+                A finding always has <code>message</code>. <code>index</code> is the fixture entry
+                it belongs to and is <strong>absent</strong> on a file-level finding.
+                <code>detail</code> carries the raw thrown text when <code>message</code> is a
+                rephrasing of it
+              </td>
+            </tr>
+            <tr>
+              <td><code>run</code></td>
+              <td>
+                The combined pass: <code>fixtures</code> is the total fixture count across every
+                file, <code>mcpFakeBlocks</code> (always present, <code>0</code> when no file has
+                <code>mcpFakes</code>) is the total number of <code>mcpFakes</code> blocks, and
+                <code>errors</code> holds run-level strings such as
+                <code>"Cross-file validation failed: ..."</code>,
+                <code
+                  >"No fixtures loaded from any input &mdash; the server aborts startup on this
+                  under --validate-on-load/--strict"</code
+                >, or the reason a usage error failed
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Usage</h3>
+        <div class="code-block">
+          <div class="code-block-header">Validate fixtures <span class="lang-tag">shell</span></div>
+          <pre><code>npx @copilotkit/aimock validate [--strict] [--json] [--] &lt;path&gt; [more paths ...]</code></pre>
+        </div>
+
+        <h3>Options</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Flag</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--strict</code></td>
+              <td>Treat warnings as errors (exit 1 on warnings)</td>
+            </tr>
+            <tr>
+              <td><code>--json</code></td>
+              <td>Emit a JSON report instead of human-readable lines</td>
+            </tr>
+            <tr>
+              <td><code>-h</code>, <code>--help</code></td>
+              <td>
+                Show the subcommand help and exit 0. With <code>--json</code> the help is the one
+                field of a JSON document on stdout: <code>{ "help": "&lt;help text&gt;" }</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>--</code></td>
+              <td>
+                Stop option parsing; every later argument is a path (use this for a path that begins
+                with <code>-</code>)
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Exit Codes</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Exit code</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>0</code></td>
+              <td>All files valid (warnings allowed unless <code>--strict</code>)</td>
+            </tr>
+            <tr>
+              <td><code>1</code></td>
+              <td>
+                Validation errors, unreadable or unparseable files, a <strong>named</strong> path of
+                the wrong shape (a walked one is skipped instead), a malformed fixture entry, a
+                remote <code>http(s)://</code> path, a stat failure or symlink cycle while walking a
+                directory, a <code>*.json</code> path that is not a regular file, a directory
+                holding no <code>*.json</code> files, no fixtures loaded at all,
+                <code>--strict</code> warnings, or a usage error (no paths given, or an unknown
+                option)
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Validation State and Reset</h3>
+        <p>
+          <code>validate</code> keeps no state. It constructs no <code>LLMock</code> and no server,
+          touches no journal, match-count, chaos or file store, and reads only the paths it is
+          given, so there is nothing for <code>LLMock.reset()</code> or
+          <code>POST /__aimock/reset</code> to clear.
+        </p>
+
+        <h3>Examples</h3>
+        <div class="code-block">
+          <div class="code-block-header">
+            Validation examples <span class="lang-tag">shell</span>
+          </div>
+          <pre><code><span class="cm"># Validate a whole fixture directory (recursive). Non-fixture JSON the</span>
+<span class="cm"># walk turns up (aimock configs, say) is skipped with a note, not failed:</span>
+<span class="cm">#   fixtures/examples/mcp/mcp-config.json: skipped (not a fixture file &mdash; an aimock config file (mcp), which "aimock --config" serves and "--fixtures" does not load)</span>
+$ npx @copilotkit/aimock validate ./fixtures/
+
+<span class="cm"># Validate specific files, failing on warnings too (--strict on the whole shipped tree exits 1: cross-file duplicate userMessage)</span>
+$ npx @copilotkit/aimock validate --strict ./fixtures/example-greeting.json ./fixtures/examples/llm/
+
+<span class="cm"># Machine-readable report for CI</span>
+$ npx @copilotkit/aimock validate --json ./fixtures/</code></pre>
+        </div>
+
         <h2>Docker Compose</h2>
 
         <p style="color: var(--text-dim); font-size: 0.9em">
           The published image's ENTRYPOINT runs the flag-driven
           <code>llmock</code> CLI &mdash; it supports <code>-f/--fixtures</code>,
           <code>-p/--port</code>, <code>-h/--host</code>, and the chaos / record flags, but not
-          <code>--config</code>. Use the compose snippet below for flag-driven fixture serving. For
-          full config-driven mode (LLM + MCP + A2A + AG-UI on one port), either build your own image
-          with <code>@copilotkit/aimock</code> installed, or run
-          <code>npx @copilotkit/aimock --config ...</code> on the host.
+          <code>--config</code>. The snippet below uses that default for flag-driven fixture
+          serving; for config-driven mode set
+          <code>entrypoint: ["node", "dist/aimock-cli.js"]</code> and
+          <code>command: ["--config", "/app/aimock.json", "--host", "0.0.0.0"]</code> and mount the
+          config file. The image declares no <code>HEALTHCHECK</code>, so the compose file supplies
+          one against <code>GET /ready</code> (busybox <code>wget</code> is in the image) and the
+          app waits on <code>condition: service_healthy</code> instead of on container start, which
+          races the listener.
         </p>
 
         <div class="code-block">
@@ -403,13 +1205,19 @@ $ npx @copilotkit/aimock convert vidaimock ./templates/</code></pre>
       - <span class="str">"4010:4010"</span>
     <span class="prop">volumes</span>:
       - <span class="str">./fixtures:/app/fixtures:ro</span>
+    <span class="prop">healthcheck</span>:
+      <span class="prop">test</span>: <span class="str">["CMD", "wget", "-qO-", "http://127.0.0.1:4010/ready"]</span>
+      <span class="prop">interval</span>: <span class="str">2s</span>
+      <span class="prop">timeout</span>: <span class="str">2s</span>
+      <span class="prop">retries</span>: <span class="num">15</span>
 
   <span class="prop">app</span>:
     <span class="prop">build</span>: <span class="str">.</span>
     <span class="prop">environment</span>:
       <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://aimock:4010/v1</span>
     <span class="prop">depends_on</span>:
-      - <span class="str">aimock</span></code></pre>
+      <span class="prop">aimock</span>:
+        <span class="prop">condition</span>: <span class="str">service_healthy</span></code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
