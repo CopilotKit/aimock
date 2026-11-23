@@ -4,7 +4,8 @@
 
 ### Added
 
-- Seeded, reproducible chaos verdicts via `chaos.seed` / `--chaos-seed` (#618)
+- Seeded chaos: `chaos.seed`, `--chaos-seed`, `x-aimock-chaos-seed`, `resetChaosOccurrences` (#618)
+- Seeded hits add response headers and journal fields; `chaosKeysMax`/`--chaos-keys-max` cap keys
 
 ## [1.48.1] - 2026-11-20
 

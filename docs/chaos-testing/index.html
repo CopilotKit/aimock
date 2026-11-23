@@ -287,7 +287,7 @@
                 <code>seed</code> &mdash; makes this request&apos;s verdict reproducible (see
                 <a href="#seeded-chaos">Reproducible Chaos</a>)
               </td>
-              <td>finite number or 1&ndash;128 visible ASCII characters, no spaces or commas</td>
+              <td>string of 1&ndash;128 visible ASCII characters, no spaces or commas</td>
             </tr>
           </tbody>
         </table>
@@ -375,8 +375,10 @@
           <li>the seed;</li>
           <li>
             the request's identity key: its method, its target (query string included) and a hash of
-            its body. Headers are not part of it, so a retry with a new request id is the same
-            request;
+            its parsed body. Headers are not part of it, so a retry with a new request id is the
+            same request. One exception: on chat completions the
+            <code>X-AIMock-Context</code> header value is part of the body that is hashed. A
+            <code>?testId=</code> in the query string is part of the target;
           </li>
           <li>
             the action kind (<code>drop</code>, <code>malformed</code>, <code>rateLimit</code>,
@@ -393,14 +395,17 @@
           tests with different <code>X-Test-Id</code>s keep separate sequences. The rates and their
           drop&nbsp;&rarr;&nbsp;malformed&nbsp;&rarr;&nbsp;rateLimit&nbsp;&rarr;&nbsp;disconnect
           order mean exactly what they mean without a seed. Streaming jitter
-          (<code>streamingProfile.jitter</code>) on a seeded request is drawn from the seed too, so
-          a replay also replays the pacing. <code>latencyMs</code> is already fixed and is
+          (<code>streamingProfile.jitter</code>) applies to SSE streaming and live transcription.
+          There, on a seeded request, it is drawn from the seed too, so a replay also replays the
+          pacing. Realtime <code>response.create</code>, Gemini Live and Responses over WebSocket
+          apply no jitter, with or without a seed. <code>latencyMs</code> is already fixed and is
           unchanged.
         </p>
         <p>
-          A seed is a finite number (used as its decimal string, so <code>42</code> and
-          <code>"42"</code> are one seed) or 1&ndash;128 visible ASCII characters without spaces or
-          commas. It follows the usual precedence:
+          A seed is a string or a finite number. A string is trimmed, then must be 1&ndash;128
+          visible ASCII characters; it cannot contain spaces or commas. A number is used as its
+          JavaScript string form, so <code>42</code> and <code>"42"</code> are one seed. It follows
+          the usual precedence:
         </p>
         <table class="endpoint-table">
           <thead>
@@ -457,14 +462,19 @@
           </li>
           <li>When a run fails, start aimock with the same seed and the same chaos rates.</li>
           <li>
-            Send the same requests. The <em>n</em>th occurrence of each request gets the same
-            verdict it got in CI, regardless of what else the run sent.
+            Send the same requests with the same <code>X-Test-Id</code> values and the same request
+            bodies (and, on chat completions, the same <code>X-AIMock-Context</code> values). The
+            <em>n</em>th occurrence of each request gets the same verdict it got in CI, regardless
+            of what else the run sent.
           </li>
         </ol>
         <p>
-          <code>POST /__aimock/reset</code>, and any <code>POST</code> or <code>DELETE</code> on
-          <code>/__aimock/chaos</code> for a testId, restart that scope's sequences at occurrence 0,
-          so one server can replay the same run again.
+          These calls restart sequences at occurrence 0, so one server can replay the same run
+          again: <code>POST /__aimock/reset</code> restarts every testId's sequences. A
+          <code>POST</code> or <code>DELETE</code> on <code>/__aimock/chaos</code> for a testId
+          restarts that testId's sequences. An untagged <code>POST</code> or <code>DELETE</code>
+          changes the baseline, so it restarts the sequences of the untagged scope and of every
+          testId that inherits the baseline (has no override of its own).
         </p>
 
         <h3>Memory bound</h3>
