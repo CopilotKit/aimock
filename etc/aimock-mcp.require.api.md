@@ -36,6 +36,7 @@ interface ChaosConfig {
     // (undocumented)
     malformedRate?: number;
     rateLimitRate?: number;
+    seed?: string | number;
 }
 
 // @public (undocumented)
@@ -438,6 +439,9 @@ interface JournalEntry {
         interruptReason?: string;
         error?: string;
         chaosAction?: ChaosAction;
+        chaosSeed?: string;
+        chaosKey?: string;
+        chaosOccurrence?: number;
         misbehavior?: MisbehaviorSummary;
         strictOverride?: boolean;
         recordSkipped?: string;

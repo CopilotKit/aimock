@@ -1347,6 +1347,15 @@ export interface CatalogRoute {
     service: string;
 }
 
+// @public
+export const CHAOS_KEY_HEADER = "x-aimock-chaos-key";
+
+// @public
+export const CHAOS_OCCURRENCE_HEADER = "x-aimock-chaos-occurrence";
+
+// @public
+export const CHAOS_SEED_HEADER = "x-aimock-chaos-seed";
+
 // @public (undocumented)
 export type ChaosAction = "drop" | "malformed" | "rateLimit" | "disconnect";
 
@@ -1363,6 +1372,7 @@ export interface ChaosConfig {
     // (undocumented)
     malformedRate?: number;
     rateLimitRate?: number;
+    seed?: string | number;
 }
 
 // @public
@@ -2828,6 +2838,7 @@ export function handleWebSocketRealtime(ws: WebSocketConnection, fixtures: Fixtu
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: http$1.IncomingHttpHeaders;
+    chaos?: HandlerDefaults["chaos"];
     transcriptionIntent?: boolean;
     beforeProcessMessage?: () => void;
 }): void;
@@ -3071,6 +3082,9 @@ export interface JournalEntry {
         interruptReason?: string;
         error?: string;
         chaosAction?: ChaosAction;
+        chaosSeed?: string;
+        chaosKey?: string;
+        chaosOccurrence?: number;
         misbehavior?: MisbehaviorSummary;
         strictOverride?: boolean;
         recordSkipped?: string;
@@ -4313,6 +4327,7 @@ export interface MockServerOptions {
     bytePlusVideo?: FalQueueConfig;
     // (undocumented)
     chaos?: ChaosConfig;
+    chaosKeysMax?: number;
     // (undocumented)
     chunkSize?: number;
     enableMisbehavior?: boolean;

@@ -269,6 +269,9 @@ export {
   resolveChaosLatencyMs,
 } from "./chaos.js";
 export type { ChaosAction } from "./types.js";
+// Seeded chaos: the request header that sets a seed, and the two headers a
+// seeded chaos hit reports its key and occurrence on.
+export { CHAOS_SEED_HEADER, CHAOS_KEY_HEADER, CHAOS_OCCURRENCE_HEADER } from "./chaos-random.js";
 // `applyChaosAsync` returns this instead of a bare boolean so callers can tell
 // "a chaos action fired" from "the response was already dead". Both non-`false`
 // members are truthy, so `if (await applyChaosAsync(...)) return;` is

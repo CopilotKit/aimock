@@ -26,6 +26,7 @@ import { AGUIMock } from "./agui-mock.js";
 import { MCPMock } from "./mcp-mock.js";
 import { mcpRecordEnv, parseMcpRecordFlag } from "./mcp-recorder.js";
 import { parseChaosField, CHAOS_FIELDS, type ChaosField } from "./chaos.js";
+import { DEFAULT_CHAOS_KEYS_MAX, normalizeChaosSeed } from "./chaos-random.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
@@ -86,6 +87,8 @@ Options:
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
       --chaos-ratelimit <rate> Probability (0-1) of 429 with Retry-After
       --chaos-latency <ms> Delay (0-${CHAOS_FIELDS.latencyMs.max}ms) injected before handling
+      --chaos-seed <seed>   Seed that makes chaos verdicts and jitter reproducible
+      --chaos-keys-max <n>  Max seeded-chaos occurrence counters kept (default: ${DEFAULT_CHAOS_KEYS_MAX}, LRU)
       AIMOCK_API_KEYS  Comma-separated inbound test API keys (environment only)
       --help                Show this help message
 `.trim();
@@ -135,6 +138,8 @@ const { values } = parseArgs({
     "chaos-disconnect": { type: "string" },
     "chaos-ratelimit": { type: "string" },
     "chaos-latency": { type: "string" },
+    "chaos-seed": { type: "string" },
+    "chaos-keys-max": { type: "string" },
     "journal-max": { type: "string", default: "1000" },
     "fixture-counts-max": { type: "string", default: "500" },
     help: { type: "boolean", default: false },
@@ -279,13 +284,15 @@ let chaos: ChaosConfig | undefined;
   const disconnectStr = values["chaos-disconnect"];
   const ratelimitStr = values["chaos-ratelimit"];
   const latencyStr = values["chaos-latency"];
+  const seedStr = values["chaos-seed"];
 
   if (
     dropStr !== undefined ||
     malformedStr !== undefined ||
     disconnectStr !== undefined ||
     ratelimitStr !== undefined ||
-    latencyStr !== undefined
+    latencyStr !== undefined ||
+    seedStr !== undefined
   ) {
     // Same parser, same TABLE, same reject-never-clamp policy as every other
     // chaos input (headers, fixture, server default, control API) — see
@@ -310,6 +317,26 @@ let chaos: ChaosConfig | undefined;
       }
       chaos[field] = val;
     }
+    if (seedStr !== undefined) {
+      const seed = normalizeChaosSeed(seedStr);
+      if (seed === undefined) {
+        console.error(
+          `Invalid chaos-seed: ${seedStr} (must be 1-128 visible ASCII characters without spaces)`,
+        );
+        process.exit(1);
+      }
+      chaos.seed = seed;
+    }
+  }
+}
+
+const chaosKeysMaxStr = values["chaos-keys-max"];
+let chaosKeysMax: number | undefined;
+if (chaosKeysMaxStr !== undefined) {
+  chaosKeysMax = Number(chaosKeysMaxStr);
+  if (!Number.isInteger(chaosKeysMax) || chaosKeysMax <= 0) {
+    console.error(`Invalid chaos-keys-max: ${chaosKeysMaxStr} (must be a positive integer)`);
+    process.exit(1);
   }
 }
 
@@ -725,6 +752,7 @@ async function main() {
       ...(responsesTools !== undefined ? { responsesTools } : {}),
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
+      ...(chaosKeysMax !== undefined ? { chaosKeysMax } : {}),
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,
     },
     mounts,
