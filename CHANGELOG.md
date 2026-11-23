@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Added
+
+- Seeded, reproducible chaos verdicts via `chaos.seed` / `--chaos-seed` (#618)
+
 ## [1.48.1] - 2026-11-20
 
 ### Changed
