@@ -906,6 +906,18 @@ export interface ChaosConfig {
    * rate limits, not 50 % (see the interface docstring above).
    */
   rateLimitRate?: number;
+  /**
+   * Seed that makes the verdicts above reproducible. Omit it and chaos rolls
+   * `Math.random()` exactly as before. Set it and each verdict is a pure function
+   * of the seed, the request (method, target and body), the action kind and how
+   * many times that request was seen before, so the same seed and the same
+   * requests give the same faults on a fresh server, and unrelated requests do
+   * not shift each other. Same precedence as the rates (header >
+   * fixture > server). A number is used as its decimal string; a string must be
+   * 1-128 visible ASCII characters without spaces. Streaming jitter on a seeded
+   * request is drawn from the seed too.
+   */
+  seed?: string | number;
 }
 
 /**
@@ -1381,6 +1393,15 @@ export interface JournalEntry {
      */
     error?: string;
     chaosAction?: ChaosAction;
+    /**
+     * Where a SEEDED `chaosAction` came from, so a failure seen in the journal can be
+     * replayed: the effective seed, the request identity key and the occurrence of
+     * that key. Present only when the request resolved a chaos seed; an unseeded
+     * chaos entry never carries them.
+     */
+    chaosSeed?: string;
+    chaosKey?: string;
+    chaosOccurrence?: number;
     /** Full prepared fault output; interrupted delivery is recorded separately above. */
     misbehavior?: MisbehaviorSummary;
     /** When the X-AIMock-Strict header overrode the server default. */
@@ -1784,6 +1805,16 @@ export interface MockServerOptions {
    * unique testIds.
    */
   fixtureCountsMaxTestIds?: number;
+  /**
+   * Maximum number of per-request occurrence counters kept for SEEDED chaos
+   * (one per distinct testId, seed and request key). Past the cap the least
+   * recently used counter is evicted, and that request starts its sequence again
+   * at occurrence 0. Must be a positive integer; anything else uses the default.
+   * Unseeded chaos keeps no counters.
+   *
+   * Default: 10000.
+   */
+  chaosKeysMax?: number;
   /**
    * Normalize requests before matching and recording. Useful for stripping
    * dynamic data (timestamps, UUIDs, session IDs) that would cause fixture

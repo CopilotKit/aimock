@@ -1,44 +1,77 @@
 /**
- * Deterministic randomness for aimock's stochastic surfaces.
+ * Seeded randomness for chaos verdicts and streaming jitter.
  *
- * aimock's promise is that a test run is reproducible. Chaos injection and
- * streaming jitter were the two exceptions: both called `Math.random()`, so a
- * CI failure that hinged on a dropped request could not be replayed.
+ * Without a seed, chaos rolls `Math.random()` exactly as it always has and
+ * nothing in this module is touched. With a seed (`chaos.seed`,
+ * `--chaos-seed`, the `x-aimock-chaos-seed` header or `POST /__aimock/chaos`),
+ * every draw is a pure function of four inputs:
  *
- * Every draw here is a pure function of four inputs - the seed, a per-request
- * key, a stream name, and an occurrence counter. That shape is what buys the
- * three properties callers depend on:
+ *   - the seed;
+ *   - the request's identity key (method, target and a hash of the body);
+ *   - the action kind (`drop`, `malformed`, `rateLimit`, `disconnect`, or
+ *     `jitter`);
+ *   - the occurrence: how many times this key was seen before under this seed.
  *
- *   - **Order independence.** The Nth decision for a given key is the same no
- *     matter what other requests were interleaved, so adding an unrelated
- *     request to a test does not reshuffle the outcomes of the rest.
- *   - **Stream independence.** Each chaos kind draws from its own stream, so
- *     turning `dropRate` up does not change which requests come back malformed.
- *   - **Rate independence.** The draw is computed before any rate is consulted
- *     and never conditionally, so raising a rate only ever adds firings.
+ * That shape buys three properties:
+ *
+ *   - **Reproducibility.** The same seed and the same requests give the same
+ *     verdicts on a fresh server.
+ *   - **Order independence.** The Nth verdict for a key does not depend on
+ *     other requests that were interleaved with it.
+ *   - **Kind independence.** Each action kind draws from its own stream, so a
+ *     change to one rate does not move the draws of another.
+ *
+ * Design and initial implementation by AnshulBhati01 in #618.
  */
+
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/** Per-request seed override. Also sent back on a seeded chaos hit. */
+export const CHAOS_SEED_HEADER = "x-aimock-chaos-seed";
+/** Sent back on a seeded chaos hit: the request's identity key. */
+export const CHAOS_KEY_HEADER = "x-aimock-chaos-key";
+/** Sent back on a seeded chaos hit: which occurrence of its key the request was. */
+export const CHAOS_OCCURRENCE_HEADER = "x-aimock-chaos-occurrence";
+
+/**
+ * Where a seeded verdict came from: enough to reproduce it. Only a request
+ * that resolved a seed has one; an unseeded verdict has no origin and reports
+ * nothing new.
+ */
+export interface ChaosOrigin {
+  /** The effective seed: the header's, else the fixture's, else the server's. */
+  seed: string;
+  /** The request's identity key (16 hex characters). */
+  key: string;
+  /** 0 for this key's first verdict under this seed and testId, then 1, 2, ... */
+  occurrence: number;
+}
 
 /** FNV-1a 32-bit offset basis. */
 const FNV_OFFSET = 0x811c9dc5;
-
 /** FNV-1a 32-bit prime. */
 const FNV_PRIME = 0x01000193;
 
 /**
- * Field separator for hash material. ASCII unit separator, which cannot appear
- * in a JSON-serialized body, a URL path, or a trimmed seed, so concatenated
- * fields cannot be made to overlap by choosing a devious seed or path.
+ * Field separator for hash material: the ASCII unit separator. A seed cannot
+ * contain it (see {@link normalizeChaosSeed}) and JSON escapes it, so the
+ * fields of one hash input cannot overlap.
  */
-const SEP = String.fromCharCode(31);
+const SEP = "\u001f";
 
-/** Width of a chaos key, in hex characters. */
-const KEY_HEX_WIDTH = 16;
+/** Longest seed accepted, in characters. */
+export const MAX_CHAOS_SEED_LENGTH = 128;
+
+/** Visible ASCII only: a seed must be safe to send back in a response header. */
+const SEED_GRAMMAR = /^[\x21-\x7e]+$/;
 
 /**
- * FNV-1a over a string's UTF-16 code units, low byte then high byte, so the
- * hash is stable for non-ASCII content without a TextEncoder round trip.
- * `state` chains one hash into the next.
+ * The default cap on distinct (testId, seed, key) occurrence counters per
+ * server. See {@link ChaosOccurrenceRegistry}.
  */
+export const DEFAULT_CHAOS_KEYS_MAX = 10_000;
+
+/** FNV-1a over UTF-16 code units, low byte then high byte. `state` chains hashes. */
 function fnv1a(input: string, state: number = FNV_OFFSET): number {
   let h = state >>> 0;
   for (let i = 0; i < input.length; i++) {
@@ -57,210 +90,230 @@ function mulberry32(state: number): number {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
-/** Render a 32-bit word as fixed-width lowercase hex. */
 function hex32(word: number): string {
   return (word >>> 0).toString(16).padStart(8, "0");
 }
 
 /**
- * Serialize a value with object keys sorted at every depth, so two bodies that
- * differ only in key order - which is invisible over JSON - hash alike.
- * Array order is meaningful and is preserved.
+ * JSON with object keys sorted at every depth, so two bodies that differ only
+ * in key order get one key. Array order is kept. `undefined` (no body) is a
+ * bare token that no JSON value can render as.
  */
-export function canonicalJSON(value: unknown): string {
-  // A bare token, so it cannot collide with any body: `JSON.stringify` quotes
-  // every string, so no value off the wire renders as an unquoted word.
+function canonicalJSON(value: unknown): string {
   if (value === undefined) return "absent";
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJSON(entry)).join(",")}]`;
-  }
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJSON(v)).join(",")}]`;
   const record = value as Record<string, unknown>;
   const parts: string[] = [];
   for (const key of Object.keys(record).sort()) {
-    const entry = record[key];
-    if (entry === undefined) continue;
-    parts.push(`${JSON.stringify(key)}:${canonicalJSON(entry)}`);
+    if (record[key] === undefined) continue;
+    parts.push(`${JSON.stringify(key)}:${canonicalJSON(record[key])}`);
   }
   return `{${parts.join(",")}}`;
 }
 
-/** Digest an identity string down to a fixed-width opaque key. */
-function digestIdentity(identity: string): string {
-  const low = fnv1a(identity);
-  const high = fnv1a(identity, (low ^ 0x9e3779b9) >>> 0);
-  return (hex32(high) + hex32(low)).slice(0, KEY_HEX_WIDTH);
+/**
+ * The parts of a request that decide its chaos key. Headers are left out on
+ * purpose: a retry with a new request id is the same request for fault
+ * injection.
+ */
+export interface ChaosRequestIdentity {
+  method: string;
+  /** The request target. Pass the raw URL (query string included) when there is one. */
+  path: string;
+  /** The parsed request body, or `undefined` for a bodiless request. */
+  body: unknown;
 }
 
-/**
- * The identity of a request for chaos purposes: method, path (query string
- * included - a different query is a different request), and the canonical form
- * of the body. Headers are deliberately excluded: a retry that carries a new
- * request id is the same request as far as fault injection is concerned.
- *
- * `override` short-circuits all of that. A client that passes an explicit key
- * groups its own requests however it likes, which is how a caller pins one
- * logical call that varies in some irrelevant field.
- */
-function buildChaosKey(
-  method: string,
-  path: string,
-  body: unknown,
-  override?: string | null,
-): string {
-  if (typeof override === "string" && override.trim().length > 0) {
-    return digestIdentity(`label${SEP}${override.trim()}`);
-  }
-  const verb = (method || "GET").toUpperCase();
-  return digestIdentity(`${verb}${SEP}${path}${SEP}${canonicalJSON(body)}`);
+/** A 16-hex-character key for a request identity. */
+export function chaosKeyFor(identity: ChaosRequestIdentity): string {
+  const material = `${(identity.method || "GET").toUpperCase()}${SEP}${identity.path}${SEP}${canonicalJSON(identity.body)}`;
+  const low = fnv1a(material);
+  const high = fnv1a(material, (low ^ 0x9e3779b9) >>> 0);
+  return hex32(high) + hex32(low);
 }
 
-/**
- * A draw in [0, 1) for one (seed, key, stream, occurrence). Pure: no state, no
- * clock, no `Math.random()`. Two servers given the same four inputs agree.
- */
-function chaosDraw(seed: string, key: string, stream: string, occurrence: number): number {
-  const material = `${seed}${SEP}${stream}${SEP}${key}${SEP}${occurrence}`;
+/** A draw in [0, 1) for one (seed, key, kind, occurrence). Pure. */
+export function chaosDraw(seed: string, key: string, kind: string, occurrence: number): number {
+  const material = `${seed}${SEP}${kind}${SEP}${key}${SEP}${occurrence}`;
   const low = fnv1a(material);
   const high = fnv1a(material, (low ^ 0x9e3779b9) >>> 0);
   return mulberry32((low ^ Math.imul(high, FNV_PRIME)) >>> 0);
 }
 
 /**
- * Per-key occurrence counters, so the second identical request draws
- * independently of the first instead of repeating its verdict forever.
- *
- * Nothing is evicted while a server is alive. A capped map would let unrelated
- * traffic rewind a key's counter, and a verdict that depends on how many other
- * requests happened to arrive is exactly what the seed exists to eliminate.
- * The reset routes are how a caller reclaims the space.
+ * The canonical string form of a seed, or `undefined` when the value is not a
+ * usable seed. A finite number becomes its decimal string, so `42` and `"42"`
+ * are one seed. A string is trimmed and must then be 1 to
+ * {@link MAX_CHAOS_SEED_LENGTH} visible ASCII characters (no spaces), so it can
+ * always be reported back in a response header unchanged.
  */
-class ChaosKeyRegistry {
-  private readonly counts = new Map<string, number>();
+export function normalizeChaosSeed(value: unknown): string | undefined {
+  let text: string;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return undefined;
+    text = String(value);
+  } else if (typeof value === "string") {
+    text = value.trim();
+  } else {
+    return undefined;
+  }
+  if (text.length === 0 || text.length > MAX_CHAOS_SEED_LENGTH) return undefined;
+  return SEED_GRAMMAR.test(text) ? text : undefined;
+}
 
-  /** Consume the next occurrence for `key`: 0 the first time, then 1, 2, ... */
-  next(key: string): number {
-    const current = this.counts.get(key) ?? 0;
-    this.counts.set(key, current + 1);
-    return current;
+/** Per-chunk jitter draw in [0, 1), indexed by chunk. */
+export type JitterSource = (chunkIndex: number) => number;
+
+/**
+ * Jitter for one request, on its seed and key. Occurrence is not part of it:
+ * the same request streams with the same pacing every time.
+ */
+export function createJitterSource(seed: string, key: string): JitterSource {
+  return (chunkIndex: number) => chaosDraw(seed, key, "jitter", chunkIndex);
+}
+
+/**
+ * Per-key occurrence counters, so the second identical request draws on its
+ * own instead of repeating the first verdict forever.
+ *
+ * BOUNDED. A long-running server sees an unbounded number of distinct request
+ * bodies, so the registry holds at most `max` counters and evicts the least
+ * recently used one first (a `Map` iterates in insertion order, and a touched
+ * entry is re-inserted at the end). An evicted key starts again at occurrence
+ * 0, so its verdicts repeat from the start of its sequence. With the default
+ * cap that only happens to a key that was idle while 10,000 other keys were
+ * seen.
+ *
+ * Counters are namespaced by testId, so two tests that run in parallel on one
+ * server keep independent sequences, and one test's chaos reset does not
+ * rewind another's.
+ */
+export class ChaosOccurrenceRegistry {
+  private readonly counts = new Map<string, { scope: string; count: number }>();
+  readonly max: number;
+
+  constructor(max: number = DEFAULT_CHAOS_KEYS_MAX) {
+    this.max = Number.isInteger(max) && max > 0 ? max : DEFAULT_CHAOS_KEYS_MAX;
   }
 
+  /** Take the next occurrence for (scope, seed, key): 0 the first time, then 1, 2, ... */
+  next(scope: string, seed: string, key: string): number {
+    const id = `${scope}${SEP}${seed}${SEP}${key}`;
+    const entry = this.counts.get(id);
+    const occurrence = entry?.count ?? 0;
+    if (entry) this.counts.delete(id);
+    else if (this.counts.size >= this.max) {
+      const oldest = this.counts.keys().next();
+      if (!oldest.done) this.counts.delete(oldest.value);
+    }
+    this.counts.set(id, { scope, count: occurrence + 1 });
+    return occurrence;
+  }
+
+  /** Number of counters held. */
   get size(): number {
     return this.counts.size;
   }
 
+  /** Drop the counters of one testId scope. */
+  clearScope(scope: string): void {
+    for (const [id, entry] of this.counts) {
+      if (entry.scope === scope) this.counts.delete(id);
+    }
+  }
+
+  /** Drop every counter. */
   clear(): void {
     this.counts.clear();
   }
 }
 
 /**
- * A fresh seed for a server that was not given one. Printed at startup and
- * served from the control API so a red run can be replayed by feeding it back.
+ * Occurrence registries, one per server, keyed by the server's chaos
+ * `byTestId` map: the one object a server's `ChaosScope` always carries, and
+ * stable for the server's life. Keyed this way so the registry reaches the
+ * verdict through the `serverDefaults` argument every chaos call site already
+ * passes. A `WeakMap`, so a stopped server's registry goes with it.
  */
-function generateChaosSeed(): string {
-  const high = Math.floor(Math.random() * 0x100000000);
-  const low = Math.floor(Math.random() * 0x100000000);
-  return hex32(high) + hex32(low);
+const occurrenceRegistries = new WeakMap<object, ChaosOccurrenceRegistry>();
+
+/** Attach a server's occurrence registry to its chaos scope map. Called once by `createServer`. */
+export function registerChaosOccurrences(
+  byTestId: object,
+  registry: ChaosOccurrenceRegistry,
+): void {
+  occurrenceRegistries.set(byTestId, registry);
+}
+
+/** The registry registered for a server's chaos scope map, if any. */
+export function chaosOccurrencesFor(byTestId: object): ChaosOccurrenceRegistry | undefined {
+  return occurrenceRegistries.get(byTestId);
 }
 
 /**
- * Coerce a configured seed to its canonical string form, or null when the value
- * carries no usable seed. Numbers are accepted because config files and CLI
- * flags routinely carry `42`.
- *
- * Null means "no seed here", and the caller falls through to the next
- * precedence level, so a rejected seed behaves exactly as a blank one does.
- * Only a value that is all whitespace (or a non-finite number) is rejected.
- * A nonblank string is opaque: its spaces and other characters remain part
- * of its identity. HTTP reporting handles transport encoding separately.
+ * Drop a server's seeded-chaos occurrence counters: every testId's, or only
+ * `scope`'s. The next seeded request for a key starts again at occurrence 0,
+ * which is what makes a reset (or a re-install through `POST
+ * /__aimock/chaos`) replay the same verdicts.
  */
-export function normalizeChaosSeed(value: unknown): string | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? String(value) : null;
-  }
-  if (typeof value !== "string") return null;
-  if (value.trim().length === 0) return null;
-  return value;
-}
-
-/** Per-chunk jitter source, indexed by chunk. Returns a value in [0, 1). */
-export type JitterSource = (chunkIndex: number) => number;
-
-/**
- * A jitter source drawn from the "jitter" stream, so enabling chaos never
- * shifts a stream's timing and vice versa.
- */
-export function createJitterSource(seed: string, key: string): JitterSource {
-  return (chunkIndex: number) => chaosDraw(seed, key, "jitter", chunkIndex);
-}
-
-/** What a request identifies itself by when asking for its draws. */
-interface ChaosDrawInput {
-  method: string;
-  path: string;
-  body: unknown;
-  /** Explicit grouping key from `x-aimock-chaos-key`. */
-  keyOverride?: string | null;
-  /** Per-request seed override from the fixture or `x-aimock-chaos-seed`. */
-  seed?: string | number | null;
-}
-
-/** One request's draws: all three kinds, always, whatever the rates are. */
-export interface ChaosDraws {
-  seed: string;
-  key: string;
-  occurrence: number;
-  drop: number;
-  malformed: number;
-  disconnect: number;
+export function clearChaosOccurrences(byTestId: object, scope?: string): void {
+  const registry = occurrenceRegistries.get(byTestId);
+  if (!registry) return;
+  if (scope === undefined) registry.clear();
+  else registry.clearScope(scope);
 }
 
 /**
- * A server's deterministic randomness. Owns the run seed and the occurrence
- * counters; hands out draws and jitter sources.
+ * Per-request seeded-chaos state that has to reach code the chaos roll does
+ * not call directly: the stream writers that compute jitter, and the chaos
+ * action that reports the verdict's origin. Entered once per HTTP request by
+ * the server (`runInChaosRequestScope`); written only when the request
+ * resolved a seed, so an unseeded request leaves it empty, its jitter stays on
+ * `Math.random()` and its chaos response carries nothing new.
  */
-export class ChaosRandomizer {
-  /** The server-wide seed: the configured one, or the one generated for this run. */
-  readonly seed: string;
+interface ChaosRequestState {
+  identity?: ChaosRequestIdentity;
+  jitter?: JitterSource;
+  origin?: ChaosOrigin;
+}
 
-  private readonly registry = new ChaosKeyRegistry();
+const chaosRequestScope = new AsyncLocalStorage<ChaosRequestState>();
 
-  constructor(seed?: string | number | null) {
-    this.seed = normalizeChaosSeed(seed) ?? generateChaosSeed();
-  }
+/** Run `fn` with a fresh, empty chaos request state. */
+export function runInChaosRequestScope<T>(fn: () => T): T {
+  return chaosRequestScope.run({}, fn);
+}
 
-  /**
-   * Draw for one request. Consumes an occurrence, so a caller that wants the
-   * verdict without advancing the sequence must not call this.
-   *
-   * Occurrence counters are namespaced by the effective seed: a request that
-   * overrides the seed to replay a failure gets that seed's own sequence rather
-   * than a position polluted by the surrounding run.
-   */
-  draw(input: ChaosDrawInput): ChaosDraws {
-    const seed = normalizeChaosSeed(input.seed) ?? this.seed;
-    const key = buildChaosKey(input.method, input.path, input.body, input.keyOverride);
-    const occurrence = this.registry.next(`${seed}${SEP}${key}`);
-    return {
-      seed,
-      key,
-      occurrence,
-      drop: chaosDraw(seed, key, "drop", occurrence),
-      malformed: chaosDraw(seed, key, "malformed", occurrence),
-      disconnect: chaosDraw(seed, key, "disconnect", occurrence),
-    };
-  }
+/**
+ * Record what the request being served is, for a chaos roll that is not handed
+ * it directly (the split gates in `src/server.ts` roll through `evaluateChaos`).
+ * Only read when the request turns out to be seeded.
+ */
+export function setRequestChaosIdentity(identity: ChaosRequestIdentity): void {
+  const state = chaosRequestScope.getStore();
+  if (state) state.identity = identity;
+}
 
-  /** Number of distinct (seed, key) pairs currently tracked. */
-  get trackedKeys(): number {
-    return this.registry.size;
-  }
+/** The identity recorded for the request being served, or `undefined`. */
+export function currentChaosIdentity(): ChaosRequestIdentity | undefined {
+  return chaosRequestScope.getStore()?.identity;
+}
 
-  /** Drop every occurrence counter. The seed is unchanged - a reset replays. */
-  reset(): void {
-    this.registry.clear();
-  }
+/** Record a seeded verdict's origin and jitter source for the request being served. */
+export function setRequestChaosSeeding(origin: ChaosOrigin, jitter: JitterSource): void {
+  const state = chaosRequestScope.getStore();
+  if (!state) return;
+  state.origin = origin;
+  state.jitter = jitter;
+}
+
+/** The seeded jitter source for the request being served, or `undefined`. */
+export function currentChaosJitter(): JitterSource | undefined {
+  return chaosRequestScope.getStore()?.jitter;
+}
+
+/** The seeded verdict origin for the request being served, or `undefined`. */
+export function currentChaosOrigin(): ChaosOrigin | undefined {
+  return chaosRequestScope.getStore()?.origin;
 }

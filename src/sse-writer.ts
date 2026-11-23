@@ -1,6 +1,7 @@
 import type * as http from "node:http";
 import type { SSEChunk, StreamingProfile, RecordedTimings } from "./types.js";
 import { httpSink, runFrameLoop, type FrameCodec } from "./response/frame-loop.js";
+import { currentChaosJitter, type JitterSource } from "./chaos-random.js";
 
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0 || signal?.aborted) return Promise.resolve();
@@ -48,6 +49,28 @@ export function calculateDelay(
   recordedTimings?: RecordedTimings,
   replaySpeed?: number,
 ): number {
+  return calculateDelayWithJitter(
+    chunkIndex,
+    profile,
+    fallbackLatency,
+    recordedTimings,
+    replaySpeed,
+    undefined,
+  );
+}
+
+// Internal (not part of the public API): `calculateDelay` with an explicit
+// seeded jitter source, for a caller outside any HTTP request scope (the
+// WebSocket turns). Without one, the source recorded for the request being
+// served is used, else `Math.random()`.
+export function calculateDelayWithJitter(
+  chunkIndex: number,
+  profile: StreamingProfile | undefined,
+  fallbackLatency: number | undefined,
+  recordedTimings: RecordedTimings | undefined,
+  replaySpeed: number | undefined,
+  jitter: JitterSource | undefined,
+): number {
   const speed = replaySpeed ?? 1.0;
   let delayMs: number;
 
@@ -64,7 +87,12 @@ export function calculateDelay(
     }
     // Jitter only applies when the delay came from ttft/tps, not fallback
     if (fromProfile && profile.jitter && profile.jitter > 0) {
-      delayMs *= 1 + (Math.random() * 2 - 1) * profile.jitter;
+      // A SEEDED request draws its jitter from the seed (passed in, or recorded
+      // for the request being served by its chaos gate), so a replayed seed
+      // replays the pacing too. Unseeded, this is the same `Math.random()` draw.
+      const source = jitter ?? currentChaosJitter();
+      const draw = source ? source(chunkIndex) : Math.random();
+      delayMs *= 1 + (draw * 2 - 1) * profile.jitter;
       if (delayMs < 0) delayMs = 0;
     }
   } else if (recordedTimings) {
