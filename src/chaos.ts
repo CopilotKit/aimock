@@ -42,6 +42,7 @@ import {
   currentChaosOrigin,
   normalizeChaosSeed,
   setRequestChaosSeeding,
+  clearRequestChaosSeeding,
   type ChaosOrigin,
   type ChaosRequestIdentity,
 } from "./chaos-random.js";
@@ -871,6 +872,11 @@ function decideChaos(
     origin = { seed, key, occurrence };
     roll = (kind) => chaosDraw(seed, key, kind, occurrence);
     setRequestChaosSeeding(origin, createJitterSource(seed, key));
+  } else {
+    // UNSEEDED: drop whatever an earlier seeded verdict in this request left in
+    // the scope, so this verdict reports no origin and its stream jitters on
+    // Math.random(). A no-op for a request that was never seeded.
+    clearRequestChaosSeeding();
   }
 
   const fires = (rate: number | undefined, kind: ChaosAction): boolean =>
@@ -1032,6 +1038,9 @@ export function applyChaos(
   // "Rolled" is not "applied": an action the response could not take is a
   // no-op, and reporting it as a hit would make the caller abandon a request
   // nothing has answered.
+  // An unseeded verdict's `origin` is undefined, so `applyChaosAction` falls
+  // back to the request scope, which `decideChaos` has just cleared: no stale
+  // seeded origin from an earlier verdict in this request can be reported.
   return (
     applyChaosAction(action, res, fixture, journal, context, source, registry, logger, origin) ===
     "applied"

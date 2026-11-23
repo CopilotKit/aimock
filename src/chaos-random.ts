@@ -315,6 +315,19 @@ export function setRequestChaosSeeding(origin: ChaosOrigin, jitter: JitterSource
   state.jitter = jitter;
 }
 
+/**
+ * Forget any seeded verdict origin and jitter source recorded for the request
+ * being served. Called by an UNSEEDED verdict, so it cannot report, or stream
+ * with, a seed left behind by an earlier seeded verdict in the same request.
+ * A no-op outside a request scope and on a scope that was never seeded.
+ */
+export function clearRequestChaosSeeding(): void {
+  const state = chaosRequestScope.getStore();
+  if (!state) return;
+  delete state.origin;
+  delete state.jitter;
+}
+
 /** The seeded jitter source for the request being served, or `undefined`. */
 export function currentChaosJitter(): JitterSource | undefined {
   return chaosRequestScope.getStore()?.jitter;
