@@ -894,7 +894,7 @@ function decideChaos(
     const occurrence = occurrencesFor(serverDefaults).next(scope, seed, key);
     origin = { seed, key, occurrence };
     roll = (kind) => chaosDraw(seed, key, kind, occurrence);
-    setRequestChaosSeeding(origin, createJitterSource(seed, key));
+    setRequestChaosSeeding(origin, createJitterSource(seed, key), logger);
   } else {
     // UNSEEDED: drop whatever an earlier seeded verdict in this request left in
     // the scope, so this verdict reports no origin and its stream jitters on

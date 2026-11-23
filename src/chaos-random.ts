@@ -523,10 +523,35 @@ export function currentChaosIdentity(): ChaosRequestIdentity | undefined {
   return chaosRequestScope.getStore()?.identity;
 }
 
-/** Record a seeded verdict's origin and jitter source for the request being served. */
-export function setRequestChaosSeeding(origin: ChaosOrigin, jitter: JitterSource): void {
+let warnedSeedingOutsideScope = false;
+
+/**
+ * Record a seeded verdict's origin and jitter source for the request being served.
+ *
+ * Outside a request scope (an embedder calling `evaluateChaos` directly) there
+ * is no per-request place to keep the jitter source: a process-wide slot would
+ * hand one call's pacing to another, concurrent one. The verdict itself stays
+ * seeded, but stream jitter stays on `Math.random()`. That is warned once per
+ * process through `logger` (or `console.warn` with the `[aimock]` prefix when
+ * there is none, as the `applyChaos` notice does), never dropped silently.
+ */
+export function setRequestChaosSeeding(
+  origin: ChaosOrigin,
+  jitter: JitterSource,
+  logger?: Logger,
+): void {
   const state = chaosRequestScope.getStore();
-  if (!state) return;
+  if (!state) {
+    if (!warnedSeedingOutsideScope) {
+      warnedSeedingOutsideScope = true;
+      const notice =
+        "[chaos] seeded chaos verdict outside a server request: the verdict is seeded, " +
+        "but stream jitter is not and falls back to Math.random(). (Warned once per process.)";
+      if (logger) logger.warn(notice);
+      else console.warn(`[aimock] ${notice}`);
+    }
+    return;
+  }
   state.origin = origin;
   state.jitter = jitter;
 }

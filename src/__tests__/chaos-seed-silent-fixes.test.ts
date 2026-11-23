@@ -9,11 +9,12 @@
  * 3. The embedder fallback occurrence registry warns when it evicts at its cap,
  *    once per burst, like a server registry does.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Logger } from "../logger.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
 
@@ -82,5 +83,51 @@ describe("--chaos-keys-max accepts only a positive decimal integer", () => {
     const r = await runCli(["--fixtures", fixturesDir, "--port", "0", "--chaos-seed=a b"]);
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain(`must be 1-${MAX_CHAOS_SEED_LENGTH} visible ASCII`);
+  });
+});
+
+describe("seeded verdict outside a request scope", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("warns once that stream jitter is not seeded", async () => {
+    vi.resetModules();
+    const { evaluateChaos } = await import("../chaos.js");
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    evaluateChaos(null, undefined, {}, logger, "/direct", { seed: "s1" });
+    evaluateChaos(null, undefined, {}, logger, "/direct", { seed: "s1" });
+    const notes = warn.mock.calls.filter((c) => String(c[0]).includes("outside a server request"));
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0][0])).toContain("Math.random()");
+  });
+
+  it("falls back to console.warn when no logger is passed", async () => {
+    vi.resetModules();
+    const { evaluateChaos } = await import("../chaos.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    evaluateChaos(null, undefined, {}, undefined, "/direct", { seed: "s1" });
+    const notes = warn.mock.calls.filter((c) =>
+      c.map(String).join(" ").includes("outside a server request"),
+    );
+    expect(notes).toHaveLength(1);
+  });
+
+  it("does not warn for an unseeded verdict or inside a request scope", async () => {
+    vi.resetModules();
+    const { evaluateChaos } = await import("../chaos.js");
+    const { runInChaosRequestScope, currentChaosJitter } = await import("../chaos-random.js");
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    evaluateChaos(null, undefined, {}, logger, "/direct", { dropRate: 0 });
+    let jitterSeen = false;
+    runInChaosRequestScope(() => {
+      evaluateChaos(null, undefined, {}, logger, "/direct", { seed: "s1" });
+      jitterSeen = currentChaosJitter() !== undefined;
+    });
+    expect(jitterSeen).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
