@@ -261,6 +261,7 @@ import {
 } from "./chaos.js";
 import {
   ChaosOccurrenceRegistry,
+  clearBaselineChaosOccurrences,
   clearChaosOccurrences,
   normalizeChaosSeed,
   registerChaosOccurrences,
@@ -699,6 +700,18 @@ function effectiveChaos(defaults: HandlerDefaults, scopeId: string): ChaosConfig
   const current = defaults.chaos;
   if (!current) return {};
   return isChaosScope(current) ? (current.base ?? {}) : current;
+}
+
+/**
+ * Rewind the seeded chaos counters after the chaos config for `scopeId`
+ * changed, so the next seeded run in that scope replays from occurrence 0.
+ * The untagged scope is the server-wide baseline: changing it rewinds every
+ * testId that inherits it (no override of its own), not only the default one.
+ */
+function rewindChaosOccurrences(defaults: HandlerDefaults, scopeId: string): void {
+  if (!defaults.chaosByTestId) return;
+  if (scopeId === DEFAULT_TEST_ID) clearBaselineChaosOccurrences(defaults.chaosByTestId);
+  else clearChaosOccurrences(defaults.chaosByTestId, scopeId);
 }
 
 /** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
@@ -1173,7 +1186,8 @@ async function handleControlAPI(
     if (scopeId === null) return writeBlankTestId(res);
     defaults.chaosByTestId?.delete(scopeId);
     // Seeded counters for this scope restart, so the next seeded run replays.
-    if (defaults.chaosByTestId) clearChaosOccurrences(defaults.chaosByTestId, scopeId);
+    // Untagged, that is every scope that inherits the baseline.
+    rewindChaosOccurrences(defaults, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;
@@ -1296,7 +1310,8 @@ async function handleControlAPI(
     }
     defaults.chaosByTestId?.set(scopeId, next);
     // A (re-)install starts this scope's seeded sequences from occurrence 0.
-    if (defaults.chaosByTestId) clearChaosOccurrences(defaults.chaosByTestId, scopeId);
+    // Untagged, that is every scope that inherits the baseline.
+    rewindChaosOccurrences(defaults, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;

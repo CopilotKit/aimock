@@ -25,6 +25,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { DEFAULT_TEST_ID } from "./constants.js";
 
 /** Per-request seed override. Also sent back on a seeded chaos hit. */
 export const CHAOS_SEED_HEADER = "x-aimock-chaos-seed";
@@ -225,8 +226,13 @@ export class ChaosOccurrenceRegistry {
 
   /** Drop the counters of one testId scope. */
   clearScope(scope: string): void {
+    this.clearScopesWhere((s) => s === scope);
+  }
+
+  /** Drop the counters of every testId scope that `drop` accepts. */
+  clearScopesWhere(drop: (scope: string) => boolean): void {
     for (const [id, entry] of this.counts) {
-      if (entry.scope === scope) this.counts.delete(id);
+      if (drop(entry.scope)) this.counts.delete(id);
     }
   }
 
@@ -290,6 +296,21 @@ export function clearChaosOccurrences(byTestId: object, scope?: string): void {
   if (!registry) return;
   if (scope === undefined) registry.clear();
   else registry.clearScope(scope);
+}
+
+/**
+ * Drop the counters of every testId scope that inherits the server-wide chaos
+ * baseline: the default scope, and every testId with no override of its own in
+ * `byTestId` (the server's chaos override map, which holds the baseline
+ * override under the default testId). Called when the baseline changes, so
+ * re-installing the same seeded baseline replays every scope that runs on it.
+ * A testId with its own override keeps its counters: the change does not
+ * reach it.
+ */
+export function clearBaselineChaosOccurrences(byTestId: ReadonlyMap<string, unknown>): void {
+  const registry = occurrenceRegistries.get(byTestId);
+  if (!registry) return;
+  registry.clearScopesWhere((scope) => scope === DEFAULT_TEST_ID || !byTestId.has(scope));
 }
 
 /**
