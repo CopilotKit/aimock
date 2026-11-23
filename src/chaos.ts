@@ -1118,6 +1118,29 @@ export function applyChaosDeprecated(
 }
 
 /**
+ * Add the seeded chaos headers to a CORS response's
+ * `Access-Control-Expose-Headers`, so a browser harness can read them.
+ *
+ * Only on a seeded chaos hit, the one response that carries them. The
+ * server-wide expose list is a static header on EVERY response, so naming them
+ * there would change the bytes of every unseeded response too. A response
+ * with no expose list (no CORS) is left alone.
+ */
+function exposeChaosOriginHeaders(res: http.ServerResponse): void {
+  const current = res.getHeader("Access-Control-Expose-Headers");
+  if (current === undefined) return;
+  const names = (Array.isArray(current) ? current.join(",") : String(current))
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  const present = new Set(names.map((name) => name.toLowerCase()));
+  for (const name of [CHAOS_SEED_HEADER, CHAOS_KEY_HEADER, CHAOS_OCCURRENCE_HEADER]) {
+    if (!present.has(name)) names.push(name);
+  }
+  res.setHeader("Access-Control-Expose-Headers", names.join(", "));
+}
+
+/**
  * Apply a specific (already-rolled) chaos action. Exposed so callers that roll
  * the dice themselves can dispatch without re-rolling — important when the
  * caller wants to branch on the action before committing (e.g. pre-flight vs.
@@ -1186,6 +1209,7 @@ export function applyChaosAction(
     res.setHeader(CHAOS_SEED_HEADER, origin.seed);
     res.setHeader(CHAOS_KEY_HEADER, origin.key);
     res.setHeader(CHAOS_OCCURRENCE_HEADER, String(origin.occurrence));
+    exposeChaosOriginHeaders(res);
   }
 
   switch (action) {

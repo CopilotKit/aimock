@@ -221,3 +221,27 @@ describe("fal chaos gates key by the parsed body", () => {
     expect(key).toBe(chaosKeyFor({ method: "GET", path, body: undefined }));
   });
 });
+
+describe("CORS exposes the seeded chaos headers", () => {
+  it("lists the seed, key and occurrence headers in Access-Control-Expose-Headers", async () => {
+    const url = await start({ chaos: { dropRate: 1, seed: "cors" } });
+    const probe = await chat(url, "alpha", { origin: "http://example.test" });
+    const exposed = String(probe.headers["access-control-expose-headers"] ?? "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase());
+    expect(exposed).toEqual(expect.arrayContaining([SEED_HEADER, KEY_HEADER, OCCURRENCE_HEADER]));
+    // The existing entries stay.
+    expect(exposed).toEqual(expect.arrayContaining(["x-total-count", "x-request-id"]));
+  });
+
+  it("leaves the expose list of an unseeded response unchanged", async () => {
+    const chaosUrl = await start({ chaos: { dropRate: 1 } });
+    const drop = await chat(chaosUrl, "alpha", { origin: "http://example.test" });
+    expect(drop.status).toBe(500);
+    expect(drop.headers["access-control-expose-headers"]).toBe("X-Total-Count, X-Request-Id");
+    const plainUrl = await start();
+    const ok = await chat(plainUrl, "alpha");
+    expect(ok.status).toBe(200);
+    expect(ok.headers["access-control-expose-headers"]).toBe("X-Total-Count, X-Request-Id");
+  });
+});
