@@ -26,7 +26,12 @@ import { AGUIMock } from "./agui-mock.js";
 import { MCPMock } from "./mcp-mock.js";
 import { mcpRecordEnv, parseMcpRecordFlag } from "./mcp-recorder.js";
 import { parseChaosField, CHAOS_FIELDS, type ChaosField } from "./chaos.js";
-import { DEFAULT_CHAOS_KEYS_MAX, normalizeChaosSeed } from "./chaos-random.js";
+import {
+  DEFAULT_CHAOS_KEYS_MAX,
+  MAX_CHAOS_SEED_LENGTH,
+  normalizeChaosSeed,
+} from "./chaos-random.js";
+import { parseStrictIntegerText } from "./helpers.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
@@ -321,7 +326,7 @@ let chaos: ChaosConfig | undefined;
       const seed = normalizeChaosSeed(seedStr);
       if (seed === undefined) {
         console.error(
-          `Invalid chaos-seed: ${seedStr} (must be 1-128 visible ASCII characters without spaces or commas)`,
+          `Invalid chaos-seed: ${seedStr} (must be 1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas)`,
         );
         process.exit(1);
       }
@@ -333,8 +338,10 @@ let chaos: ChaosConfig | undefined;
 const chaosKeysMaxStr = values["chaos-keys-max"];
 let chaosKeysMax: number | undefined;
 if (chaosKeysMaxStr !== undefined) {
-  chaosKeysMax = Number(chaosKeysMaxStr);
-  if (!Number.isInteger(chaosKeysMax) || chaosKeysMax <= 0) {
+  // The strict integer grammar --chaos-latency uses (plain decimal digits, safe
+  // integer), untrimmed: `0x10`, `1e3` and ` 5 ` are typos, not counts.
+  chaosKeysMax = parseStrictIntegerText(chaosKeysMaxStr) ?? undefined;
+  if (chaosKeysMax === undefined || chaosKeysMax <= 0) {
     console.error(`Invalid chaos-keys-max: ${chaosKeysMaxStr} (must be a positive integer)`);
     process.exit(1);
   }
