@@ -21,6 +21,7 @@ import {
   runInChaosRequestScope,
 } from "../chaos-random.js";
 import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 import type { ChaosAction, ChaosConfig, Fixture, MockServerOptions } from "../types.js";
 
 const SEED_HEADER = "x-aimock-chaos-seed";
@@ -264,5 +265,21 @@ describe("finding 3: direct callers can reset the seeded occurrence counters", (
   it("is published from the package barrel", () => {
     expect(typeof resetFromBarrel).toBe("function");
     expect(resetFromBarrel).toBe(resetChaosOccurrences);
+  });
+});
+
+describe("finding 4: an invalid seed handed in through `resolved` warns", () => {
+  it("warns and falls back to Math.random", () => {
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const action = evaluateChaos(null, undefined, {}, logger, "/direct", {
+      seed: "not a seed",
+      dropRate: 0.5,
+    });
+    expect(action).toBe("drop");
+    expect(random).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/^\[chaos\] .*rejected seed "not a seed"/);
   });
 });

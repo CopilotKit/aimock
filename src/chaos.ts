@@ -856,7 +856,12 @@ function decideChaos(
   let roll: (kind: ChaosAction) => number = () => Math.random();
   // A resolved config's seed is already normalized; one handed in by a caller
   // (the `resolved` argument) is normalized here so it cannot bypass the grammar.
-  const seed = config.seed === undefined ? undefined : normalizeChaosSeed(config.seed);
+  // A rejected one warns like any rejected seed and the verdict stays unseeded.
+  // Not latched: a `resolved` config is per-call input, like a header.
+  const seed =
+    config.seed === undefined
+      ? undefined
+      : readSeed(config.seed, { label: "resolved chaos config" }, logger);
   if (seed !== undefined) {
     const key = chaosKeyFor(
       identity ?? currentChaosIdentity() ?? { method: "", path: url ?? "", body: undefined },
