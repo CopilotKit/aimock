@@ -4,24 +4,28 @@
  * Without a seed, every chaos draw and every jitter draw is `Math.random()`,
  * exactly as before: no key is hashed, no occurrence is counted and no seeded
  * state is recorded. The module is still entered (the server opens a request
- * scope and records the request identity, and an unseeded verdict clears any
- * seeded state left in its scope), but none of that changes an unseeded
- * verdict or its timing. With a seed (`chaos.seed`,
- * `--chaos-seed`, the `x-aimock-chaos-seed` header or `POST /__aimock/chaos`),
- * every draw is a pure function of four inputs:
+ * scope, `readBody` records the client body text in it, the split gates record
+ * the request identity, and an unseeded verdict clears any seeded state left in
+ * its scope), but none of that changes an unseeded verdict or its timing. With
+ * a seed (`chaos.seed`, `--chaos-seed`, the `x-aimock-chaos-seed` header or
+ * `POST /__aimock/chaos`), every draw is a pure function of four inputs:
  *
  *   - the seed;
- *   - the request's identity key (method, target and a hash of the body);
+ *   - the request's identity key (method, target less `testId`, and a hash of
+ *     the body the client sent);
  *   - the action kind (`drop`, `malformed`, `rateLimit`, `disconnect`, or
  *     `jitter`);
- *   - the occurrence: how many times this key was seen before under this seed.
+ *   - for a verdict, the occurrence: how many times this key was seen before
+ *     under this seed and testId. A jitter draw takes the chunk index here
+ *     instead (see {@link createJitterSource}).
  *
  * That shape buys three properties:
  *
  *   - **Reproducibility.** The same seed and the same requests give the same
  *     verdicts on a fresh server.
  *   - **Order independence.** The Nth verdict for a key does not depend on
- *     other requests that were interleaved with it.
+ *     other requests that were interleaved with it, nor on requests under
+ *     another testId.
  *   - **Kind independence.** Each action kind draws from its own stream, so a
  *     change to one rate does not move the draws of another.
  *
@@ -149,10 +153,12 @@ export interface ChaosRequestIdentity {
    */
   path: string;
   /**
-   * The PARSED request body, or `undefined` for a bodiless request. A JSON
-   * body is passed parsed, so key order and whitespace do not change the key;
-   * a JSON `null` body is `null`, not `undefined`. A body that is not JSON is
-   * passed as its raw text with {@link ChaosRequestIdentity.rawText} set.
+   * The request body, or `undefined` for a bodiless request. A JSON body is
+   * parsed, so key order and whitespace do not change the key; a JSON `null`
+   * body is `null`, not `undefined`. A body that is not JSON is its raw text
+   * with {@link ChaosRequestIdentity.rawText} set. For a seeded key this is
+   * replaced by the client's own body text when `readBody` recorded one
+   * ({@link chaosKeyIdentity}); the body a caller passes is used only without it.
    */
   body: unknown;
   /**
@@ -257,8 +263,10 @@ export function createJitterSource(seed: string, key: string): JitterSource {
  * seen.
  *
  * Counters are namespaced by testId, so two tests that run in parallel on one
- * server keep independent sequences, and one test's chaos reset does not
- * rewind another's.
+ * server keep independent sequences, and a testId-scoped chaos reset does not
+ * rewind another testId's. A full reset, and a baseline change, rewind every
+ * scope they reach (see {@link clearChaosOccurrences} and
+ * {@link clearBaselineChaosOccurrences}).
  *
  * Both fallbacks are logged when a logger is given: an invalid `max` (the
  * default cap applies instead), and an eviction at the cap. The eviction
@@ -421,8 +429,10 @@ export function clearBaselineChaosOccurrences(byTestId: ReadonlyMap<string, unkn
  * Per-request seeded-chaos state that has to reach code the chaos roll does
  * not call directly: the stream writers that compute jitter, and the chaos
  * action that reports the verdict's origin. Entered once per HTTP request by
- * the server (`runInChaosRequestScope`). The request identity is recorded for
- * every request that reaches a split gate, seeded or not. The origin and the
+ * the server (`runInChaosRequestScope`). The client body text is recorded by
+ * `readBody` when it reads a text body, and the request identity by the split
+ * gates that call {@link setRequestChaosIdentity}, seeded or not; a route's
+ * `applyChaos` passes its identity directly instead. The origin and the
  * jitter source are written only when the request resolved a seed, and an
  * unseeded verdict clears them, so an unseeded request has neither: its jitter
  * stays on `Math.random()` and its chaos response carries nothing new.

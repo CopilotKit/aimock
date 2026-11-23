@@ -351,7 +351,8 @@
   --chaos-malformed 0.05 \
   --chaos-ratelimit 0.05 \
   --chaos-disconnect 0.02 \
-  --chaos-latency 250</code></pre>
+  --chaos-latency 250 \
+  --chaos-seed ci-1234</code></pre>
             </div>
           </div>
         </div>
@@ -387,14 +388,14 @@
             <code>disconnect</code>), each drawn from its own stream;
           </li>
           <li>
-            the occurrence: how many times that request was seen before, under that seed and
-            <code>X-Test-Id</code>.
+            the occurrence: how many times that request was seen before, under that seed and testId
+            (the <code>X-Test-Id</code> header or the <code>?testId=</code> query parameter).
           </li>
         </ul>
         <p>
           The same seed and the same requests give the same faults on a fresh server. An unrelated
           request inserted into the run does not change the verdicts of the others, and parallel
-          tests with different <code>X-Test-Id</code>s keep separate sequences. The rates and their
+          tests with different testIds keep separate sequences. The rates and their
           drop&nbsp;&rarr;&nbsp;malformed&nbsp;&rarr;&nbsp;rateLimit&nbsp;&rarr;&nbsp;disconnect
           order mean exactly what they mean without a seed. Streaming jitter
           (<code>streamingProfile.jitter</code>) applies to SSE streaming and live transcription.
@@ -462,12 +463,16 @@
           <li>
             Run the suite with a seed, e.g. <code>--chaos-seed ci-$GITHUB_RUN_ID</code>, and log it.
           </li>
-          <li>When a run fails, start aimock with the same seed and the same chaos rates.</li>
           <li>
-            Send the same requests with the same <code>X-Test-Id</code> values and the same request
-            bodies (and, on chat completions, the same <code>X-AIMock-Context</code> values). The
-            <em>n</em>th occurrence of each request gets the same verdict it got in CI, regardless
-            of what else the run sent.
+            When a run fails, start aimock with the same seed, the same chaos rates, the same
+            fixtures and the same <code>chaosKeysMax</code>. A different fixture set can serve a
+            request with other chaos settings, and a smaller cap can evict a counter that CI kept.
+          </li>
+          <li>
+            Send the same requests with the same testIds and the same request bodies (and, on chat
+            completions, the same <code>X-AIMock-Context</code> values, which can select a different
+            fixture). The <em>n</em>th occurrence of each request gets the same verdict it got in
+            CI, regardless of what else the run sent.
           </li>
         </ol>
         <p>
@@ -476,7 +481,11 @@
           <code>POST</code> or <code>DELETE</code> on <code>/__aimock/chaos</code> for a testId
           restarts that testId's sequences. An untagged <code>POST</code> or <code>DELETE</code>
           changes the baseline, so it restarts the sequences of the untagged scope and of every
-          testId that inherits the baseline (has no override of its own).
+          testId that inherits the baseline (has no override of its own). From code,
+          <code>mock.setChaos()</code> restarts the baseline scopes the same way and
+          <code>mock.clearChaos()</code> restarts every testId&apos;s sequences. An embedder that
+          calls <code>evaluateChaos</code> directly, with no server, calls
+          <code>resetChaosOccurrences()</code> to restart its sequences.
         </p>
 
         <h3>Memory bound</h3>

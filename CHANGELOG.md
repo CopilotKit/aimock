@@ -5,7 +5,7 @@
 ### Added
 
 - Seeded chaos: `chaos.seed`, `--chaos-seed`, `x-aimock-chaos-seed`, `resetChaosOccurrences` (#618)
-- Seeded hits add response headers and journal fields; `chaosKeysMax`/`--chaos-keys-max` cap keys
+- Seeded hits add headers and journal fields; `chaosKeysMax`/`--chaos-keys-max` cap keys (#618)
 
 ## [1.48.1] - 2026-11-20
 

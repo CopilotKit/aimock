@@ -573,8 +573,9 @@ export function resolveChaosConfig(
     if (value !== undefined) resolved[field] = value;
   }
 
-  // The seed follows the same precedence. Read only where it was given, so an
-  // unseeded request does no extra work and its resolved config is unchanged.
+  // The seed follows the same precedence. Parsed only where it was given: an
+  // unseeded request only looks up the seed header and the two `seed` fields,
+  // finds none, and its resolved config is unchanged (no `seed` field).
   // Like the rates, every level is parsed even when a higher one wins, so a bad
   // seed is always reported rather than hidden by the override above it.
   const seedFromHeader = readSeed(
@@ -827,6 +828,10 @@ export async function awaitChaosLatency(
  * and ~25 % rate limits (0.5 x 0.5 — half the requests never reach the second
  * draw), not 50 % of each. To exercise two faults at their nominal frequency,
  * configure them on separate requests rather than in one config.
+ *
+ * SEEDED: each call consumes one occurrence of the request's key (under its
+ * seed and testId), even when every rate is 0 or unset, so calling it twice for
+ * one request moves that key's sequence on by two. Call it once per request.
  */
 export function evaluateChaos(
   fixture: Fixture | null,
@@ -845,7 +850,9 @@ export function evaluateChaos(
  *
  * UNSEEDED (no seed from the header, the fixture or the server): exactly the
  * historical behaviour — the same `Math.random()` draws, in the same order,
- * only for rates above 0 — and no origin. Nothing else is touched.
+ * only for rates above 0 — and no origin. The only other effect is that it
+ * clears any seeded origin and jitter source an earlier seeded verdict left in
+ * the request scope (a no-op for a request that was never seeded).
  *
  * SEEDED: each kind's draw comes from `chaosDraw(seed, key, kind,
  * occurrence)` instead, checked in the same drop → malformed → rateLimit →
