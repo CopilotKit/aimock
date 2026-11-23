@@ -374,11 +374,13 @@
         <ul>
           <li>the seed;</li>
           <li>
-            the request's identity key: its method, its target (query string included) and a hash of
-            its parsed body. Headers are not part of it, so a retry with a new request id is the
-            same request. One exception: on chat completions the
-            <code>X-AIMock-Context</code> header value is part of the body that is hashed. A
-            <code>?testId=</code> in the query string is part of the target;
+            the request's identity key: its method, its target and a hash of the body exactly as the
+            client sent it (parsed when it is JSON, so key order and whitespace do not matter; raw
+            text otherwise, which never matches a JSON string; a JSON <code>null</code> body is not
+            the same as no body). Headers are not part of it, so a retry with a new request id is
+            the same request, and <code>X-AIMock-Context</code> does not change it. The target keeps
+            its query string except <code>?testId=</code>, so <code>?testId=x</code> and
+            <code>X-Test-Id: x</code> give the same key;
           </li>
           <li>
             the action kind (<code>drop</code>, <code>malformed</code>, <code>rateLimit</code>,

@@ -5541,7 +5541,7 @@ async function startServer(
             );
             return;
           }
-          // Keys a SEEDED verdict by this request (method, raw target, parsed body);
+          // Keys a SEEDED verdict by this request (method, raw target less testId, client body);
           // unused unseeded.
           setRequestChaosIdentity({
             method: req.method ?? "GET",
@@ -5648,7 +5648,7 @@ async function startServer(
           );
           return;
         }
-        // Keys a SEEDED verdict by this request (method, raw target, parsed body);
+        // Keys a SEEDED verdict by this request (method, raw target less testId, client body);
         // unused unseeded. A GET has no body: `raw` is a stand-in `"{}"` for
         // `handleFalQueue`, so it is keyed as bodiless, like every other route.
         setRequestChaosIdentity({

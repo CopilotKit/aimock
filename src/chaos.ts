@@ -850,7 +850,7 @@ export function evaluateChaos(
  * SEEDED: each kind's draw comes from `chaosDraw(seed, key, kind,
  * occurrence)` instead, checked in the same drop → malformed → rateLimit →
  * disconnect order with the same first-hit-wins rule, so the probabilities are
- * the ones documented above. `identity` (method, raw URL and parsed body)
+ * the ones documented above. `identity` (method, raw URL less `testId`, body)
  * gives the key: passed in by `applyChaos`, or recorded for the request by a
  * split gate in `src/server.ts` (`setRequestChaosIdentity`); without either the
  * key is the key of a bodiless `GET` of `url` (`{ method: "", path: url,

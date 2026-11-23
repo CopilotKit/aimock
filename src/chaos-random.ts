@@ -143,7 +143,10 @@ function canonicalJSON(value: unknown): string {
  */
 export interface ChaosRequestIdentity {
   method: string;
-  /** The request target. Pass the raw URL (query string included) when there is one. */
+  /**
+   * The request target. Pass the raw URL (query string included) when there is one;
+   * the key leaves its `testId` query parameter out ({@link chaosKeyPath}).
+   */
   path: string;
   /**
    * The PARSED request body, or `undefined` for a bodiless request. A JSON
@@ -470,20 +473,49 @@ export function currentChaosClientBody(): string | undefined {
  * depends on what the client sent and never on the handler's translation of
  * it or on headers copied into it. Otherwise it is the body the caller passed,
  * with its top-level `_`-prefixed internal fields left out for the same reason.
+ * The path leaves out the `testId` query parameter ({@link chaosKeyPath}).
  */
 export function chaosKeyIdentity(identity: ChaosRequestIdentity): ChaosRequestIdentity {
+  const path = chaosKeyPath(identity.path);
   const clientBody = currentChaosClientBody();
   if (clientBody !== undefined) {
-    return { method: identity.method, path: identity.path, ...chaosBodyFromRaw(clientBody) };
+    return { method: identity.method, path, ...chaosBodyFromRaw(clientBody) };
   }
   const { body } = identity;
-  if (identity.rawText === true || body === null || typeof body !== "object") return identity;
-  if (Array.isArray(body)) return identity;
+  const plain =
+    identity.rawText === true || body === null || typeof body !== "object" || Array.isArray(body);
+  if (plain || !Object.keys(body).some((k) => k.startsWith("_"))) return { ...identity, path };
   const record = body as Record<string, unknown>;
-  if (!Object.keys(record).some((k) => k.startsWith("_"))) return identity;
   const clean: Record<string, unknown> = {};
   for (const k of Object.keys(record)) if (!k.startsWith("_")) clean[k] = record[k];
-  return { method: identity.method, path: identity.path, body: clean };
+  return { method: identity.method, path, body: clean };
+}
+
+/**
+ * The request target as a seeded key sees it: the `testId` query parameter is
+ * left out, because `?testId=x` and the `X-Test-Id: x` header tag the same
+ * test and must give the same key. Every other query parameter is kept, in
+ * order and as sent. A parameter name is compared percent-decoded, with `+` as
+ * a space, the way `resolveTestId` reads it.
+ */
+export function chaosKeyPath(url: string): string {
+  const q = url.indexOf("?");
+  if (q === -1) return url;
+  const kept = url
+    .slice(q + 1)
+    .split("&")
+    .filter((part) => {
+      const eq = part.indexOf("=");
+      const rawName = (eq === -1 ? part : part.slice(0, eq)).replace(/\+/g, " ");
+      let name = rawName;
+      try {
+        name = decodeURIComponent(rawName);
+      } catch {
+        // A malformed escape is not `testId`; keep the part as sent.
+      }
+      return name !== "testId";
+    });
+  return kept.length > 0 ? `${url.slice(0, q)}?${kept.join("&")}` : url.slice(0, q);
 }
 
 /** The identity recorded for the request being served, or `undefined`. */
