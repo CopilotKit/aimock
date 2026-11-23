@@ -1109,9 +1109,17 @@ async function emitLiveTranscriptionEvents(
   // A WebSocket turn passes no chaos gate, so a seeded jitter source (when a
   // seed applies) is resolved here; unseeded, jitter stays on Math.random().
   // Resolved without a logger: this turn rolls no chaos, so it must not repeat
-  // the rate warnings the HTTP gates already report.
+  // the rate warnings the HTTP gates already report. The URL carries the
+  // socket's testId (already resolved from X-Test-Id, else the upgrade URL's
+  // ?testId=), so a socket tagged either way gets its test's seed.
   const chaosSeed = normalizeChaosSeed(
-    resolveChaosConfig(fixture, defaults.chaos, defaults.upgradeHeaders).seed,
+    resolveChaosConfig(
+      fixture,
+      defaults.chaos,
+      defaults.upgradeHeaders,
+      undefined,
+      `/v1/realtime?testId=${encodeURIComponent(testId)}`,
+    ).seed,
   );
   const jitter =
     chaosSeed === undefined
