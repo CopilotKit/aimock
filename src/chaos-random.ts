@@ -119,10 +119,9 @@ function hex32(word: number): string {
 
 /**
  * JSON with object keys sorted at every depth, so two PARSED bodies that differ
- * only in key order get one key. Array order is kept. A string body (raw text
- * that did not parse as JSON) is encoded as one JSON string, so its key order
- * and whitespace do count. `undefined` (no body) is a bare token that no JSON
- * value can render as.
+ * only in key order get one key. Array order is kept. `undefined` (no body) is
+ * a bare token that no JSON value can render as. Raw text is not encoded here:
+ * {@link canonicalBody} tags it apart first.
  */
 function canonicalJSON(value: unknown): string {
   if (value === undefined) return "absent";
@@ -147,18 +146,52 @@ export interface ChaosRequestIdentity {
   /** The request target. Pass the raw URL (query string included) when there is one. */
   path: string;
   /**
-   * The PARSED request body, or `undefined` for a bodiless request. Every
-   * server route passes the parsed JSON, so key order and whitespace do not
-   * change the key. A body that is not JSON is passed as its raw text, which
-   * is keyed as that exact string: key order and whitespace inside it DO
-   * change the key.
+   * The PARSED request body, or `undefined` for a bodiless request. A JSON
+   * body is passed parsed, so key order and whitespace do not change the key;
+   * a JSON `null` body is `null`, not `undefined`. A body that is not JSON is
+   * passed as its raw text with {@link ChaosRequestIdentity.rawText} set.
    */
   body: unknown;
+  /**
+   * `true` when `body` is raw text that did not parse as JSON. It is keyed as
+   * that exact string (key order and whitespace inside it DO change the key),
+   * and never as the JSON string with the same characters.
+   */
+  rawText?: boolean;
+}
+
+/**
+ * The canonical form of a request body for its key. Raw text (a body that did
+ * not parse as JSON) is tagged `text:` and encoded as one JSON string, so it
+ * never collides with a JSON value: the raw text `hello` and the JSON string
+ * `"hello"` get different keys. No JSON value renders with a leading `text:`,
+ * and `absent` (no body) is a bare token too, so the three kinds cannot meet.
+ */
+function canonicalBody(identity: ChaosRequestIdentity): string {
+  if (identity.rawText === true && typeof identity.body === "string") {
+    return `text:${JSON.stringify(identity.body)}`;
+  }
+  return canonicalJSON(identity.body);
+}
+
+/**
+ * The body half of a request identity, from the body text exactly as the
+ * client sent it: empty text is no body (`undefined`), text that parses as
+ * JSON is the parsed value (a JSON `null` stays `null`), and anything else is
+ * the raw text, marked {@link ChaosRequestIdentity.rawText}.
+ */
+export function chaosBodyFromRaw(raw: string): Pick<ChaosRequestIdentity, "body" | "rawText"> {
+  if (raw === "") return { body: undefined };
+  try {
+    return { body: JSON.parse(raw) as unknown };
+  } catch {
+    return { body: raw, rawText: true };
+  }
 }
 
 /** A 16-hex-character key for a request identity. */
 export function chaosKeyFor(identity: ChaosRequestIdentity): string {
-  const material = `${(identity.method || "GET").toUpperCase()}${SEP}${identity.path}${SEP}${canonicalJSON(identity.body)}`;
+  const material = `${(identity.method || "GET").toUpperCase()}${SEP}${identity.path}${SEP}${canonicalBody(identity)}`;
   const low = fnv1a(material);
   const high = fnv1a(material, (low ^ 0x9e3779b9) >>> 0);
   return hex32(high) + hex32(low);

@@ -267,6 +267,7 @@ import {
   registerChaosOccurrences,
   runInChaosRequestScope,
   setRequestChaosIdentity,
+  chaosBodyFromRaw,
 } from "./chaos-random.js";
 import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
 // Route paths/patterns are the router's single source of truth — shared with
@@ -712,21 +713,6 @@ function rewindChaosOccurrences(defaults: HandlerDefaults, scopeId: string): voi
   if (!defaults.chaosByTestId) return;
   if (scopeId === DEFAULT_TEST_ID) clearBaselineChaosOccurrences(defaults.chaosByTestId);
   else clearChaosOccurrences(defaults.chaosByTestId, scopeId);
-}
-
-/**
- * The body a fal chaos gate keys a seeded verdict by: the PARSED body, like
- * every other route, so the same JSON with a different key order or
- * whitespace is one key. An empty body is bodiless (`undefined`). A body that
- * is not JSON keeps its raw text, so it still gets a stable key of its own.
- */
-function falChaosBody(raw: string): unknown {
-  if (raw === "") return undefined;
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return raw;
-  }
 }
 
 /** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
@@ -5559,7 +5545,7 @@ async function startServer(
           setRequestChaosIdentity({
             method: req.method ?? "GET",
             path: req.url ?? pathname,
-            body: falChaosBody(raw),
+            ...chaosBodyFromRaw(raw),
           });
           const chaosAction = evaluateChaos(
             null,
@@ -5667,7 +5653,9 @@ async function startServer(
         setRequestChaosIdentity({
           method: req.method ?? "GET",
           path: req.url ?? pathname,
-          body: req.method === "POST" || req.method === "PUT" ? falChaosBody(raw) : undefined,
+          ...(req.method === "POST" || req.method === "PUT"
+            ? chaosBodyFromRaw(raw)
+            : { body: undefined }),
         });
         const chaosAction = evaluateChaos(
           null,
