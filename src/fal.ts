@@ -26,7 +26,6 @@ import { resolveRequestDecisions, strictOverrideField } from "./response/policy.
 import { renderError } from "./response/errors.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { applyChaos, chaosIdentity, prepareChaos } from "./chaos.js";
 import type { Logger } from "./logger.js";
 import {
   buildFixtureMatch,
@@ -468,35 +467,6 @@ export async function handleFal(
   const testId = getTestId(req);
   const stateKey = (id: string) => `${testId}:${id}`;
 
-  // The lifecycle routes serve aimock's own job state and match no fixture, so
-  // they roll here, sourced "internal" like every other route that answers out
-  // of aimock's own state. Submit and sync-run roll further down, once their
-  // fixture is known, and are skipped so nothing rolls twice.
-  if (route.kind !== "queue-submit" && route.kind !== "sync-run") {
-    if (
-      applyChaos(
-        res,
-        null,
-        defaults.chaos,
-        req.headers,
-        journal,
-        {
-          method: req.method ?? "GET",
-          path: pathname,
-          headers: flattenHeaders(req.headers),
-          body: { model: "", messages: [] },
-        },
-        "internal",
-        defaults.registry,
-        defaults.logger,
-        defaults.chaosRandom,
-        chaosIdentity(req, body),
-      )
-    ) {
-      return "handled";
-    }
-  }
-
   switch (route.kind) {
     case "queue-status": {
       const job = falQueueStates.get(stateKey(route.requestId!));
@@ -650,30 +620,6 @@ export async function handleFal(
         matchCounts,
         defaults.requestTransform,
       );
-
-      // Rolled here rather than before routing, so a matched fixture's own
-      // chaos config and seed are the ones that apply.
-      const chaos = prepareChaos(
-        res,
-        fixture,
-        defaults.chaos,
-        req.headers,
-        journal,
-        {
-          method: req.method ?? "POST",
-          path: pathname,
-          headers: flattenHeaders(req.headers),
-          body: syntheticReq,
-        },
-        fixture ? "fixture" : "proxy",
-        defaults.registry,
-        defaults.logger,
-        defaults.chaosRandom,
-        chaosIdentity(req, body),
-      );
-      if (chaos.handled) {
-        return "handled";
-      }
 
       if (!fixture) {
         const fixtureMiss = resolveRequestDecisions(defaults.strict, req.headers).fixtureMiss;

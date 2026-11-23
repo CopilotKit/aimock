@@ -259,6 +259,14 @@ import {
   CHAOS_FIELDS,
   CHAOS_FIELD_NAMES,
 } from "./chaos.js";
+import {
+  ChaosOccurrenceRegistry,
+  clearChaosOccurrences,
+  normalizeChaosSeed,
+  registerChaosOccurrences,
+  runInChaosRequestScope,
+  setRequestChaosIdentity,
+} from "./chaos-random.js";
 import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
 // Route paths/patterns are the router's single source of truth — shared with
 // the machine-readable catalog (`route-registry.ts` → `openapi.ts`), so the
@@ -569,6 +577,8 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   // isolation barrier every parallel harness leans on; chaos leaking past it
   // poisons later tests with 500s that look like application bugs.
   targets.defaults.chaos = undefined;
+  // Seeded chaos restarts every key at occurrence 0, so a reset replays the run.
+  if (targets.defaults.chaosByTestId) clearChaosOccurrences(targets.defaults.chaosByTestId);
   targets.defaults.misbehavior?.byTestId.clear();
   targets.videoStates.clear();
   targets.openRouterVideoJobs.clear();
@@ -1162,6 +1172,8 @@ async function handleControlAPI(
     const scopeId = chaosScopeId(req);
     if (scopeId === null) return writeBlankTestId(res);
     defaults.chaosByTestId?.delete(scopeId);
+    // Seeded counters for this scope restart, so the next seeded run replays.
+    if (defaults.chaosByTestId) clearChaosOccurrences(defaults.chaosByTestId, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;
@@ -1222,7 +1234,7 @@ async function handleControlAPI(
     // resolver silently discarded it at request time as a non-integer: the
     // control API reported a config the traffic never saw.
     for (const key of Object.keys(parsed)) {
-      if (!(CHAOS_FIELD_NAMES as readonly string[]).includes(key)) {
+      if (key !== "seed" && !(CHAOS_FIELD_NAMES as readonly string[]).includes(key)) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Unknown chaos field: '${key}'` }));
         return true;
@@ -1248,6 +1260,23 @@ async function handleControlAPI(
       }
       next[key] = accepted;
     }
+    // `seed` is not a numeric field: a finite number or 1-128 visible ASCII
+    // characters, stored in its normalized string form so `GET` echoes what
+    // the traffic uses.
+    if (parsed.seed !== undefined) {
+      const seed = normalizeChaosSeed(parsed.seed);
+      if (seed === undefined) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error:
+              "Invalid 'seed': must be a finite number or 1-128 visible ASCII characters without spaces",
+          }),
+        );
+        return true;
+      }
+      next.seed = seed;
+    }
     // The install REPLACES what was in effect for this scope; it does not merge
     // over it. Name every field that was in effect and is not restated, so a
     // baseline rate a test silently loses (the classic case: a server-wide
@@ -1266,6 +1295,8 @@ async function handleControlAPI(
       );
     }
     defaults.chaosByTestId?.set(scopeId, next);
+    // A (re-)install starts this scope's seeded sequences from occurrence 0.
+    if (defaults.chaosByTestId) clearChaosOccurrences(defaults.chaosByTestId, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;
@@ -2059,6 +2090,8 @@ async function handleCompletions(
     );
     return;
   }
+  // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+  setRequestChaosIdentity({ method, path: req.url ?? path, body });
   const chaosAction = evaluateChaos(
     fixture,
     defaults.chaos,
@@ -3055,6 +3088,9 @@ async function startServer(
   // one operation and neither can accidentally take the other's overrides with
   // it; only assigning `undefined` (a full reset) clears the map.
   const chaosByTestId = new Map<string, ChaosConfig>();
+  // Seeded chaos occurrence counters, bounded by `chaosKeysMax` (LRU). Unseeded
+  // chaos never touches it. See `ChaosOccurrenceRegistry`.
+  registerChaosOccurrences(chaosByTestId, new ChaosOccurrenceRegistry(options?.chaosKeysMax));
   let misbehaviorBaseline: MisbehaviorConfig | undefined;
   const misbehavior: MisbehaviorScope = {
     byTestId: new Map(),
@@ -3166,6 +3202,11 @@ async function startServer(
       const shape = CHAOS_FIELDS[field].integer ? "a whole number of ms" : "a number";
       logger.warn(
         `Chaos default ${field} value ${JSON.stringify(value)} — must be ${shape} in [0,${CHAOS_FIELDS[field].max}]; rejected at runtime, never clamped: this default is ignored`,
+      );
+    }
+    if (chaosDefaults.seed !== undefined && normalizeChaosSeed(chaosDefaults.seed) === undefined) {
+      logger.warn(
+        `Chaos default seed ${JSON.stringify(chaosDefaults.seed)} — must be a finite number or 1-128 visible ASCII characters without spaces; this seed is ignored`,
       );
     }
   }
@@ -3604,10 +3645,13 @@ async function startServer(
     // Run inside the request scope so every journal write made while serving
     // this request (in any handler module) is attributed back to it.
     requestScope.run(req, () => {
-      runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
-        handleHttpRequest(req, res).catch((err: unknown) => {
-          routeError(req, res, err, req.url ?? "?");
-        }),
+      // Per-request seeded-chaos state (the jitter source); empty when unseeded.
+      runInChaosRequestScope(() =>
+        runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
+          handleHttpRequest(req, res).catch((err: unknown) => {
+            routeError(req, res, err, req.url ?? "?");
+          }),
+        ),
       );
     });
   });
@@ -5466,6 +5510,12 @@ async function startServer(
             );
             return;
           }
+          // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+          setRequestChaosIdentity({
+            method: req.method ?? "GET",
+            path: req.url ?? pathname,
+            body: raw === "" ? undefined : raw,
+          });
           const chaosAction = evaluateChaos(
             null,
             defaults.chaos,
@@ -5566,6 +5616,12 @@ async function startServer(
           );
           return;
         }
+        // Keys a SEEDED verdict by this request (method, raw target, body); unused unseeded.
+        setRequestChaosIdentity({
+          method: req.method ?? "GET",
+          path: req.url ?? pathname,
+          body: raw === "" ? undefined : raw,
+        });
         const chaosAction = evaluateChaos(
           null,
           defaults.chaos,

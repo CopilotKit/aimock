@@ -664,24 +664,6 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
-  // A progressive relay has already committed its bytes. Notify callers even
-  // when the capture cap below prevents recording the response.
-  if (streamedToClient && options?.beforeWriteResponse && options.onHookBypassed) {
-    const contentType = pickContentType(upstreamHeaders["content-type"]).toLowerCase();
-    const reason = contentType.includes("application/vnd.amazon.eventstream")
-      ? "binary_streamed"
-      : contentType.includes("application/x-ndjson")
-        ? "ndjson_streamed"
-        : "sse_streamed";
-    try {
-      options.onHookBypassed(reason);
-    } catch (err) {
-      defaults.logger.warn(
-        `onHookBypassed callback threw: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
   // Buffer cap tripped: skip collapse + recording (the in-memory buffer can't
   // be safely/faithfully journaled), but ALWAYS deliver a faithful response to
   // the client. The cap means "don't journal", not "don't answer".
@@ -1120,10 +1102,27 @@ export async function proxyAndRecord(
   // Relay upstream response to client (skip when the response was already
   // streamed progressively by makeUpstreamRequest — headers and body are
   // already on the wire).
-  if (!streamedToClient) {
+  if (streamedToClient) {
+    // The hook can't run because the body is already on the wire. Surface
+    // the bypass so the caller (typically the chaos layer) can record it —
+    // otherwise a configured chaos action silently no-ops on streamed traffic.
+    if (options?.beforeWriteResponse && options.onHookBypassed) {
+      const bypassReason: "sse_streamed" | "ndjson_streamed" | "binary_streamed" = isBinaryStream
+        ? "binary_streamed"
+        : ctString.toLowerCase().includes("application/x-ndjson")
+          ? "ndjson_streamed"
+          : "sse_streamed";
+      try {
+        options.onHookBypassed(bypassReason);
+      } catch (err) {
+        defaults.logger.warn(
+          `onHookBypassed callback threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  } else {
     // Give the caller a chance to mutate or replace the response before relay.
-    // Callers may replace buffered responses; progressive relays notify the
-    // bypass callback above instead.
+    // Used by the chaos layer to turn a successful proxy into a malformed body.
     // `body` is the raw upstream bytes so binary payloads survive round-tripping.
     if (options?.beforeWriteResponse) {
       let handled: boolean | undefined;

@@ -34,6 +34,7 @@ import {
 import { checkRawResponse, type RawCheckContext } from "./raw-validation.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
+import { normalizeChaosSeed } from "./chaos-random.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { getUsageFieldDefinition } from "./response/usage/fields.js";
@@ -1701,6 +1702,17 @@ export function validateFixtures(
             message: `chaos.${field} must be ${shape} between 0 and ${CHAOS_FIELDS[field].max}`,
           });
         }
+      }
+      // A warning, not an error: `seed` was ignored before it existed, so a
+      // fixture that already carried a bad one must keep loading. At request
+      // time a rejected seed is skipped like any rejected chaos value.
+      if (ch.seed !== undefined && normalizeChaosSeed(ch.seed) === undefined) {
+        results.push({
+          severity: "warning",
+          fixtureIndex: i,
+          message:
+            "chaos.seed must be a finite number or 1-128 visible ASCII characters without spaces; it is ignored",
+        });
       }
     }
 
