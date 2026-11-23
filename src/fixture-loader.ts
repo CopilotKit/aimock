@@ -1680,7 +1680,24 @@ export function validateFixtures(
         });
       }
     }
-    if (f.chaos !== undefined) {
+    // `chaos` must be a plain object before its fields are read. `null` threw
+    // a TypeError here, so no such fixture ever validated: it is an error. An
+    // array or a primitive validated clean and is ignored at request time, so
+    // it stays loadable: a warning, like a rejected `chaos.seed`.
+    const chaosValue: unknown = f.chaos;
+    const chaosIsObject =
+      typeof chaosValue === "object" && chaosValue !== null && !Array.isArray(chaosValue);
+    if (chaosValue !== undefined && !chaosIsObject) {
+      results.push({
+        severity: chaosValue === null ? "error" : "warning",
+        fixtureIndex: i,
+        message:
+          chaosValue === null
+            ? "chaos must be an object"
+            : "chaos must be an object; it is ignored",
+      });
+    }
+    if (chaosIsObject) {
       // EVERY chaos field is routed through the ONE chaos table, so a fixture
       // cannot accept a value the CLI, the header and the runtime reject. The
       // hand-rolled `< 0 || > 1` checks this replaces let `NaN`, `-0` and a
