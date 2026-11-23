@@ -563,7 +563,7 @@ export function handleWebSocketRealtime(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    /** Server chaos scope; only its seed is read here, for streaming jitter. */
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
     chaos?: HandlerDefaults["chaos"];
     transcriptionIntent?: boolean;
     /** @internal Called before each message is processed (the server assigns fixture positions). */
@@ -662,7 +662,7 @@ async function processMessage(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    /** Server chaos scope; only its seed is read here, for streaming jitter. */
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
     chaos?: HandlerDefaults["chaos"];
     transcriptionIntent?: boolean;
   },
@@ -976,7 +976,7 @@ async function emitLiveTranscriptionEvents(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    /** Server chaos scope; only its seed is read here, for streaming jitter. */
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
     chaos?: HandlerDefaults["chaos"];
   },
   session: SessionConfig,
@@ -1283,8 +1283,6 @@ async function handleResponseCreate(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-    /** Server chaos scope; only its seed is read here, for streaming jitter. */
-    chaos?: HandlerDefaults["chaos"];
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],

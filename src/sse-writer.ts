@@ -60,8 +60,9 @@ export function calculateDelay(
 }
 
 // Internal (not part of the public API): `calculateDelay` with an explicit
-// seeded jitter source, for a caller outside any HTTP request scope (the
-// WebSocket turns). Without one, the source recorded for the request being
+// seeded jitter source, for a caller outside any HTTP request scope (live
+// transcription over WebSocket, the one WebSocket turn that applies a
+// streaming profile). Without one, the source recorded for the request being
 // served is used, else `Math.random()`.
 export function calculateDelayWithJitter(
   chunkIndex: number,
