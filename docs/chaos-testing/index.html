@@ -287,7 +287,7 @@
                 <code>seed</code> &mdash; makes this request&apos;s verdict reproducible (see
                 <a href="#seeded-chaos">Reproducible Chaos</a>)
               </td>
-              <td>finite number or 1&ndash;128 visible ASCII characters</td>
+              <td>finite number or 1&ndash;128 visible ASCII characters, no spaces or commas</td>
             </tr>
           </tbody>
         </table>
@@ -399,8 +399,8 @@
         </p>
         <p>
           A seed is a finite number (used as its decimal string, so <code>42</code> and
-          <code>"42"</code> are one seed) or 1&ndash;128 visible ASCII characters without spaces. It
-          follows the usual precedence:
+          <code>"42"</code> are one seed) or 1&ndash;128 visible ASCII characters without spaces or
+          commas. It follows the usual precedence:
         </p>
         <table class="endpoint-table">
           <thead>

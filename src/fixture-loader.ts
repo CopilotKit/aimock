@@ -1728,7 +1728,7 @@ export function validateFixtures(
           severity: "warning",
           fixtureIndex: i,
           message:
-            "chaos.seed must be a finite number or 1-128 visible ASCII characters without spaces; it is ignored",
+            "chaos.seed must be a finite number or 1-128 visible ASCII characters without spaces or commas; it is ignored",
         });
       }
     }

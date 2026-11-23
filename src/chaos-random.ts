@@ -62,8 +62,14 @@ const SEP = "\u001f";
 /** Longest seed accepted, in characters. */
 export const MAX_CHAOS_SEED_LENGTH = 128;
 
-/** Visible ASCII only: a seed must be safe to send back in a response header. */
-const SEED_GRAMMAR = /^[\x21-\x7e]+$/;
+/**
+ * Visible ASCII except the comma. Visible ASCII because a seed must be safe to
+ * send back in a response header. No comma because the `x-aimock-chaos-seed`
+ * request header is read like every other chaos header: a comma separates
+ * repeated values (that is how Node folds a repeated header), so a seed with a
+ * comma could be reported but never replayed through the header.
+ */
+const SEED_GRAMMAR = /^[\x21-\x2b\x2d-\x7e]+$/;
 
 /**
  * The default cap on distinct (testId, seed, key) occurrence counters per
@@ -145,8 +151,9 @@ export function chaosDraw(seed: string, key: string, kind: string, occurrence: n
  * The canonical string form of a seed, or `undefined` when the value is not a
  * usable seed. A finite number becomes its decimal string, so `42` and `"42"`
  * are one seed. A string is trimmed and must then be 1 to
- * {@link MAX_CHAOS_SEED_LENGTH} visible ASCII characters (no spaces), so it can
- * always be reported back in a response header unchanged.
+ * {@link MAX_CHAOS_SEED_LENGTH} visible ASCII characters (no spaces, no
+ * commas), so it can always be reported back in a response header unchanged
+ * and replayed through the `x-aimock-chaos-seed` request header unchanged.
  */
 export function normalizeChaosSeed(value: unknown): string | undefined {
   let text: string;

@@ -250,6 +250,26 @@ function firstHeaderValue(
   field: ChaosField,
   logger?: Logger,
 ): string | undefined {
+  return firstRepeatedHeaderValue(
+    raw,
+    CHAOS_FIELDS[field].header,
+    (text) => headerValueMeaning(text, field),
+    logger,
+  );
+}
+
+/**
+ * The rule {@link firstHeaderValue} applies, for any chaos header: split on
+ * commas, trim, drop empties, the first non-empty value wins, and a repeat
+ * whose values `meaning` tells apart warns once. Shared by the rate headers and
+ * the seed header, so the two read a repeat the same way.
+ */
+function firstRepeatedHeaderValue(
+  raw: string | string[] | undefined,
+  header: string,
+  meaning: (text: string) => string,
+  logger?: Logger,
+): string | undefined {
   const parts = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
   const values = parts
     .flatMap((part) => part.split(","))
@@ -257,10 +277,10 @@ function firstHeaderValue(
     .filter((part) => part !== "");
   const first = values[0];
   if (first === undefined) return undefined;
-  const firstMeaning = headerValueMeaning(first, field);
-  if (values.some((value) => headerValueMeaning(value, field) !== firstMeaning)) {
+  const firstMeaning = meaning(first);
+  if (values.some((value) => meaning(value) !== firstMeaning)) {
     logger?.warn(
-      `[chaos] ${CHAOS_FIELDS[field].header}: repeated header with conflicting values ${JSON.stringify(values)} — using the first (${JSON.stringify(first)})`,
+      `[chaos] ${header}: repeated header with conflicting values ${JSON.stringify(values)} — using the first (${JSON.stringify(first)})`,
     );
   }
   return first;
@@ -435,7 +455,7 @@ function warnRejectedSeed(source: ChaosSource, raw: unknown, logger?: Logger): v
   if (alreadyWarned(source, "seed", raw, logger)) return;
   logger.warn(
     `[chaos] ${source.label}: rejected seed ${JSON.stringify(raw)} — must be a finite number or ` +
-      `1-128 visible ASCII characters without spaces; ignoring it`,
+      `1-128 visible ASCII characters without spaces or commas; ignoring it`,
   );
 }
 
@@ -450,14 +470,27 @@ function readSeed(raw: unknown, source: ChaosSource, logger?: Logger): string | 
   return seed;
 }
 
-/** The seed header's single value: the first non-empty one, like the rate headers. */
-function readSeedHeader(rawHeaders: http.IncomingHttpHeaders | undefined): string | undefined {
-  const raw = rawHeaders?.[CHAOS_SEED_HEADER];
-  const parts = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
-  return parts
-    .flatMap((part) => part.split(","))
-    .map((part) => part.trim())
-    .find((part) => part !== "");
+/**
+ * The seed header's single value: the first non-empty one, read exactly like
+ * the rate headers, so a comma separates repeated values. That is why a seed
+ * cannot contain a comma (see `normalizeChaosSeed`): every seed the server
+ * reports replays through this header byte-for-byte. A repeat whose values
+ * name different seeds warns, like a conflicting rate header; values are
+ * compared by their normalized seed, so `42` and ` 42` agree.
+ */
+function readSeedHeader(
+  rawHeaders: http.IncomingHttpHeaders | undefined,
+  logger?: Logger,
+): string | undefined {
+  return firstRepeatedHeaderValue(
+    rawHeaders?.[CHAOS_SEED_HEADER],
+    CHAOS_SEED_HEADER,
+    (text) => {
+      const seed = normalizeChaosSeed(text);
+      return seed === undefined ? `raw:${text}` : `seed:${seed}`;
+    },
+    logger,
+  );
 }
 
 /** Read one field from the request headers. */
@@ -536,7 +569,11 @@ export function resolveChaosConfig(
   // unseeded request does no extra work and its resolved config is unchanged.
   // Like the rates, every level is parsed even when a higher one wins, so a bad
   // seed is always reported rather than hidden by the override above it.
-  const seedFromHeader = readSeed(readSeedHeader(rawHeaders), { label: CHAOS_SEED_HEADER }, logger);
+  const seedFromHeader = readSeed(
+    readSeedHeader(rawHeaders, logger),
+    { label: CHAOS_SEED_HEADER },
+    logger,
+  );
   const seedFromFixture = readSeed(fixture?.chaos?.seed, fixtureFrom, logger);
   const seedFromServer = readSeed(serverConfig?.seed, serverFrom, logger);
   const seed = seedFromHeader ?? seedFromFixture ?? seedFromServer;

@@ -914,7 +914,7 @@ export interface ChaosConfig {
    * requests give the same faults on a fresh server, and unrelated requests do
    * not shift each other. Same precedence as the rates (header >
    * fixture > server). A number is used as its decimal string; a string must be
-   * 1-128 visible ASCII characters without spaces. Streaming jitter on a seeded
+   * 1-128 visible ASCII characters without spaces or commas. Streaming jitter on a seeded
    * request is drawn from the seed too.
    */
   seed?: string | number;
