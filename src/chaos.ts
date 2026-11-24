@@ -11,6 +11,13 @@
  * sets. The server level is itself scoped per `X-Test-Id`, and that scope lookup
  * is a SELECTION, not a merge: a per-testId override replaces the server-wide
  * baseline wholesale. See `ChaosScope` in types.ts.
+ *
+ * Seeds: with no seed configured, every roll is `Math.random()`, exactly as
+ * before. With a seed (`chaos.seed`, `--chaos-seed`, the `x-aimock-chaos-seed`
+ * header or `POST /__aimock/chaos`, same precedence as the rates) each roll is
+ * a pure function of the seed, the request's identity key, the action kind and
+ * the key's occurrence, so a run replays. The seeded randomness lives in
+ * `chaos-random.ts`.
  */
 
 import type * as http from "node:http";
@@ -29,12 +36,47 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
 import { renderError } from "./response/errors.js";
+import {
+  CHAOS_KEY_HEADER,
+  CHAOS_OCCURRENCE_HEADER,
+  CHAOS_SEED_HEADER,
+  ChaosOccurrenceRegistry,
+  chaosDraw,
+  chaosKeyFor,
+  chaosKeyIdentity,
+  chaosOccurrencesFor,
+  createJitterSource,
+  fallbackChaosOccurrences,
+  MAX_CHAOS_SEED_LENGTH,
+  currentChaosIdentity,
+  currentChaosOrigin,
+  normalizeChaosSeed,
+  describeChaosValue,
+  setRequestChaosSeeding,
+  clearRequestChaosSeeding,
+  type ChaosOrigin,
+  type ChaosRequestIdentity,
+} from "./chaos-random.js";
+
+/** A verdict plus, when the request was seeded, its origin. */
+interface ChaosDecision {
+  action: ChaosAction | null;
+  origin?: ChaosOrigin;
+}
+
+/** The occurrence registry a seeded verdict counts in (see `registerChaosOccurrences`). */
+function occurrencesFor(serverDefaults: ChaosDefaults | undefined): ChaosOccurrenceRegistry {
+  if (serverDefaults && isChaosScope(serverDefaults) && serverDefaults.byTestId) {
+    return chaosOccurrencesFor(serverDefaults.byTestId) ?? fallbackChaosOccurrences;
+  }
+  return fallbackChaosOccurrences;
+}
 
 /**
  * Narrow the server-defaults argument. The discrimination is STRUCTURAL: a
  * `ChaosConfig` only ever carries the fault fields (`dropRate`,
- * `malformedRate`, `rateLimitRate`, `disconnectRate`, `latencyMs`), so the
- * presence of a `base` / `byTestId` key means a `ChaosScope`.
+ * `malformedRate`, `rateLimitRate`, `disconnectRate`, `latencyMs`) and
+ * `seed`, so the presence of a `base` / `byTestId` key means a `ChaosScope`.
  *
  * Both members are optional, so `{}` satisfies BOTH types and is reported here
  * as a config, not a scope. That is not a bug to route around: an empty scope
@@ -96,6 +138,10 @@ function resolveScopedDefaults(
  * Exported for the two surfaces that live in other modules (`src/server.ts`'s
  * control API, `src/cli.ts`'s flag parsing); in-module callers go through
  * {@link parseChaosField} too.
+ *
+ * `seed` is NOT in this table: it is not a number in a range. Every source
+ * validates it through `normalizeChaosSeed` (`chaos-random.ts`) instead, with
+ * the same reject-never-substitute policy.
  */
 export const CHAOS_FIELDS = {
   dropRate: { header: "x-aimock-chaos-drop", max: 1, integer: false },
@@ -213,6 +259,26 @@ function firstHeaderValue(
   field: ChaosField,
   logger?: Logger,
 ): string | undefined {
+  return firstRepeatedHeaderValue(
+    raw,
+    CHAOS_FIELDS[field].header,
+    (text) => headerValueMeaning(text, field),
+    logger,
+  );
+}
+
+/**
+ * The rule {@link firstHeaderValue} applies, for any chaos header: split on
+ * commas, trim, drop empties, the first non-empty value wins, and a repeat
+ * whose values `meaning` tells apart warns once. Shared by the rate headers and
+ * the seed header, so the two read a repeat the same way.
+ */
+function firstRepeatedHeaderValue(
+  raw: string | string[] | undefined,
+  header: string,
+  meaning: (text: string) => string,
+  logger?: Logger,
+): string | undefined {
   const parts = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
   const values = parts
     .flatMap((part) => part.split(","))
@@ -220,10 +286,10 @@ function firstHeaderValue(
     .filter((part) => part !== "");
   const first = values[0];
   if (first === undefined) return undefined;
-  const firstMeaning = headerValueMeaning(first, field);
-  if (values.some((value) => headerValueMeaning(value, field) !== firstMeaning)) {
+  const firstMeaning = meaning(first);
+  if (values.some((value) => meaning(value) !== firstMeaning)) {
     logger?.warn(
-      `[chaos] ${CHAOS_FIELDS[field].header}: repeated header with conflicting values ${JSON.stringify(values)} — using the first (${JSON.stringify(first)})`,
+      `[chaos] ${header}: repeated header with conflicting values ${JSON.stringify(values)} — using the first (${JSON.stringify(first)})`,
     );
   }
   return first;
@@ -309,24 +375,33 @@ export function resetChaosWarnings(logger: Logger): void {
   warnedStaticRejections.delete(logger);
 }
 
+/**
+ * True when this rejection was already reported for this static source on this
+ * server (and so must stay quiet); records it otherwise. Never latches a
+ * dynamic source (no `latchKey`).
+ */
+function alreadyWarned(source: ChaosSource, field: string, raw: unknown, logger: Logger): boolean {
+  if (source.latchKey === undefined) return false;
+  // Latched only once a logger is actually present, so a warn-less call can
+  // never swallow the one line a configured logger was going to emit.
+  const key = `${source.latchKey}\u0000${field}\u0000${describeChaosValue(raw)}`;
+  let latched = warnedStaticRejections.get(logger);
+  if (!latched) {
+    latched = new Set<string>();
+    warnedStaticRejections.set(logger, latched);
+  }
+  if (latched.has(key)) return true;
+  if (latched.size >= MAX_LATCHED_REJECTIONS) {
+    const oldest = latched.values().next();
+    if (!oldest.done) latched.delete(oldest.value);
+  }
+  latched.add(key);
+  return false;
+}
+
 function warnRejected(source: ChaosSource, field: ChaosField, raw: unknown, logger?: Logger): void {
   if (!logger) return;
-  if (source.latchKey !== undefined) {
-    // Latched only once a logger is actually present, so a warn-less call can
-    // never swallow the one line a configured logger was going to emit.
-    const key = `${source.latchKey}\u0000${field}\u0000${JSON.stringify(raw)}`;
-    let latched = warnedStaticRejections.get(logger);
-    if (!latched) {
-      latched = new Set<string>();
-      warnedStaticRejections.set(logger, latched);
-    }
-    if (latched.has(key)) return;
-    if (latched.size >= MAX_LATCHED_REJECTIONS) {
-      const oldest = latched.values().next();
-      if (!oldest.done) latched.delete(oldest.value);
-    }
-    latched.add(key);
-  }
+  if (alreadyWarned(source, field, raw, logger)) return;
   const shape = CHAOS_FIELDS[field].integer ? "a whole number of ms" : "a number";
   logger.warn(
     `[chaos] ${source.label}: rejected ${field} value ${JSON.stringify(raw)} — must be ${shape} in [0,${CHAOS_FIELDS[field].max}]; ignoring it`,
@@ -381,6 +456,50 @@ function serverSource(
     }
   }
   return { label: "server chaos default", latchKey: "server" };
+}
+
+/** Same latch and the same reject-never-substitute policy as the numeric fields. */
+function warnRejectedSeed(source: ChaosSource, raw: unknown, logger?: Logger): void {
+  if (!logger) return;
+  if (alreadyWarned(source, "seed", raw, logger)) return;
+  logger.warn(
+    `[chaos] ${source.label}: rejected seed ${describeChaosValue(raw)} — must be a finite number or ` +
+      `1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas; ignoring it`,
+  );
+}
+
+/**
+ * Read the seed from one level. A rejected seed is left unset, so the next
+ * level of precedence applies, exactly like a rejected rate.
+ */
+function readSeed(raw: unknown, source: ChaosSource, logger?: Logger): string | undefined {
+  if (raw === undefined) return undefined;
+  const seed = normalizeChaosSeed(raw);
+  if (seed === undefined) warnRejectedSeed(source, raw, logger);
+  return seed;
+}
+
+/**
+ * The seed header's single value: the first non-empty one, read exactly like
+ * the rate headers, so a comma separates repeated values. That is why a seed
+ * cannot contain a comma (see `normalizeChaosSeed`): every seed the server
+ * reports replays through this header byte-for-byte. A repeat whose values
+ * name different seeds warns, like a conflicting rate header; values are
+ * compared by their normalized seed, so `42` and ` 42` agree.
+ */
+function readSeedHeader(
+  rawHeaders: http.IncomingHttpHeaders | undefined,
+  logger?: Logger,
+): string | undefined {
+  return firstRepeatedHeaderValue(
+    rawHeaders?.[CHAOS_SEED_HEADER],
+    CHAOS_SEED_HEADER,
+    (text) => {
+      const seed = normalizeChaosSeed(text);
+      return seed === undefined ? `raw:${text}` : `seed:${seed}`;
+    },
+    logger,
+  );
 }
 
 /** Read one field from the request headers. */
@@ -454,6 +573,21 @@ export function resolveChaosConfig(
     const value = fromHeader ?? fromFixture ?? fromServer;
     if (value !== undefined) resolved[field] = value;
   }
+
+  // The seed follows the same precedence. Parsed only where it was given: an
+  // unseeded request only looks up the seed header and the two `seed` fields,
+  // finds none, and its resolved config is unchanged (no `seed` field).
+  // Like the rates, every level is parsed even when a higher one wins, so a bad
+  // seed is always reported rather than hidden by the override above it.
+  const seedFromHeader = readSeed(
+    readSeedHeader(rawHeaders, logger),
+    { label: CHAOS_SEED_HEADER },
+    logger,
+  );
+  const seedFromFixture = readSeed(fixture?.chaos?.seed, fixtureFrom, logger);
+  const seedFromServer = readSeed(serverConfig?.seed, serverFrom, logger);
+  const seed = seedFromHeader ?? seedFromFixture ?? seedFromServer;
+  if (seed !== undefined) resolved.seed = seed;
 
   return resolved;
 }
@@ -680,7 +814,11 @@ export async function awaitChaosLatency(
 /**
  * Evaluate chaos config and return the triggered action, or null if none.
  *
- * THE RATES DO NOT ROLL INDEPENDENTLY. Each is a separate `Math.random()` draw
+ * Each draw is `Math.random()` when no seed is set. When a seed is set, each
+ * draw comes from the seeded source instead (see `decideChaos` below). The
+ * order and the first-hit-wins rule below are the same in both cases.
+ *
+ * THE RATES DO NOT ROLL INDEPENDENTLY. Each is a separate draw
  * taken in a fixed order — drop → malformed → rateLimit → disconnect — and the
  * first draw that hits returns immediately, so the ones after it are never
  * rolled at all. A rate is therefore the probability that ITS draw hits GIVEN
@@ -691,6 +829,10 @@ export async function awaitChaosLatency(
  * and ~25 % rate limits (0.5 x 0.5 — half the requests never reach the second
  * draw), not 50 % of each. To exercise two faults at their nominal frequency,
  * configure them on separate requests rather than in one config.
+ *
+ * SEEDED: each call consumes one occurrence of the request's key (under its
+ * seed and testId), even when every rate is 0 or unset, so calling it twice for
+ * one request moves that key's sequence on by two. Call it once per request.
  */
 export function evaluateChaos(
   fixture: Fixture | null,
@@ -700,40 +842,92 @@ export function evaluateChaos(
   url?: string,
   resolved?: ChaosConfig,
 ): ChaosAction | null {
+  return decideChaos(fixture, serverDefaults, rawHeaders, logger, url, resolved).action;
+}
+
+/**
+ * {@link evaluateChaos}, plus the origin of a seeded verdict. Call it once per
+ * request: a seeded call consumes one occurrence of the request's key.
+ *
+ * UNSEEDED (no seed from the header, the fixture or the server): exactly the
+ * historical behaviour — the same `Math.random()` draws, in the same order,
+ * only for rates above 0 — and no origin. The only other effect is that it
+ * clears any seeded origin and jitter source an earlier seeded verdict left in
+ * the request scope (a no-op for a request that was never seeded).
+ *
+ * SEEDED: each kind's draw comes from `chaosDraw(seed, key, kind,
+ * occurrence)` instead, checked in the same drop → malformed → rateLimit →
+ * disconnect order with the same first-hit-wins rule, so the probabilities are
+ * the ones documented above. `identity` (method, raw URL less `testId`, body)
+ * gives the key: passed in by `applyChaos`, or recorded for the request by a
+ * split gate in `src/server.ts` (`setRequestChaosIdentity`); without either the
+ * key is the key of a bodiless `GET` of `url` (`{ method: "", path: url,
+ * body: undefined }`, and an empty method keys as `GET`). Whichever it is, its
+ * body is then replaced by the body text the CLIENT sent, when `readBody`
+ * recorded one (`chaosKeyIdentity`), so the key never depends on a handler's
+ * translated request or on headers copied into it. The
+ * occurrence counter is per server, per testId, per seed and per key (see
+ * `ChaosOccurrenceRegistry`). A seeded call consumes one occurrence even when
+ * every rate is 0 or unset: the occurrence is taken before any rate is read.
+ * A seeded request also records its jitter source for the stream writers.
+ */
+function decideChaos(
+  fixture: Fixture | null,
+  serverDefaults?: ChaosDefaults,
+  rawHeaders?: http.IncomingHttpHeaders,
+  logger?: Logger,
+  url?: string,
+  resolved?: ChaosConfig,
+  identity?: ChaosRequestIdentity,
+): ChaosDecision {
   const config = resolved ?? resolveChaosConfig(fixture, serverDefaults, rawHeaders, logger, url);
 
-  if (config.dropRate !== undefined && config.dropRate > 0 && Math.random() < config.dropRate) {
-    return "drop";
-  }
-  if (
-    config.malformedRate !== undefined &&
-    config.malformedRate > 0 &&
-    Math.random() < config.malformedRate
-  ) {
-    return "malformed";
-  }
-  if (
-    config.rateLimitRate !== undefined &&
-    config.rateLimitRate > 0 &&
-    Math.random() < config.rateLimitRate
-  ) {
-    return "rateLimit";
-  }
-  if (
-    config.disconnectRate !== undefined &&
-    config.disconnectRate > 0 &&
-    Math.random() < config.disconnectRate
-  ) {
-    return "disconnect";
+  let origin: ChaosOrigin | undefined;
+  let roll: (kind: ChaosAction) => number = () => Math.random();
+  // A resolved config's seed is already normalized; one handed in by a caller
+  // (the `resolved` argument) is normalized here so it cannot bypass the grammar.
+  // A rejected one warns like any rejected seed and the verdict stays unseeded.
+  // Not latched: a `resolved` config is per-call input, like a header.
+  const seed =
+    config.seed === undefined
+      ? undefined
+      : readSeed(config.seed, { label: "resolved chaos config" }, logger);
+  if (seed !== undefined) {
+    const key = chaosKeyFor(
+      chaosKeyIdentity(
+        identity ?? currentChaosIdentity() ?? { method: "", path: url ?? "", body: undefined },
+      ),
+    );
+    const scope = resolveTestId(rawHeaders ?? {}, url);
+    const occurrence = occurrencesFor(serverDefaults).next(scope, seed, key);
+    origin = { seed, key, occurrence };
+    roll = (kind) => chaosDraw(seed, key, kind, occurrence);
+    setRequestChaosSeeding(origin, createJitterSource(seed, key), logger);
+  } else {
+    // UNSEEDED: drop whatever an earlier seeded verdict in this request left in
+    // the scope, so this verdict reports no origin and its stream jitters on
+    // Math.random(). A no-op for a request that was never seeded.
+    clearRequestChaosSeeding();
   }
 
-  return null;
+  const fires = (rate: number | undefined, kind: ChaosAction): boolean =>
+    rate !== undefined && rate > 0 && roll(kind) < rate;
+
+  let action: ChaosAction | null = null;
+  if (fires(config.dropRate, "drop")) action = "drop";
+  else if (fires(config.malformedRate, "malformed")) action = "malformed";
+  else if (fires(config.rateLimitRate, "rateLimit")) action = "rateLimit";
+  else if (fires(config.disconnectRate, "disconnect")) action = "disconnect";
+
+  return origin ? { action, origin } : { action };
 }
 
 /**
  * Async chaos entrypoint: awaits the deterministic latency delay (when
- * configured) BEFORE rolling terminal actions. Returns true when a terminal
- * action fired (caller returns early), false to proceed.
+ * configured) BEFORE rolling terminal actions. Returns a
+ * {@link ChaosAsyncOutcome}: `"handled"` when a terminal action fired,
+ * `"unwritable"` when the response was gone after the delay (the caller
+ * returns early on both), or `false` to proceed.
  *
  * This is the ONLY entrypoint that honours `latencyMs`, so it is the one every
  * route handler must use: `src/__tests__/chaos-async-call-sites.test.ts` fails
@@ -857,13 +1051,34 @@ export function applyChaos(
   logger?: Logger,
   resolved?: ChaosConfig,
 ): boolean {
-  const action = evaluateChaos(fixture, serverDefaults, rawHeaders, logger, requestUrl, resolved);
+  // The identity a seeded verdict is keyed by: the raw request target (query
+  // string included) and the handler's body, which `chaosKeyIdentity` replaces
+  // with the client's own body text when one was recorded. A `null` journal
+  // body means "no body". Unused when unseeded.
+  const identity: ChaosRequestIdentity = {
+    method: context.method,
+    path: requestUrl ?? context.path,
+    body: context.body ?? undefined,
+  };
+  const { action, origin } = decideChaos(
+    fixture,
+    serverDefaults,
+    rawHeaders,
+    logger,
+    requestUrl,
+    resolved,
+    identity,
+  );
   if (!action) return false;
   // "Rolled" is not "applied": an action the response could not take is a
   // no-op, and reporting it as a hit would make the caller abandon a request
   // nothing has answered.
+  // An unseeded verdict's `origin` is undefined, so `applyChaosAction` falls
+  // back to the request scope, which `decideChaos` has just cleared: no stale
+  // seeded origin from an earlier verdict in this request can be reported.
   return (
-    applyChaosAction(action, res, fixture, journal, context, source, registry, logger) === "applied"
+    applyChaosAction(action, res, fixture, journal, context, source, registry, logger, origin) ===
+    "applied"
   );
 }
 
@@ -939,6 +1154,29 @@ export function applyChaosDeprecated(
 }
 
 /**
+ * Add the seeded chaos headers to a CORS response's
+ * `Access-Control-Expose-Headers`, so a browser harness can read them.
+ *
+ * Only on a seeded chaos hit, the one response that carries them. The
+ * server-wide expose list is a static header on EVERY response, so naming them
+ * there would change the bytes of every unseeded response too. A response
+ * with no expose list (no CORS) is left alone.
+ */
+function exposeChaosOriginHeaders(res: http.ServerResponse): void {
+  const current = res.getHeader("Access-Control-Expose-Headers");
+  if (current === undefined) return;
+  const names = (Array.isArray(current) ? current.join(",") : String(current))
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  const present = new Set(names.map((name) => name.toLowerCase()));
+  for (const name of [CHAOS_SEED_HEADER, CHAOS_KEY_HEADER, CHAOS_OCCURRENCE_HEADER]) {
+    if (!present.has(name)) names.push(name);
+  }
+  res.setHeader("Access-Control-Expose-Headers", names.join(", "));
+}
+
+/**
  * Apply a specific (already-rolled) chaos action. Exposed so callers that roll
  * the dice themselves can dispatch without re-rolling — important when the
  * caller wants to branch on the action before committing (e.g. pre-flight vs.
@@ -982,6 +1220,9 @@ export function applyChaosAction(
   source: "fixture" | "proxy" | "internal",
   registry: MetricsRegistry | undefined,
   logger: Logger | undefined,
+  // The split gates in `src/server.ts` roll through `evaluateChaos` and apply
+  // separately; their seeded origin reaches here through the request scope.
+  origin: ChaosOrigin | undefined = currentChaosOrigin(),
 ): ChaosActionOutcome {
   const unwritable = responseUnwritableReason(res);
   // `headers-sent` blocks only the actions that need a status line; every
@@ -992,6 +1233,19 @@ export function applyChaosAction(
         `${UNWRITABLE_DESCRIPTION[unwritable]} — no metric, no journal entry, no write`,
     );
     return "skipped";
+  }
+
+  // A SEEDED verdict reports where it came from, on the response (best effort:
+  // a committed head cannot take new headers) and in the journal entry. An
+  // unseeded verdict has no origin, so its response and entry are unchanged.
+  const originFields = origin
+    ? { chaosSeed: origin.seed, chaosKey: origin.key, chaosOccurrence: origin.occurrence }
+    : {};
+  if (origin && !res.headersSent) {
+    res.setHeader(CHAOS_SEED_HEADER, origin.seed);
+    res.setHeader(CHAOS_KEY_HEADER, origin.key);
+    res.setHeader(CHAOS_OCCURRENCE_HEADER, String(origin.occurrence));
+    exposeChaosOriginHeaders(res);
   }
 
   switch (action) {
@@ -1011,7 +1265,7 @@ export function applyChaosAction(
       );
       journal.add({
         ...context,
-        response: { status: 500, fixture, chaosAction: "drop", source },
+        response: { status: 500, fixture, chaosAction: "drop", source, ...originFields },
       });
       break;
     }
@@ -1020,7 +1274,7 @@ export function applyChaosAction(
       res.end("{malformed json: <<<chaos>>>");
       journal.add({
         ...context,
-        response: { status: 200, fixture, chaosAction: "malformed", source },
+        response: { status: 200, fixture, chaosAction: "malformed", source, ...originFields },
       });
       break;
     }
@@ -1039,7 +1293,7 @@ export function applyChaosAction(
       );
       journal.add({
         ...context,
-        response: { status: 429, fixture, chaosAction: "rateLimit", source },
+        response: { status: 429, fixture, chaosAction: "rateLimit", source, ...originFields },
       });
       break;
     }
@@ -1055,7 +1309,7 @@ export function applyChaosAction(
       res.destroy();
       journal.add({
         ...context,
-        response: { status, fixture, chaosAction: "disconnect", source },
+        response: { status, fixture, chaosAction: "disconnect", source, ...originFields },
       });
       break;
     }

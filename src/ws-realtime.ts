@@ -44,9 +44,11 @@ import {
   watchWsClose,
   wsLifecycle,
 } from "./response/lifecycle.js";
-import { delay, calculateDelay } from "./sse-writer.js";
+import { delay, calculateDelay, calculateDelayWithJitter } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { resolveChaosConfig } from "./chaos.js";
+import { chaosKeyFor, createJitterSource, normalizeChaosSeed } from "./chaos-random.js";
 import type { WebSocketConnection } from "./ws-framing.js";
 import { render as renderRealtimeUsage } from "./response/usage/codecs/realtime.js";
 import { resolveRequestDecisions, strictOverrideField } from "./response/policy.js";
@@ -561,6 +563,8 @@ export function handleWebSocketRealtime(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
+    chaos?: HandlerDefaults["chaos"];
     transcriptionIntent?: boolean;
     /** @internal Called before each message is processed (the server assigns fixture positions). */
     beforeProcessMessage?: () => void;
@@ -658,6 +662,8 @@ async function processMessage(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
+    chaos?: HandlerDefaults["chaos"];
     transcriptionIntent?: boolean;
   },
   session: SessionConfig,
@@ -970,6 +976,8 @@ async function emitLiveTranscriptionEvents(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    /** Server chaos scope; only its seed is read, for live transcription jitter. */
+    chaos?: HandlerDefaults["chaos"];
   },
   session: SessionConfig,
   audioItem: RealtimeItem,
@@ -1098,14 +1106,37 @@ async function emitLiveTranscriptionEvents(
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
   const lifecycle = wsLifecycle(ws, fixture);
+  // A WebSocket turn passes no chaos gate, so a seeded jitter source (when a
+  // seed applies) is resolved here; unseeded, jitter stays on Math.random().
+  // Resolved without a logger: this turn rolls no chaos, so it must not repeat
+  // the rate warnings the HTTP gates already report. The URL carries the
+  // socket's testId (already resolved from X-Test-Id, else the upgrade URL's
+  // ?testId=), so a socket tagged either way gets its test's seed.
+  const chaosSeed = normalizeChaosSeed(
+    resolveChaosConfig(
+      fixture,
+      defaults.chaos,
+      defaults.upgradeHeaders,
+      undefined,
+      `/v1/realtime?testId=${encodeURIComponent(testId)}`,
+    ).seed,
+  );
+  const jitter =
+    chaosSeed === undefined
+      ? undefined
+      : createJitterSource(
+          chaosSeed,
+          chaosKeyFor({ method: "WS", path: "/v1/realtime", body: request }),
+        );
   let chunkIndex = 0;
   for (let index = 0; index < transcript.length; index += chunkSize) {
-    const chunkDelay = calculateDelay(
+    const chunkDelay = calculateDelayWithJitter(
       chunkIndex,
       fixture.streamingProfile,
       latency,
       fixture.recordedTimings,
       replaySpeed,
+      jitter,
     );
     if (chunkDelay > 0) await delay(chunkDelay, lifecycle.signal);
     if (lifecycle.signal.aborted || ws.isClosed) {

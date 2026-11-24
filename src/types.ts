@@ -874,9 +874,10 @@ export interface RecordedTimings {
 /**
  * Probabilistic (and one deterministic) fault injection knobs.
  *
- * VALIDATION — ONE policy, whatever the source. Each field is a finite number
- * in its range: the rates in [0, 1], `latencyMs` in [0, 30000]. A value outside
- * it, or one that is not a number at all (`"0.5abc"`, `"Infinity"`, `NaN`), is
+ * VALIDATION — ONE policy, whatever the source. Each numeric field is a finite
+ * number in its range: the rates in [0, 1], `latencyMs` in [0, 30000]. `seed`
+ * is a finite number or a string (see the field). A value outside its range,
+ * or one that is not a number at all (`"0.5abc"`, `"Infinity"`, `NaN`), is
  * REJECTED, never clamped — silent clamping substitutes a fault rate nobody
  * asked for and hides the misconfiguration that produced it.
  *
@@ -906,6 +907,19 @@ export interface ChaosConfig {
    * rate limits, not 50 % (see the interface docstring above).
    */
   rateLimitRate?: number;
+  /**
+   * Seed that makes the verdicts above reproducible. Omit it and chaos rolls
+   * `Math.random()` exactly as before. Set it and each verdict is a pure function
+   * of the seed, the request (method, target and body), the action kind and how
+   * many times that request was seen before, so the same seed and the same
+   * requests give the same faults on a fresh server, and unrelated requests do
+   * not shift each other. Same precedence as the rates (header >
+   * fixture > server). A number is used as `String(value)` (so `42` and `"42"`
+   * are one seed). A string is trimmed, then must be 1-128 visible ASCII
+   * characters; it must not contain spaces or commas. Streaming jitter on a
+   * seeded request is drawn from the seed too, where streaming jitter applies.
+   */
+  seed?: string | number;
 }
 
 /**
@@ -1381,6 +1395,15 @@ export interface JournalEntry {
      */
     error?: string;
     chaosAction?: ChaosAction;
+    /**
+     * Where a SEEDED `chaosAction` came from, so a failure seen in the journal can be
+     * replayed: the effective seed, the request identity key and the occurrence of
+     * that key. Present only when the request resolved a chaos seed; an unseeded
+     * chaos entry never carries them.
+     */
+    chaosSeed?: string;
+    chaosKey?: string;
+    chaosOccurrence?: number;
     /** Full prepared fault output; interrupted delivery is recorded separately above. */
     misbehavior?: MisbehaviorSummary;
     /** When the X-AIMock-Strict header overrode the server default. */
@@ -1784,6 +1807,16 @@ export interface MockServerOptions {
    * unique testIds.
    */
   fixtureCountsMaxTestIds?: number;
+  /**
+   * Maximum number of per-request occurrence counters kept for SEEDED chaos
+   * (one per distinct testId, seed and request key). Past the cap the least
+   * recently used counter is evicted, and that request starts its sequence again
+   * at occurrence 0. Must be a positive integer; anything else uses the default.
+   * Unseeded chaos keeps no counters.
+   *
+   * Default: 10000.
+   */
+  chaosKeysMax?: number;
   /**
    * Normalize requests before matching and recording. Useful for stripping
    * dynamic data (timestamps, UUIDs, session IDs) that would cause fixture

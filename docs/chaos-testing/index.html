@@ -281,6 +281,14 @@
               <td><code>latencyMs</code> &mdash; delay before the response</td>
               <td>0&ndash;30000, whole ms</td>
             </tr>
+            <tr>
+              <td><code>x-aimock-chaos-seed</code></td>
+              <td>
+                <code>seed</code> &mdash; makes this request&apos;s verdict reproducible (see
+                <a href="#seeded-chaos">Reproducible Chaos</a>)
+              </td>
+              <td>string of 1&ndash;128 visible ASCII characters, no spaces or commas</td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -326,7 +334,8 @@
   --chaos-malformed 0.05 \
   --chaos-ratelimit 0.05 \
   --chaos-disconnect 0.02 \
-  --chaos-latency 250</code></pre>
+  --chaos-latency 250 \
+  --chaos-seed ci-1234</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -342,7 +351,8 @@
   --chaos-malformed 0.05 \
   --chaos-ratelimit 0.05 \
   --chaos-disconnect 0.02 \
-  --chaos-latency 250</code></pre>
+  --chaos-latency 250 \
+  --chaos-seed ci-1234</code></pre>
             </div>
           </div>
         </div>
@@ -351,9 +361,140 @@
           The <code>aimock</code> binary takes no chaos flags &mdash; its options are
           <code>--config</code>, <code>--port</code>, <code>--host</code> and
           <code>-h, --help</code>. With <code>aimock --config</code>, set the server-level chaos
-          under <code>llm.chaos</code> in the config file (the same five fields, the same bounds),
-          or install it at runtime with <code>POST /__aimock/chaos</code> (see the
+          under <code>llm.chaos</code> in the config file (the same fields, the same bounds), or
+          install it at runtime with <code>POST /__aimock/chaos</code> (see the
           <a href="/control-api">Control API</a>).
+        </p>
+
+        <h2 id="seeded-chaos">Reproducible Chaos (Seeds)</h2>
+        <p>
+          By default every chaos verdict is a fresh <code>Math.random()</code> draw, so a CI run
+          that failed on an injected fault cannot be replayed. Set a <strong>seed</strong> and each
+          verdict becomes a pure function of four inputs:
+        </p>
+        <ul>
+          <li>the seed;</li>
+          <li>
+            the request's identity key: its method, its target and a hash of the body exactly as the
+            client sent it (parsed when it is JSON, so key order and whitespace do not matter; raw
+            text otherwise, which never matches a JSON string; a JSON <code>null</code> body is not
+            the same as no body). Headers are not part of it, so a retry with a new request id is
+            the same request, and <code>X-AIMock-Context</code> does not change it. The target keeps
+            its query string except <code>?testId=</code>, so <code>?testId=x</code> and
+            <code>X-Test-Id: x</code> give the same key;
+          </li>
+          <li>
+            the action kind (<code>drop</code>, <code>malformed</code>, <code>rateLimit</code>,
+            <code>disconnect</code>), each drawn from its own stream;
+          </li>
+          <li>
+            the occurrence: how many times that request was seen before, under that seed and testId
+            (the <code>X-Test-Id</code> header or the <code>?testId=</code> query parameter).
+          </li>
+        </ul>
+        <p>
+          The same seed and the same requests give the same faults on a fresh server. An unrelated
+          request inserted into the run does not change the verdicts of the others, and parallel
+          tests with different testIds keep separate sequences. The rates and their
+          drop&nbsp;&rarr;&nbsp;malformed&nbsp;&rarr;&nbsp;rateLimit&nbsp;&rarr;&nbsp;disconnect
+          order mean exactly what they mean without a seed. Streaming jitter
+          (<code>streamingProfile.jitter</code>) applies to SSE streaming and live transcription.
+          There, on a seeded request, it is drawn from the seed too, so a replay also replays the
+          pacing. Realtime <code>response.create</code>, Gemini Live and Responses over WebSocket
+          apply no jitter, with or without a seed. <code>latencyMs</code> is already fixed and is
+          unchanged.
+        </p>
+        <p>
+          A seed is a string or a finite number. A string is trimmed, then must be 1&ndash;128
+          visible ASCII characters; it cannot contain spaces or commas. A number is used as its
+          JavaScript string form, so <code>42</code> and <code>"42"</code> are one seed. It follows
+          the usual precedence:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>How</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Request header</td>
+              <td><code>x-aimock-chaos-seed: my-seed</code></td>
+            </tr>
+            <tr>
+              <td>Fixture</td>
+              <td><code>"chaos": { "dropRate": 0.3, "seed": "my-seed" }</code></td>
+            </tr>
+            <tr>
+              <td>Server (programmatic or config file)</td>
+              <td>
+                <code>chaos: { dropRate: 0.3, seed: "my-seed" }</code> / <code>llm.chaos.seed</code>
+              </td>
+            </tr>
+            <tr>
+              <td>CLI</td>
+              <td><code>--chaos-seed my-seed</code></td>
+            </tr>
+            <tr>
+              <td>Runtime control</td>
+              <td>
+                <code>POST /__aimock/chaos {"dropRate": 0.3, "seed": "my-seed"}</code>;
+                <code>GET</code> echoes it
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <strong>Without a seed nothing changes:</strong> the same
+          <code>Math.random()</code> draws, no new response headers, no new journal fields. A seed
+          is never generated for you.
+        </p>
+
+        <h3>Replaying a failed run</h3>
+        <p>
+          A seeded chaos hit carries its coordinates on the response &mdash;
+          <code>x-aimock-chaos-seed</code>, <code>x-aimock-chaos-key</code> and
+          <code>x-aimock-chaos-occurrence</code> (except a <code>disconnect</code>, which sends no
+          headers) &mdash; and in its journal entry as <code>chaosSeed</code>,
+          <code>chaosKey</code> and <code>chaosOccurrence</code>. To replay a failure:
+        </p>
+        <ol>
+          <li>
+            Run the suite with a seed, e.g. <code>--chaos-seed ci-$GITHUB_RUN_ID</code>, and log it.
+          </li>
+          <li>
+            When a run fails, start aimock with the same seed, the same chaos rates, the same
+            fixtures and the same <code>chaosKeysMax</code>. A different fixture set can serve a
+            request with other chaos settings, and a smaller cap can evict a counter that CI kept.
+          </li>
+          <li>
+            Send the same requests with the same testIds and the same request bodies (and, on chat
+            completions, the same <code>X-AIMock-Context</code> values, which can select a different
+            fixture). The <em>n</em>th occurrence of each request gets the same verdict it got in
+            CI, regardless of what else the run sent.
+          </li>
+        </ol>
+        <p>
+          These calls restart sequences at occurrence 0, so one server can replay the same run
+          again: <code>POST /__aimock/reset</code> restarts every testId's sequences. A
+          <code>POST</code> or <code>DELETE</code> on <code>/__aimock/chaos</code> for a testId
+          restarts that testId's sequences. An untagged <code>POST</code> or <code>DELETE</code>
+          changes the baseline, so it restarts the sequences of the untagged scope and of every
+          testId that inherits the baseline (has no override of its own). From code,
+          <code>mock.setChaos()</code> restarts the baseline scopes the same way and
+          <code>mock.clearChaos()</code> restarts every testId&apos;s sequences. An embedder that
+          calls <code>evaluateChaos</code> directly, with no server, calls
+          <code>resetChaosOccurrences()</code> to restart its sequences.
+        </p>
+
+        <h3>Memory bound</h3>
+        <p>
+          Seeded chaos keeps one occurrence counter per distinct testId, seed and request key. The
+          number of counters is capped at <strong>10,000</strong> per server (set it with the
+          <code>chaosKeysMax</code> server option or <code>--chaos-keys-max &lt;n&gt;</code>). Past
+          the cap the least recently used counter is evicted, and that request's sequence starts
+          again at occurrence 0. Unseeded chaos keeps no counters.
         </p>
 
         <h2>Proxy Mode</h2>

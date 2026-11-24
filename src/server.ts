@@ -259,6 +259,17 @@ import {
   CHAOS_FIELDS,
   CHAOS_FIELD_NAMES,
 } from "./chaos.js";
+import {
+  ChaosOccurrenceRegistry,
+  clearBaselineChaosOccurrences,
+  clearChaosOccurrences,
+  normalizeChaosSeed,
+  describeChaosValue,
+  registerChaosOccurrences,
+  runInChaosRequestScope,
+  setRequestChaosIdentity,
+  chaosBodyFromRaw,
+} from "./chaos-random.js";
 import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
 // Route paths/patterns are the router's single source of truth — shared with
 // the machine-readable catalog (`route-registry.ts` → `openapi.ts`), so the
@@ -569,6 +580,8 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   // isolation barrier every parallel harness leans on; chaos leaking past it
   // poisons later tests with 500s that look like application bugs.
   targets.defaults.chaos = undefined;
+  // Seeded chaos restarts every key at occurrence 0, so a reset replays the run.
+  if (targets.defaults.chaosByTestId) clearChaosOccurrences(targets.defaults.chaosByTestId);
   targets.defaults.misbehavior?.byTestId.clear();
   targets.videoStates.clear();
   targets.openRouterVideoJobs.clear();
@@ -689,6 +702,18 @@ function effectiveChaos(defaults: HandlerDefaults, scopeId: string): ChaosConfig
   const current = defaults.chaos;
   if (!current) return {};
   return isChaosScope(current) ? (current.base ?? {}) : current;
+}
+
+/**
+ * Rewind the seeded chaos counters after the chaos config for `scopeId`
+ * changed, so the next seeded run in that scope replays from occurrence 0.
+ * The untagged scope is the server-wide baseline: changing it rewinds every
+ * testId that inherits it (no override of its own), not only the default one.
+ */
+function rewindChaosOccurrences(defaults: HandlerDefaults, scopeId: string): void {
+  if (!defaults.chaosByTestId) return;
+  if (scopeId === DEFAULT_TEST_ID) clearBaselineChaosOccurrences(defaults.chaosByTestId);
+  else clearChaosOccurrences(defaults.chaosByTestId, scopeId);
 }
 
 /** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
@@ -1162,14 +1187,19 @@ async function handleControlAPI(
     const scopeId = chaosScopeId(req);
     if (scopeId === null) return writeBlankTestId(res);
     defaults.chaosByTestId?.delete(scopeId);
+    // Seeded counters for this scope restart, so the next seeded run replays.
+    // Untagged, that is every scope that inherits the baseline.
+    rewindChaosOccurrences(defaults, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;
   }
 
   // POST /__aimock/chaos — replace the server chaos config at runtime (no
-  // restart). Accepts any subset of dropRate/malformedRate/disconnectRate as
-  // numbers in [0, 1]; `{}` means explicitly no chaos. Unknown fields and
+  // restart). Accepts any subset of the rates (numbers in [0, 1]), `latencyMs`
+  // and `seed` (a finite number or a string, normalized like every other seed;
+  // installing it rewinds the scope's seeded occurrence counters, so the same
+  // seed replays); `{}` means explicitly no chaos. Unknown fields and
   // out-of-range values are rejected with 400.
   //
   // SCOPED to the caller's testId (`X-Test-Id`, else `?testId=`), like every
@@ -1222,7 +1252,7 @@ async function handleControlAPI(
     // resolver silently discarded it at request time as a non-integer: the
     // control API reported a config the traffic never saw.
     for (const key of Object.keys(parsed)) {
-      if (!(CHAOS_FIELD_NAMES as readonly string[]).includes(key)) {
+      if (key !== "seed" && !(CHAOS_FIELD_NAMES as readonly string[]).includes(key)) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Unknown chaos field: '${key}'` }));
         return true;
@@ -1248,6 +1278,23 @@ async function handleControlAPI(
       }
       next[key] = accepted;
     }
+    // `seed` is not a numeric field: a finite number or 1-128 visible ASCII
+    // characters, stored in its normalized string form so `GET` echoes what
+    // the traffic uses.
+    if (parsed.seed !== undefined) {
+      const seed = normalizeChaosSeed(parsed.seed);
+      if (seed === undefined) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error:
+              "Invalid 'seed': must be a finite number or 1-128 visible ASCII characters without spaces or commas",
+          }),
+        );
+        return true;
+      }
+      next.seed = seed;
+    }
     // The install REPLACES what was in effect for this scope; it does not merge
     // over it. Name every field that was in effect and is not restated, so a
     // baseline rate a test silently loses (the classic case: a server-wide
@@ -1266,6 +1313,9 @@ async function handleControlAPI(
       );
     }
     defaults.chaosByTestId?.set(scopeId, next);
+    // A (re-)install starts this scope's seeded sequences from occurrence 0.
+    // Untagged, that is every scope that inherits the baseline.
+    rewindChaosOccurrences(defaults, scopeId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ chaos: effectiveChaos(defaults, scopeId) }));
     return true;
@@ -2059,6 +2109,9 @@ async function handleCompletions(
     );
     return;
   }
+  // Keys a SEEDED verdict by this request (method, raw target and, via the recorded
+  // client body, what the client sent — not `body`, the translated request); unused unseeded.
+  setRequestChaosIdentity({ method, path: req.url ?? path, body });
   const chaosAction = evaluateChaos(
     fixture,
     defaults.chaos,
@@ -3055,6 +3108,14 @@ async function startServer(
   // one operation and neither can accidentally take the other's overrides with
   // it; only assigning `undefined` (a full reset) clears the map.
   const chaosByTestId = new Map<string, ChaosConfig>();
+  // Seeded chaos occurrence counters, bounded by `chaosKeysMax` (LRU). Unseeded
+  // chaos never touches it. See `ChaosOccurrenceRegistry`.
+  // An invalid `chaosKeysMax` and an eviction at the cap are warned through the
+  // server logger.
+  registerChaosOccurrences(
+    chaosByTestId,
+    new ChaosOccurrenceRegistry(options?.chaosKeysMax, logger),
+  );
   let misbehaviorBaseline: MisbehaviorConfig | undefined;
   const misbehavior: MisbehaviorScope = {
     byTestId: new Map(),
@@ -3105,14 +3166,21 @@ async function startServer(
     // empty one, so the construction-time chaos config is always recoverable
     // (that is what `POST /__aimock/reset` does). `POST {}` still installs a
     // real, empty override: "explicitly no chaos".
+    //
+    // Rewinds the seeded counters like the HTTP control does (`LLMock.setChaos`
+    // and `clearChaos` write through here): a full clear rewinds every scope,
+    // and a baseline change rewinds every scope that inherits the baseline, so
+    // setting the same seed again replays the run.
     set chaos(value: ChaosDefaults | undefined) {
       if (value === undefined) {
         chaosByTestId.clear();
+        clearChaosOccurrences(chaosByTestId);
         return;
       }
       const base = isChaosScope(value) ? value.base : value;
       if (base === undefined) chaosByTestId.delete(DEFAULT_TEST_ID);
       else chaosByTestId.set(DEFAULT_TEST_ID, base);
+      clearBaselineChaosOccurrences(chaosByTestId);
     },
     registry,
     get record() {
@@ -3166,6 +3234,11 @@ async function startServer(
       const shape = CHAOS_FIELDS[field].integer ? "a whole number of ms" : "a number";
       logger.warn(
         `Chaos default ${field} value ${JSON.stringify(value)} — must be ${shape} in [0,${CHAOS_FIELDS[field].max}]; rejected at runtime, never clamped: this default is ignored`,
+      );
+    }
+    if (chaosDefaults.seed !== undefined && normalizeChaosSeed(chaosDefaults.seed) === undefined) {
+      logger.warn(
+        `Chaos default seed ${describeChaosValue(chaosDefaults.seed)} — must be a finite number or 1-128 visible ASCII characters without spaces or commas; this seed is ignored`,
       );
     }
   }
@@ -3604,10 +3677,13 @@ async function startServer(
     // Run inside the request scope so every journal write made while serving
     // this request (in any handler module) is attributed back to it.
     requestScope.run(req, () => {
-      runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
-        handleHttpRequest(req, res).catch((err: unknown) => {
-          routeError(req, res, err, req.url ?? "?");
-        }),
+      // Per-request seeded-chaos state (the jitter source); empty when unseeded.
+      runInChaosRequestScope(() =>
+        runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
+          handleHttpRequest(req, res).catch((err: unknown) => {
+            routeError(req, res, err, req.url ?? "?");
+          }),
+        ),
       );
     });
   });
@@ -5466,6 +5542,13 @@ async function startServer(
             );
             return;
           }
+          // Keys a SEEDED verdict by this request (method, raw target less testId, client body);
+          // unused unseeded.
+          setRequestChaosIdentity({
+            method: req.method ?? "GET",
+            path: req.url ?? pathname,
+            ...chaosBodyFromRaw(raw),
+          });
           const chaosAction = evaluateChaos(
             null,
             defaults.chaos,
@@ -5566,6 +5649,16 @@ async function startServer(
           );
           return;
         }
+        // Keys a SEEDED verdict by this request (method, raw target less testId, client body);
+        // unused unseeded. A GET has no body: `raw` is a stand-in `"{}"` for
+        // `handleFalQueue`, so it is keyed as bodiless, like every other route.
+        setRequestChaosIdentity({
+          method: req.method ?? "GET",
+          path: req.url ?? pathname,
+          ...(req.method === "POST" || req.method === "PUT"
+            ? chaosBodyFromRaw(raw)
+            : { body: undefined }),
+        });
         const chaosAction = evaluateChaos(
           null,
           defaults.chaos,
@@ -5926,6 +6019,12 @@ async function startServer(
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
       handleWebSocketRealtime(ws, fixtures, journal, {
         ...defaults,
+        // Read per turn, not snapshotted at connect by the spread above, so a
+        // socket opened before `POST /__aimock/reset` or an untagged
+        // `DELETE /__aimock/chaos` sees the chaos in effect now.
+        get chaos() {
+          return defaults.chaos;
+        },
         model,
         transcriptionIntent,
         testId: wsTestId,

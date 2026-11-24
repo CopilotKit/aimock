@@ -34,6 +34,7 @@ import {
 import { checkRawResponse, type RawCheckContext } from "./raw-validation.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
+import { normalizeChaosSeed } from "./chaos-random.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { getUsageFieldDefinition } from "./response/usage/fields.js";
@@ -1679,7 +1680,24 @@ export function validateFixtures(
         });
       }
     }
-    if (f.chaos !== undefined) {
+    // `chaos` must be a plain object before its fields are read. `null` threw
+    // a TypeError here, so no such fixture ever validated: it is an error. An
+    // array or a primitive validated clean and is ignored at request time, so
+    // it stays loadable: a warning, like a rejected `chaos.seed`.
+    const chaosValue: unknown = f.chaos;
+    const chaosIsObject =
+      typeof chaosValue === "object" && chaosValue !== null && !Array.isArray(chaosValue);
+    if (chaosValue !== undefined && !chaosIsObject) {
+      results.push({
+        severity: chaosValue === null ? "error" : "warning",
+        fixtureIndex: i,
+        message:
+          chaosValue === null
+            ? "chaos must be an object"
+            : "chaos must be an object; it is ignored",
+      });
+    }
+    if (chaosIsObject) {
       // EVERY chaos field is routed through the ONE chaos table, so a fixture
       // cannot accept a value the CLI, the header and the runtime reject. The
       // hand-rolled `< 0 || > 1` checks this replaces let `NaN`, `-0` and a
@@ -1701,6 +1719,17 @@ export function validateFixtures(
             message: `chaos.${field} must be ${shape} between 0 and ${CHAOS_FIELDS[field].max}`,
           });
         }
+      }
+      // A warning, not an error: `seed` was ignored before it existed, so a
+      // fixture that already carried a bad one must keep loading. At request
+      // time a rejected seed is skipped like any rejected chaos value.
+      if (ch.seed !== undefined && normalizeChaosSeed(ch.seed) === undefined) {
+        results.push({
+          severity: "warning",
+          fixtureIndex: i,
+          message:
+            "chaos.seed must be a finite number or 1-128 visible ASCII characters without spaces or commas; it is ignored",
+        });
       }
     }
 
