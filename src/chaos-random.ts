@@ -12,7 +12,9 @@
  *
  *   - the seed;
  *   - the request's identity key (method, target less `testId`, and a hash of
- *     the body the client sent);
+ *     the body the client sent). Live-transcription jitter on the realtime
+ *     WebSocket is the exception: it keys from the turn request at the fixed
+ *     path `/v1/realtime`, not from a client body;
  *   - the action kind (`drop`, `malformed`, `rateLimit`, `disconnect`, or
  *     `jitter`);
  *   - for a verdict, the occurrence: how many times this key was seen before
@@ -49,7 +51,11 @@ export const CHAOS_OCCURRENCE_HEADER = "x-aimock-chaos-occurrence";
  * nothing new.
  */
 export interface ChaosOrigin {
-  /** The effective seed: the header's, else the fixture's, else the server's. */
+  /**
+   * The effective seed: the header's, else the fixture's, else the server's; or,
+   * when a caller passes its own resolved config to `evaluateChaos`, that
+   * config's seed.
+   */
   seed: string;
   /** The request's identity key (16 hex characters). */
   key: string;
@@ -70,7 +76,7 @@ const FNV_PRIME = 0x01000193;
  *
  *   - Request key (`method`, `path`, `body`): an HTTP method is a token and
  *     cannot contain it; the body is canonical JSON (a non-JSON body is
- *     encoded as a JSON string), which escapes it, or the bare token
+ *     encoded as `text:` followed by a JSON string), which escapes it, or the bare token
  *     `absent`. Only the path, between them, can.
  *   - Draw (`seed`, `kind`, `key`, `occurrence`): a seed cannot contain it
  *     (see {@link normalizeChaosSeed}); the kind is a fixed word, the key is
@@ -311,8 +317,8 @@ export function createJitterSource(seed: string, key: string): JitterSource {
  * recently used one first (a `Map` iterates in insertion order, and a touched
  * entry is re-inserted at the end). An evicted key starts again at occurrence
  * 0, so its verdicts repeat from the start of its sequence. With the default
- * cap that only happens to a key that was idle while 10,000 other keys were
- * seen.
+ * cap that only happens to a key that was idle while 10,000 other
+ * (testId, seed, key) counters were used.
  *
  * Counters are namespaced by testId, so two tests that run in parallel on one
  * server keep independent sequences, and a testId-scoped chaos reset does not
@@ -524,8 +530,8 @@ export function setRequestChaosIdentity(identity: ChaosRequestIdentity): void {
 
 /**
  * Record the body text the client sent for the request being served. The
- * FIRST call wins: a later `readBody` in the same request (for example of an
- * upstream response) cannot replace it. A no-op outside a request scope.
+ * FIRST call wins: a later `readBody` in the same request cannot replace it.
+ * (`readBody` records only a server request's body, never a response it reads.) A no-op outside a request scope.
  */
 export function recordRequestChaosBody(raw: string): void {
   const state = chaosRequestScope.getStore();

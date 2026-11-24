@@ -292,13 +292,14 @@
           </tbody>
         </table>
         <p>
-          Header values are read as plain decimal text and are <strong>never clamped</strong>: a
-          value that is out of range, not a plain decimal (<code>1e3</code>, <code>0x1f</code>,
-          <code>Infinity</code>), or fractional where a whole number of milliseconds is required is
-          rejected with a warning and simply does not apply &mdash; the level below it (fixture,
-          then server default) still does. The same rule governs values set in a fixture, in the
-          server defaults, on the <code>--chaos-*</code> CLI flags and through
-          <code>POST /__aimock/chaos</code>.
+          The rate and latency header values are read as plain decimal text and are
+          <strong>never clamped</strong>: a value that is out of range, not a plain decimal
+          (<code>1e3</code>, <code>0x1f</code>, <code>Infinity</code>), or fractional where a whole
+          number of milliseconds is required is rejected with a warning and simply does not apply
+          &mdash; the level below it (fixture, then server default) still does. The same rule
+          governs values set in a fixture, in the server defaults, on the <code>--chaos-*</code> CLI
+          flags and through <code>POST /__aimock/chaos</code>. The seed header is a string, not a
+          number, and has its own rules (see <a href="#seeded-chaos">Reproducible Chaos</a>).
         </p>
 
         <div class="code-block">
@@ -453,11 +454,13 @@
 
         <h3>Replaying a failed run</h3>
         <p>
-          A seeded chaos hit carries its coordinates on the response &mdash;
-          <code>x-aimock-chaos-seed</code>, <code>x-aimock-chaos-key</code> and
-          <code>x-aimock-chaos-occurrence</code> (except a <code>disconnect</code>, which sends no
-          headers) &mdash; and in its journal entry as <code>chaosSeed</code>,
-          <code>chaosKey</code> and <code>chaosOccurrence</code>. To replay a failure:
+          A seeded chaos hit records its coordinates in its journal entry as
+          <code>chaosSeed</code>, <code>chaosKey</code> and <code>chaosOccurrence</code>. It also
+          sends them on the response as <code>x-aimock-chaos-seed</code>,
+          <code>x-aimock-chaos-key</code> and <code>x-aimock-chaos-occurrence</code>, but only when
+          the response headers were not sent yet. A <code>disconnect</code> sends no headers: before
+          the headers it destroys the socket, and in the middle of a stream the headers were already
+          sent. The journal entry records the coordinates in both cases. To replay a failure:
         </p>
         <ol>
           <li>
@@ -465,8 +468,10 @@
           </li>
           <li>
             When a run fails, start aimock with the same seed, the same chaos rates, the same
-            fixtures and the same <code>chaosKeysMax</code>. A different fixture set can serve a
-            request with other chaos settings, and a smaller cap can evict a counter that CI kept.
+            fixtures and the same counter cap: the <code>--chaos-keys-max</code> CLI flag or the
+            <code>chaosKeysMax</code> server option (an <code>aimock --config</code> file cannot set
+            it). A different fixture set can serve a request with other chaos settings, and a
+            smaller cap can evict a counter that CI kept.
           </li>
           <li>
             Send the same requests with the same testIds and the same request bodies (and, on chat
@@ -579,6 +584,23 @@
           destroyed). A latency delay alone leaves no <code>chaosAction</code>: the entry is the
           ordinary one for whatever the request then received.
         </p>
+        <p>
+          A <a href="#seeded-chaos">seeded</a> chaos hit also adds three fields next to
+          <code>chaosAction</code>, so you can replay it. An unseeded hit never has them.
+        </p>
+        <ul>
+          <li>
+            <code>chaosSeed</code> (string): the effective seed (from the header, else the fixture,
+            else the server).
+          </li>
+          <li>
+            <code>chaosKey</code> (string): the request&apos;s identity key, 16 hex characters.
+          </li>
+          <li>
+            <code>chaosOccurrence</code> (number): which occurrence of that key the request was
+            under that seed and testId, starting at 0.
+          </li>
+        </ul>
 
         <h2>Prometheus Metrics</h2>
         <p>
