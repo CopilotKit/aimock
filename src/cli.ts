@@ -326,7 +326,7 @@ let chaos: ChaosConfig | undefined;
       const seed = normalizeChaosSeed(seedStr);
       if (seed === undefined) {
         console.error(
-          `Invalid chaos-seed: ${seedStr} (must be 1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas)`,
+          `Invalid chaos-seed: ${JSON.stringify(seedStr)} (after trimming, must be 1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters with no inner spaces or commas)`,
         );
         process.exit(1);
       }

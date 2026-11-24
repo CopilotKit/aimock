@@ -582,8 +582,8 @@ describe("seeded chaos: CLI flag validation", () => {
   }
 
   it.each([
-    ["--chaos-seed", "has space", /Invalid chaos-seed: has space/],
-    ["--chaos-seed", "run,7", /Invalid chaos-seed: run,7/],
+    ["--chaos-seed", "has space", /Invalid chaos-seed: "has space"/],
+    ["--chaos-seed", "run,7", /Invalid chaos-seed: "run,7"/],
     ["--chaos-keys-max", "0", /Invalid chaos-keys-max: 0/],
     ["--chaos-keys-max", "2.5", /Invalid chaos-keys-max: 2\.5/],
   ])(

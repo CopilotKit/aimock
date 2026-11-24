@@ -34,7 +34,7 @@ import {
 import { checkRawResponse, type RawCheckContext } from "./raw-validation.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
-import { normalizeChaosSeed } from "./chaos-random.js";
+import { MAX_CHAOS_SEED_LENGTH, normalizeChaosSeed } from "./chaos-random.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { getUsageFieldDefinition } from "./response/usage/fields.js";
@@ -1727,8 +1727,7 @@ export function validateFixtures(
         results.push({
           severity: "warning",
           fixtureIndex: i,
-          message:
-            "chaos.seed must be a finite number or 1-128 visible ASCII characters without spaces or commas; it is ignored",
+          message: `chaos.seed must be a finite number or 1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas; it is ignored`,
         });
       }
     }
