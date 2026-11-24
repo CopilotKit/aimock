@@ -264,6 +264,7 @@ import {
   clearBaselineChaosOccurrences,
   clearChaosOccurrences,
   normalizeChaosSeed,
+  describeChaosValue,
   registerChaosOccurrences,
   runInChaosRequestScope,
   setRequestChaosIdentity,
@@ -3237,7 +3238,7 @@ async function startServer(
     }
     if (chaosDefaults.seed !== undefined && normalizeChaosSeed(chaosDefaults.seed) === undefined) {
       logger.warn(
-        `Chaos default seed ${JSON.stringify(chaosDefaults.seed)} — must be a finite number or 1-128 visible ASCII characters without spaces or commas; this seed is ignored`,
+        `Chaos default seed ${describeChaosValue(chaosDefaults.seed)} — must be a finite number or 1-128 visible ASCII characters without spaces or commas; this seed is ignored`,
       );
     }
   }

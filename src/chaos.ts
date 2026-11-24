@@ -51,6 +51,7 @@ import {
   currentChaosIdentity,
   currentChaosOrigin,
   normalizeChaosSeed,
+  describeChaosValue,
   setRequestChaosSeeding,
   clearRequestChaosSeeding,
   type ChaosOrigin,
@@ -383,7 +384,7 @@ function alreadyWarned(source: ChaosSource, field: string, raw: unknown, logger:
   if (source.latchKey === undefined) return false;
   // Latched only once a logger is actually present, so a warn-less call can
   // never swallow the one line a configured logger was going to emit.
-  const key = `${source.latchKey}\u0000${field}\u0000${JSON.stringify(raw)}`;
+  const key = `${source.latchKey}\u0000${field}\u0000${describeChaosValue(raw)}`;
   let latched = warnedStaticRejections.get(logger);
   if (!latched) {
     latched = new Set<string>();
@@ -462,7 +463,7 @@ function warnRejectedSeed(source: ChaosSource, raw: unknown, logger?: Logger): v
   if (!logger) return;
   if (alreadyWarned(source, "seed", raw, logger)) return;
   logger.warn(
-    `[chaos] ${source.label}: rejected seed ${JSON.stringify(raw)} — must be a finite number or ` +
+    `[chaos] ${source.label}: rejected seed ${describeChaosValue(raw)} — must be a finite number or ` +
       `1-${MAX_CHAOS_SEED_LENGTH} visible ASCII characters without spaces or commas; ignoring it`,
   );
 }

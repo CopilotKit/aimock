@@ -1,8 +1,10 @@
 /**
- * Seeded chaos: crash fixes (CR round 3 of #618), over the real server.
+ * Seeded chaos: two crash fixes (CR round 3 of #618), over the real server.
  *
  * 1. A seeded request with a deeply nested JSON body is keyed, not crashed:
  *    the body canonicalizer has no recursion depth limit.
+ * 2. A BigInt seed (untyped JS config) is rejected with a warning; the warning
+ *    itself does not throw.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
@@ -77,6 +79,10 @@ function chat(url: string, body: string, headers: Record<string, string> = {}): 
   return rawRequest(`${url}/v1/chat/completions`, "POST", body, headers);
 }
 
+function warnings(spy: { mock: { calls: unknown[][] } }): string[] {
+  return spy.mock.calls.map((call) => call.map(String).join(" "));
+}
+
 // ─── 1. deep bodies ─────────────────────────────────────────────────────────
 
 describe("a seeded request with a deeply nested body", () => {
@@ -126,5 +132,36 @@ describe("a seeded request with a deeply nested body", () => {
     const second = await chat(url, chatBody(`,"deep":${ba}`), headers);
     expect(first.headers[KEY_HEADER]).toMatch(/^[0-9a-f]{16}$/);
     expect(second.headers[KEY_HEADER]).toBe(first.headers[KEY_HEADER]);
+  });
+});
+
+// ─── 2. BigInt seed ─────────────────────────────────────────────────────────
+
+describe("a BigInt seed from an untyped JS config", () => {
+  it("is rejected with a warning at startup and requests are still served", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const url = await start({
+      logLevel: "warn",
+      chaos: { seed: 42n } as unknown as MockServerOptions["chaos"],
+    });
+    const probe = await chat(url, chatBody());
+    expect(probe.status).toBe(200);
+    expect(probe.headers[SEED_HEADER]).toBeUndefined();
+    expect(warnings(warn).some((line) => line.includes("seed") && line.includes("42n"))).toBe(true);
+  });
+
+  it("on a fixture is rejected with a warning and the request is served", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const url = await start({ logLevel: "warn" }, [
+      {
+        match: { userMessage: "alpha" },
+        response: { content: "A" },
+        chaos: { seed: 7n } as unknown as Fixture["chaos"],
+      },
+    ]);
+    const probe = await chat(url, chatBody());
+    expect(probe.status).toBe(200);
+    expect(probe.body).toContain('"A"');
+    expect(warnings(warn).some((line) => line.includes("rejected seed 7n"))).toBe(true);
   });
 });

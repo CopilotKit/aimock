@@ -268,6 +268,27 @@ export function normalizeChaosSeed(value: unknown): string | undefined {
   return SEED_GRAMMAR.test(text) ? text : undefined;
 }
 
+/**
+ * `JSON.stringify` for a value named in a warning, that never throws. A config
+ * written in plain JS can hold anything, and a BigInt (or a cycle) makes
+ * `JSON.stringify` throw: the warning about a bad value must not itself crash
+ * the request. A BigInt reads as its literal (`42n`); any other value that
+ * cannot be serialized reads as `String(value)`. Every value `JSON.stringify`
+ * accepts reads exactly as it did.
+ */
+export function describeChaosValue(raw: unknown): string | undefined {
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    if (typeof raw === "bigint") return `${raw}n`;
+    try {
+      return String(raw);
+    } catch {
+      return Object.prototype.toString.call(raw);
+    }
+  }
+}
+
 /** Per-chunk jitter draw in [0, 1), indexed by chunk. */
 export type JitterSource = (chunkIndex: number) => number;
 
