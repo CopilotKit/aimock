@@ -126,18 +126,49 @@ function hex32(word: number): string {
  * only in key order get one key. Array order is kept. `undefined` (no body) is
  * a bare token that no JSON value can render as. Raw text is not encoded here:
  * {@link canonicalBody} tags it apart first.
+ *
+ * Iterative, with an explicit work stack, so a body nested to any depth (the
+ * body limit allows hundreds of thousands of levels) is keyed instead of
+ * overflowing the call stack. The output is the same string a recursive walk
+ * gives.
  */
-function canonicalJSON(value: unknown): string {
-  if (value === undefined) return "absent";
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map((v) => canonicalJSON(v)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  const parts: string[] = [];
-  for (const key of Object.keys(record).sort()) {
-    if (record[key] === undefined) continue;
-    parts.push(`${JSON.stringify(key)}:${canonicalJSON(record[key])}`);
+function canonicalJSON(root: unknown): string {
+  const out: string[] = [];
+  // A work item is either text to emit as-is, or a value to encode. Pushed in
+  // reverse, so items pop in output order.
+  const work: ({ text: string } | { value: unknown })[] = [{ value: root }];
+  while (work.length > 0) {
+    const item = work.pop()!;
+    if ("text" in item) {
+      out.push(item.text);
+      continue;
+    }
+    const value = item.value;
+    if (value === undefined) {
+      out.push("absent");
+    } else if (value === null || typeof value !== "object") {
+      out.push(JSON.stringify(value) ?? "null");
+    } else if (Array.isArray(value)) {
+      work.push({ text: "]" });
+      for (let i = value.length - 1; i >= 0; i--) {
+        work.push({ value: value[i] });
+        if (i > 0) work.push({ text: "," });
+      }
+      out.push("[");
+    } else {
+      const record = value as Record<string, unknown>;
+      const keys = Object.keys(record)
+        .sort()
+        .filter((key) => record[key] !== undefined);
+      work.push({ text: "}" });
+      for (let i = keys.length - 1; i >= 0; i--) {
+        work.push({ value: record[keys[i]] });
+        work.push({ text: `${i > 0 ? "," : ""}${JSON.stringify(keys[i])}:` });
+      }
+      out.push("{");
+    }
   }
-  return `{${parts.join(",")}}`;
+  return out.join("");
 }
 
 /**
