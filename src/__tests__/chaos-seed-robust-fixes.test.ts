@@ -86,8 +86,10 @@ function warnings(spy: { mock: { calls: unknown[][] } }): string[] {
 // ─── 1. deep bodies ─────────────────────────────────────────────────────────
 
 describe("a seeded request with a deeply nested body", () => {
-  // ~400 KB, far below the 10 MB body limit.
-  const DEPTH = 200_000;
+  // Deep enough to overflow a recursive canonicalizer (~2k levels), but below
+  // the depth at which JSON.stringify overflows on Node 20-24 (~5.8k levels),
+  // which the request journal hits on every served request.
+  const DEPTH = 3_500;
   const deep = chatBody(`,"deep":${"[".repeat(DEPTH)}${"]".repeat(DEPTH)}`);
 
   it("is served unseeded (control)", async () => {
