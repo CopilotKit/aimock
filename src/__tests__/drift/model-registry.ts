@@ -183,6 +183,32 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // drift-proposals/openai-gpt-6.2-sol-new-family.md.
     "gpt-6.2-astra",
     "gpt-6.2-sol",
+    // `-healthcare` variants of the included gpt-6.x lines. All four were first
+    // flagged by Drift Tests run 45558538056 (2026-11-24, 10:09 PM PST) and
+    // routed to needs-human PR #635. The normalizer keeps the `-healthcare`
+    // token, so each is its own family and must be enumerated.
+    //
+    // Classified on a LIVE PROBE (2026-11-25, drift-live-pr run 45572123355),
+    // not on the name. Each listing entry and `GET /v1/models/<id>` returns only
+    // `id` / `object` / `created` / `owned_by: "system"` / `shutdown_date: null`,
+    // the same shape as `gpt-6.2-sol`, with no preview or early-access marker.
+    // A minimal /v1/chat/completions call to each returned 200,
+    // `object: "chat.completion"`, `finish_reason: "stop"` and a real assistant
+    // text turn, and /v1/responses returned 200, `status: "completed"` with an
+    // `output_text` part: the same shape the control `gpt-6.2-sol` returned in
+    // the same run. The response `model` field echoes the base line (for
+    // example `gpt-6-astra`). Not voice/audio families, so no
+    // knownVoiceModelFamilies pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6-astra-healthcare-new-family.md,
+    // drift-proposals/openai-gpt-6.1-sol-healthcare-new-family.md,
+    // drift-proposals/openai-gpt-6.2-astra-healthcare-new-family.md and
+    // drift-proposals/openai-gpt-6.2-sol-healthcare-new-family.md.
+    "gpt-6-astra-healthcare",
+    "gpt-6.1-sol-healthcare",
+    "gpt-6.2-astra-healthcare",
+    "gpt-6.2-sol-healthcare",
     // Codex line (coding chat; text output)
     "gpt-5-codex",
     "gpt-5.1-codex",
