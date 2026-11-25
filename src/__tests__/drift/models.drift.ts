@@ -1045,6 +1045,11 @@ describe("recorded /models family waves are classified", () => {
       // gpt-6.2 point releases (2026-11-17 wave, drift run 44249205468; probe-verified text chat)
       "gpt-6.2-astra",
       "gpt-6.2-sol",
+      // -healthcare variants (2026-11-24 wave, drift run 45558538056; probe-verified text chat)
+      "gpt-6-astra-healthcare",
+      "gpt-6.1-sol-healthcare",
+      "gpt-6.2-astra-healthcare",
+      "gpt-6.2-sol-healthcare",
       // o-series reasoning
       "o1",
       "o1-pro",

@@ -699,3 +699,42 @@ describe("the 2026-11-17..19 model-family waves are classified", () => {
     expect(unclassifiedFamilies(["gemini-4-neon-tts"], "gemini")).toEqual(["gemini-4-neon-tts"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The 2026-11-24 wave — BEHAVIOURAL coverage of the four gpt-6.x `-healthcare`
+// variants (INCLUDE), in the same shape as the blocks above. Evidence sits
+// beside the entries in model-registry.ts and in drift-proposals/.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-11-24 model-family wave is classified", () => {
+  const healthcare = [
+    "gpt-6-astra-healthcare",
+    "gpt-6.1-sol-healthcare",
+    "gpt-6.2-astra-healthcare",
+    "gpt-6.2-sol-healthcare",
+  ];
+
+  it("the -healthcare variants are INCLUDED in a /models-shaped payload", () => {
+    for (const id of healthcare) {
+      expect(includeFamilies.openai.has(id)).toBe(true);
+      expect(isClassifiedFamily(id, "openai")).toBe(true);
+      expect(excludeFamilies.openai.has(id)).toBe(false);
+    }
+    expect(unclassifiedFamilies(["gpt-6-astra", "gpt-6.2-sol", ...healthcare], "openai")).toEqual(
+      [],
+    );
+  });
+
+  it("the new keys do not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    for (const id of healthcare) expect(normalizeModelFamily(id, "openai")).toBe(id);
+    expect(unclassifiedFamilies(["gpt-6-sol-healthcare"], "openai")).toEqual([
+      "gpt-6-sol-healthcare",
+    ]);
+    expect(unclassifiedFamilies(["gpt-6.3-sol-healthcare"], "openai")).toEqual([
+      "gpt-6.3-sol-healthcare",
+    ]);
+    expect(unclassifiedFamilies(["gpt-6.2-sol-legal"], "openai")).toEqual(["gpt-6.2-sol-legal"]);
+  });
+});
