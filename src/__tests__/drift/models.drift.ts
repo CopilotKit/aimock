@@ -1263,3 +1263,110 @@ describe.skipIf(!process.env.GOOGLE_API_KEY)("Google Gemini model-family availab
     );
   });
 });
+
+// TEMPORARY DIAGNOSTIC (reverted before merge): records the live listing entries
+// and one short text call for the four `-healthcare` families (gpt-6-astra,
+// gpt-6.1-sol, gpt-6.2-astra, gpt-6.2-sol) so they can be classified on
+// evidence. Writes a key-free summary into drift-evidence/, which the
+// drift-live-pr head artifact uploads. Never fails.
+function tempRedact(value: unknown, keys: string[]): string {
+  let text = JSON.stringify(value, null, 2);
+  for (const k of keys) if (k) text = text.split(k).join("<redacted>");
+  return text;
+}
+
+function tempErrorSummary(body: unknown): unknown {
+  const e = (body as { error?: Record<string, unknown> } | null)?.error;
+  if (!e) return undefined;
+  return { type: e.type, code: e.code, status: e.status, message: e.message };
+}
+
+describe.skipIf(!process.env.OPENAI_API_KEY)("TEMP -healthcare family probe", () => {
+  it("records listing + text-call evidence", async () => {
+    const { mkdirSync: mk, writeFileSync: wf } = await import("node:fs");
+    const key = process.env.OPENAI_API_KEY ?? "";
+    const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+    const base = "https://api.openai.com/v1";
+    const out: Record<string, unknown> = { probedAt: new Date().toISOString() };
+    const targets = [
+      "gpt-6-astra-healthcare",
+      "gpt-6.1-sol-healthcare",
+      "gpt-6.2-astra-healthcare",
+      "gpt-6.2-sol-healthcare",
+    ];
+    try {
+      const lr = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(15000) });
+      const lb = (await lr.json()) as {
+        data?: Record<string, unknown>[];
+      };
+      out.listStatus = lr.status;
+      out.listed = (lb.data ?? []).filter((m) =>
+        /healthcare|gpt-6\.2-sol$|gpt-6-astra$/.test(String(m.id)),
+      );
+      for (const model of [...targets, "gpt-6.2-sol"]) {
+        const g = await fetch(`${base}/models/${model}`, {
+          headers,
+          signal: AbortSignal.timeout(15000),
+        });
+        const gb = (await g.json()) as Record<string, unknown>;
+        out[`get:${model}`] = { status: g.status, body: g.ok ? gb : tempErrorSummary(gb) };
+      }
+      for (const model of [...targets, "gpt-6.2-sol"]) {
+        const c = await fetch(`${base}/chat/completions`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: "Reply with the single word: pong" }],
+          }),
+          signal: AbortSignal.timeout(60000),
+        });
+        const cb = (await c.json()) as {
+          object?: string;
+          model?: string;
+          choices?: { finish_reason?: string; message?: { role?: string; content?: unknown } }[];
+        };
+        const choice = cb.choices?.[0];
+        out[`chat:${model}`] = {
+          status: c.status,
+          object: cb.object,
+          model: cb.model,
+          finish_reason: choice?.finish_reason,
+          role: choice?.message?.role,
+          contentType: typeof choice?.message?.content,
+          content:
+            typeof choice?.message?.content === "string"
+              ? choice.message.content.slice(0, 40)
+              : undefined,
+          error: tempErrorSummary(cb),
+        };
+        const r = await fetch(`${base}/responses`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model, input: "Reply with the single word: pong" }),
+          signal: AbortSignal.timeout(60000),
+        });
+        const rb = (await r.json()) as {
+          object?: string;
+          status?: string;
+          output?: { type?: string; content?: { type?: string; text?: string }[] }[];
+        };
+        const msg = rb.output?.find((o) => o.type === "message");
+        out[`responses:${model}`] = {
+          status: r.status,
+          object: rb.object,
+          responseStatus: rb.status,
+          outputTypes: rb.output?.map((o) => o.type),
+          contentTypes: msg?.content?.map((p) => p.type),
+          text: msg?.content?.find((p) => p.type === "output_text")?.text?.slice(0, 40),
+          error: tempErrorSummary(rb),
+        };
+      }
+    } catch (error) {
+      out.error = String(error);
+    }
+    mk("drift-evidence", { recursive: true });
+    wf("drift-evidence/zz-temp-openai-healthcare-probe.json", tempRedact(out, [key]));
+    expect(true).toBe(true);
+  });
+});
