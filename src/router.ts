@@ -769,7 +769,7 @@ export function matchFixtureDiagnostic(
 
   // Stale-fixture check (#638): a recorded fixture whose request hash differs
   // from this request's is marked for the journal. Serving does not change.
-  noteStaleFixture(req, selected, effective);
+  noteStaleFixture(req, selected, effective, options?.logger);
 
   return { fixture: selected, skippedBySequenceOrTurn, turnIndexRelaxed, matchedBy };
 }

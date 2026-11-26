@@ -14,7 +14,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Fixture, JournalEntry } from "../types.js";
+import type { ChatCompletionRequest, Fixture, JournalEntry } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
 import { loadFixtureFile } from "../fixture-loader.js";
 
@@ -73,7 +73,11 @@ afterEach(async () => {
 const REPLY = "Done - refunded $500 for order A1.";
 
 /** Record `body` on `route` through a real recording server; return the written fixtures. */
-async function record(route: string, body: unknown): Promise<Fixture[]> {
+async function record(
+  route: string,
+  body: unknown,
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest,
+): Promise<Fixture[]> {
   const upstream = await createServer(
     [{ match: { userMessage: "Refund order A1" }, response: { content: REPLY } }],
     { port: 0, logLevel: "silent" },
@@ -85,9 +89,10 @@ async function record(route: string, body: unknown): Promise<Fixture[]> {
     port: 0,
     logLevel: "silent",
     record: {
-      providers: { openai: upstream.url, anthropic: upstream.url },
+      providers: { openai: upstream.url, anthropic: upstream.url, cohere: upstream.url },
       fixturePath: dir,
     },
+    ...(requestTransform && { requestTransform }),
   });
   servers.push(recorder);
   const res = await post(`${recorder.url}${route}`, body);
@@ -102,13 +107,18 @@ async function replay(
   fixtures: Fixture[],
   route: string,
   rawBody: string,
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest,
 ): Promise<{
   status: number;
   body: string;
   entry: JournalEntry;
   warnings: string[];
 }> {
-  const server = await createServer(fixtures, { port: 0, logLevel: "warn" });
+  const server = await createServer(fixtures, {
+    port: 0,
+    logLevel: "warn",
+    ...(requestTransform && { requestTransform }),
+  });
   servers.push(server);
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   const res = await postRaw(`${server.url}${route}`, rawBody);
@@ -357,4 +367,119 @@ describe("stale fixture detection (#638)", () => {
     expect(r.entry.response).not.toHaveProperty("staleFixture");
     expect(staleWarnings(r.warnings)).toEqual([]);
   });
+});
+
+// ─── Tool calls without ids: converters make up random ids ──────────────────
+
+/** Responses API history whose call and output carry no `call_id`. */
+function responsesNoIdsBody(refundResult: string) {
+  const body = responsesBody(refundResult);
+  return {
+    ...body,
+    input: body.input.map((item) => {
+      const copy: Record<string, unknown> = { ...item };
+      delete copy.call_id;
+      return copy;
+    }),
+  };
+}
+
+/** Cohere v2 history whose tool call and tool result carry no ids. */
+function cohereNoIdsBody(refundResult: string) {
+  return {
+    model: "command-r-plus",
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "refund",
+          description: "Refund an order",
+          parameters: { type: "object", properties: { order_id: { type: "string" } } },
+        },
+      },
+    ],
+    messages: [
+      { role: "user", content: "Refund order A1" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { type: "function", function: { name: "refund", arguments: '{"order_id":"A1"}' } },
+        ],
+      },
+      { role: "tool", content: refundResult },
+    ],
+  };
+}
+
+const NO_ID_PROVIDERS = [
+  { name: "OpenAI Responses", route: "/v1/responses", build: responsesNoIdsBody },
+  { name: "Cohere v2", route: "/v2/chat", build: cohereNoIdsBody },
+] as const;
+
+describe("tool calls without ids (#638)", () => {
+  for (const p of NO_ID_PROVIDERS) {
+    it(`${p.name}: an unchanged replay is not flagged`, async () => {
+      const fixtures = await record(p.route, p.build(RECORDED));
+      expect(fixtures[0].metadata?.requestHash).toMatch(/^[0-9a-f]{16}$/);
+      const r = await replay(fixtures, p.route, JSON.stringify(p.build(RECORDED)));
+      expect(r.status).toBe(200);
+      expect(r.entry.response.fixture).not.toBeNull();
+      expect(r.entry.response).not.toHaveProperty("staleFixture");
+      expect(staleWarnings(r.warnings)).toEqual([]);
+    });
+
+    it(`${p.name}: a changed tool result is still flagged`, async () => {
+      const fixtures = await record(p.route, p.build(RECORDED));
+      const r = await replay(fixtures, p.route, JSON.stringify(p.build(CHANGED)));
+      expect(r.status).toBe(200);
+      expect(r.entry.response.staleFixture?.expected).toBe(fixtures[0].metadata?.requestHash);
+      expect(staleWarnings(r.warnings)).toHaveLength(1);
+    });
+  }
+});
+
+// ─── A requestTransform result that cannot be hashed ────────────────────────
+
+/** Adds a self-reference to the last message. */
+const selfReferential = (req: ChatCompletionRequest): ChatCompletionRequest => {
+  const messages = req.messages.map((m) => ({ ...m }));
+  const last = messages[messages.length - 1] as Record<string, unknown>;
+  last.self = last;
+  return { ...req, messages };
+};
+
+/** Adds a BigInt to the last message. */
+const withBigInt = (req: ChatCompletionRequest): ChatCompletionRequest => {
+  const messages = req.messages.map((m) => ({ ...m }));
+  (messages[messages.length - 1] as Record<string, unknown>).big = 1n;
+  return { ...req, messages };
+};
+
+describe("a requestTransform result that cannot be hashed (#638)", () => {
+  for (const [name, transform] of [
+    ["self-referential", selfReferential],
+    ["BigInt", withBigInt],
+  ] as const) {
+    it(`${name}: records normally, with no requestHash`, { timeout: 15_000 }, async () => {
+      const fixtures = await record("/v1/chat/completions", openaiBody(RECORDED), transform);
+      expect(fixtures).toHaveLength(1);
+      expect(fixtures[0].metadata?.toolsHash).toMatch(/^[0-9a-f]{8}$/);
+      expect(fixtures[0].metadata).not.toHaveProperty("requestHash");
+    });
+
+    it(`${name}: serves normally and marks nothing`, { timeout: 15_000 }, async () => {
+      const fixtures = await record("/v1/chat/completions", openaiBody(RECORDED));
+      const r = await replay(
+        fixtures,
+        "/v1/chat/completions",
+        JSON.stringify(openaiBody(CHANGED)),
+        transform,
+      );
+      expect(r.status).toBe(200);
+      expect(r.body.includes("refunded $500")).toBe(true);
+      expect(r.entry.response).not.toHaveProperty("staleFixture");
+      expect(staleWarnings(r.warnings)).toEqual([]);
+    });
+  }
 });

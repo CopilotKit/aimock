@@ -1063,7 +1063,7 @@ export async function proxyAndRecord(
   }
 
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const metadata = buildFixtureMetadata(request, matchRequest);
+  const metadata = buildFixtureMetadata(request, matchRequest, defaults.logger);
   const embeddingRequest = getEmbeddingRequest(request);
   const fixture: Fixture = {
     match: {
@@ -2633,13 +2633,15 @@ export function buildFixtureMatch(
  * hashes of the system prompt and tool definitions present in the request.
  * When either is present it also carries `requestHash`
  * ({@link computeRequestHash}) of the request after `requestTransform`
- * (`matchRequest`), for stale-fixture detection at replay. Returns undefined
- * when neither is present, so those recordings stay exactly as before.
+ * (`matchRequest`), for stale-fixture detection at replay, unless that
+ * request cannot be hashed. Returns undefined when neither is present, so
+ * those recordings stay exactly as before.
  */
 function buildFixtureMetadata(
   request: ChatCompletionRequest,
   matchRequest: ChatCompletionRequest,
-): { systemHash?: string; toolsHash?: string; requestHash: string } | undefined {
+  logger: Logger,
+): { systemHash?: string; toolsHash?: string; requestHash?: string } | undefined {
   const meta: { systemHash?: string; toolsHash?: string } = {};
 
   const messages = request.messages ?? [];
@@ -2660,7 +2662,8 @@ function buildFixtureMetadata(
   }
 
   if (Object.keys(meta).length === 0) return undefined;
-  return { ...meta, requestHash: computeRequestHash(matchRequest) };
+  const requestHash = computeRequestHash(matchRequest, logger);
+  return requestHash === undefined ? meta : { ...meta, requestHash };
 }
 
 // ─── Service fakes persistence (MCP recorder, MR11) ─────────────────────────
