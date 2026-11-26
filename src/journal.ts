@@ -10,6 +10,7 @@ import type {
   MisbehaviorCounters,
 } from "./types.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import { staleFixtureFor } from "./request-hash.js";
 export { DEFAULT_TEST_ID } from "./constants.js";
 
 /**
@@ -255,6 +256,12 @@ export class Journal implements MisbehaviorCounters {
       ...entry,
       body: capBody(entry.body),
     };
+    // Stale-fixture check (#638): the matcher marked this request object when
+    // the fixture it served was recorded on a different request.
+    const staleFixture = staleFixtureFor(entry.body, entry.response.fixture);
+    if (staleFixture && !full.response.staleFixture) {
+      full.response = { ...full.response, staleFixture };
+    }
     // A request is served from an extended server's view of a fixture, or
     // from LLMock's per-addition copy with misbehavior enabled; the entry
     // names the caller's fixture behind it, as in 1.44.0.

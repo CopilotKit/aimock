@@ -1218,6 +1218,32 @@ try {
           may no longer reflect what the real provider would return for the current prompt.
         </p>
 
+        <h3 id="stale-fixtures">Stale Fixtures</h3>
+        <p>
+          The recorder also writes <code>metadata.requestHash</code>, a hash of the request it
+          recorded on. It covers the messages (system prompt and tool results included), the tool
+          definitions, <code>tool_choice</code>, <code>response_format</code>,
+          <code>temperature</code>, <code>max_tokens</code> and the model name without its date
+          suffix. It is taken after <code>requestTransform</code>, in canonical JSON, so key order
+          and whitespace do not change it. Headers, the stream flag and other transport details are
+          not covered. The hash is written only when the request has a system prompt or tools, so a
+          request with neither is never checked.
+        </p>
+        <p>
+          At replay, when a request matches a fixture that has a <code>requestHash</code> but hashes
+          differently, the request has changed since the recording (for example, a tool now returns
+          <code>{"blocked":true}</code> instead of <code>{"refunded":500}</code>). aimock still
+          serves the fixture as before, adds <code>response.staleFixture</code> to the journal entry
+          with the recorded hash (<code>expected</code>) and this request&rsquo;s
+          (<code>actual</code>), and logs one <code>STALE FIXTURE</code> warning. Fixtures without a
+          <code>requestHash</code> (hand-written ones and older recordings) are never checked.
+        </p>
+        <p>
+          Content that changes on every run, such as dates, timestamps or random IDs, changes the
+          hash too. Normalize it with <code>requestTransform</code>, or every replay of that fixture
+          is flagged.
+        </p>
+
         <h2 id="snapshot-style-recording">Snapshot-Style Recording</h2>
         <p>
           When the <code>X-Test-Id</code> header is present on a request, aimock uses

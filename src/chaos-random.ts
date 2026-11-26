@@ -138,7 +138,7 @@ function hex32(word: number): string {
  * overflowing the call stack. The output is the same string a recursive walk
  * gives.
  */
-function canonicalJSON(root: unknown): string {
+export function canonicalJSON(root: unknown): string {
   const out: string[] = [];
   // A work item is either text to emit as-is, or a value to encode. Pushed in
   // reverse, so items pop in output order.

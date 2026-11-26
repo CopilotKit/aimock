@@ -18,6 +18,7 @@ import type {
 } from "./types.js";
 import { getLastMessageByRole, getTextContent, currentTurnHasToolResult } from "./router.js";
 import { normalizeModelName } from "./model-utils.js";
+import { computeRequestHash } from "./request-hash.js";
 import type { Logger } from "./logger.js";
 import {
   collapseStreamingResponseWithResponsesTools,
@@ -1062,7 +1063,7 @@ export async function proxyAndRecord(
   }
 
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const metadata = buildFixtureMetadata(request);
+  const metadata = buildFixtureMetadata(request, matchRequest, defaults.logger);
   const embeddingRequest = getEmbeddingRequest(request);
   const fixture: Fixture = {
     match: {
@@ -2630,11 +2631,17 @@ export function buildFixtureMatch(
 /**
  * Build optional metadata for drift detection. Contains 8-char SHA-256
  * hashes of the system prompt and tool definitions present in the request.
- * Returns undefined when neither is present.
+ * When either is present it also carries `requestHash`
+ * ({@link computeRequestHash}) of the request after `requestTransform`
+ * (`matchRequest`), for stale-fixture detection at replay, unless that
+ * request cannot be hashed. Returns undefined when neither is present, so
+ * those recordings stay exactly as before.
  */
 function buildFixtureMetadata(
   request: ChatCompletionRequest,
-): { systemHash?: string; toolsHash?: string } | undefined {
+  matchRequest: ChatCompletionRequest,
+  logger: Logger,
+): { systemHash?: string; toolsHash?: string; requestHash?: string } | undefined {
   const meta: { systemHash?: string; toolsHash?: string } = {};
 
   const messages = request.messages ?? [];
@@ -2654,7 +2661,9 @@ function buildFixtureMetadata(
       .slice(0, 8);
   }
 
-  return Object.keys(meta).length > 0 ? meta : undefined;
+  if (Object.keys(meta).length === 0) return undefined;
+  const requestHash = computeRequestHash(matchRequest, logger);
+  return requestHash === undefined ? meta : { ...meta, requestHash };
 }
 
 // ─── Service fakes persistence (MCP recorder, MR11) ─────────────────────────

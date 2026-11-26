@@ -1,6 +1,7 @@
 import { claimOneShotError, isOneShotError } from "./fixture-loader.js";
 import { isDeepStrictEqual } from "node:util";
 import { getEmbeddingRequest } from "./embedding-request.js";
+import { noteStaleFixture } from "./request-hash.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -765,6 +766,10 @@ export function matchFixtureDiagnostic(
       );
     }
   }
+
+  // Stale-fixture check (#638): a recorded fixture whose request hash differs
+  // from this request's is marked for the journal. Serving does not change.
+  noteStaleFixture(req, selected, effective, options?.logger);
 
   return { fixture: selected, skippedBySequenceOrTurn, turnIndexRelaxed, matchedBy };
 }
