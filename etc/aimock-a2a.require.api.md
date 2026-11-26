@@ -356,6 +356,7 @@ interface Fixture {
     metadata?: {
         systemHash?: string;
         toolsHash?: string;
+        requestHash?: string;
     };
     // (undocumented)
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
@@ -552,6 +553,10 @@ interface JournalEntry {
         misbehavior?: MisbehaviorSummary;
         strictOverride?: boolean;
         recordSkipped?: string;
+        staleFixture?: {
+            expected: string;
+            actual: string;
+        };
     };
     // (undocumented)
     service?: string;

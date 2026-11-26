@@ -1095,6 +1095,14 @@ export interface Fixture {
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
+    /**
+     * Hash of the request this fixture was recorded on, written by the
+     * recorder when the request has a system prompt or tools. At replay, a
+     * matching request that hashes differently is flagged in the journal
+     * ({@link JournalEntry} `response.staleFixture`) and logged; it is still
+     * served. Fixtures without it are never checked.
+     */
+    requestHash?: string;
   };
 }
 
@@ -1319,6 +1327,14 @@ export interface FixtureFileEntry {
   metadata?: {
     systemHash?: string;
     toolsHash?: string;
+    /**
+     * Hash of the request this fixture was recorded on, written by the
+     * recorder when the request has a system prompt or tools. At replay, a
+     * matching request that hashes differently is flagged in the journal
+     * ({@link JournalEntry} `response.staleFixture`) and logged; it is still
+     * served. Fixtures without it are never checked.
+     */
+    requestHash?: string;
   };
 }
 
@@ -1410,6 +1426,13 @@ export interface JournalEntry {
     strictOverride?: boolean;
     /** MR8 / MR11 / MR14: why a forwarded MCP record-mode message was not recorded. */
     recordSkipped?: string;
+    /**
+     * Set when the served fixture has a recorded `metadata.requestHash` and
+     * this request hashes differently: the request changed since the
+     * recording. `expected` is the recorded hash, `actual` the request's.
+     * The fixture was still served. Absent otherwise.
+     */
+    staleFixture?: { expected: string; actual: string };
   };
 }
 

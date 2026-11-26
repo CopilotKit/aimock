@@ -3340,6 +3340,16 @@ async function startServer(
     onAdd: (entry) => {
       const req = requestScope.getStore();
       if (req) ownJournalEntry.set(req, entry);
+      const stale = entry.response.staleFixture;
+      if (stale && entry.response.fixture) {
+        const fixture = entry.response.fixture;
+        logger.warn(
+          `STALE FIXTURE — ${entry.method} ${entry.path} served fixture ` +
+            `${describeMatch(fixture.match, fixtures.indexOf(fixture))}, recorded on a different ` +
+            `request (requestHash ${stale.expected}, this request ${stale.actual}); normalize ` +
+            `changing content with requestTransform or re-record`,
+        );
+      }
     },
   });
   // An extended server matches each fixture through its view; the journal
