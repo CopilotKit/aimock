@@ -255,7 +255,9 @@ export function geminiInteractionsToCompletionRequest(
           } else {
             // Text-only turn
             const text = textParts.map((p) => p.text ?? "").join("");
-            if (role === "user" || role === "assistant" || role === "system") {
+            if (role === "user" && textParts.length === 0) {
+              messages.push({ role: "user", content: null });
+            } else if (role === "user" || role === "assistant" || role === "system") {
               messages.push({
                 role: role as "user" | "assistant" | "system",
                 content: text,
@@ -267,11 +269,11 @@ export function geminiInteractionsToCompletionRequest(
         // Step[] format — the wire contract Google's /v1beta/interactions accepts.
         for (const step of req.input as InteractionsStep[]) {
           if (step.type === "user_input") {
-            const text = (step.content ?? [])
-              .filter((p) => p.type === "text")
-              .map((p) => p.text ?? "")
-              .join("");
-            messages.push({ role: "user", content: text });
+            const parts = step.content ?? [];
+            const textParts = parts.filter((p) => p.type === "text");
+            const text = textParts.map((p) => p.text ?? "").join("");
+            const hasText = textParts.length > 0 || parts.length === 0;
+            messages.push({ role: "user", content: hasText ? text : null });
           } else if (step.type === "model_output") {
             const blocks = step.content ?? [];
             const funcCallParts = blocks.filter((p) => p.type === "function_call");

@@ -128,6 +128,16 @@ function extractTextContent(content: string | BedrockContentBlock[] | null | und
     .join("");
 }
 
+function extractUserContent(
+  content: string | BedrockContentBlock[] | null | undefined,
+): string | null {
+  const hasText =
+    !Array.isArray(content) ||
+    content.length === 0 ||
+    content.some((b) => b !== null && b !== undefined && b.type === "text");
+  return hasText ? extractTextContent(content) : null;
+}
+
 export function bedrockToCompletionRequest(
   req: BedrockRequest,
   modelId: string,
@@ -201,7 +211,7 @@ export function bedrockToCompletionRequest(
       }
       messages.push({
         role: "user",
-        content: extractTextContent(msg.content),
+        content: extractUserContent(msg.content),
       });
     } else if (msg.role === "assistant") {
       if (typeof msg.content === "string") {
