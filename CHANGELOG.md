@@ -8,6 +8,10 @@
 - Seeded hits add headers and journal fields; `chaosKeysMax`/`--chaos-keys-max` cap keys (#618)
 - Recorder writes `requestHash`; changed replays get journal `staleFixture` and a warning (#638)
 
+### Fixed
+
+- Split prompt + image-only turns match `userMessage` on Anthropic, Gemini, Bedrock, Cohere (#643)
+
 ## [1.48.1] - 2026-11-20
 
 ### Changed
