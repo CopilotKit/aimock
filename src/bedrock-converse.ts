@@ -508,7 +508,8 @@ export function converseToCompletionRequest(
         .filter((b) => b.text !== undefined && b.text !== "")
         .map((b) => b.text ?? "")
         .join("");
-      messages.push({ role: "user", content: text });
+      const hasText = msg.content.length === 0 || msg.content.some((b) => "text" in b);
+      messages.push({ role: "user", content: hasText ? text : null });
     } else if (msg.role === "assistant") {
       const toolUseBlocks = msg.content.filter((b) => b.toolUse);
       const textContent = msg.content

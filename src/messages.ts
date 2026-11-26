@@ -156,6 +156,14 @@ function extractClaudeTextContent(content: string | ClaudeContentBlock[]): strin
     .join("");
 }
 
+function extractClaudeUserContent(content: string | ClaudeContentBlock[]): string | null {
+  const hasText =
+    !Array.isArray(content) ||
+    content.length === 0 ||
+    content.some((b) => b != null && typeof b === "object" && b.type === "text");
+  return hasText ? extractClaudeTextContent(content) : null;
+}
+
 export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionRequest {
   const messages: ChatMessage[] = [];
 
@@ -231,7 +239,7 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
       // Regular user message
       messages.push({
         role: "user",
-        content: extractClaudeTextContent(msg.content),
+        content: extractClaudeUserContent(msg.content),
       });
     } else if (msg.role === "assistant") {
       if (typeof msg.content === "string") {
