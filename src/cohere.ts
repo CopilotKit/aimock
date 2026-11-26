@@ -155,6 +155,16 @@ function extractTextContent(content: string | CohereContentPart[] | null | undef
     .join("");
 }
 
+function extractUserContent(
+  content: string | CohereContentPart[] | null | undefined,
+): string | null {
+  const hasText =
+    !Array.isArray(content) ||
+    content.length === 0 ||
+    content.some((part) => part !== null && part !== undefined && part.type === "text");
+  return hasText ? extractTextContent(content) : null;
+}
+
 /** Type guard: is this an OpenAI-style tool definition (has `function` key)? */
 function isOpenAIToolDef(t: CohereToolDef): t is CohereToolDefOpenAI {
   return "function" in t && typeof (t as CohereToolDefOpenAI).function === "object";
@@ -168,7 +178,7 @@ export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionReq
     if (msg.role === "system") {
       messages.push({ role: "system", content: textContent });
     } else if (msg.role === "user") {
-      messages.push({ role: "user", content: textContent });
+      messages.push({ role: "user", content: extractUserContent(msg.content) });
     } else if (msg.role === "assistant") {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         messages.push({

@@ -219,7 +219,8 @@ export function geminiToCompletionRequest(
         } else {
           // Regular user text
           const text = textParts.map((p) => p.text!).join("");
-          messages.push({ role: "user", content: text });
+          const hasText = textParts.length > 0 || parts.length === 0;
+          messages.push({ role: "user", content: hasText ? text : null });
         }
       } else if (role === "model") {
         // Check for functionCall parts
